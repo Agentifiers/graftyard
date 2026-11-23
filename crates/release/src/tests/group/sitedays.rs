@@ -64,6 +64,11 @@ fn a_step_gate_breaches_on_each_input_at_its_bound_and_starves_under_step_min_en
     // A quiet step is starved, not passed; a breach still wins over too few entries.
     assert_eq!(gate::judge_site(&lag_side(999, 0, 200), &n), Gate::Starved(999));
     assert!(breach(Side { exceptions: 1, ..lag_side(10, 0, 200) }));
+    // Under STEP_MIN_ENTRIES the lag shares are chance: one slow entry of 20 (5% over N's p99 and over 5 s) starves,
+    // and an N of 999 entries is no baseline, so 50% over its p99 passes on the backstop.
+    assert_eq!(gate::judge_site(&lag_side(20, 1, 10_000), &n), Gate::Starved(20));
+    assert_eq!(gate::judge_site(&lag_side(1_000, 500, 300), &lag_side(999, 0, 200)), Gate::Pass);
+    assert!(breach(lag_side(1_000, 500, 300)), "the same N+1 against N's 5,000 entries");
     assert_eq!(gate::judge_errors(20, 10), Gate::Pass);
     assert!(matches!(gate::judge_errors(21, 10), Gate::Breach(_)));
 }

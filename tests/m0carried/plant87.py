@@ -26,9 +26,10 @@ OPSFAULTS = ['bash', 'tests/m5/opsfaults.sh']
 MUTANTS = [
     # R40 (2026-11-23): apply lag is N+1's share over N's p99, with a 5 s backstop (DECISIONS "`gate-relative`").
     ("apply lag is judged by the backstop alone", GATE,
-     '    if has_n && tail > GATE_APPLY_LAG_SHARE_BP {', '    if false && tail > GATE_APPLY_LAG_SHARE_BP {', REL),
+     '    if n.entries >= STEP_MIN_ENTRIES && tail > GATE_APPLY_LAG_SHARE_BP {', '    if false && tail > GATE_APPLY_LAG_SHARE_BP {', REL),
     ("exactly 2% of N+1 over N's p99 breaches", GATE,
-     '    if has_n && tail > GATE_APPLY_LAG_SHARE_BP {', '    if has_n && tail >= GATE_APPLY_LAG_SHARE_BP {', REL),
+     '    if n.entries >= STEP_MIN_ENTRIES && tail > GATE_APPLY_LAG_SHARE_BP {',
+     '    if n.entries >= STEP_MIN_ENTRIES && tail >= GATE_APPLY_LAG_SHARE_BP {', REL),
     ("apply lag may put 3% over N's p99", GATE,
      'pub const GATE_APPLY_LAG_SHARE_BP: u64 = 200;', 'pub const GATE_APPLY_LAG_SHARE_BP: u64 = 300;', REL),
     ("apply lag is judged against N's p50 bucket, not its p99", GATE,
@@ -114,8 +115,11 @@ MUTANTS = [
      '    let k = usize::from(c.next);', '    let k = usize::from(c.next.saturating_sub(u8::from(c.next % 3 == 2)));', REL),
     # The hosted half's pure parts (2026-11-22): the counters the host sums, the missing N baseline, the day's versions,
     # and the shard objects a ContainerDay step covers.
-    ("with no N baseline the apply-lag share still breaches", GATE,
-     '    if has_n && tail > GATE_APPLY_LAG_SHARE_BP {', '    if tail > GATE_APPLY_LAG_SHARE_BP {', REL),
+    ("an N under STEP_MIN_ENTRIES is a baseline", GATE,
+     '    if n.entries >= STEP_MIN_ENTRIES && tail > GATE_APPLY_LAG_SHARE_BP {', '    if n.entries > 0 && tail > GATE_APPLY_LAG_SHARE_BP {', REL),
+    ("the lag shares are judged on a step under STEP_MIN_ENTRIES", GATE,
+     '    if n1.entries < STEP_MIN_ENTRIES {\n        return Gate::Starved(n1.entries);\n    }\n    let tail',
+     '    let tail', REL),
     ("with no N baseline the ack-rate rule still breaches", GATE,
      'if has_n && n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {', 'if n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {', REL),
     ("the p99 bucket is the one at 98%", GATE,

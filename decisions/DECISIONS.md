@@ -3415,7 +3415,8 @@ The fold gains what the executor needs: where each finished intent left each scr
 **Status.** Code-only, not deployed. Ships on a site day (the members' `gate` rows are kept longer) and an ops deploy. Closes R40 (`decisions/OPEN-QUESTIONS.md`).
 
 **Decision.**
-- `judge_site` breaches `GATE_APPLY_LAG` when more than 2% (`GATE_APPLY_LAG_SHARE_BP`, 200) of N+1's applied entries fall in buckets above N's p99 bucket on the same site, when N has entries.
+- `judge_site` breaches `GATE_APPLY_LAG` when more than 2% (`GATE_APPLY_LAG_SHARE_BP`, 200) of N+1's applied entries fall in buckets above N's p99 bucket on the same site, when N has at least `STEP_MIN_ENTRIES` entries.
+- The lag shares are judged only once N+1 has `STEP_MIN_ENTRIES` entries; under it the step is `Starved`. One slow entry of 20 is 5%, over both shares, so a healthy step judged early would breach on chance: at graft-m4a's healthy 0.5 to 1% of entries over N's p99, a 20-entry read breaches 10 to 18% of the time [inference from the binomial on BF-39's shares], and one breach runs the `Rollback`. Exceptions, `STEP_DOWN` and the ack rate still breach at any count. Found preparing the check row, before any spend (2026-11-23).
 - With or without N, it breaches when more than 1% (`GATE_APPLY_LAG_CAP_BP`) of N+1's entries are slower than 5 s (`GATE_APPLY_LAG_CAP_MS`). That backstop replaces the absolute 500 ms cap.
 - At 100% and on the first day no member runs N, so `graft-ops` reads N's counters from the intent's start, which covers the 1, 10 and 50% steps where N last ran beside N+1 (`workers/ops/src/exec.rs`, `gate`). The site keeps gate rows for `6 x STEP_DWELL + FIRST_DAY` so they are still there (`workers/site/src/gatecount.rs`).
 
@@ -3441,7 +3442,7 @@ The fold gains what the executor needs: where each finished intent left each scr
 | Plant: +10 s on 1.5% of applies | 1.06 to 2.64% | 1.48 to 1.67% | breach | breach 35 of 36, by the backstop |
 
 - `sitedays.rs`: `a_step_gate_breaches_on_each_input_at_its_bound_and_starves_under_step_min_entries` (each bound, both sides), `a_drained_sites_followers_pass_against_n_and_a_slower_n1_still_breaches` (the row's histograms: the undrain step passes, the fault breaches, half a bucket slower breaches), and the no-baseline test.
-- `tests/m0carried/plant87.py`: 49 of 49 caught, 9 of them for this rule.
+- `tests/m0carried/plant87.py`: 50 of 50 caught, 10 of them for this rule (the floor on N+1 and on N each).
 
 **Caveat: the replay flatters the rule.** N in the replay is R3's own healthy window, the same build as N+1, so N's p99 and N+1's tail come from the same distribution. A real N+1 runs beside a different N. The plants show it still catches regressions, but the hosted check row must judge against a real N: its site day leaves the previous version running beside N+1 at 1, 10 and 50%, with real counts on both.
 

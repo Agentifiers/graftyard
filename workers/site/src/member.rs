@@ -1149,6 +1149,12 @@ impl<F: Family> Routes<F> {
                 }
                 #[cfg(not(feature = "test-faults"))]
                 let id = 0;
+                // The gate check's planted slow apply (`faults::SiteFault::slow_ms`).
+                #[cfg(feature = "test-faults")]
+                if let Some(ms) = crate::faults::slow_raft(&self.host.env).await {
+                    crate::faults::count("slow_raft");
+                    Delay::from(Duration::from_millis(ms)).await;
+                }
                 let r = self.raft(&body, id).await;
                 self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);
                 #[cfg(feature = "test-faults")]
