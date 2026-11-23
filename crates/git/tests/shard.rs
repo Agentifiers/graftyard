@@ -544,7 +544,7 @@ fn a_forwarded_miss_waits_briefly_for_its_chain_and_the_last_site_waits_the_dead
             (Some(w), Some(r)) if r <= w => Poll::Ready(()),
             _ => Poll::Pending,
         });
-        let composed = futures_executor::block_on(chain_ready(follows, true, left, ready, |w| {
+        let composed = futures_executor::block_on(chain_ready(follows, true, true, left, ready, |w| {
             slept.set(Some(w));
             std::future::poll_fn(
                 move |_| if ready_at.is_some_and(|r| r <= w) { Poll::Pending } else { Poll::Ready(()) },
@@ -625,7 +625,7 @@ fn a_miss_on_a_site_that_holds_no_chain_waits_for_no_chain_step() {
             (Some(w), Some(r)) if r <= w => Poll::Ready(()),
             _ => Poll::Pending,
         });
-        let go = futures_executor::block_on(chain_ready(follows, chain_site(on), left, ready, |w| {
+        let go = futures_executor::block_on(chain_ready(follows, chain_site(on), true, left, ready, |w| {
             slept.set(Some(w));
             std::future::poll_fn(
                 move |_| if ready_at.is_some_and(|r| r <= w) { Poll::Pending } else { Poll::Ready(()) },
@@ -1555,4 +1555,47 @@ fn a_restarted_builder_installs_the_buckets_chain_and_steps_a_part() {
     let m = model(None, Some(chain('a', &['b'])), false);
     assert_eq!(step(&m), ChainHead { base: id('9'), parts: vec![], tree: id('f') });
     assert_eq!((m.installs.get(), m.bases.get()), (1, 1));
+}
+
+/// A composable miss on a chain site whose container holds no chain (`chain_ready` with `holds` false,
+/// `builder-install`): forwarded, it answers `warming` at once and the edge asks the next site; as the last site it
+/// still waits all that is left, as `chain-wait` requires, so a miss never runs out of sites that would wait. A shard
+/// that holds a chain keeps the 2 s bound. B0-34 mt20b's case: the restarted home held none, and 25 forwarded misses
+/// waited the 2 s each before the next site; one took 5,195 ms in all (`tests/am1/results/g37-design.md`). On main's
+/// rule a forwarded miss waits the bound whatever the shard holds, which fails here.
+#[test]
+fn a_forwarded_miss_on_a_chain_site_that_holds_no_chain_goes_on_at_once() {
+    use graftyard_git::compose::{CHAIN_WAIT_FORWARDED, chain_ready};
+    use std::cell::Cell;
+    use std::task::Poll;
+    use std::time::Duration;
+    let s = Duration::from_secs;
+    // (asks its container, the wait the shard slept for) on a chain site
+    let run = |follows: bool, holds: bool, left: Duration, ready_at: Option<Duration>| {
+        let slept = Cell::new(None::<Duration>);
+        let ready = std::future::poll_fn(|_| match (slept.get(), ready_at) {
+            (Some(w), Some(r)) if r <= w => Poll::Ready(()),
+            _ => Poll::Pending,
+        });
+        let go = futures_executor::block_on(chain_ready(follows, true, holds, left, ready, |w| {
+            slept.set(Some(w));
+            std::future::poll_fn(
+                move |_| if ready_at.is_some_and(|r| r <= w) { Poll::Pending } else { Poll::Ready(()) },
+            )
+        }));
+        (go, slept.get().expect("the shard sleeps for its wait"))
+    };
+    // mt20b's home: forwarded (wait=15, next=1), no chain on the new container. Warming at once, not after 2 s.
+    assert_eq!(run(true, false, s(15), None), (false, Duration::ZERO));
+    // Even a chain about to be ready inside the bound does not hold it: the edge's next site answers.
+    assert_eq!(run(true, false, s(15), Some(Duration::from_millis(1_500))), (false, Duration::ZERO));
+    // A chain already ready still answers here at once.
+    assert_eq!(run(true, false, s(15), Some(Duration::ZERO)), (true, Duration::ZERO));
+    // The last site with no chain waits all that is left, and composes a chain 14 s away.
+    assert_eq!(run(false, false, s(60), None), (false, s(60)));
+    assert_eq!(run(false, false, s(60), Some(s(14))), (true, s(60)));
+    // A shard that holds a chain keeps chain-wait's bound when forwarded, and its whole deadline when last.
+    assert_eq!(run(true, true, s(15), None), (false, CHAIN_WAIT_FORWARDED));
+    assert_eq!(run(true, true, s(15), Some(Duration::from_millis(1_500))), (true, CHAIN_WAIT_FORWARDED));
+    assert_eq!(run(false, true, s(60), None), (false, s(60)));
 }

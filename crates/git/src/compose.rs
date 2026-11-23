@@ -568,9 +568,15 @@ pub async fn builder_step<I: BuilderIo>(io: &I) -> Result<Option<ChainHead>, cra
 ///   on at once, and the last site asks its container at once, which composes from a chain it holds or serves stock.
 ///   On B0-34 mt11 site c, which is not a warm site and holds no chain, waited `COMPOSE_WAIT`'s whole 20 s for each of
 ///   kill's last-site misses and 2 s for each forwarded one (`decisions/DECISIONS.md`, "`chain-site`").
+/// - `holds`: the shard's container holds a chain, or this isolate synced one. On a chain site whose container holds
+///   none, a forwarded miss waits for nothing: what it would wait for is an install or a base, not a part, and the edge
+///   has another site to ask. The last site still waits all `left`, so a miss never runs out of sites that would wait
+///   (`builder-install`). On B0-34 mt20b the restarted home, holding no chain, answered 25 forwarded misses `warming`
+///   after 2 s each, and one of them took 5,195 ms in all (`tests/am1/results/g37-design.md`).
 pub async fn chain_ready<R, S, D>(
     follows: bool,
     chain_site: bool,
+    holds: bool,
     left: std::time::Duration,
     ready: R,
     sleep: S,
@@ -582,6 +588,7 @@ where
 {
     let wait = match (chain_site, follows) {
         (false, _) => std::time::Duration::ZERO,
+        (true, true) if !holds => std::time::Duration::ZERO,
         (true, true) => left.min(CHAIN_WAIT_FORWARDED),
         (true, false) => left,
     };
