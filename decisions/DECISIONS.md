@@ -8615,6 +8615,12 @@ the tier DDL helpers). Add any new writer here, and give it a `memo.sh` case:
   - the memo is read before the buffered writes;
   - another handle's transaction keeps it;
   - prefix reads keyed by table alone.
+- `crates/raft` is unchanged, and the lead asked for the long sweep anyway. `RAFT_SEEDS=2000 RAFT_STEPS=10000`: exit 0
+  in 1,083 s. Porcupine (`-seg 2000`): `hist.jsonl` Ok on 146,543 operations, `hist.jsonl.gray` Ok on 2,346,656, and
+  `hist.jsonl.live` Ok on 5,474,828. The longest stretches with a healthy quorum and nothing completing were 14.7 s,
+  25.2 s and 24.9 s, under the 30 s bound [measured].
+- `cargo test --workspace`: 1,481 passed. fmt, workspace clippy, the wasm32 clippy for site, edge and ops both ways,
+  `go test` in `containers/git/server`, and the three docs checks all pass.
 
 **Flip.**
 - A hosted row whose leader stored reads per event fall by half or more while CPU per event falls by less than 15%:
