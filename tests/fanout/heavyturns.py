@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'b03
 from common import RUNS, ms  # noqa: E402
 
 HEAVY = 20
-WL = {'mr': 'wl-mr', 'pg': 'wl-pg', 'pf': 'wl-pf', 'bl': 'wl-bl', 'ql': 'wl-ql', 'm3': 'wl-m3'}
+WL = {'ms': 'wl-ms', 'mr': 'wl-mr', 'pg': 'wl-pg', 'pf': 'wl-pf', 'bl': 'wl-bl', 'ql': 'wl-ql', 'm3': 'wl-m3'}
 RAW = os.environ.get('B033_RAW', 'tests/fanout/raw')
 
 

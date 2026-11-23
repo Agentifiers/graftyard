@@ -1,0 +1,202 @@
+{"t": 1795443674761, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e953cd91ff438585", "budgetMs": 316, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 385}
+{"t": 1795443683387, "push": true, "class": "agent", "edgefull": "refused", "isolate": "42d0b8e85efd2b6f", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 440}
+{"t": 1795443683245, "push": true, "class": "agent", "edgefull": "refused", "isolate": "ce9bbd3e42a7272b", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 465}
+{"t": 1795443683217, "push": true, "class": "agent", "edgefull": "refused", "isolate": "1f9939f10762dd83", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 280}
+{"t": 1795443687707, "push": true, "class": "agent", "edgefull": "refused", "isolate": "007b3719fd90faed", "budgetMs": 355, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 359}
+{"t": 1795443687695, "push": true, "class": "agent", "edgefull": "refused", "isolate": "2f9b89a638d46d17", "budgetMs": 289, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 359}
+{"t": 1795443690658, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a97e98b6caadd2ef", "budgetMs": 138, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 376}
+{"t": 1795443690644, "push": true, "class": "agent", "edgefull": "refused", "isolate": "1ad7c98dfb604807", "budgetMs": 183, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 272}
+{"t": 1795443702841, "push": true, "class": "agent", "edgefull": "refused", "isolate": "c22ba1e1388c72c5", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 238}
+{"t": 1795443704770, "push": true, "class": "agent", "edgefull": "refused", "isolate": "d17358a9a75762c7", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 214}
+{"t": 1795443704297, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "dca5e212b48b1023", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443705419, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "dca5e212b48b1023", "budgetMs": 0, "failOpen": 2, "refused": 0, "repo": 131397}
+{"t": 1795443707016, "push": true, "class": "agent", "edgefull": "refused", "isolate": "d17358a9a75762c7", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 388}
+{"t": 1795443714509, "push": true, "class": "agent", "edgefull": "refused", "isolate": "2d051c0b159fb04d", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 312}
+{"t": 1795443715589, "push": true, "class": "agent", "edgefull": "refused", "isolate": "43e51262b5bd4cd7", "budgetMs": 0, "failOpen": 0, "refused": 3, "repo": 131397, "waitMs": 281}
+{"t": 1795443715588, "push": true, "class": "agent", "edgefull": "refused", "isolate": "43e51262b5bd4cd7", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 281}
+{"t": 1795443715582, "push": true, "class": "agent", "edgefull": "refused", "isolate": "4ce0b7ae99bf2fd9", "budgetMs": 213, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 365}
+{"t": 1795443715102, "push": true, "class": "agent", "edgefull": "refused", "isolate": "43e51262b5bd4cd7", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 359}
+{"t": 1795443715102, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "2d051c0b159fb04d", "budgetMs": 279, "failOpen": 1, "refused": 1, "repo": 131397}
+{"t": 1795443715101, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a796f2201b4f5845", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 255}
+{"t": 1795443715095, "push": true, "class": "agent", "edgefull": "refused", "isolate": "ae200fa35026c3ad", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 298}
+{"t": 1795443716241, "push": true, "class": "agent", "edgefull": "refused", "isolate": "f22a9651b785ec2f", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 403}
+{"t": 1795443725821, "push": true, "class": "agent", "edgefull": "refused", "isolate": "957e8e3c80ada6b1", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 255}
+{"t": 1795443726611, "push": true, "class": "agent", "edgefull": "refused", "isolate": "957e8e3c80ada6b1", "budgetMs": 123, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 255}
+{"t": 1795443729391, "push": true, "class": "agent", "edgefull": "refused", "isolate": "58ea9126599c1d7f", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 244}
+{"t": 1795443729388, "push": true, "class": "agent", "edgefull": "refused", "isolate": "58ea9126599c1d7f", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 244}
+{"t": 1795443730941, "push": true, "class": "agent", "edgefull": "refused", "isolate": "6682174db8f535ef", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 228}
+{"t": 1795443732071, "push": true, "class": "agent", "edgefull": "refused", "isolate": "43e51262b5bd4cd7", "budgetMs": 11, "failOpen": 0, "refused": 6, "repo": 131397, "waitMs": 236}
+{"t": 1795443732071, "push": true, "class": "agent", "edgefull": "refused", "isolate": "43e51262b5bd4cd7", "budgetMs": 15, "failOpen": 0, "refused": 5, "repo": 131397, "waitMs": 236}
+{"t": 1795443732007, "push": true, "class": "agent", "edgefull": "refused", "isolate": "43e51262b5bd4cd7", "budgetMs": 0, "failOpen": 0, "refused": 4, "repo": 131397, "waitMs": 263}
+{"t": 1795443740458, "push": true, "class": "agent", "edgefull": "refused", "isolate": "7b56ddb087bf2dd3", "budgetMs": 244, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 264}
+{"t": 1795443741743, "push": true, "class": "agent", "edgefull": "refused", "isolate": "2d051c0b159fb04d", "budgetMs": 0, "failOpen": 1, "refused": 2, "repo": 131397, "waitMs": 274}
+{"t": 1795443741729, "push": true, "class": "agent", "edgefull": "refused", "isolate": "d45379a48266a825", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 282}
+{"t": 1795443744954, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "07aea070c66f76af", "budgetMs": 186, "failOpen": 2, "refused": 0, "repo": 131397}
+{"t": 1795443744517, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "bf7367ae8058295f", "budgetMs": 249, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443744236, "push": true, "class": "agent", "edgefull": "refused", "isolate": "300d6023a6693c71", "budgetMs": 71, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 328}
+{"t": 1795443744187, "push": true, "class": "agent", "edgefull": "refused", "isolate": "559219773ca14e71", "budgetMs": 137, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 247}
+{"t": 1795443744170, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "07aea070c66f76af", "budgetMs": 128, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443746770, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "15fdb506f7d46791", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443746764, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e4702104f2971227", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 209}
+{"t": 1795443747781, "push": true, "class": "agent", "edgefull": "refused", "isolate": "233a3a31e8ac92d5", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 193}
+{"t": 1795443747780, "push": true, "class": "agent", "edgefull": "refused", "isolate": "28603ada4a19e563", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 203}
+{"t": 1795443747563, "push": true, "class": "agent", "edgefull": "refused", "isolate": "72f1db6313aa5549", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 209}
+{"t": 1795443747558, "push": true, "class": "agent", "edgefull": "refused", "isolate": "72f1db6313aa5549", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 209}
+{"t": 1795443747557, "push": true, "class": "agent", "edgefull": "refused", "isolate": "fb7c513c5f748c1f", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 199}
+{"t": 1795443747533, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "360e26ba0e48e649", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443747464, "push": true, "class": "agent", "edgefull": "refused", "isolate": "bf7367ae8058295f", "budgetMs": 0, "failOpen": 1, "refused": 3, "repo": 131397, "waitMs": 193}
+{"t": 1795443747453, "push": true, "class": "agent", "edgefull": "refused", "isolate": "bf7367ae8058295f", "budgetMs": 0, "failOpen": 1, "refused": 2, "repo": 131397, "waitMs": 193}
+{"t": 1795443747445, "push": true, "class": "agent", "edgefull": "refused", "isolate": "bf7367ae8058295f", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397, "waitMs": 193}
+{"t": 1795443747445, "push": true, "class": "agent", "edgefull": "refused", "isolate": "01abffbba0e7a0db", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 207}
+{"t": 1795443747425, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "1cc591ac2e4e8c07", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443747421, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e7786485d4d034cd", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 203}
+{"t": 1795443748820, "push": true, "class": "agent", "edgefull": "refused", "isolate": "72f1db6313aa5549", "budgetMs": 0, "failOpen": 0, "refused": 3, "repo": 131397, "waitMs": 218}
+{"t": 1795443748820, "push": true, "class": "agent", "edgefull": "refused", "isolate": "72f1db6313aa5549", "budgetMs": 0, "failOpen": 0, "refused": 4, "repo": 131397, "waitMs": 218}
+{"t": 1795443749194, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "360e26ba0e48e649", "budgetMs": 0, "failOpen": 2, "refused": 0, "repo": 131397}
+{"t": 1795443749192, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "dca5e212b48b1023", "budgetMs": 0, "failOpen": 3, "refused": 0, "repo": 131397}
+{"t": 1795443750297, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e7786485d4d034cd", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 205}
+{"t": 1795443751665, "push": true, "class": "agent", "edgefull": "refused", "isolate": "dca5e212b48b1023", "budgetMs": 0, "failOpen": 3, "refused": 2, "repo": 131397, "waitMs": 284}
+{"t": 1795443751663, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a2dc7e1f783bf717", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 284}
+{"t": 1795443751641, "push": true, "class": "agent", "edgefull": "refused", "isolate": "dca5e212b48b1023", "budgetMs": 0, "failOpen": 3, "refused": 1, "repo": 131397, "waitMs": 284}
+{"t": 1795443751640, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a2dc7e1f783bf717", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 284}
+{"t": 1795443753158, "push": true, "class": "agent", "edgefull": "refused", "isolate": "d3a414acc63abd7b", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 255}
+{"t": 1795443753154, "push": true, "class": "agent", "edgefull": "refused", "isolate": "d45379a48266a825", "budgetMs": 129, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 266}
+{"t": 1795443759381, "push": true, "class": "agent", "edgefull": "refused", "isolate": "ce057db625848bd5", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 253}
+{"t": 1795443762137, "push": true, "class": "agent", "edgefull": "refused", "isolate": "43e51262b5bd4cd7", "budgetMs": 0, "failOpen": 0, "refused": 7, "repo": 131397, "waitMs": 267}
+{"t": 1795443765916, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "a97e98b6caadd2ef", "budgetMs": 56, "failOpen": 1, "refused": 1, "repo": 131397}
+{"t": 1795443765643, "push": true, "class": "agent", "edgefull": "refused", "isolate": "645182de2290d5dd", "budgetMs": 186, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 223}
+{"t": 1795443765634, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "ad6fb3fdd62d8b7d", "budgetMs": 253, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443772957, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "61cb81d355818af3", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443772643, "push": true, "class": "agent", "edgefull": "refused", "isolate": "73ab4b735f90863f", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 277}
+{"t": 1795443774796, "push": true, "class": "agent", "edgefull": "refused", "isolate": "61cb81d355818af3", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397, "waitMs": 250}
+{"t": 1795443775634, "push": true, "class": "agent", "edgefull": "refused", "isolate": "c22ba1e1388c72c5", "budgetMs": 290, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 354}
+{"t": 1795443784219, "push": true, "class": "agent", "edgefull": "refused", "isolate": "3a1f8d9b5d238edd", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 330}
+{"t": 1795443786970, "push": true, "class": "agent", "edgefull": "refused", "isolate": "c22ba1e1388c72c5", "budgetMs": 109, "failOpen": 0, "refused": 4, "repo": 131397, "waitMs": 236}
+{"t": 1795443786967, "push": true, "class": "agent", "edgefull": "refused", "isolate": "c22ba1e1388c72c5", "budgetMs": 232, "failOpen": 0, "refused": 3, "repo": 131397, "waitMs": 236}
+{"t": 1795443787143, "push": true, "class": "agent", "edgefull": "refused", "isolate": "97b7dfd595a19343", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 218}
+{"t": 1795443787091, "push": true, "class": "agent", "edgefull": "refused", "isolate": "233a3a31e8ac92d5", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 218}
+{"t": 1795443788734, "push": true, "class": "agent", "edgefull": "refused", "isolate": "3c09431f3ca34fb5", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 235}
+{"t": 1795443788729, "push": true, "class": "agent", "edgefull": "refused", "isolate": "3c09431f3ca34fb5", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 235}
+{"t": 1795443788726, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "53e5729ee0f28901", "budgetMs": 17, "failOpen": 2, "refused": 0, "repo": 131397}
+{"t": 1795443788719, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "53e5729ee0f28901", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443790841, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a4c8d912791caa2b", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 210}
+{"t": 1795443790841, "push": true, "class": "agent", "edgefull": "refused", "isolate": "748421543d13bfd1", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 215}
+{"t": 1795443791270, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "dca5e212b48b1023", "budgetMs": 119, "failOpen": 4, "refused": 2, "repo": 131397}
+{"t": 1795443798618, "push": true, "class": "agent", "edgefull": "refused", "isolate": "957e8e3c80ada6b1", "budgetMs": 0, "failOpen": 0, "refused": 3, "repo": 131397, "waitMs": 330}
+{"t": 1795443798594, "push": true, "class": "agent", "edgefull": "refused", "isolate": "1f9939f10762dd83", "budgetMs": 152, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 344}
+{"t": 1795443806060, "push": true, "class": "agent", "edgefull": "refused", "isolate": "d15d347c48d4880f", "budgetMs": 669, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 694}
+{"t": 1795443806057, "push": true, "class": "agent", "edgefull": "refused", "isolate": "d15d347c48d4880f", "budgetMs": 679, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 694}
+{"t": 1795443806046, "push": true, "class": "agent", "edgefull": "refused", "isolate": "3a1f8d9b5d238edd", "budgetMs": 684, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 717}
+{"t": 1795443806024, "push": true, "class": "agent", "edgefull": "refused", "isolate": "ec664958d2c3c7eb", "budgetMs": 713, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 715}
+{"t": 1795443807294, "push": true, "class": "agent", "edgefull": "refused", "isolate": "ad46402918a257b5", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 248}
+{"t": 1795443811911, "push": true, "class": "agent", "edgefull": "refused", "isolate": "8cce509c1f9be5c7", "budgetMs": 78, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 331}
+{"t": 1795443811902, "push": true, "class": "agent", "edgefull": "refused", "isolate": "46de2501867ccd27", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 370}
+{"t": 1795443817305, "push": true, "class": "agent", "edgefull": "refused", "isolate": "ad46402918a257b5", "budgetMs": 752, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 1059}
+{"t": 1795443817255, "push": true, "class": "agent", "edgefull": "refused", "isolate": "3a1f8d9b5d238edd", "budgetMs": 1014, "failOpen": 0, "refused": 3, "repo": 131397, "waitMs": 1076}
+{"t": 1795443819060, "push": true, "class": "agent", "edgefull": "refused", "isolate": "6682174db8f535ef", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 1092}
+{"t": 1795443823953, "push": true, "class": "agent", "edgefull": "refused", "isolate": "15fdb506f7d46791", "budgetMs": 41, "failOpen": 1, "refused": 1, "repo": 131397, "waitMs": 409}
+{"t": 1795443823953, "push": true, "class": "agent", "edgefull": "refused", "isolate": "15fdb506f7d46791", "budgetMs": 106, "failOpen": 1, "refused": 2, "repo": 131397, "waitMs": 409}
+{"t": 1795443824311, "push": true, "class": "agent", "edgefull": "refused", "isolate": "15fdb506f7d46791", "budgetMs": 0, "failOpen": 1, "refused": 3, "repo": 131397, "waitMs": 409}
+{"t": 1795443826813, "push": true, "class": "agent", "edgefull": "refused", "isolate": "78aefd570d80f0b1", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 469}
+{"t": 1795443826224, "push": true, "class": "agent", "edgefull": "refused", "isolate": "d17358a9a75762c7", "budgetMs": 0, "failOpen": 0, "refused": 3, "repo": 131397, "waitMs": 295}
+{"t": 1795443826221, "push": true, "class": "agent", "edgefull": "refused", "isolate": "78aefd570d80f0b1", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 469}
+{"t": 1795443832867, "push": true, "class": "agent", "edgefull": "refused", "isolate": "28603ada4a19e563", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 234}
+{"t": 1795443832864, "push": true, "class": "agent", "edgefull": "refused", "isolate": "957e8e3c80ada6b1", "budgetMs": 5, "failOpen": 0, "refused": 4, "repo": 131397, "waitMs": 234}
+{"t": 1795443838615, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "70dcecf927420afb", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443838478, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a7a63d72fe0b40df", "budgetMs": 258, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 266}
+{"t": 1795443839368, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "49fe4327d3b14ba7", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443840993, "push": true, "class": "agent", "edgefull": "refused", "isolate": "905d5ed81f276bef", "budgetMs": 214, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 229}
+{"t": 1795443840765, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a6c12a529e4b5c99", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 223}
+{"t": 1795443840765, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e613be5631fb1b1f", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 209}
+{"t": 1795443844855, "push": true, "class": "agent", "edgefull": "refused", "isolate": "1ad7c98dfb604807", "budgetMs": 102, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 416}
+{"t": 1795443848483, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "e26cc97773726bc1", "budgetMs": 13, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443849722, "push": true, "class": "agent", "edgefull": "refused", "isolate": "748421543d13bfd1", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 296}
+{"t": 1795443849535, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "d8ab4c30ecde0523", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443849098, "push": true, "class": "agent", "edgefull": "refused", "isolate": "f6a6b69c77dce16f", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 262}
+{"t": 1795443850744, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a97e98b6caadd2ef", "budgetMs": 0, "failOpen": 1, "refused": 2, "repo": 131397, "waitMs": 296}
+{"t": 1795443850049, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "78aefd570d80f0b1", "budgetMs": 0, "failOpen": 1, "refused": 2, "repo": 131397}
+{"t": 1795443851440, "push": true, "class": "agent", "edgefull": "refused", "isolate": "72f1db6313aa5549", "budgetMs": 0, "failOpen": 0, "refused": 6, "repo": 131397, "waitMs": 298}
+{"t": 1795443851439, "push": true, "class": "agent", "edgefull": "refused", "isolate": "72f1db6313aa5549", "budgetMs": 0, "failOpen": 0, "refused": 5, "repo": 131397, "waitMs": 298}
+{"t": 1795443851436, "push": true, "class": "agent", "edgefull": "refused", "isolate": "d8ab4c30ecde0523", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397, "waitMs": 265}
+{"t": 1795443851431, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "78aefd570d80f0b1", "budgetMs": 0, "failOpen": 2, "refused": 2, "repo": 131397}
+{"t": 1795443852776, "push": true, "class": "agent", "edgefull": "refused", "isolate": "3e3ecb54ebcb5705", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 298}
+{"t": 1795443852770, "push": true, "class": "agent", "edgefull": "refused", "isolate": "78aefd570d80f0b1", "budgetMs": 0, "failOpen": 2, "refused": 3, "repo": 131397, "waitMs": 263}
+{"t": 1795443852184, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "905d5ed81f276bef", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397}
+{"t": 1795443856887, "push": true, "class": "agent", "edgefull": "refused", "isolate": "f77f4f85fbd2a8d9", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 251}
+{"t": 1795443858985, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "84e12dbe815adb2d", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443858985, "push": true, "class": "agent", "edgefull": "refused", "isolate": "5f6edda58afb3b91", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 241}
+{"t": 1795443858984, "push": true, "class": "agent", "edgefull": "refused", "isolate": "9ea799a86466a1bd", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 232}
+{"t": 1795443858981, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "5f9bd1f615ee4e2d", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443858981, "push": true, "class": "agent", "edgefull": "refused", "isolate": "5f6edda58afb3b91", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 241}
+{"t": 1795443858979, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "a6c12a529e4b5c99", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397}
+{"t": 1795443858615, "push": true, "class": "agent", "edgefull": "refused", "isolate": "97b7dfd595a19343", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 238}
+{"t": 1795443859507, "push": true, "class": "agent", "edgefull": "refused", "isolate": "9ea799a86466a1bd", "budgetMs": 6, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 213}
+{"t": 1795443859507, "push": true, "class": "agent", "edgefull": "refused", "isolate": "9ea799a86466a1bd", "budgetMs": 0, "failOpen": 0, "refused": 3, "repo": 131397, "waitMs": 213}
+{"t": 1795443859002, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "43e51262b5bd4cd7", "budgetMs": 0, "failOpen": 1, "refused": 7, "repo": 131397}
+{"t": 1795443860661, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "f6a6b69c77dce16f", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397}
+{"t": 1795443860656, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "bf7367ae8058295f", "budgetMs": 203, "failOpen": 2, "refused": 3, "repo": 131397}
+{"t": 1795443860655, "push": true, "class": "agent", "edgefull": "refused", "isolate": "1cc591ac2e4e8c07", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397, "waitMs": 253}
+{"t": 1795443860072, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e26cc97773726bc1", "budgetMs": 121, "failOpen": 1, "refused": 2, "repo": 131397, "waitMs": 253}
+{"t": 1795443860069, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "5f9bd1f615ee4e2d", "budgetMs": 0, "failOpen": 2, "refused": 0, "repo": 131397}
+{"t": 1795443860068, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e26cc97773726bc1", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397, "waitMs": 253}
+{"t": 1795443861720, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a774b3cb3e30d043", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 227}
+{"t": 1795443863619, "push": true, "class": "agent", "edgefull": "refused", "isolate": "cb80ff356e8f2cab", "budgetMs": 298, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 345}
+{"t": 1795443863178, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a3182e9a705df8d1", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 345}
+{"t": 1795443866763, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "d3a414acc63abd7b", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397}
+{"t": 1795443866440, "push": true, "class": "agent", "edgefull": "refused", "isolate": "f6ed9988259233d7", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 330}
+{"t": 1795443866144, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "5341c7117cc53695", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443866136, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e613be5631fb1b1f", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 349}
+{"t": 1795443868685, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "1e0fb5a416f286fd", "budgetMs": 363, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443868568, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "64802f694f1c2e13", "budgetMs": 18, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443868562, "push": true, "class": "agent", "edgefull": "refused", "isolate": "837ea146fedb3bc5", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 307}
+{"t": 1795443869818, "push": true, "class": "agent", "edgefull": "refused", "isolate": "3e3ecb54ebcb5705", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 321}
+{"t": 1795443869074, "push": true, "class": "agent", "edgefull": "refused", "isolate": "77c548eab3756e61", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 280}
+{"t": 1795443871600, "push": true, "class": "agent", "edgefull": "refused", "isolate": "77c548eab3756e61", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 301}
+{"t": 1795443871501, "push": true, "class": "agent", "edgefull": "refused", "isolate": "626769a87bae1c55", "budgetMs": 89, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 309}
+{"t": 1795443871497, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "657873b9efbc868f", "budgetMs": 130, "failOpen": 2, "refused": 0, "repo": 131397}
+{"t": 1795443871496, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "08f7f4c14bcdc655", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443871496, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e26cc97773726bc1", "budgetMs": 0, "failOpen": 1, "refused": 3, "repo": 131397, "waitMs": 301}
+{"t": 1795443871274, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "657873b9efbc868f", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443872307, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "657873b9efbc868f", "budgetMs": 0, "failOpen": 3, "refused": 0, "repo": 131397}
+{"t": 1795443872300, "push": true, "class": "agent", "edgefull": "refused", "isolate": "59928b81b494bd99", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 307}
+{"t": 1795443873610, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "08d4e9253d780edd", "budgetMs": 95, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443874995, "push": true, "class": "agent", "edgefull": "refused", "isolate": "5f9bd1f615ee4e2d", "budgetMs": 84, "failOpen": 2, "refused": 1, "repo": 131397, "waitMs": 332}
+{"t": 1795443874577, "push": true, "class": "agent", "edgefull": "refused", "isolate": "43e51262b5bd4cd7", "budgetMs": 30, "failOpen": 1, "refused": 8, "repo": 131397, "waitMs": 306}
+{"t": 1795443874512, "push": true, "class": "agent", "edgefull": "refused", "isolate": "078b677152fe2405", "budgetMs": 123, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 297}
+{"t": 1795443875909, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "5f9bd1f615ee4e2d", "budgetMs": 61, "failOpen": 3, "refused": 1, "repo": 131397}
+{"t": 1795443875350, "push": true, "class": "agent", "edgefull": "refused", "isolate": "c608d4316bb151a9", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 293}
+{"t": 1795443875142, "push": true, "class": "agent", "edgefull": "refused", "isolate": "dca5e212b48b1023", "budgetMs": 0, "failOpen": 4, "refused": 3, "repo": 131397, "waitMs": 293}
+{"t": 1795443876852, "push": true, "class": "agent", "edgefull": "refused", "isolate": "d45379a48266a825", "budgetMs": 0, "failOpen": 0, "refused": 3, "repo": 131397, "waitMs": 323}
+{"t": 1795443876847, "push": true, "class": "agent", "edgefull": "refused", "isolate": "5ef18e259a44acd7", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 315}
+{"t": 1795443876458, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "5f9bd1f615ee4e2d", "budgetMs": 0, "failOpen": 4, "refused": 1, "repo": 131397}
+{"t": 1795443876268, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "814d8c0420ad94d1", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443876241, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "3a67872a7c23b919", "budgetMs": 0, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443876147, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "72653c1aa5e8f33d", "budgetMs": 57, "failOpen": 2, "refused": 0, "repo": 131397}
+{"t": 1795443876144, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "72653c1aa5e8f33d", "budgetMs": 243, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443876135, "push": true, "class": "agent", "edgefull": "refused", "isolate": "a4e94923e39020eb", "budgetMs": 159, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 305}
+{"t": 1795443878172, "push": true, "class": "agent", "edgefull": "refused", "isolate": "f6a6b69c77dce16f", "budgetMs": 0, "failOpen": 1, "refused": 4, "repo": 131397, "waitMs": 319}
+{"t": 1795443878170, "push": true, "class": "agent", "edgefull": "refused", "isolate": "f6a6b69c77dce16f", "budgetMs": 0, "failOpen": 1, "refused": 3, "repo": 131397, "waitMs": 319}
+{"t": 1795443878164, "push": true, "class": "agent", "edgefull": "refused", "isolate": "f6ed9988259233d7", "budgetMs": 16, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 333}
+{"t": 1795443878163, "push": true, "class": "agent", "edgefull": "refused", "isolate": "f6a6b69c77dce16f", "budgetMs": 310, "failOpen": 1, "refused": 2, "repo": 131397, "waitMs": 319}
+{"t": 1795443878159, "push": true, "class": "agent", "edgefull": "refused", "isolate": "73ab4b735f90863f", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 333}
+{"t": 1795443879843, "push": true, "class": "agent", "edgefull": "refused", "isolate": "ed9c7b750588429b", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 371}
+{"t": 1795443879798, "push": true, "class": "agent", "edgefull": "refused", "isolate": "72f1db6313aa5549", "budgetMs": 0, "failOpen": 0, "refused": 7, "repo": 131397, "waitMs": 335}
+{"t": 1795443879783, "push": true, "class": "agent", "edgefull": "refused", "isolate": "fe0500670a290575", "budgetMs": 63, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 503}
+{"t": 1795443879720, "push": true, "class": "agent", "edgefull": "refused", "isolate": "814d8c0420ad94d1", "budgetMs": 136, "failOpen": 1, "refused": 1, "repo": 131397, "waitMs": 333}
+{"t": 1795443881985, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e5e1b6738124b2b3", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 314}
+{"t": 1795443881670, "push": true, "class": "agent", "edgefull": "refused", "isolate": "593ab2ba23b652ad", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 328}
+{"t": 1795443881312, "push": true, "class": "agent", "edgefull": "refused", "isolate": "84e12dbe815adb2d", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397, "waitMs": 328}
+{"t": 1795443882982, "push": true, "class": "agent", "edgefull": "refused", "isolate": "9ea799a86466a1bd", "budgetMs": 0, "failOpen": 0, "refused": 4, "repo": 131397, "waitMs": 299}
+{"t": 1795443882981, "push": true, "class": "agent", "edgefull": "refused", "isolate": "fe0500670a290575", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 286}
+{"t": 1795443882490, "push": true, "class": "agent", "edgefull": "refused", "isolate": "615bff78449ce85b", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 307}
+{"t": 1795443886489, "push": true, "class": "agent", "edgefull": "refused", "isolate": "9ea799a86466a1bd", "budgetMs": 0, "failOpen": 0, "refused": 5, "repo": 131397, "waitMs": 321}
+{"t": 1795443886426, "push": true, "class": "agent", "edgefull": "failOpen", "isolate": "26d7660e70d05eef", "budgetMs": 17, "failOpen": 1, "refused": 0, "repo": 131397}
+{"t": 1795443886426, "push": true, "class": "agent", "edgefull": "refused", "isolate": "879cb8269460ad39", "budgetMs": 236, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 363}
+{"t": 1795443887744, "push": true, "class": "agent", "edgefull": "refused", "isolate": "e26cc97773726bc1", "budgetMs": 0, "failOpen": 1, "refused": 4, "repo": 131397, "waitMs": 462}
+{"t": 1795443887744, "push": true, "class": "agent", "edgefull": "refused", "isolate": "ddf60be5845d67a1", "budgetMs": 0, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 334}
+{"t": 1795443897158, "push": true, "class": "agent", "edgefull": "refused", "isolate": "59928b81b494bd99", "budgetMs": 0, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 386}
+{"t": 1795443899127, "push": true, "class": "agent", "edgefull": "refused", "isolate": "bf7367ae8058295f", "budgetMs": 0, "failOpen": 2, "refused": 4, "repo": 131397, "waitMs": 244}
+{"t": 1795443901706, "push": true, "class": "agent", "edgefull": "refused", "isolate": "dca5e212b48b1023", "budgetMs": 266, "failOpen": 4, "refused": 4, "repo": 131397, "waitMs": 358}
+{"t": 1795443909948, "push": true, "class": "agent", "edgefull": "refused", "isolate": "5341c7117cc53695", "budgetMs": 0, "failOpen": 1, "refused": 1, "repo": 131397, "waitMs": 387}
+{"t": 1795443918163, "push": true, "class": "agent", "edgefull": "refused", "isolate": "adf0d3930e1a2e53", "budgetMs": 198, "failOpen": 0, "refused": 1, "repo": 131397, "waitMs": 338}
+{"t": 1795443919689, "push": true, "class": "agent", "edgefull": "refused", "isolate": "615bff78449ce85b", "budgetMs": 54, "failOpen": 0, "refused": 2, "repo": 131397, "waitMs": 299}
