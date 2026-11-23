@@ -334,6 +334,16 @@ Under that direction the orchestrator settled A48, which asked whether B0-33's "
 - **Leader changes still count on their own:** zero in the window, unchanged. A report that starts an election fails the row even if no leader changes.
 - **A48 is closed.** Other rows' `suspect` lines (B0-29, B0-32) are unchanged: they have not met this case.
 
+### Operator decision, 2026-11-23, B0-33's merge-queue and refusal-shape lines
+
+> "Get it done. Always be asking how we can move the needle and don't wait for me to approve things unless it is a large cost"
+
+Under that direction the orchestrator settled two B0-33 lines that the three kept runs (mrB, msA, erDA) failed as worded, on edge refusal's Row B2 split (`tests/am1/results/edge-refusal.md`, "Row B2").
+
+- **"Any merge-queue command waiting over 2 s" reads MergeQueue-class commands:** the merge queue consumer's `Build` and `QueueMerge`. B0-33 offers none. The pushes the harness logs as `merge` (the admin PAT's push to an `a1m-` ref before each PR merge) are Human class at the edge, because `admit_class` answers Agent, Bot or Human and no host path builds `AdmitClass::MergeQueue` [measured, code and erDA's trace]. Read as the Human lane, the fail column would sit under the row's own 3,912 ms Human pass line. The six such pushes over 2 s (mrB 1, erDA 5) were lane wait behind frozen agent-heavy batches: freeze wait 550 to 1,197 ms and held 116 to 858 ms, against own rounds of 0 to 380 ms [measured]. They count toward the Human line, which they pass.
+- **"Every refusal in the `ng` or 429 shape" reads Agent-class refusals,** and every Human or Bot 503 must carry `Retry-After`. Admission never refuses Human or Bot in the agent shape by design. A Human 503 is unavailability: a shed read or a shard that is still `warming`. erDA's 4,669 Agent-class 503s were member sheds of the write's row read. The orchestrator cleared edge refusal's design for code: a shed row read for an Agent-classed write answers the 429 shape, as the advert refusal already does on those routes, and a plain PAT or a Bot App is untouched. Its 215 upload-pack `warming` 503s carried no `Retry-After`, so they still fail the line until the edge adds one, after a GHES byte-diff check.
+- **What does not change.** The 3,912 ms Human line, the 110 agent line, the median of three runs, and every other line stand. The home git shard's catch-up lag, which made merges answer `warming` after `MERGE_WAIT` on all three runs and on B0-32's m3fk2B, stays open as a fix of its own.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
