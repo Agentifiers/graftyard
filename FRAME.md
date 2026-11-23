@@ -305,6 +305,15 @@ Commit `5ea920e4` (BF-39 hosted on `graft-m4a`) committed the install account's 
 - **Accepted as public.** The subdomain is an address, not a credential: each test install still needs its own tokens. History is not rewritten, and the subdomain is not changed.
 - **The leak scan before a merge** reads each new or changed file whole, compressed files decompressed, against both account ids, both workers subdomains, the zone id, and the orb's home directory path. Scanning only a diff's added lines missed this one.
 
+### Operator decision, 2026-11-23, the runner account stands in as BF-47's vault account
+
+> "Yes use the runner account for the vault"
+
+BF-47's hosted row (`build/BUILD-PLAN.md`, M5-WP5) needs a vault account apart from the install's, because `release roll` refuses a vault account or token equal to the install's (`decisions/DECISIONS.md`, "`vault-roll`"). The orchestrator recommended the runner account, which hosted row vh1 already used as a stand-in, and the operator took it:
+
+- **The runner account is the vault account for test installs** until go-live, under `CLOUDFLARE_VAULT_API_TOKEN` scoped to the vault's Worker and bucket. Its spend counts toward `graft-m4a`, as the runner account's does.
+- **What it does not test.** The runner account also holds `graft-runners`, so the vault is not isolated from Actions runners the way "Every install runs a vault account" requires in production (`decisions/DECISIONS.md`). A production install still gets its own vault account; BF-47's verdict records the stand-in.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
