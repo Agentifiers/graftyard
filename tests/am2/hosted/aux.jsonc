@@ -1,0 +1,11 @@
+// AM2-WP1 hosted: the CIMD documents the SDK clients name as `client_id` (`tests/m0/src/wp15/aux.ts`, M0-WP15's), as
+// `graft-m3f-mcp-aux`. Test harness only. Deployed and deleted by tests/am2/hosted/day.sh.
+{
+  "name": "graft-m3f-mcp-aux",
+  "main": "../../m0/src/wp15/aux.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "LOG", "class_name": "HookLog" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["HookLog"] }]
+}

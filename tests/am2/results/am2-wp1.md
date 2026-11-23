@@ -160,3 +160,83 @@ The first run caught 13 of 19 and showed six weak tests, each fixed at the test 
 - the shard's Go tests.
 
 Edgeboot (`tests/edgeboot/run.sh`) passes on the test-faults build and with `PRODUCT=1`, with 0 wasm traps.
+
+## Hosted plan and prep (2026-11-23)
+
+The operator approved the plan with a $10 stop, metered from the site day's start (`tests/fanout/m2bcost.py`). It runs
+on graft-m3f, which the lead handed to this work (`tests/am1/results/install-m3f.md`, site-day log). There will be
+**one hosted day, after AM2-WP2 merges**, so L0-08 passes or fails whole on one site day. Branch `am2-hosted-prep`
+holds the $0 prep. Nothing hosted has run.
+
+### Rulings
+
+1. **App 327680.** `graftyard-mcp` reuses App 327680, which `tests/am1/rest/apps.mjs` registered on 2026-11-14. Its
+   old pem dies, and L0-12's "Graftyard MCP" kind can no longer mint on graft-m3f. `install-m3f.md` records the
+   takeover.
+2. **One site day.** It runs from merged main as it stands on the day, with a shard image built from the same head.
+3. **Formats.** 20.4 (0x14.4) and 17.4 (0x11.4) are added to graft-m3f's `FORMATS_ENABLED` only, with no signed
+   Release-group `FormatsEnable`.
+4. **Teardown.** It deletes the four new store secrets, `graft-m3f-mcp`, and `graft-m3f-mcp-aux`, unless a later row
+   needs them.
+
+### What the prep changed
+
+- **`graftyard apps init` flags.** They are product flags; without them the command behaves as before.
+  - `--store <id>` writes to that store. Secrets Store's open beta allows one store and 100 secrets per account
+    [doc, `research/cloudflare.md`], and the test account's one store is shared.
+  - `--secret-prefix <p>` names the four secrets `<p>MCP_APP_KEY_A` and so on.
+  - `--mcp-origin <url>` registers `<url>/callback` instead of `https://mcp.<host>/callback`, because AM2-WP3 does
+    not route `mcp.<host>` yet.
+  - `apps.json` records the prefix and origin. A test checks the named store, the prefixed names, the moved callback,
+    the secret hash, and the refusals of a bad prefix or origin (`cli/src/apps.rs`).
+- **The install's `Authz` read.** It takes `{"app": id}` and answers the App record's slug, callbacks, and client
+  secret count, never the hashes (`workers/site/src/family.rs`). It ships with the site day.
+- **`tests/am1/rest/apps.mjs`** refuses to touch an App whose record has a callback or a client secret, which only
+  `apps init` writes, or whose state entry is marked `moved`. `agentToken` refuses a `moved` App.
+  `tests/am1/hosted/rows.mjs` skips L0-12's "Graftyard MCP" kind when it is `moved` and logs why.
+- **`workers/mcp/deploy.mjs`** deploys `graft-mcp` from `apps.json`, as a product build:
+  - the `EDGE` service binding;
+  - `MCP_CLIENT_SECRET` and `MCP_SEAL_KEY` from Secrets Store under the recorded prefix;
+  - `MCP_CLIENT_ID` from `--app-id`;
+  - `MCP_ORIGIN`, `HOST_ORIGIN`, and `DENY_ZONES`.
+
+  `--delete` removes it.
+- **`tests/am2/hosted/`:**
+  - `apps.mjs` commits the claims, prints each slug's App id (from its route when the claim answers `Taken`), and
+    commits the registration in file order. It marks `graftyard-mcp` `moved` before it sends anything.
+  - `mcp.mjs` and `browser.mjs` play the user's browser. The browser goes through consent and the edge's stand-in
+    `/login/oauth/authorize` as `m3-member`.
+  - `l008.mjs` covers L0-08's cells that need no SDK client: wrong audience, refresh scope over 100, replay, framed,
+    cross-site or skipped consent, and the held `ghu_`. It also runs LF-6 through the edge, 100 of each.
+    graft-mcp's client secret is in Secrets Store only, so LF-6 puts a test secret beside it in the record's second
+    slot (`CLIENT_SECRETS_MAX` 2) and restores the record after.
+  - `ts-client.mjs` (SDK v2 2.4.0 and v1 1.32.2), `goclient/` (go-sdk v1.8.0), and `py_client.py` (`mcp` 2.3.0) run
+    the SDK clients, unmodified. Each takes `--drop-token` for A43: the client's HTTP layer drops the first code
+    redemption's answer after graft-mcp answered it. The row records every `/token` call, the consents, and whether
+    the session came back.
+  - `day.sh` runs the day's steps one at a time, one-shot per tag: init, claims, register, deploy, smoke, l008,
+    clients, a43, and teardown. `aux.jsonc` is the CIMD host, M0-WP15's `aux.ts`, as `graft-m3f-mcp-aux`.
+- **Records.** Secrets Store's limits are in `research/cloudflare.md`. `decisions/OPEN-QUESTIONS.md` C25 asks whether
+  an install's keys fit under 100 and what a managed account holding several installs does. graft-m3f's handover and
+  the App takeover are in `install-m3f.md`.
+
+### Checks
+
+`bash tests/am1/runs/checks.sh`: every step RC=0, and `cargo test --workspace` ran 1,446 passed and 0 failed. The
+drivers load both TypeScript SDKs, the Go client builds and vets, and Python `mcp` 2.3.0 imports, each run against a
+dead port. The aux config passes `wrangler deploy --dry-run`. Edgeboot does not apply: nothing the edge links changed.
+
+### The day, in order
+
+1. **Site day and edge day** from merged main, with a shard image from that head. The flags are m3fr37's:
+   test-faults, `--anchor`, standard-4, `--ssh`, `--edge graft-m3f-edge`, and `--export-bucket graft-m3f-export`.
+   FORMATS adds 20.4 and 17.4. Edgeboot runs on both builds first, and a one-shot launcher runs the deploy. The check
+   is that `GET /api/graftyard/v1/mcp/grants` answers 401, not 503. About $0.05 to $0.20.
+2. **Apps.** `day.sh <tag> init`, `claims`, then `register <insights id>`. This writes four secrets, so the store holds
+   21 of 100. Under $0.01.
+3. **Deploy and smoke.** `day.sh <tag> deploy` and `smoke`. $0.
+4. **L0-08 and A43.** `day.sh <tag> l008`, `clients`, then `a43`. About $0.10 to $0.30.
+5. **Teardown.** `day.sh <tag> teardown`, then list every shard container and tear them all down, failing loudly if
+   any remain. The records are pushed and graft-m3f is handed back.
+
+The total is about $1 against the $10 stop. The verdict lines are due within 30 minutes of the done line.

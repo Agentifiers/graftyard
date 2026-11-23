@@ -9,6 +9,13 @@
 //! - `--host <host>` draws an RSA-2048 key per App, the MCP client secret, and the sealing key, writes all four to
 //!   Secrets Store and nowhere else, then writes `apps.json` (public halves and hashes only) and the two `ClaimSlug`
 //!   requests. It refuses when `apps.json` exists, so a rerun never replaces a registered App's key.
+//!   - `--store <id>` writes to that store instead of finding or creating `graft-ops-<install>`. Secrets Store allows
+//!     one store and 100 secrets per account (`research/cloudflare.md`), so installs that share an account share it.
+//!   - `--secret-prefix <p>` puts `<p>` before each of the four names, so two installs in one store do not collide.
+//!   - `--mcp-origin <url>` registers `<url>/callback` instead of `https://mcp.<host>/callback`, for a `graft-mcp`
+//!     served somewhere other than `mcp.<host>` (a test install's workers.dev name, before AM2-WP3's routing).
+//!
+//!   Without them it behaves as before. `apps.json` records the prefix and origin when they are set.
 //! - `--app-ids <mcp>,<insights>` reads `apps.json` and writes, per App, `PutApp`, `RegisterApp`, `RegisterClient`,
 //!   and for `Graftyard MCP` the `Mcp` `AgentApp` row (`PutAgentApp`). It needs no network.
 //!
@@ -91,7 +98,21 @@ const APPS: [AppSpec; 2] = [
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Saved {
     pub host: String,
+    /// `--mcp-origin`: where `graft-mcp` is served when not at `https://mcp.<host>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_origin: Option<String>,
+    /// `--secret-prefix`: what each Secrets Store name starts with, for the deploy that binds them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret_prefix: String,
     pub apps: Vec<SavedApp>,
+}
+
+/// Step 1's choices beyond the host; the default is the command as it was before the flags.
+#[derive(Clone, Debug, Default)]
+pub struct InitOpts {
+    pub store: Option<String>,
+    pub secret_prefix: String,
+    pub mcp_origin: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -139,6 +160,25 @@ fn check_host(host: &str) -> Res<()> {
     if ok { Ok(()) } else { Err(format!("--host {host:?}: a bare hostname such as git.example.com")) }
 }
 
+fn check_prefix(p: &str) -> Res<()> {
+    let ok = p.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_');
+    if ok { Ok(()) } else { Err(format!("--secret-prefix {p:?}: letters, digits, '-' and '_' only")) }
+}
+
+/// An `https` origin with nothing after the host: `<origin>/callback` is the callback.
+fn check_origin(o: &str) -> Res<()> {
+    let ok = o.strip_prefix("https://").is_some_and(|h| check_host(h).is_ok());
+    if ok { Ok(()) } else { Err(format!("--mcp-origin {o:?}: an https origin such as https://mcp.git.example.com")) }
+}
+
+/// `Graftyard MCP`'s callback: `graft-mcp`'s `/callback`, at `https://mcp.<host>` unless `--mcp-origin` moved it.
+fn callback(saved: &Saved) -> String {
+    match &saved.mcp_origin {
+        Some(o) => format!("{o}/callback"),
+        None => format!("https://mcp.{}/callback", saved.host),
+    }
+}
+
 fn slug(s: &str) -> Slug {
     Slug::parse(s).expect("the table's slugs parse")
 }
@@ -149,7 +189,7 @@ pub fn claims() -> Vec<Planned> {
 }
 
 /// The `AppRecord` of one App, from its claimed id and `apps.json`.
-fn record(spec: &AppSpec, id: AppId, host: &str, saved: &SavedApp) -> Res<AppRecord> {
+fn record(spec: &AppSpec, id: AppId, callback: &str, saved: &SavedApp) -> Res<AppRecord> {
     let public = unhex(&saved.public_key).ok_or_else(|| format!("{STATE}: {}'s public_key is not hex", spec.slug))?;
     let client_secrets = match (&saved.client_secret_sha256, spec.mcp) {
         (Some(h), true) => {
@@ -177,7 +217,7 @@ fn record(spec: &AppSpec, id: AppId, host: &str, saved: &SavedApp) -> Res<AppRec
         webhook: None,
         webhook_secret: None,
         client_secrets,
-        callbacks: if spec.mcp { smallvec![Url(format!("https://mcp.{host}/callback").into())] } else { smallvec![] },
+        callbacks: if spec.mcp { smallvec![Url(callback.into())] } else { smallvec![] },
         public: true,
     })
 }
@@ -186,11 +226,14 @@ fn record(spec: &AppSpec, id: AppId, host: &str, saved: &SavedApp) -> Res<AppRec
 /// same order: `Graftyard MCP`, then `graftyard-insights`.
 pub fn register_commands(saved: &Saved, ids: [AppId; 2]) -> Res<Vec<(String, Planned)>> {
     check_host(&saved.host)?;
+    if let Some(o) = &saved.mcp_origin {
+        check_origin(o)?;
+    }
     let owner = install_account();
     let mut out = Vec::new();
     for (spec, id) in APPS.iter().zip(ids) {
         let s = saved.apps.iter().find(|a| a.slug == spec.slug).ok_or_else(|| format!("{STATE}: no {}", spec.slug))?;
-        let rec = record(spec, id, &saved.host, s)?;
+        let rec = record(spec, id, &callback(saved), s)?;
         let client = rec.client;
         let tag = |op: &str| format!("{op} ({})", spec.slug);
         out.push((tag("PutApp"), Planned::authz(AuthzOp::PutApp { record: Box::new(rec) })));
@@ -219,13 +262,17 @@ fn write_requests(path: &Path, v: &[Value]) -> Res<()> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-pub fn init(config: &Path, host: &str, out: &Path) -> Res<()> {
+pub fn init(config: &Path, host: &str, opts: &InitOpts, out: &Path) -> Res<()> {
     let t = InstallToml::load(config)?;
-    init_with(&Cf::from_env(&t.account)?, &t, host, out)
+    init_with(&Cf::from_env(&t.account)?, &t, host, opts, out)
 }
 
-fn init_with(cf: &Cf, t: &InstallToml, host: &str, out: &Path) -> Res<()> {
+fn init_with(cf: &Cf, t: &InstallToml, host: &str, opts: &InitOpts, out: &Path) -> Res<()> {
     check_host(host)?;
+    check_prefix(&opts.secret_prefix)?;
+    if let Some(o) = &opts.mcp_origin {
+        check_origin(o)?;
+    }
     let state = out.join(STATE);
     if state.exists() {
         return Err(format!(
@@ -234,9 +281,16 @@ fn init_with(cf: &Cf, t: &InstallToml, host: &str, out: &Path) -> Res<()> {
         ));
     }
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
-    // The install's store, as `graftyard genesis` names it (`cli/src/genesis.rs`).
-    let store_name = format!("graft-ops-{}", t.install.to_ascii_lowercase());
-    let store = cf.store(&store_name)?;
+    // The install's store, as `graftyard genesis` names it (`cli/src/genesis.rs`), unless `--store` names one.
+    let (store_name, store) = match &opts.store {
+        Some(id) => (format!("store {id}"), id.clone()),
+        None => {
+            let name = format!("graft-ops-{}", t.install.to_ascii_lowercase());
+            let id = cf.store(&name)?;
+            (name, id)
+        }
+    };
+    let name = |n: &str| format!("{}{n}", opts.secret_prefix);
     let created = now().0;
     let mut apps = Vec::new();
     for spec in &APPS {
@@ -244,13 +298,14 @@ fn init_with(cf: &Cf, t: &InstallToml, host: &str, out: &Path) -> Res<()> {
         let pem = key.to_pkcs8_pem(LineEnding::LF).map_err(|e| format!("PKCS#8: {e}"))?;
         let der = key.to_public_key().to_public_key_der().map_err(|e| format!("SPKI: {e}"))?;
         let comment = format!("graftyard apps init: the {} App's RS256 key, PKCS#8 PEM", spec.slug);
-        cf.put_secret(&store, spec.key_secret, &pem, &comment)?;
-        println!("  {}: written to Secrets Store {store_name} ({store}); no copy kept", spec.key_secret);
+        cf.put_secret(&store, &name(spec.key_secret), &pem, &comment)?;
+        println!("  {}: written to Secrets Store {store_name} ({store}); no copy kept", name(spec.key_secret));
         let client_secret_sha256 = if spec.mcp {
             // 40 hex characters, as GitHub's client secrets are [inference].
             let secret = hex(&random::<20>());
-            cf.put_secret(&store, MCP_CLIENT_SECRET, &secret, "graftyard apps init: Graftyard MCP's client secret")?;
-            println!("  {MCP_CLIENT_SECRET}: written to Secrets Store {store_name}");
+            let n = name(MCP_CLIENT_SECRET);
+            cf.put_secret(&store, &n, &secret, "graftyard apps init: Graftyard MCP's client secret")?;
+            println!("  {n}: written to Secrets Store {store_name}");
             Some(hex(&secret_hash(&secret).0))
         } else {
             None
@@ -263,9 +318,15 @@ fn init_with(cf: &Cf, t: &InstallToml, host: &str, out: &Path) -> Res<()> {
         });
     }
     let seal = hex(&random::<32>());
-    cf.put_secret(&store, MCP_SEAL_KEY, &seal, "graftyard apps init: graft-mcp's AES-256-GCM sealing key, hex")?;
-    println!("  {MCP_SEAL_KEY}: written to Secrets Store {store_name}");
-    let saved = Saved { host: host.into(), apps };
+    let n = name(MCP_SEAL_KEY);
+    cf.put_secret(&store, &n, &seal, "graftyard apps init: graft-mcp's AES-256-GCM sealing key, hex")?;
+    println!("  {n}: written to Secrets Store {store_name}");
+    let saved = Saved {
+        host: host.into(),
+        mcp_origin: opts.mcp_origin.clone(),
+        secret_prefix: opts.secret_prefix.clone(),
+        apps,
+    };
     write_new(&state, &(serde_json::to_string_pretty(&saved).expect("json") + "\n"), 0o644)?;
     let note = "Commit as the operator on `chain`. The answer, `NamesOut::App(id)`, is the App's id.";
     let reqs: Vec<Value> =
@@ -332,21 +393,22 @@ mod tests {
         }
     }
 
-    /// Runs step 1 against a Secrets Store stub whose only store is the install's, `st1`. Returns the output folder
-    /// and every secret POSTed, by name, with the path it went to.
-    fn step_one() -> (std::path::PathBuf, BTreeMap<String, (String, String)>) {
+    /// Runs step 1 against a Secrets Store stub whose stores are `st0` (`other`) and `st1` (the install's). Returns
+    /// the output folder and every secret POSTed, by name, with the path it went to.
+    fn step_one(opts: &InitOpts) -> (std::path::PathBuf, BTreeMap<String, (String, String)>) {
         let out = std::env::temp_dir().join(format!("graftyard-apps-{}", hex(&random::<6>())));
         let t = install();
         let store = format!("graft-ops-{}", t.install.to_ascii_lowercase());
         let posted = Arc::new(Mutex::new(BTreeMap::new()));
         let log = posted.clone();
-        // One store lookup, then a search and a create for each of the four secrets.
-        let (url, _rx) = serve(9, move |s| {
+        // One store lookup unless --store named it, then a search and a create for each of the four secrets.
+        let (url, _rx) = serve(if opts.store.is_some() { 8 } else { 9 }, move |s| {
             let (m, path) = (s.line.split(' ').next().unwrap(), s.line.split(' ').nth(1).unwrap());
             let path = path.strip_prefix("/accounts/be2a").unwrap().to_string();
             let ok = |r: Value| (200, json!({ "success": true, "result": r }).to_string());
             match (m, path.as_str()) {
                 ("GET", "/secrets_store/stores") => {
+                    // `step_one` serves 8 requests with `--store`, so a lookup there would starve a secret's.
                     ok(json!([{ "id": "st0", "name": "other" }, { "id": "st1", "name": store }]))
                 }
                 ("GET", p) if p.contains("/secrets?search=") => ok(json!([])),
@@ -359,7 +421,7 @@ mod tests {
                 _ => (404, json!({ "success": false, "errors": [{ "code": 1, "message": path }] }).to_string()),
             }
         });
-        init_with(&Cf::with(&url, "be2a", "t"), &t, "git.acme.example", &out).unwrap();
+        init_with(&Cf::with(&url, "be2a", "t"), &t, "git.acme.example", opts, &out).unwrap();
         let posted = posted.lock().unwrap().clone();
         (out, posted)
     }
@@ -377,7 +439,7 @@ mod tests {
 
     #[test]
     fn init_stores_four_secrets_in_the_install_store_and_writes_none_of_them_to_disk() {
-        let (out, posted) = step_one();
+        let (out, posted) = step_one(&InitOpts::default());
         let names: Vec<&str> = posted.keys().map(String::as_str).collect();
         assert_eq!(names, ["INSIGHTS_APP_KEY_A", "MCP_APP_KEY_A", "MCP_CLIENT_SECRET_A", "MCP_SEAL_KEY_A"]);
         for (name, (path, _)) in &posted {
@@ -418,7 +480,8 @@ mod tests {
             assert_eq!((r["kind"].as_str(), &r["chain"]), (Some("graftyard.names.command"), &json!(chain)));
         }
         // A rerun refuses before it draws or writes anything: the stub served its nine requests and is gone.
-        let again = init_with(&Cf::with("http://127.0.0.1:9", "be2a", "t"), &install(), "git.acme.example", &out);
+        let cf = Cf::with("http://127.0.0.1:9", "be2a", "t");
+        let again = init_with(&cf, &install(), "git.acme.example", &InitOpts::default(), &out);
         assert!(again.unwrap_err().contains("apps.json exists"));
         std::fs::remove_dir_all(&out).unwrap();
     }
@@ -478,7 +541,7 @@ mod tests {
     /// chain the request names and leaves records that match what Secrets Store holds.
     #[test]
     fn app_ids_write_a_registration_that_commits_and_matches_the_stored_secrets() {
-        let (out, posted) = step_one();
+        let (out, posted) = step_one(&InitOpts::default());
         let mut l = Leaders { names: BTreeMap::new(), authz: AuthzFold::new(install_account()) };
         // `install --genesis` opens the install account's chain.
         l.authz(&AuthzCmd {
@@ -567,5 +630,47 @@ mod tests {
             assert_eq!(public, private.to_public_key(), "{} signs with the key {secret} holds", rec.slug.as_str());
         }
         std::fs::remove_dir_all(&out).unwrap();
+    }
+    /// `--store`, `--secret-prefix` and `--mcp-origin`: the secrets go to the named store under the prefix, with no
+    /// store lookup or create, and the registration's callback is the given origin's, not `mcp.<host>`'s.
+    #[test]
+    fn store_prefix_and_origin_move_the_secrets_and_the_callback() {
+        let opts = InitOpts {
+            store: Some("st0".into()),
+            secret_prefix: "graft-m3f-".into(),
+            mcp_origin: Some("https://graft-m3f-mcp.sub.workers.dev".into()),
+        };
+        let (out, posted) = step_one(&opts);
+        let names: Vec<&str> = posted.keys().map(String::as_str).collect();
+        assert_eq!(
+            names,
+            [
+                "graft-m3f-INSIGHTS_APP_KEY_A",
+                "graft-m3f-MCP_APP_KEY_A",
+                "graft-m3f-MCP_CLIENT_SECRET_A",
+                "graft-m3f-MCP_SEAL_KEY_A"
+            ]
+        );
+        assert!(posted.values().all(|(path, _)| path == "/secrets_store/stores/st0/secrets"), "the named store");
+        register(&out, &[327680, 393216]).unwrap();
+        let reqs: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(out.join(REGISTER)).unwrap()).unwrap();
+        let cmd: AuthzCmd = serde_json::from_value(reqs[0]["cmd"].clone()).unwrap();
+        let AuthzOp::PutApp { record } = cmd.op else { panic!("PutApp first") };
+        assert_eq!(record.id, AppId(DbId(327680)));
+        assert_eq!(record.callbacks.as_slice(), [Url("https://graft-m3f-mcp.sub.workers.dev/callback".into())]);
+        assert_eq!(record.client_secrets.as_slice(), [secret_hash(&posted["graft-m3f-MCP_CLIENT_SECRET_A"].1)]);
+        let saved: Saved = serde_json::from_str(&std::fs::read_to_string(out.join(STATE)).unwrap()).unwrap();
+        assert_eq!(saved.secret_prefix, "graft-m3f-");
+        std::fs::remove_dir_all(&out).unwrap();
+        // A bad prefix or origin refuses before anything is drawn.
+        let cf = Cf::with("http://127.0.0.1:9", "be2a", "t");
+        let bad = |o: InitOpts| init_with(&cf, &install(), "git.acme.example", &o, &out).unwrap_err();
+        assert!(bad(InitOpts { secret_prefix: "a/b".into(), ..InitOpts::default() }).contains("--secret-prefix"));
+        for o in ["http://x.example", "https://x.example/path", "https://"] {
+            assert!(
+                bad(InitOpts { mcp_origin: Some(o.into()), ..InitOpts::default() }).contains("--mcp-origin"),
+                "{o}"
+            );
+        }
     }
 }

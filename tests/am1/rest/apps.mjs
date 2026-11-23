@@ -6,7 +6,10 @@
 // and B0-37 need for their Graftyard-run and MCP kinds (`tests/am1/results/am1-fix.md`, "Task 3").
 //
 // Stands in for `graftyard apps init` and `graftyard agents init` until AM2 builds them. Idempotent: a rerun finds
-// each slug, record, route, installation and row and changes nothing. Each App's private key goes to
+// each slug, record, route, installation and row and changes nothing. It refuses to touch an App whose record has a
+// callback or a client secret, which only `graftyard apps init` writes: its `PutApp` here would replace that record's
+// key and drop the client secret `graft-mcp` holds (graft-m3f's App 327680 since AM2-WP1's hosted day,
+// `tests/am1/results/install-m3f.md`). `state.agentApps[slug].moved` marks the same locally. Each App's private key goes to
 // <state>/agent-apps/<slug>.pem (0600), never to argv or a log; the state file gets the ids.
 //
 //   node tests/am1/rest/apps.mjs --plan     # print the commands for the current state; sends nothing
@@ -92,6 +95,7 @@ export async function agentToken(slug, extra = {}) {
   const { createSign } = await import("node:crypto");
   const a = state.agentApps?.[slug];
   if (!a) throw new Error(`${slug} is not registered: run tests/am1/rest/apps.mjs first`);
+  if (a.moved) throw new Error(`${slug}: ${a.moved}`);
   const pem = readFileSync(`${M3H}/agent-apps/${slug}.pem`, "utf8");
   const b64u = (b) => Buffer.from(b).toString("base64url");
   const now = Math.floor(Date.now() / 1000);
@@ -132,12 +136,22 @@ async function main() {
     }
     return;
   }
-  const { log, must, tools } = await import("../hosted/lib.mjs");
+  const { bed, log, must, tools } = await import("../hosted/lib.mjs");
   // The install's chain is an org whose operator acts as its site admin; an install that already opened it says so.
   await must(`authz:${INSTALL}`, { cred: { account: null, key: null }, op: { Open: { kind: "Org", enterprise: null } } }, "AlreadyOpened");
   // The install's admin (m3-admin) is a site admin, an `Admin` of the install org, as tests/m3/hosted/rows.ts makes it:
   // `/api/graftyard/v1/agents/apps/{id}` needs one. `SetMember` again with the same role commits nothing new.
   await must(`authz:${INSTALL}`, { cred: { account: null, key: null }, op: { SetMember: { user: state.admin, role: "Admin" } } });
+  // Before anything is sent: every App this run would touch, refused if `apps init` owns it.
+  for (const a of APPS) {
+    const known = state.agentApps[a.slug];
+    if (known?.moved) throw new Error(`${a.slug}: ${known.moved}; not touched`);
+    if (!known?.app) continue;
+    const rec = (await bed({ chain: `authz:${INSTALL}`, read: { app: known.app } })).value?.app;
+    if (rec?.callbacks?.length || rec?.client_secrets) {
+      throw new Error(`${a.slug}: App ${known.app} has a callback or client secret, so \`graftyard apps init\` registered it; not touched`);
+    }
+  }
   for (const a of APPS) {
     const der = keyOf(a.slug);
     let app = state.agentApps[a.slug]?.app;
