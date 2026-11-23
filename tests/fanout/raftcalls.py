@@ -17,6 +17,9 @@ import json, lzma, sys
 from datetime import datetime, timezone
 
 
+HEAVY_MS = 20
+
+
 def opener(p):
     return lzma.open(p, 'rt') if p.endswith('.xz') else open(p)
 
@@ -91,6 +94,14 @@ def main():
     for k in cols:
         v = [j[0][k] for j in learner]
         print(f'  {k:10} mean {sum(v) / len(v):9.1f} p50 {pc(v, .5):7} p90 {pc(v, .9):7} max {max(v)}')
+    # The heavy calls apart: 20 ms or more carried 36 to 86% of the baseline's learner `/raft` CPU (b033-profile.md).
+    heavy = [j for j in learner if j[1] >= HEAVY_MS]
+    print(f'calls of {HEAVY_MS} ms or more: {len(heavy)} of {len(learner)}, '
+          f'{100 * sum(j[1] for j in heavy) / max(sum(cpu), 1):.0f}% of the CPU; stage means, heavy against the rest:')
+    rest = [j for j in learner if j[1] < HEAVY_MS]
+    for k in ['body', 'envs', 'asks', 'held', 'held_bytes', 'out', 'answer', 'gate_ms']:
+        m = lambda js: sum(j[0][k] for j in js) / len(js) if js else 0
+        print(f'  {k:10} {m(heavy):10.1f} {m(rest):10.1f}')
     # CPU per call by stage: a fixed part per call, per KB decoded, per ask and per other envelope stepped (a learner's
     # ack, whose step may build its next append), per message the step built (answered less held), per held message
     # taken, and per KB answered.
@@ -106,13 +117,25 @@ def main():
     x = [[r[i] for i in keep] for r in x]
     names = [names[i] for i in keep]
     b = solve(x, cpu)
+    # One envelope a call makes "per other envelope" the intercept less "per ask": drop it and fit again.
+    if b is None and 'per other envelope' in names:
+        i = names.index('per other envelope')
+        print('  per other envelope: every call carried one envelope, folded into "per call"')
+        x, names = [r[:i] + r[i + 1:] for r in x], names[:i] + names[i + 1:]
+        b = solve(x, cpu)
     if b is None:
         print('fit: singular')
         return
+    light = [(r, y) for r, y in zip(x, cpu) if y < HEAVY_MS]
+    bl = solve([r for r, _ in light], [y for _, y in light]) if light else None
     mean = [sum(r[i] for r in x) / len(x) for i in range(len(names))]
     print('least-squares CPU fit, ms (coefficient, and its share of the mean call):')
     for n, c, m in zip(names, b, mean):
         print(f'  {n:18} {c:8.4f}   {c * m:6.3f} ms a call')
+    if bl:
+        print(f'the same fit on calls under {HEAVY_MS} ms only:')
+        for n, c, m in zip(names, bl, mean):
+            print(f'  {n:18} {c:8.4f}   {c * m:6.3f} ms a call')
 
 
 def selftest():

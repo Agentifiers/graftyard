@@ -7,8 +7,9 @@ RUNS = {  # tag: (load start ISO, leader site, seconds of site-0 leadership to u
     'sabA': ('2026-11-21T11:37:06Z', 300), 'blA': ('2026-11-22T02:44:24Z', 300), 'blB': ('2026-11-22T03:25:41Z', 300),
     'blC2': ('2026-11-22T04:15:03Z', 300), 'ncA': ('2026-11-22T01:32:10Z', 216), 'chA': ('2026-11-21T22:07:57Z', 300),
     'crA': ('2026-11-21T23:49:06Z', 300), 'm64r33': ('2026-11-21T00:11:46Z', 144),
-    'qlA': ('2026-11-22T16:24:36Z', 300), 'qlB': ('2026-11-22T17:09:28Z', 300), 'qlC': ('2026-11-22T17:52:14Z', 300)}
-COLO = {'sabA': 'EWR', 'blB': 'EWR', 'blA': 'IAD', 'blC2': 'IAD', 'chA': 'IAD', 'm64r33': 'IAD', 'crA': 'ORD', 'ncA': 'ATL', 'qlA': 'MIA', 'qlB': 'MIA', 'qlC': 'EWR'}
+    'qlA': ('2026-11-22T16:24:36Z', 300), 'qlB': ('2026-11-22T17:09:28Z', 300), 'qlC': ('2026-11-22T17:52:14Z', 300),
+    'pfA': ('2026-11-23T01:04:05Z', 296)}
+COLO = {'sabA': 'EWR', 'blB': 'EWR', 'blA': 'IAD', 'blC2': 'IAD', 'chA': 'IAD', 'm64r33': 'IAD', 'crA': 'ORD', 'ncA': 'ATL', 'qlA': 'MIA', 'qlB': 'MIA', 'qlC': 'EWR', 'pfA': 'ATL'}
 def ms(s): return int(datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp() * 1000)
 def pc(xs, q):
     xs = sorted(xs); return round(xs[min(len(xs) - 1, int(q * len(xs)))]) if xs else None
