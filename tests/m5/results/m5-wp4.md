@@ -10,8 +10,9 @@
 | `EdgeRoll{e4}`, index 117, undo `EdgePointer{e3}` | `GATE=pass` | 43 (28 / 13 / 2), 43 runs | 0 to 3, once each | 02:20:32Z |
 | `SiteDay{c, R4}`, index 125, undo `Rollback{c, R2}` | real gate (`GATE` unset) | 16 (12 / 1 / 3), 19 runs | 0, then the `Rollback`'s return steps 0 to 2, once each, plus `SiteRelease` to R2 and undrain | 03:05:30Z |
 
-Ending state:
-- Site c runs R2's `39439670` at 100%, and the group's `site_release` for c is R2 `a3a1f620…`.
+Ending state (corrected 2026-11-23: c was drained again after the done line, see "After the done line: a false drain of c and its hand undrain"):
+- Site c runs R2's `39439670` at 100%, and the group's `site_release` for c is R2 `a3a1f620…`. `deploy.mjs` site days leave the group's `site_release` on R2, the last release `graft-ops` rolled; that is a test-install artifact, not a product bug.
+- c was drained by the drain key at entry 134 (03:09:34Z) with no fault, and undrained by hand with the drain key at entry 135 (about 03:54:47Z). Since then the group reads `drained []`.
 - The edge runs e4 `f4e193b9` at 100%, with e3 `dd713c1c` at 0%. It serves today's traffic: `/api/v3/meta` answers 200 `installed_version 3.22.0`.
 - Sites a and b run day 69's `c3be75f2` and `627c8882`.
 - `graft-m4a-ops` is `32f9d175`, with `GATE=pending` and no Cron Trigger. The scoped token is revoked, and no shard container is running.
@@ -121,6 +122,13 @@ The row was at $4.96 when the intent posted, under the $6 bar.
 
 The undo restarted the step count at 0, as `IntentState::Undoing` does. Kills fell before each return deploy (3) and between the deploy and its `SiteRelease`, and each return step still committed once. This is the "a breach runs the pre-signed `Rollback` with no human signature" half of BF-39, here under kills. It breached for the reason R40 gives, not for a planted fault.
 
+## After the done line: a false drain of c and its hand undrain
+
+- **False drain, entry 134, 03:09:34Z, drain key `477de526…`.** No fault was set. The reports read a→c 11 of 1,812 missed (12.1 x on 1 in 2,000) and b→c 10 of 1,949 (10.3 x), both over `DRAIN_BURN` 10 x with more than `MIN_CALLS`, so `verdict` called c burning. The run came after the `GATE=pending` redeploy and before the Cron Trigger's removal took effect: the trigger was removed at 03:06Z, and `graft-ops` still ran until 03:12:31Z, its last run. Automatic drain under `GATE=pending` is correct, since drain is the safety path; the cause is R41's thresholds. Under the R41 rule now in code (1 in 100, 5 x) the same reports read 0.61 x and 0.51 x and drain nothing.
+- **Customer-key `Normal` refused.** A customer-signed `SiteMode Normal c` posted at 03:52:55Z answered 422 `WrongSigner`: the group ends a drain-key drain only with a drain-key `Normal` (`crates/release/src/group.rs`, `by_drain_key`), and steady load kept c over `UNDRAIN_BURN` 1 x, so `graft-ops` would never have undrained it (OPEN-QUESTIONS R42).
+- **Hand undrain, entry 135, posted 03:54:25Z on the orb's clock (group time about 03:54:47Z), digest `bb3f81eb…`.** Signed by hand with graft-m4a's drain key, on the lead's instruction: the drain was false, B0-29 needs c leading, and this is the test install's own key. Just before signing, the group read 135 entries, no intent current, and c the only drained site. The seed was read only into the signing step and never printed.
+- **After.** The fold reads `count 136`, `current None`, `drained []`, and all three members are at 136. c leads its home groups again: at 04:04Z, after light writes, 6 of 6 sampled c-homed chains (`repo:7390000`, 011, 023, 037, 059, 433) had c's member as leader in a new term. `graft-ops` has run 0 times since 03:12:31Z, and its schedules read `[]`, so the old rules cannot drain c again.
+
 ## Records this row changes
 
 - `decisions/OPEN-QUESTIONS.md`:
@@ -128,6 +136,7 @@ The undo restarted the step count at 0, as `IntentState::Undoing` does. Kills fe
   - R41, `DRAIN_BURN`'s margin.
 - `design/DESIGN.md`, Site day's table: `GATE_APPLY_LAG`'s cap, and `DRAIN_BURN` with `MIN_CALLS`, marked as [guess] values this row refutes. No threshold changed in code.
 - `decisions/DECISIONS.md`, "The hosted half's inputs are counted in the site's registry objects": its hosted evidence.
+- Later, at $0 (2026-11-23): R40 closed by `gate-relative` (N+1's share over N's p99, a 5 s backstop) and R41's thresholds replayed on `health.txt` (1 in 100, 5 x over 5 min, `MIN_CALLS` 300, calm under 2 x over 15 min), both in `decisions/DECISIONS.md`; R41 stays open, and R42, the missing override for a false automatic drain, is new.
 
 Raw records in `raw/bf39/`:
 - `bf39.log`: the driver's milestones.

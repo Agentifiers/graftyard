@@ -3357,8 +3357,8 @@ The fold gains what the executor needs: where each finished intent left each scr
 #### The gates and the burn are pure functions `graft-ops` asks
 
 **Decision.** `graftyard_release::gate` holds M5-WP4's rules, and `ops::next` acts on them:
-- `judge_site(N+1, N)` breaches on `GATE_EXCEPTIONS`, `GATE_STEP_DOWN`, `GATE_APPLY_LAG` (over twice N's p99 or over 500 ms) and `GATE_ACK_RATE`; under `STEP_MIN_ENTRIES` it is `Starved`, which dwells up to twice `STEP_DWELL` and then pages. `judge_errors` is `GATE_ERRORS`.
-- `verdict` calls a site burning when both other voter sites report it at `DRAIN_BURN` over 5 minutes, and calm when both report it under `UNDRAIN_BURN` over 30 minutes. Burn is the missed share of calls over 1 in 2,000, the write journey's 99.95%, and a report under 100 calls is no evidence.
+- `judge_site(N+1, N)` breaches on `GATE_EXCEPTIONS`, `GATE_STEP_DOWN`, `GATE_APPLY_LAG` (as built, over twice N's p99 or over 500 ms; since 2026-11-23 `gate-relative`, below) and `GATE_ACK_RATE`; under `STEP_MIN_ENTRIES` it is `Starved`, which dwells up to twice `STEP_DWELL` and then pages. `judge_errors` is `GATE_ERRORS`.
+- `verdict` calls a site burning when both other voter sites report it at `DRAIN_BURN` over 5 minutes, and calm when both report it under `UNDRAIN_BURN` over 30 minutes. Burn is the missed share of calls over 1 in 2,000, the write journey's 99.95%, and a report under 100 calls is no evidence. Since 2026-11-23 the budget is 1 in 100 with 5 x over 5 minutes, calm under 2 x over 15 minutes and 300 calls (`drain-budget`, below).
 - Before any step, a burning site is drained with the drain key. If the current site day's own drain holds, its `Normal` goes in first. A drain-key drain other than the day's own ends once the site is calm. A burning site while another is drained for any other reason pages, because the group refuses a second drain.
 - A site day waits while another site is drained, at its drain step and its deploys. One that cannot advance for `STUCK_DAY` (no deployment read, or a pending gate) undrains its site and resumes later from the same step.
 - `lead_limited` is the current site day's site once its drain step is done and while it is not drained: its first day, or the rest of a day an automatic drain preempted. `may_not_lead` adds it, except for 1% of chains by FNV-1a hash, to the drained sites, which is what a member steps into `set_drained`.
@@ -3385,7 +3385,7 @@ The fold gains what the executor needs: where each finished intent left each scr
 
 **Decision.** The host half of M5-WP4, built code-only:
 - Each member isolate counts its version's gate inputs (`workers/site/src/gatecount.rs`): applied entries with their apply lag in 24 buckets, `verify` refusals and fold storage losses as exceptions, AppendEntries answers and acks, and `STEP_DOWN` trips. It also counts `SiteHealth` per target site, each voter call once at its first outcome, a call that missed `CALL_DEADLINE` counting as missed. Every 30 s it adds them to the site's `Registry` objects `gate` (one row per minute and version, the `VERSION` version metadata binding) and `site_health` (one row per 10 s and target).
-- `graft-ops` judges a site day's step on the rolling site's `gate` object from the step's start, N+1's version against N's, with `judge_site`. With no N baseline (a first release, or 100%, where no member runs N) only `GATE_APPLY_LAG`'s 500 ms cap, exceptions and `STEP_DOWN` apply. Every other intent's gate stays pending until its inputs are counted (5xx rates for `GATE_ERRORS`, a canary for spares). Each run reads every voter's `site_health` object over `DRAIN_WINDOW` and `UNDRAIN_AFTER` and asks `verdict`. `GATE` remains a test install's override, unset by default.
+- `graft-ops` judges a site day's step on the rolling site's `gate` object from the step's start, N+1's version against N's, with `judge_site`. With no N baseline (a first release, or 100%, where no member runs N) only `GATE_APPLY_LAG`'s 500 ms cap, exceptions and `STEP_DOWN` apply. Since `gate-relative`, at 100% and on the first day N is read from the intent's start, and with no N only the 5 s backstop applies. Every other intent's gate stays pending until its inputs are counted (5xx rates for `GATE_ERRORS`, a canary for spares). Each run reads every voter's `site_health` object over `DRAIN_WINDOW` and `UNDRAIN_AFTER` and asks `verdict`. `GATE` remains a test install's override, unset by default.
 - Every member steps `may_not_lead` from the `Release` view into `set_drained` on each tick, so the 1% lead limit is the FNV-1a hash of the chain's text form mod 100, now the chosen rule (DESIGN, journey 7). A `Release` member reads no view of its own group.
 - A shard object starts `image_for(site, object id, shard_day)`: about 10%, 50% and 100% of the site's objects by weight on `day#<site>`, each step covering the last. A running container on another image is stopped at its next fetch or alarm and restarts on the new one. A version deployed without `--image-prev` has no `git_prev`, and its shards start `git`.
 
@@ -3394,11 +3394,11 @@ The fold gains what the executor needs: where each finished intent left each scr
 **Beat.** Analytics Engine for the counters. Its reads need the Cloudflare API, which the gate must not depend on (the November 2, 2023 class).
 
 **Evidence.**
-- `sitedays.rs`: `counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_leaves_only_the_cap` and `day_versions_names_the_site_days_n1_and_n_versions_only_while_a_site_day_runs`.
+- `sitedays.rs`: `counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_leaves_only_the_backstop` (renamed by `gate-relative`) and `day_versions_names_the_site_days_n1_and_n_versions_only_while_a_site_day_runs`.
 - `crates/git/tests/shard.rs`: `container_day_covers_about_10_50_100_percent_of_shard_objects_each_step_covering_the_last`.
 - `tests/m0carried/plant87.py`: 37 of 37, 8 of them new.
 - Hosted, BF-39 on graft-m4a (2026-11-23, `tests/m5/results/m5-wp4.md`): the members' `gate` and `site_health` objects counted and `graft-ops` read them; c drained by the drain key 3 min 39 s after a gray fault started, and the real gate breached and ran the pre-signed `Rollback` under kills.
-- Two [guess] values the row refutes, kept in code until a fix is chosen: `GATE_APPLY_LAG`'s 500 ms cap (every version read a p99 in the 1,000 to 1,500 ms bucket, R40) and `DRAIN_BURN` 10 x with `MIN_CALLS` 100 (steady load read 3 to 20 x from one observer, R41).
+- Two [guess] values the row refutes, kept in code until a fix was chosen: `GATE_APPLY_LAG`'s 500 ms cap (every version read a p99 in the 1,000 to 1,500 ms bucket, R40, now `gate-relative`) and `DRAIN_BURN` 10 x with `MIN_CALLS` 100 (steady load read 3 to 20 x from one observer, R41, now `drain-budget`). After the row, the old rule drained c at entry 134 with no fault (a→c 11 of 1,812, b→c 10 of 1,949), undrained by hand with the drain key at entry 135 (`tests/m5/results/m5-wp4.md`).
 
 **Flip.**
 - Edges' receipt misses, which DESIGN also counts into `SiteHealth`, show a gray site that member calls miss.
@@ -3409,6 +3409,78 @@ The fold gains what the executor needs: where each finished intent left each scr
 *Why kept.* The refusing member is the only one that knows it refused. Counting against the writer's version needs the leader's version in every AppendEntries, a wire change for one counter. The deposing case already trips `GATE_STEP_DOWN` on N+1.
 
 *Flip.* A hosted site day where an N follower refuses an N+1 entry and the N+1 step passes without a `STEP_DOWN` trip. Then the refusal answer carries the writer's version (the leader's `VERSION`, sent in AppendEntries), and the exception counts there.
+
+#### `gate-relative`: apply lag is N+1's share over N's p99, with a 5 s backstop (2026-11-23)
+
+**Status.** Code-only, not deployed. Ships on a site day (the members' `gate` rows are kept longer) and an ops deploy. Closes R40 (`decisions/OPEN-QUESTIONS.md`).
+
+**Decision.**
+- `judge_site` breaches `GATE_APPLY_LAG` when more than 2% (`GATE_APPLY_LAG_SHARE_BP`, 200) of N+1's applied entries fall in buckets above N's p99 bucket on the same site, when N has entries.
+- With or without N, it breaches when more than 1% (`GATE_APPLY_LAG_CAP_BP`) of N+1's entries are slower than 5 s (`GATE_APPLY_LAG_CAP_MS`). That backstop replaces the absolute 500 ms cap.
+- At 100% and on the first day no member runs N, so `graft-ops` reads N's counters from the intent's start, which covers the 1, 10 and 50% steps where N last ran beside N+1 (`workers/ops/src/exec.rs`, `gate`). The site keeps gate rows for `6 x STEP_DWELL + FIRST_DAY` so they are still there (`workers/site/src/gatecount.rs`).
+
+**Why.** A drained site holds only followers, which apply an entry on a quiet chain about `CALL_DEADLINE` after the leader, when R29's commit round tells them the commit. Every version on graft-m4a read a p99 in the 1,000 to 1,500 ms bucket, so the 500 ms cap breached every drained day, and leg 3 of BF-39 breached on it with N+1 and N both at 1,500 ms. A share over N's p99 compares followers with followers. A share, not a p99 ratio, because a bucketed p99 cannot move by less than one bucket: a healthy step and a +300 ms regression read the same 1,500 ms p99.
+
+**Beat.**
+- A cap relative to N's p99 (for example, at most twice it). It passes a +300 ms regression at 1,500 ms, which lands in the 2 s bucket, under twice N.
+- Measuring lag only on entries that were not the last of their round. It needs a new counter on every member and a site day before it can be judged, and it hides a slow commit round.
+- Gating on the leader-side commit lag. A drained site has no leaders, so its day would have nothing to judge.
+
+**Evidence.** Replayed offline on BF-39's own `tests/m5/results/raw/bf39/gate.txt`, with R3's 12 healthy minutes before the fault (01:36Z to 01:48Z, 7,804 entries, p99 1,500 ms) as N:
+
+| N+1 reads | Share over N's p99 | Over 5 s | Old rule | `gate-relative` |
+| --- | --- | --- | --- | --- |
+| Leg 1, 100% step, healthy (7 reads) | 0.07 to 0.19% | 0.00% | breach (cap) | pass |
+| Leg 1, undrain step, healthy (26 reads) | 0.07 to 1.01% | 0.27% | breach (cap) | pass |
+| Leg 1, first day, healthy (3 reads) | 0.00 to 0.27% | 0.09% | breach (cap) | pass |
+| Leg 2, after the gray fault (healthy) | 0.04 to 0.32% | 0.02% | breach (cap) | pass |
+| Leg 2, gray fault (3 s hangs on 30% of c's calls, 8 reads) | 0.46 to 30.17% | 3.07% | breach | breach 7 of 8 |
+| Plant: +300 ms on every apply | 46.4 to 50.6% | | breach | breach 36 of 36 |
+| Plant: +1 s on every apply | 91.5 to 93.9% | | breach | breach 36 of 36 |
+| Plant: +3 s on 5% of applies | 4.9 to 6.0% | | breach | breach 36 of 36 |
+| Plant: +10 s on 1.5% of applies | 1.06 to 2.64% | 1.48 to 1.67% | breach | breach 35 of 36, by the backstop |
+
+- `sitedays.rs`: `a_step_gate_breaches_on_each_input_at_its_bound_and_starves_under_step_min_entries` (each bound, both sides), `a_drained_sites_followers_pass_against_n_and_a_slower_n1_still_breaches` (the row's histograms: the undrain step passes, the fault breaches, half a bucket slower breaches), and the no-baseline test.
+- `tests/m0carried/plant87.py`: 49 of 49 caught, 9 of them for this rule.
+
+**Caveat: the replay flatters the rule.** N in the replay is R3's own healthy window, the same build as N+1, so N's p99 and N+1's tail come from the same distribution. A real N+1 runs beside a different N. The plants show it still catches regressions, but the hosted check row must judge against a real N: its site day leaves the previous version running beside N+1 at 1, 10 and 50%, with real counts on both.
+
+**Flip.**
+- The check row's healthy N+1 puts more than 2% of entries over a real N's p99 on any step.
+- A planted regression smaller than one bucket (under about 100 ms at 1,500 ms) passes and matters: then measure lag on entries that were not the last of their round.
+- N's rows from the intent's start are gone by 100% (a day longer than `GATE_KEEP_MS`): keep them longer, or carry N's p99 in the intent's state.
+
+#### `drain-budget`: a missed call deadline is budgeted at 1 in 100, drained at 5 x over 5 minutes, and calm under 2 x over 15 minutes (2026-11-23)
+
+**Status.** Code-only, not deployed; the thresholds live in `graft-ops`, so they ship on an ops deploy. R41 stays open: the values come from one install.
+
+**Decision.** `ALLOWED_MISS_DENOM` 100 [measured, one install], `DRAIN_BURN` 5 x over `DRAIN_WINDOW` 5 min, `MIN_CALLS` 300, `UNDRAIN_BURN` 2 (under 2 x) over `UNDRAIN_AFTER` 15 min. The two-observer rule is unchanged.
+
+**Why.** A missed `CALL_DEADLINE` is a slow member call the next round retries, not a failed write, so the write SLO's 1 in 2,000 was the wrong budget. On it, steady load with no fault read 3 to 20 x, one observer was over `DRAIN_BURN` on most windows, the old rule drained c with no fault at entry 134, and no undrain could happen, because calm under 1 x was never reached. Graft-m4a's steady 5-minute miss rate was 0.2 to 0.3%, at most 0.99%.
+
+**Beat.** Every candidate below was replayed on `tests/m5/results/raw/bf39/health.txt` (85 snapshots, 01:39Z to 03:05Z, both observers of every site):
+
+| Budget, drain, calm, `MIN_CALLS` | False drains (no fault) | Fault to burning | Lift to calm |
+| --- | --- | --- | --- |
+| 1 in 2,000, 10 x, under 1 x over 30 min, 100 (as built) | 1 (02:00:11Z, site c), and entry 134 hosted | 64 s | never (to 03:05Z) |
+| 1 in 100, 10 x, under 1 x over 30 min, 100 | 0 | 187 s | 30 min 2 s |
+| 1 in 100, 10 x, under 1 x over 20 min, 100 | 0 | 187 s | 20 min 48 s |
+| 1 in 100, 5 x, under 1 x over 20 min, 300 | 0 | 126 s | 20 min 48 s |
+| 1 in 200, 10 x, under 2 x over 20 min, 300 | 0 | 126 s | 20 min 48 s |
+| 1 in 50, 3 x, under 1 x over 15 min, 300 | 0 | 126 s | 15 min 40 s |
+| **1 in 100, 5 x, under 2 x over 15 min, 300 (chosen)** | **0** | **126 s** | **15 min 40 s** |
+| 1 in 100, 5 x, under 2 x over 30 min, 300 | 0 | 126 s | 29 min 1 s |
+
+On 1 in 100 steady c read at most 1.0 x from the higher observer and 0.4 x from the lower, and the gray fault read 9.6 to 27.5 x from the lower observer from 2 minutes in. Entry 134's reports read 0.61 x and 0.51 x. `MIN_CALLS` 300 makes 15 misses the drain burn, so 3 misses in 582 calls no longer vote.
+
+**Evidence.**
+- `sitedays.rs`: `a_site_burns_only_when_both_other_sites_report_it_and_each_report_counts_once_it_has_min_calls` at the new bounds (100 of 2,000 burns and 99 does not, 39 of 2,000 is calm and 40 is not, 299 calls is no evidence).
+- `tests/m0carried/plant87.py`: the four constants, each moved one step, are caught.
+
+**Flip.**
+- A loaded install whose steady 5-minute miss rate is over 1% from one observer, or that drains with no fault.
+- A fault that matters and reads under 5 x from either observer, so it never drains.
+- A drained site that stays over 2 x for 15 minutes after a fault lifts.
 
 ### M4-WP2's hosted half, as built (2026-11-13)
 

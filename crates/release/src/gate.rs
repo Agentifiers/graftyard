@@ -4,7 +4,10 @@
 //! these functions; `ops::next` acts on the answer.
 //!
 //! - **A step's gate.** `judge_site` compares the N+1 members of the rolling site with its N members:
-//!   `GATE_EXCEPTIONS`, `GATE_STEP_DOWN`, `GATE_APPLY_LAG`, and `GATE_ACK_RATE` breach; fewer than `STEP_MIN_ENTRIES`
+//!   `GATE_EXCEPTIONS`, `GATE_STEP_DOWN`, `GATE_APPLY_LAG`, and `GATE_ACK_RATE` breach. `GATE_APPLY_LAG` judges
+//!   N+1's tail against N's own p99 on the same site, so a drained site's followers, which apply about
+//!   `CALL_DEADLINE` after their leader on a quiet chain (R29's commit round), are judged against followers
+//!   (`decisions/DECISIONS.md`, "`gate-relative`"); fewer than `STEP_MIN_ENTRIES`
 //!   applied by N+1 is `Starved`, which `next` dwells on up to twice `STEP_DWELL` and then pages. `judge_errors` is
 //!   `GATE_ERRORS` for the edge, front, ops, MCP, and controller rolls.
 //! - **Burn.** A target site's burn, from one observer, is its missed share of calls over the allowed share
@@ -22,28 +25,37 @@ use crate::types::{DayTarget, Intent, IntentState, Script, VersionId};
 
 /// Entries the N+1 members must apply in a step before its gate is judged (`STEP_MIN_ENTRIES`) [guess].
 pub const STEP_MIN_ENTRIES: u64 = 1_000;
-/// N+1's p99 apply lag may be at most twice N's and at most this (`GATE_APPLY_LAG`) [guess].
-pub const GATE_APPLY_LAG_MS: u64 = 500;
+/// `GATE_APPLY_LAG`: at most this share of N+1's applied entries, in basis points, may be slower than N's p99 on
+/// the same site [measured, BF-39 hosted: a healthy N+1 put 0.07 to 1.01% there, a +300 ms regression 47 to 50%].
+pub const GATE_APPLY_LAG_SHARE_BP: u64 = 200;
+/// `GATE_APPLY_LAG`'s backstop, with or without N: at most `GATE_APPLY_LAG_CAP_BP` of N+1's entries slower than
+/// this [measured, BF-39 hosted: a healthy N+1 put at most 0.27% over 5 s, a 10 s stall on 1.5% of entries 1.5%].
+pub const GATE_APPLY_LAG_CAP_MS: u64 = 5_000;
+pub const GATE_APPLY_LAG_CAP_BP: u64 = 100;
 /// N+1's ack rate may be at most this many basis points below N's (`GATE_ACK_RATE`, 0.1 points) [guess].
 pub const GATE_ACK_RATE_BP: u32 = 10;
 /// N+1's 5xx rate may be at most this many basis points above N's (`GATE_ERRORS`, 0.1 points) [guess].
 pub const GATE_ERRORS_BP: u32 = 10;
 /// A site day that cannot advance for this long undrains its site under the 1% lead limit (`STUCK_DAY`) [guess].
 pub const STUCK_DAY: u64 = 3_600_000;
-/// The share of calls the SLO allows to miss: the write journey's 99.95% (\"Downtime\", SLOs), because member calls are
-/// the commit path [inference]. As a ratio, 1 in 2,000.
-pub const ALLOWED_MISS_DENOM: u64 = 2_000;
-/// Burn that drains a site, held over `DRAIN_WINDOW` from both other sites (`DRAIN_BURN`) [guess].
-pub const DRAIN_BURN: u64 = 10;
+/// The share of member calls allowed to miss `CALL_DEADLINE`, as 1 in this: 1% [measured, one install: graft-m4a's
+/// steady 5-minute miss rate was 0.2 to 0.3%, at most 0.99%, in BF-39 hosted]. Not the write SLO's 1 in 2,000: a
+/// missed deadline is a slow call the next round retries, not a failed write (OPEN-QUESTIONS R41).
+pub const ALLOWED_MISS_DENOM: u64 = 100;
+/// Burn that drains a site, held over `DRAIN_WINDOW` from both other sites (`DRAIN_BURN`): 5% of calls missed
+/// [measured, one install: B0-07's gray fault read 9.6 to 27.5 x from 2 minutes in, steady load at most 1.0 x].
+pub const DRAIN_BURN: u64 = 5;
 pub const DRAIN_WINDOW: u64 = 5 * 60_000;
-/// Burn under which a drained site undrains, held over `UNDRAIN_AFTER` from both other sites [guess].
-pub const UNDRAIN_BURN: u64 = 1;
-pub const UNDRAIN_AFTER: u64 = 30 * 60_000;
-/// Fewest calls in a report that counts as evidence [guess]: below it one missed call is a 10x burn.
-pub const MIN_CALLS: u64 = 100;
+/// Burn under which a drained site undrains, held over `UNDRAIN_AFTER` from both other sites [measured, one
+/// install: calm 15 min 40 s after BF-39's gray fault lifted].
+pub const UNDRAIN_BURN: u64 = 2;
+pub const UNDRAIN_AFTER: u64 = 15 * 60_000;
+/// Fewest calls in a report that counts as evidence: 300, so 15 missed is the drain burn and 3 missed are not
+/// [inference from BF-39 hosted, where 3 misses in 582 calls counted at 1 in 2,000].
+pub const MIN_CALLS: u64 = 300;
 
 /// One side of a step's comparison: the N+1 members of the rolling site, or its N members, over the step.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Side {
     pub apply_lag_p99_ms: u64,
     /// Apply and verify exceptions.
@@ -54,6 +66,17 @@ pub struct Side {
     pub step_downs: u64,
     /// Entries applied in the step.
     pub entries: u64,
+    /// Entries applied per `LAG_EDGES` bucket.
+    pub lag: Vec<u64>,
+}
+
+impl Side {
+    /// The share of this side's entries, in basis points, in buckets above the one whose upper bound is `ms`.
+    pub fn share_over_bp(&self, ms: u64) -> u64 {
+        let total: u64 = self.lag.iter().sum();
+        let over: u64 = self.lag.iter().zip(LAG_EDGES).filter(|(_, e)| *e > ms).map(|(n, _)| n).sum();
+        (over * 10_000).checked_div(total).unwrap_or(0)
+    }
 }
 
 /// A site day's step gate: N+1 against the same site's N members.
@@ -64,12 +87,20 @@ pub fn judge_site(n1: &Side, n: &Side) -> Gate {
     if n1.step_downs > 0 {
         return Gate::Breach(format!("GATE_STEP_DOWN: {} on N+1 leaders", n1.step_downs).into());
     }
-    // An N that applied nothing in the window (at 100% and on the first day, when no member runs N) is no baseline:
-    // only the 500 ms cap applies.
+    // An N that applied nothing is no baseline (a site's first release): only the backstop applies. At 100% and on
+    // the first day no member runs N, so the host passes N's counters from the whole intent, when N last ran beside
+    // N+1 (`ops::Exec::gate`).
     let has_n = n.entries > 0;
-    if n1.apply_lag_p99_ms > GATE_APPLY_LAG_MS || (has_n && n1.apply_lag_p99_ms > 2 * n.apply_lag_p99_ms) {
+    let tail = n1.share_over_bp(n.apply_lag_p99_ms);
+    if has_n && tail > GATE_APPLY_LAG_SHARE_BP {
         return Gate::Breach(
-            format!("GATE_APPLY_LAG: N+1 p99 {} ms, N {} ms", n1.apply_lag_p99_ms, n.apply_lag_p99_ms).into(),
+            format!("GATE_APPLY_LAG: {tail} bp of N+1 entries over N's p99 {} ms", n.apply_lag_p99_ms).into(),
+        );
+    }
+    let stalled = n1.share_over_bp(GATE_APPLY_LAG_CAP_MS);
+    if stalled > GATE_APPLY_LAG_CAP_BP {
+        return Gate::Breach(
+            format!("GATE_APPLY_LAG: {stalled} bp of N+1 entries over {GATE_APPLY_LAG_CAP_MS} ms").into(),
         );
     }
     if has_n && n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {
@@ -173,6 +204,7 @@ impl Counters {
             ack_bp,
             step_downs: self.step_downs,
             entries: self.entries,
+            lag: self.lag.clone(),
         }
     }
 }
