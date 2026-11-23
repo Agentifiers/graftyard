@@ -89,7 +89,8 @@ def leader_windows(tag):
 
 
 def read(path, tag=None):
-    lines = [json.loads(x) for x in open(path) if x.strip()]
+    import lzma
+    lines = [json.loads(x) for x in (lzma.open(path, "rt") if path.endswith(".xz") else open(path)) if x.strip()]
     if not lines:
         print("no edgefull lines: the edge refused nothing and sent nothing on a lapsed full advert")
         return

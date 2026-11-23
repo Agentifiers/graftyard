@@ -159,8 +159,68 @@ p99 do not. The row reports reask-read's top-ups (`Trace::TopUp`) and stage-firs
   fail-open an isolate a chain per ADVERT_TTL ceiling) and per 10 s window, joined to the leader's cuts for flips 2 to 4.
   The cuts run on the leader's clock, 1 to 3.5 s behind Cloudflare's, so a window is read with the one before it.
 
+## Row B: erBA, the result (2026-11-23)
+
+One placement, run erBA, ruled on by the lead. **It reads a slow host only, not typical-host behaviour.**
+
+| Item | erBA |
+|---|---|
+| Build | site day -erB from main 050eefc8, test-faults, siteday exit 0; new shard image; edge 47b8f634 at 100% (`edgever.py`) |
+| Repo, a1 run | 131394, `mwt69ks9`; 5,000 agents; learners `enam:2000,weur:1000,apac:1000`; no `--seed-prs` |
+| Guard | `GUARD_WANT=slow`: hostguard re-place verdict, 36.1 ms of leader CPU a setup commit (49 commits); load released |
+| Probe | `--advert-probe`: all five checks passed; the leader's `agentRate` 780.9, `agentWaitMs` 112 before load |
+| Load (UTC) | 11:20:56 to 11:25:56; done line 11:31:20Z |
+| Cost | $1.63 for the run (`costrow-erBA.status`), against RUN_STOP $4; graft-m2b $4.99 for the day at 11:32Z |
+| Sweep | rows.sh's sweep and a final `teardown.py --sweep` exited 0; no shard container left |
+
+**The host falls between the two approved bands** (31.0 to 31.5 ms and 39.7 to 46.1 ms), so no baseline matches it.
+The lines are tabled against both bands, and the lead chose neither.
+
+[measured]
+
+| Line | erBA | pfA / pgA (39.7 to 46.1) | blA / blC2 (31.0 to 31.5) | Lead's ruling |
+|---|---|---|---|---|
+| Edge 503s | 3,263 | 6,754 / 5,205 | 4,835 / 1,168 | On record against both bands |
+| Leader `full` rendered 503 | 0 | 2,754 / 1,728 | | Pass |
+| Shed reads while the advert passed 5 s | 753 | 3,593 / 2,277 | | Pass (down 79% / 67%) |
+| Agent `full`s the leader refused | 6,433 (3,254 admission, 3,179 `expire_agents`) | 8,463 (pfA) | | **Fail**: 76% of pfA, over the 50% fail line |
+| `ERR_HTTP2_STREAM_ERROR` on agent pushes | 1 | 1,371 / 2,251 | 0 / 342 | Pass |
+| Human commit stage p99, push log (n) | 4,739 (119) | 9,394 / 11,018 | 7,854 / 4,244 | On record against both bands |
+| Merges over 2 s at the commit stage | 23 of 44 | 22 of 27, 21 of 34 | 28 of 44, 27 of 37 | |
+| Agent pushes ok | 1,498 | 190 / 2,740 | | |
+| Leader changes | 0 | | | |
+
+- **All shed 503s:** 3,263, every one "every member asked shed the read: overloaded". 753 fell in buckets whose
+  advert passed 5 s; the rest fell while it was under 5 s (`agentdrain.py erBA fivexx20-erBA.jsonl`).
+- **Agent `full`s by stage** (`pushfull.py`): 4,014 at the edge on the advert, 540 at `bound_at_send`, 3,254 at
+  admission and 3,179 in `expire_agents`. The edge also refused 7,529 REST and agent-API writes with 429 (a1's `api429`:
+  2,527 agent 429s carried `advert`, 5,010 were the leader's own).
+- **The drain:** 30 saturated windows; agent commands cut a second p10/p50/p90 55.8 / 76.8 / 108.8; the bucket at 1.55
+  times the drain.
+- **The confound:** 2 reask-read top-ups (`Trace::TopUp`) in the whole trace, and 257 agent `full`s that staged first.
+
+**The flips** (`decisions/DECISIONS.md`, "`edge-refusal`"):
+1. **Not met: 0.** No human or merge push carried `advert`, a1 saw no non-agent 429 with it, and `flip1` is empty.
+2. **Not met, but fragile.** 3 of 30 refusing windows read a leader wait under 2.5 s, exactly the 10% line. That is
+   read with the window before each, as registered. Read on each window alone, it is 13 of 30.
+3. **Not met.** No refusing window had an empty agent lane. Agent commands cut a second while refusing: p50 78.7.
+4. **Met, on the fail-open path.** The edge refused 11,553 writes, so not few. But 6,032 Agent writes went out on a
+   lapsed advert that said full, up to 164 from one isolate, more than half the refusals. Those are the writes the
+   leader then refused (6,433). An isolate that refuses everything hears no advert, and when its advert lapses every
+   Agent write in flight fails open at once, not one per ADVERT_TTL. That is the next design.
+5. **Not met against the upper band** (human p99 down 50 to 57%). Against blC2, 4,739 is 112% of its 4,244.
+
+Raws in `tests/fanout/raw/`:
+- `costrow-erBA.status`, `rows-erBA.status`, `siteday-erB.status` (account redacted), `terms-erBA.jsonl`, and
+  `tsave-erBA.jsonl.xz`;
+- `memguard-erBA.{err,jsonl.xz}`, `arrivals-erBA.jsonl`, and `shardgate-erBA-b0-33-{0,1,2}.jsonl`;
+- `edgefull-erBA.jsonl.xz`, the 17,570 `edgefull` lines, and `fivexx20-erBA.jsonl`, the 503s by 20 s bucket.
+
+The a1 raws stay local (`tests/am1/raw/` is git-ignored): `a1-b0-33-mwt69ks9.jsonl` and its push log.
+
 ## Open
 
-- Row B's results, when it runs.
+- The fail-open bound (flip 4), designed before code. Its rerun needs a guard that keeps a leader inside an approved
+  band, and the lead's clearance.
 - Whether human p99 falls on a slow host is the row's question, not this file's. Edge refusal sheds agent work but does
   not cut apply CPU per entry at the same drain [inference].
