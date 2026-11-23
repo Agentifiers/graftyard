@@ -1,16 +1,20 @@
 //! `graft-front` (`design/DESIGN.md`, Stack, Workers; Shape, "Release group", `Pointers` and `POINTER_TTL`; "Commit
-//! and read paths", journey 7): the stable Worker every request enters. It forwards each request to the edge over the
-//! `EDGE` `fetch()` service binding. While its cached `Release` view pins the edge (`Pointers.edge` is `Some`, which
-//! only a pre-signed `EdgePointer` undo sets), it adds the `Cloudflare-Workers-Version-Overrides` header naming the
-//! pinned version; otherwise the deployment's percentage split picks the version. No path here calls the Cloudflare
-//! API.
+//! and read paths", journey 7): the stable Worker every request enters. It forwards each request over a `fetch()`
+//! service binding: `MCP` (`graft-mcp`) for the host `MCP_HOST` names (`mcp.<host>`), and `EDGE` for every other host
+//! (`graftyard_release::view::front_route`). While its cached `Release` view pins the edge or `graft-mcp`
+//! (`Pointers.edge` or `Pointers.mcp` is `Some`, which only a pre-signed `EdgePointer` or `McpPointer` undo sets), it
+//! sets one `Cloudflare-Workers-Version-Overrides` header naming every pinned version
+//! (`graftyard_release::view::overrides`); a `None` pointer adds nothing, so the deployment's percentage split picks the
+//! version. `graft-mcp` forwards that header on its edge calls, so a pinned edge stays pinned behind it
+//! (`design/AGENT-LAYER.md`, Shape, "graft-mcp", release control). No path here calls the Cloudflare API.
 //!
 //! - **The view.** One `graftyard_lookup::view` replica per isolate, read from any `Release` member over the
 //!   `MEMBER_<n>` and `REGISTRY_<n>` bindings and checked against this script's own trust anchor. A request waits for
 //!   it only on a cold or long-idle isolate, and never once a refresh has failed.
-//! - **The version report.** Each forwarded request carries `x-graftyard-front`, and the edge answers it with the
-//!   version that ran (`x-graftyard-edge-version`, from its version metadata binding). A pinned request whose edge
-//!   reports another version, or none, is a mismatch: an override is ignored silently when its version is not in the
+//! - **The version report.** Each forwarded request carries `x-graftyard-front`, and the script that ran answers it
+//!   with its version (`x-graftyard-edge-version` from the edge, `x-graftyard-mcp-version` from `graft-mcp`, each from
+//!   its version metadata binding). A request whose script is pinned and reports another version, or none, is a
+//!   mismatch: an override is ignored silently when its version is not in the
 //!   current deployment. Each mismatch is logged as an alarm (`console_error`) and counted. The header is taken off
 //!   the client's response unless the client asked for it with `x-graftyard-report-version`, so no client response
 //!   changes.
@@ -20,7 +24,7 @@
 use std::cell::RefCell;
 
 use graftyard_lookup::{Bindings, view};
-use graftyard_release::view::{mismatch, version_override};
+use graftyard_release::view::{forward, mismatch};
 use graftyard_release::{Anchor, Script};
 use graftyard_types::SiteTable;
 use serde_json::json;
@@ -28,8 +32,9 @@ use worker::*;
 
 /// The request header that asks the edge for its version.
 const FRONT_HEADER: &str = "x-graftyard-front";
-/// The edge's version report.
+/// The edge's and `graft-mcp`'s version reports.
 const EDGE_VERSION_HEADER: &str = "x-graftyard-edge-version";
+const MCP_VERSION_HEADER: &str = "x-graftyard-mcp-version";
 /// A client that sends this header keeps the edge's version report in its response (test drivers).
 const REPORT_HEADER: &str = "x-graftyard-report-version";
 const OVERRIDE_HEADER: &str = "cloudflare-workers-version-overrides";
@@ -38,6 +43,8 @@ const OVERRIDE_HEADER: &str = "cloudflare-workers-version-overrides";
 struct Counts {
     requests: u64,
     pinned: u64,
+    /// Requests routed to `graft-mcp`.
+    mcp: u64,
     mismatches: u64,
     first_mismatch: Option<u64>,
     last_mismatch: Option<serde_json::Value>,
@@ -60,31 +67,47 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if req.path() == "/_front/status" {
         return status(&env, &req);
     }
-    let pin = view::pin(Script::Edge);
+    // `graft-mcp` sits behind this front only when the deployment names its host and script (`deploy.mjs --mcp`).
+    let var = |k: &str| env.var(k).ok().map(|v| v.to_string()).filter(|v| !v.is_empty());
+    let mcp = var("MCP_HOST").zip(var("MCP_SCRIPT"));
+    let plan = forward(
+        req.url()?.host_str().unwrap_or_default(),
+        &env.var("EDGE_SCRIPT")?.to_string(),
+        mcp.as_ref().map(|(h, s)| (h.as_str(), s.as_str())),
+        view::pin,
+    );
+    let (to, pin) = (plan.to, plan.pin);
+    let (binding, version_header) = match to {
+        Script::Mcp => ("MCP", MCP_VERSION_HEADER),
+        _ => ("EDGE", EDGE_VERSION_HEADER),
+    };
     let report = req.headers().has(REPORT_HEADER)?;
     let fwd = req.clone_mut()?;
     fwd.headers().set(FRONT_HEADER, "1")?;
     let _ = fwd.headers().delete(OVERRIDE_HEADER);
-    if let Some(v) = pin {
-        fwd.headers().set(OVERRIDE_HEADER, &version_override(&env.var("EDGE_SCRIPT")?.to_string(), v))?;
+    if let Some(o) = &plan.overrides {
+        fwd.headers().set(OVERRIDE_HEADER, o)?;
     }
-    let res = env.service("EDGE")?.fetch_request(fwd).await?;
-    let ran = res.headers().get(EDGE_VERSION_HEADER)?;
+    let res = env.service(binding)?.fetch_request(fwd).await?;
+    let ran = res.headers().get(version_header)?;
     let bad = mismatch(pin, ran.as_deref());
     COUNTS.with(|c| {
         let mut c = c.borrow_mut();
         c.requests += 1;
         c.pinned += u64::from(pin.is_some());
+        c.mcp += u64::from(to == Script::Mcp);
         if bad {
             let now = graftyard_lookup::now_ms();
             c.mismatches += 1;
             c.first_mismatch.get_or_insert(now);
-            c.last_mismatch = Some(json!({ "at": now, "pin": pin.map(|v| v.to_string()), "ran": ran }));
+            c.last_mismatch =
+                Some(json!({ "at": now, "script": binding, "pin": pin.map(|v| v.to_string()), "ran": ran }));
         }
     });
     if bad {
         console_error!(
-            "ALARM graft-front: edge pinned to {} answered from {}",
+            "ALARM graft-front: {} pinned to {} answered from {}",
+            if to == Script::Mcp { "graft-mcp" } else { "edge" },
             pin.map(|v| v.to_string()).unwrap_or_default(),
             ran.as_deref().unwrap_or("no version")
         );
@@ -98,9 +121,9 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         let status = res.status_code();
         return Ok(Response::from_body(res.body().clone())?.with_status(status).with_headers(headers));
     }
-    // The edge's own headers otherwise pass through as they are; only the version report is taken off.
+    // The script's own headers otherwise pass through as they are; only the version report is taken off.
     let headers = res.headers().clone();
-    let _ = headers.delete(EDGE_VERSION_HEADER);
+    let _ = headers.delete(version_header);
     let status = res.status_code();
     Ok(Response::from_body(res.body().clone())?.with_status(status).with_headers(headers))
 }
@@ -113,13 +136,14 @@ fn status(env: &Env, req: &Request) -> Result<Response> {
     let version = env.get_binding::<WorkerVersionMetadata>("VERSION").map(|v| v.id()).ok();
     let counts = COUNTS.with(|c| {
         let c = c.borrow();
-        json!({ "requests": c.requests, "pinned": c.pinned, "mismatches": c.mismatches,
+        json!({ "requests": c.requests, "pinned": c.pinned, "mcp": c.mcp, "mismatches": c.mismatches,
                 "firstMismatch": c.first_mismatch, "lastMismatch": c.last_mismatch })
     });
     Response::from_json(&json!({
         "front": version,
         "now": graftyard_lookup::now_ms(),
         "pin": view::pin(Script::Edge).map(|v| v.to_string()),
+        "mcpPin": view::pin(Script::Mcp).map(|v| v.to_string()),
         "view": view::status(),
         "counts": counts,
     }))

@@ -883,8 +883,8 @@ fn every_entry_kind_keeps_its_tag_and_bytes() {
 // ---- The cached view (M5-WP2) ----
 
 use crate::view::{
-    ABANDON_MS, COPY_MS, Freshness, Need, POINTER_TTL_MS, RETRY_MS, Replica, covers, mismatch, verify_stale,
-    version_override,
+    ABANDON_MS, COPY_MS, Forward, Freshness, Need, POINTER_TTL_MS, RETRY_MS, Replica, covers, forward, front_route,
+    mismatch, overrides, verify_stale, version_override,
 };
 
 /// The group's committed entries as a member's `/view` pages them: each entry's bytes with its time.
@@ -1053,6 +1053,74 @@ fn graft_front_alarms_only_when_a_pinned_call_ran_another_version() {
     assert!(mismatch(Some(v), None));
     assert!(mismatch(Some(v), Some("not-a-version")));
     assert_eq!(version_override("graft-edge", v), format!("graft-edge=\"{v}\""));
+}
+
+#[test]
+fn one_override_header_carries_every_pinned_script_and_none_for_an_unpinned_one() {
+    let (e, m) = (vid(1, 3), vid(2, 5));
+    assert_eq!(overrides(&[("graft-edge", None), ("graft-mcp", None)]), None);
+    assert_eq!(overrides(&[]), None);
+    assert_eq!(overrides(&[("graft-edge", Some(e)), ("graft-mcp", None)]), Some(format!("graft-edge=\"{e}\"")));
+    assert_eq!(overrides(&[("graft-edge", None), ("graft-mcp", Some(m))]), Some(format!("graft-mcp=\"{m}\"")));
+    // Both in one Structured Fields dictionary, each under its own script's name with its own version.
+    assert_eq!(
+        overrides(&[("graft-edge", Some(e)), ("graft-mcp", Some(m))]),
+        Some(format!("graft-edge=\"{e}\", graft-mcp=\"{m}\""))
+    );
+}
+
+#[test]
+fn graft_front_routes_only_the_mcp_host_to_graft_mcp() {
+    let m = Some("mcp.i1.graftyard.dev");
+    assert_eq!(front_route("mcp.i1.graftyard.dev", m), Script::Mcp);
+    assert_eq!(front_route("MCP.I1.graftyard.dev:443", m), Script::Mcp);
+    assert_eq!(front_route("mcp.i1.graftyard.dev.", m), Script::Mcp);
+    // The install's own host, a host that only ends in the MCP host, and one that only starts with it go to the edge.
+    assert_eq!(front_route("i1.graftyard.dev", m), Script::Edge);
+    assert_eq!(front_route("evil-mcp.i1.graftyard.dev", m), Script::Edge);
+    assert_eq!(front_route("mcp.i1.graftyard.dev.evil.example", m), Script::Edge);
+    // No MCP host: everything to the edge, as before AM2-WP3.
+    assert_eq!(front_route("mcp.i1.graftyard.dev", None), Script::Edge);
+    assert_eq!(front_route("", Some("")), Script::Edge);
+}
+
+#[test]
+fn graft_front_checks_each_request_against_its_own_scripts_pin_and_sends_both_pins() {
+    let (e, m) = (vid(1, 3), vid(2, 5));
+    let both = |s: Script| match s {
+        Script::Edge => Some(e),
+        Script::Mcp => Some(m),
+        _ => None,
+    };
+    let mcp = Some(("mcp.i1.graftyard.dev", "graft-i1-mcp"));
+    let header = Some(format!("graft-i1-edge=\"{e}\", graft-i1-mcp=\"{m}\""));
+    // An MCP request is checked against Pointers.mcp, and its header also pins the edge behind graft-mcp.
+    assert_eq!(
+        forward("mcp.i1.graftyard.dev", "graft-i1-edge", mcp, both),
+        Forward { to: Script::Mcp, pin: Some(m), overrides: header.clone() }
+    );
+    // An API request is checked against Pointers.edge; the header is the same one.
+    assert_eq!(
+        forward("i1.graftyard.dev", "graft-i1-edge", mcp, both),
+        Forward { to: Script::Edge, pin: Some(e), overrides: header }
+    );
+    // Only Pointers.mcp set: an API request is unpinned and its header names graft-mcp alone, which the edge ignores.
+    let mcp_only = |s: Script| (s == Script::Mcp).then_some(m);
+    assert_eq!(
+        forward("i1.graftyard.dev", "graft-i1-edge", mcp, mcp_only),
+        Forward { to: Script::Edge, pin: None, overrides: Some(format!("graft-i1-mcp=\"{m}\"")) }
+    );
+    assert_eq!(forward("mcp.i1.graftyard.dev", "graft-i1-edge", mcp, mcp_only).pin, Some(m));
+    // No pointer set: the split decides both.
+    assert_eq!(
+        forward("mcp.i1.graftyard.dev", "graft-i1-edge", mcp, |_| None),
+        Forward { to: Script::Mcp, pin: None, overrides: None }
+    );
+    // A front deployed without graft-mcp sends every host to the edge and never reads Pointers.mcp.
+    assert_eq!(
+        forward("mcp.i1.graftyard.dev", "graft-i1-edge", None, both),
+        Forward { to: Script::Edge, pin: Some(e), overrides: Some(format!("graft-i1-edge=\"{e}\"")) }
+    );
 }
 
 #[test]

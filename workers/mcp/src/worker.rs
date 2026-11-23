@@ -1,8 +1,10 @@
 //! The Workers host for `flow::serve` (`design/AGENT-LAYER.md`, Shape, "graft-mcp"; Deployment modes). Bindings:
 //!
-//! - `EDGE`, the service binding to the edge, the only way `graft-mcp` reaches the install. `graft-front` sets the
-//!   edge's version override header on the request it routes here, and every edge call forwards it, so an undo that
-//!   pins the edge pins `graft-mcp`'s calls too.
+//! - `EDGE`, the service binding to the edge, the only way `graft-mcp` reaches the install. `graft-front` sets one
+//!   version override header for the edge and `graft-mcp` on the request it routes here, and every edge call forwards
+//!   it, so an undo that pins the edge pins `graft-mcp`'s calls too.
+//! - `VERSION`, the version metadata binding: a request from `graft-front` (`x-graftyard-front`) gets the version that
+//!   ran as `x-graftyard-mcp-version`, which `graft-front` checks against `Pointers.mcp`.
 //! - `MCP_CLIENT_SECRET` and `MCP_SEAL_KEY`, Secrets Store bindings of the secrets `graftyard apps init` stored in the
 //!   install's store (`MCP_CLIENT_SECRET_A` and `MCP_SEAL_KEY_A`, `cli/src/apps.rs`), and `MCP_SEAL_KEY_OLD`,
 //!   optional, bound to the slot a rotation retired, which still opens what it sealed.
@@ -22,6 +24,9 @@ use crate::flow::{self, Req, Resp};
 use crate::{AUTHORIZE_PER_MIN, CIMD_MAX_BYTES, CIMD_TIMEOUT_MS, CimdDoc, Fetched, Sealer};
 
 const OVERRIDE_HEADER: &str = "cloudflare-workers-version-overrides";
+/// The header `graft-front` sends on each request it forwards, and the version report it reads back.
+const FRONT_HEADER: &str = "x-graftyard-front";
+const MCP_VERSION_HEADER: &str = "x-graftyard-mcp-version";
 
 thread_local! {
     static CIMD: RefCell<BTreeMap<String, (CimdDoc, u64)>> = const { RefCell::new(BTreeMap::new()) };
@@ -188,10 +193,16 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         headers: req.headers().entries().collect(),
         body: if req.method() == Method::Get { Vec::new() } else { req.bytes().await.unwrap_or_default() },
     };
+    let front = r.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(FRONT_HEADER));
     let Resp { status, headers, body } = flow::serve(&host, &r).await;
     let h = Headers::new();
     for (k, v) in &headers {
         h.append(k, v)?;
+    }
+    // The version report `graft-front` asked for: it alarms when `Pointers.mcp` pins another version, and takes the
+    // header off before the client sees it.
+    if front && let Ok(v) = host.env.get_binding::<WorkerVersionMetadata>("VERSION") {
+        h.set(MCP_VERSION_HEADER, &v.id())?;
     }
     Ok(Response::from_bytes(body)?.with_status(status).with_headers(h))
 }

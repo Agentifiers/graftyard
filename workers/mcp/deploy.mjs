@@ -1,6 +1,6 @@
 // Deploys `graft-mcp` (`workers/mcp`, `src/worker.rs`) for a test install, from what `graftyard apps init` wrote:
 //   node workers/mcp/deploy.mjs <name> <apps.json> --edge <edge script> --store <secrets store id> --app-id <id>
-//     [--host-origin https://<host>] [--deny <zone>,...] [--old-seal <secret name>]
+//     [--host-origin https://<host>] [--deny <zone>,...] [--old-seal <secret name>] [--upload-only]
 // - `EDGE` is the service binding to the edge, the only way `graft-mcp` reaches the install.
 // - `MCP_CLIENT_SECRET` and `MCP_SEAL_KEY` are Secrets Store bindings of the names `apps init` stored, with the
 //   `secret_prefix` it recorded in apps.json; `--old-seal` binds `MCP_SEAL_KEY_OLD` during a seal-key rotation.
@@ -8,7 +8,9 @@
 //   `MCP_ORIGIN` is apps.json's
 //   `mcp_origin`, else `https://mcp.<host>`; `HOST_ORIGIN` is `--host-origin`, else `https://<host>`; `DENY_ZONES` is the
 //   host, the MCP origin's host, and `--deny`, so a CIMD URL may not name the install's own zones.
-// A product build (no test-faults: `graft-mcp` has none). Needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID; no
+// - `VERSION` is the version metadata binding, the version report `graft-front` checks against `Pointers.mcp`.
+// `--upload-only` uploads a version without deploying it (`wrangler versions upload`), for an `McpRoll`, which the ops
+// path deploys by percentage. A product build (no test-faults: `graft-mcp` has none). Needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID; no
 // secret value passes through this script.
 //   node workers/mcp/deploy.mjs <name> --delete      wrangler delete
 import { execFileSync } from "node:child_process";
@@ -55,6 +57,7 @@ const cfg = {
   workers_dev: true,
   preview_urls: false,
   services: [{ binding: "EDGE", service: edge }],
+  version_metadata: { binding: "VERSION" },
   secrets_store_secrets: [
     secret("MCP_CLIENT_SECRET", `${prefix}MCP_CLIENT_SECRET_A`),
     secret("MCP_SEAL_KEY", `${prefix}MCP_SEAL_KEY_A`),
@@ -64,4 +67,4 @@ const cfg = {
   observability: { enabled: true },
 };
 writeFileSync(join(gen, `${name}.jsonc`), JSON.stringify(cfg, null, 2));
-wrangler(["deploy", "-c", `${name}.jsonc`], gen);
+wrangler([...(args.includes("--upload-only") ? ["versions", "upload"] : ["deploy"]), "-c", `${name}.jsonc`], gen);
