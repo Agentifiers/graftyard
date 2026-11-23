@@ -45,9 +45,17 @@ export function judge(pushes, edge = []) {
       continue;
     }
     if (prev.status === 200 && prev.result !== "ok") {
-      // A refused previous push left the ref where it was; this push then named the same `old` the refused one did.
-      out.push({ ...row, verdict: prev.old === p.old ? "FAIL" : "PASS",
-        why: prev.old === p.old ? `the previous push was answered ${prev.result} and left the ref at this push's old tip` : "this push named another tip" });
+      // A refused push leaves the ref where it was. So the ref is at the newest push acked `ok` before this push started,
+      // when every push that ended since that ack was refused too; otherwise (no ack in the log) at the refused push's
+      // `old`. A Stale is wrong only when this push named that tip. On b9m3f1 a push overlapping an ack was refused, and
+      // judging the next push against the refused one's `old` called a correct Stale a FAIL.
+      const acked = before.filter((q) => q.status === 200 && q.result === "ok").pop();
+      const since = acked ? before.filter((q) => q.end > acked.end) : before;
+      const refusedSince = since.every((q) => q.status === 200 && q.result !== "ok");
+      const tip = acked && refusedSince ? acked.new : prev.old;
+      const at = acked && refusedSince ? `the push acked ok before it (${acked.client})` : `the previous push (${prev.result})`;
+      out.push({ ...row, verdict: tip === p.old ? "FAIL" : "PASS",
+        why: tip === p.old ? `${at} left the ref at this push's old tip` : `${at} left the ref at another tip than this push's old` });
       continue;
     }
     // The previous push's reply never reached the client: the edge says whether it committed.

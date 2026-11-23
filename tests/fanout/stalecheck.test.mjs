@@ -36,3 +36,18 @@ test("a Stale after a refused push at the same tip fails, and pushes to other re
   assert.equal(judge(race).rows[0].why.startsWith("race"), true);
   assert.equal(judge(race).verdict, "PASS");
 });
+
+test("a Stale is judged against the ref's tip after the newest ack, not only the push just before it", () => {
+  // b9m3f1's a1h-19: c2 overlapped c1's ack and was refused; c3 started after the ack and named the tip before it.
+  const b9 = [p("c1", 0, 900, "a", "b", 200, "ok"), p("c2", 500, 1600, "a", "c", 200, "stale"), p("c3", 1700, 2500, "a", "d", 200, "stale")];
+  const v = judge(b9);
+  assert.deepEqual(v.rows.map((r) => r.verdict), ["PASS", "PASS"]);
+  // The same ref with the ack at the tip c3 names, then a refusal: the ref is still at it, so the Stale is wrong.
+  const wrong = [p("c1", 0, 900, "z", "a", 200, "ok"), p("c2", 1000, 1600, "a", "c", 200, "full"), p("c3", 1700, 2500, "a", "d", 200, "stale")];
+  assert.equal(judge(wrong).verdict, "FAIL");
+  // A lost reply since the ack may have moved the ref (to x, which c3 then named): the refused push's own `old`
+  // decides, as before, so c4's Stale on the acked tip is right, not a FAIL on the ack.
+  const lost = [p("c1", 0, 900, "z", "a", 200, "ok"), p("c2", 1000, 1400, "a", "x", 0, "http 0"), p("c3", 1500, 1600, "x", "y", 200, "full"),
+    p("c4", 1700, 2500, "a", "d", 200, "stale")];
+  assert.equal(judge(lost).verdict, "PASS");
+});
