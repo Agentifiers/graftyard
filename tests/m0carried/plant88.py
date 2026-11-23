@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """M5-WP5's vault Worker and `graftyard vault init`: planted bugs in the vault's pass (`workers/vault/src/lib.rs`) and
-the CLI's lock rules and token (`cli/src/vault.rs`; `decisions/DECISIONS.md`, `vault-worker`). Plants one mutant at a
+the CLI's lock rules, token, and release check (`cli/src/vault.rs`, `crates/release/src/ops.rs` `check_vault`;
+`decisions/DECISIONS.md`, `vault-worker` and `vault-release`). Plants one mutant at a
 time, runs the tests that guard it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT
 COMPILE. Run from the repository root:
 
@@ -15,8 +16,10 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 LIB = 'workers/vault/src/lib.rs'
 CLI = 'cli/src/vault.rs'
+OPS = 'crates/release/src/ops.rs'
 VAULT = ['cargo', 'test', '-q', '-p', 'graftyard-vault']
 INIT = ['cargo', 'test', '-q', '-p', 'graftyard', '--', 'vault']
+RELEASE = ['sh', '-c', 'cargo test -q -p graftyard-release -- the_vault_worker && cargo test -q -p graftyard -- vault']
 
 MUTANTS = [
     # The feed.
@@ -72,6 +75,33 @@ MUTANTS = [
     # A refused token.
     ("a 401 on a copy is counted missed, not stopped", LIB,
      '            Copied::Status(401) => return Err(refused(&format!("{c:?}"), 401)),\n', '', VAULT),
+    # Create-only puts under a lock (R2 checks the lock before `If-None-Match`).
+    ("a refused create-only put fails the pass", LIB,
+     '        Ok(false) => None,\n        Err(e) => Some(e),', '        Ok(false) => None::<String>,\n        Err(e) => return Err(e),', VAULT),
+    ("a refused put is taken as stored without looking", LIB,
+     '        Taken::Different(why) => Err(format!("{key} holds another object: {why}")),',
+     '        Taken::Different(_) => Ok(false),', VAULT),
+    ("a different digest at the key passes as the same", LIB,
+     '        (Some(want), Some(got)) if got == want.hex() => Taken::Same,', '        (Some(_), Some(_)) => Taken::Same,', VAULT),
+    ("a different size at the key passes as the same", LIB,
+     '    if h.size != len {', '    if false {', VAULT),
+    # The signed vault artifact.
+    ("check_vault skips the signature", OPS,
+     '    verify_raw(release_key, record, &sig).map_err(|_| bad("release.json does not verify under Keys.release"))?;\n    let rec: serde_json::Value = serde_json::from_slice(record).map_err(|_| bad("release.json is not JSON"))?;\n    let listed: BTreeMap<&str, &str> = rec["files"]\n        .as_array()\n        .into_iter()\n        .flatten()\n        .filter_map(|f| Some((f["name"].as_str()?, f["sha256"].as_str()?)))\n        .filter(',
+     '    let _ = (release_key, sig);\n    let rec: serde_json::Value = serde_json::from_slice(record).map_err(|_| bad("release.json is not JSON"))?;\n    let listed: BTreeMap<&str, &str> = rec["files"]\n        .as_array()\n        .into_iter()\n        .flatten()\n        .filter_map(|f| Some((f["name"].as_str()?, f["sha256"].as_str()?)))\n        .filter(', RELEASE),
+    ("check_vault takes a vault/ file the record does not list", OPS,
+     '        let Some(module) = name.strip_prefix(VAULT_FOLDER) else { continue };\n        let want = crate::types::hex(&Sha256::digest(bytes));\n        if listed.get(name.as_str()) != Some(&want.as_str()) {',
+     '        let Some(module) = name.strip_prefix(VAULT_FOLDER) else { continue };\n        let want = crate::types::hex(&Sha256::digest(bytes));\n        if listed.get(name.as_str()).is_some_and(|l| *l != want.as_str()) {', RELEASE),
+    ("check_vault takes a release missing a listed module", OPS,
+     '        return Err(bad(format!("the release holds no {missing}, which release.json lists")));', '        let _ = missing;', RELEASE),
+    ("upgrade verifies after its first API call", CLI,
+     '    let artifact = verified(&a.release)?;\n    let release = hex(&artifact.release.0);\n    let (versions, _) = cf.deployed(a.script)?;',
+     '    let (versions, _) = cf.deployed(a.script)?;\n    let artifact = verified(&a.release)?;\n    let release = hex(&artifact.release.0);', INIT),
+    ("upgrade resets the bindings", CLI,
+     '        "keep_bindings": ["r2_bucket", "plain_text", "secret_text"],', '        "keep_bindings": [],', INIT),
+    ("upgrade uploads again a release already at 100%", CLI,
+     '        if *pct >= 100.0 && cf.version_tag(a.script, id)?.as_deref() == Some(release.as_str()) {',
+     '        if *pct > 100.0 && cf.version_tag(a.script, id)?.as_deref() == Some(release.as_str()) {', INIT),
     # `vault init`.
     ("the lock covers 30 days, not 35", CLI,
      '"condition": { "type": "Age", "maxAgeSeconds": LOCK_DAYS * 86_400 },',

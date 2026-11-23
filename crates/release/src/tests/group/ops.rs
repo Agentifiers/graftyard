@@ -580,3 +580,49 @@ fn release_roll_skips_a_script_the_release_leaves_unchanged() {
         r => panic!("{r:?}"),
     }
 }
+
+/// The vault Worker is taken from a release folder only when `release.json` verifies under the release key and lists
+/// every `vault/` file with its SHA-256; files outside `vault/` are not read, and a tampered folder is refused.
+#[test]
+fn the_vault_worker_comes_only_from_a_verified_release() {
+    let key = crate::public_key(&RELEASE);
+    let sha = |b: &[u8]| crate::types::hex(&<Sha256 as sha2::Digest>::digest(b));
+    let files: Files = vec![
+        ("vault/entry.js".into(), b"vault".to_vec()),
+        ("vault/ab12-index_bg.wasm".into(), b"\0asm vault".to_vec()),
+        ("edge/index.js".into(), b"edge".to_vec()),
+    ];
+    let record = |fs: &[(String, Vec<u8>)]| {
+        let listed: Vec<String> =
+            fs.iter().map(|(n, b)| format!(r#"{{"name":"{n}","sha256":"{}"}}"#, sha(b))).collect();
+        format!(r#"{{"label":"v5","files":[{}]}}"#, listed.join(",")).into_bytes()
+    };
+    let sign = |seed: &[u8; 32], rec: &[u8]| crate::sign_record(seed, rec);
+    let rec = record(&files);
+    let a = ops::check_vault(&key, &rec, sign(&RELEASE, &rec), &files).unwrap();
+    assert_eq!(a.release, ReleaseId(<Sha256 as sha2::Digest>::digest(&rec).into()));
+    let names: Vec<&str> = a.modules.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["ab12-index_bg.wasm", "entry.js"], "only vault/'s modules, folder removed");
+    // The edge's file is never read: a changed one outside vault/ does not matter here.
+    let mut other = files.clone();
+    other[2].1 = b"edge, changed".to_vec();
+    assert!(ops::check_vault(&key, &rec, sign(&RELEASE, &rec), &other).is_ok());
+    let refused = |rec: &[u8], sig, fs: &[(String, Vec<u8>)], why: &str| match ops::check_vault(&key, rec, sig, fs) {
+        Err(Refusal::BadRecord(m)) => assert!(m.contains(why), "{m}"),
+        r => panic!("{why}: {r:?}"),
+    };
+    refused(&rec, sign(&[9; 32], &rec), &files, "does not verify");
+    let mut bad = rec.clone();
+    let n = bad.len() - 3;
+    bad[n] ^= 1;
+    refused(&bad, sign(&RELEASE, &rec), &files, "does not verify");
+    let mut changed = files.clone();
+    changed[1].1 = b"\0asm evil".to_vec();
+    refused(&rec, sign(&RELEASE, &rec), &changed, "lists no vault/ab12-index_bg.wasm");
+    let mut extra = files.clone();
+    extra.push(("vault/evil.js".into(), b"x".to_vec()));
+    refused(&rec, sign(&RELEASE, &rec), &extra, "lists no vault/evil.js");
+    refused(&rec, sign(&RELEASE, &rec), &files[1..], "holds no vault/entry.js");
+    let wasm_only = record(&files[1..]);
+    refused(&wasm_only, sign(&RELEASE, &wasm_only), &files[1..], "no vault/entry.js");
+}

@@ -138,9 +138,12 @@ enum VaultCmd {
         /// The customer's Ed25519 private key: a 64-hex-character seed or a PEM PRIVATE KEY.
         #[arg(long)]
         key: PathBuf,
-        /// The folder `wrangler deploy --dry-run --outdir` wrote for the vault Worker.
+        /// The release folder: release.json, release.sig, and the vault/ modules release.json lists.
         #[arg(long)]
-        bundle: PathBuf,
+        release: PathBuf,
+        /// The vendor's release public key (the genesis's Keys.release): 64 hex characters or a PEM PUBLIC KEY.
+        #[arg(long)]
+        release_key: PathBuf,
         #[arg(long, default_value = "graft-vault")]
         bucket: String,
         /// The R2 location hint used only when the bucket is created.
@@ -154,6 +157,19 @@ enum VaultCmd {
         /// The export token's life in days, at most 400.
         #[arg(long, default_value_t = 365)]
         days: u64,
+    },
+    /// Deploys a later release's vault Worker at 100%, keeping its bindings, under CLOUDFLARE_VAULT_API_TOKEN.
+    Upgrade {
+        #[arg(long)]
+        account: String,
+        /// The release folder: release.json, release.sig, and the vault/ modules release.json lists.
+        #[arg(long)]
+        release: PathBuf,
+        /// The vendor's release public key (the genesis's Keys.release): 64 hex characters or a PEM PUBLIC KEY.
+        #[arg(long)]
+        release_key: PathBuf,
+        #[arg(long, default_value = "graft-vault")]
+        script: String,
     },
     /// Signs an export token offline and writes it to --out (mode 0600). Never prints the token or the key.
     Token {
@@ -494,12 +510,14 @@ fn run(cli: Cli) -> Res<()> {
             release::roll(config, &release, &entries, &key, ttl_s, out.as_deref(), edge.as_deref())
         }
         Cmd::Install { genesis, edge } => genesis::install(config, &genesis, edge.as_deref()),
-        Cmd::Vault { cmd: VaultCmd::Init { account, key, bundle, bucket, region, script, edge, days } } => vault::init(
+        Cmd::Vault {
+            cmd: VaultCmd::Init { account, key, release, release_key, bucket, region, script, edge, days },
+        } => vault::init(
             config,
             &vault::InitArgs {
                 account: &account,
                 key: &key,
-                bundle: &bundle,
+                release: vault::Release { dir: &release, release_key: &release_key },
                 bucket: &bucket,
                 region: &region,
                 script: &script,
@@ -507,6 +525,13 @@ fn run(cli: Cli) -> Res<()> {
                 days,
             },
         ),
+        Cmd::Vault { cmd: VaultCmd::Upgrade { account, release, release_key, script } } => {
+            vault::upgrade(&vault::UpgradeArgs {
+                account: &account,
+                script: &script,
+                release: vault::Release { dir: &release, release_key: &release_key },
+            })
+        }
         Cmd::Vault { cmd: VaultCmd::Token { key, scope, holder, days, out } } => {
             vault::token(config, &vault::TokenArgs { key: &key, scope: &scope, holder: &holder, days, out: &out })
         }

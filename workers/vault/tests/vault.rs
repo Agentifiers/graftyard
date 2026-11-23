@@ -16,7 +16,9 @@ use graftyard_raft::{EntryBody, LogEntry, Term, TierSet, codec};
 use graftyard_types::{
     AccountId, ChainId, DbId, Digest, Index, NetworkId, RepoId, RequestId, SiteSet, Tier, Timestamp, TokenShard, Ulid,
 };
-use graftyard_vault::{Copied, Got, Host, LOCK_DAYS, PackCheck, SnapPart, SnapshotReader, VaultState, pass};
+use graftyard_vault::{
+    Copied, Got, Held, Host, LOCK_DAYS, PackCheck, SnapPart, SnapshotReader, Taken, VaultState, pass, put_once, taken,
+};
 use sha2::{Digest as _, Sha256};
 use smallvec::SmallVec;
 
@@ -129,12 +131,18 @@ impl ExportSource for Install {
     }
 }
 
+/// An object in the vault's bucket: its bytes, its write time, and its `sha256` metadata.
+type Stored = (Vec<u8>, u64, Option<String>);
+
 /// The vault account: its bucket with 35-day lock rules on every prefix but `state/`, and the install it reaches over
 /// HTTPS under an install-scoped token (`revoked` answers 401).
 struct Vault<'a> {
     inst: &'a RefCell<Install>,
     now: Cell<u64>,
-    bucket: RefCell<BTreeMap<String, (Vec<u8>, u64)>>,
+    /// Each object's bytes, its write time, and its `sha256` metadata.
+    bucket: RefCell<BTreeMap<String, Stored>>,
+    /// Create-only puts refused, by a lock (409) or by the precondition.
+    refused_puts: Cell<u32>,
     etag: Cell<u64>,
     revoked: Cell<bool>,
     /// Revoked after the pass's batches page, before its copies: pack reads answer 401.
@@ -151,6 +159,7 @@ impl<'a> Vault<'a> {
             inst,
             now: Cell::new(T0),
             bucket: RefCell::default(),
+            refused_puts: Cell::new(0),
             etag: Cell::new(0),
             revoked: Cell::new(false),
             revoked_packs: Cell::new(false),
@@ -213,6 +222,13 @@ impl Host for Vault<'_> {
         if self.revoked_packs.get() {
             return Ok(Copied::Status(401));
         }
+        // As the Worker: HEAD first, so a pack already held is never fetched again.
+        let key = graftyard_vault::pack_key(network, id);
+        match taken(self.head(&key).await?, bytes, Some(&checksum)) {
+            Taken::Same => return Ok(Copied::Exists),
+            Taken::Different(why) => return Ok(Copied::Corrupt(format!("{key} holds another object: {why}"))),
+            Taken::Absent => {}
+        }
         if self.inst.borrow().lost.contains(&id) {
             return Ok(Copied::Status(410));
         }
@@ -229,11 +245,7 @@ impl Host for Vault<'_> {
         if let Err(e) = check.done() {
             return Ok(Copied::Corrupt(e));
         }
-        Ok(if self.put_new(&graftyard_vault::pack_key(network, id), &body).await? {
-            Copied::Stored
-        } else {
-            Copied::Exists
-        })
+        Ok(if put_once(self, &key, &body).await? { Copied::Stored } else { Copied::Exists })
     }
     async fn copy_snapshot(&self, chain: ChainId, at: Index) -> Result<Copied, String> {
         let body = match self.serve(&format!("chains/{chain}/snapshots?at={}", at.0)) {
@@ -251,7 +263,7 @@ impl Host for Vault<'_> {
                         if !ok || !graftyard_vault::snapshot_of(&key, chain) {
                             return Ok(Copied::Corrupt(key));
                         }
-                        if self.put_new(&key, &buf).await? {
+                        if put_once(self, &key, &buf).await? {
                             out = Copied::Stored;
                         }
                     }
@@ -267,16 +279,24 @@ impl Host for Vault<'_> {
         }
         Ok(self.serve(&format!("packs/{id}?network={}", network.0.0)).map_or_else(|s| s, |_| 200))
     }
-    async fn put_new(&self, key: &str, body: &[u8]) -> Result<bool, String> {
+    async fn put_create(&self, key: &str, body: &[u8], sha256: &Digest) -> Result<bool, String> {
         let mut b = self.bucket.borrow_mut();
-        if b.contains_key(key) {
+        if let Some((_, at, _)) = b.get(key) {
+            self.refused_puts.set(self.refused_puts.get() + 1);
+            // R2 checks the lock before the precondition: a locked key answers 409, not 412.
+            if self.now.get() < at + LOCK_DAYS * DAY && !key.starts_with("state/") {
+                return Err("409 ObjectLockedByBucketPolicy".into());
+            }
             return Ok(false);
         }
-        b.insert(key.into(), (body.to_vec(), self.now.get()));
+        b.insert(key.into(), (body.to_vec(), self.now.get(), Some(sha256.hex())));
         Ok(true)
     }
+    async fn head(&self, key: &str) -> Result<Option<Held>, String> {
+        Ok(self.bucket.borrow().get(key).map(|(b, _, s)| Held { size: b.len() as u64, sha256: s.clone() }))
+    }
     async fn state(&self) -> Result<Option<(Vec<u8>, String)>, String> {
-        Ok(self.bucket.borrow().get("state/vault").map(|(b, _)| (b.clone(), self.etag.get().to_string())))
+        Ok(self.bucket.borrow().get("state/vault").map(|(b, ..)| (b.clone(), self.etag.get().to_string())))
     }
     async fn put_state(&self, body: &[u8], etag: Option<&str>) -> Result<Option<String>, String> {
         if self.race.replace(false) {
@@ -287,7 +307,7 @@ impl Host for Vault<'_> {
             return Ok(None);
         }
         self.etag.set(self.etag.get() + 1);
-        self.bucket.borrow_mut().insert("state/vault".into(), (body.to_vec(), self.now.get()));
+        self.bucket.borrow_mut().insert("state/vault".into(), (body.to_vec(), self.now.get(), None));
         Ok(Some(self.etag.get().to_string()))
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>, String> {
@@ -295,7 +315,7 @@ impl Host for Vault<'_> {
     }
     async fn delete(&self, key: &str) -> Result<bool, String> {
         let mut b = self.bucket.borrow_mut();
-        let Some((_, at)) = b.get(key) else { return Ok(true) };
+        let Some((_, at, _)) = b.get(key) else { return Ok(true) };
         // The bucket lock: a delete before the object is LOCK_DAYS old is refused.
         if self.now.get() < at + LOCK_DAYS * DAY && !key.starts_with("state/") {
             self.refused_deletes.set(self.refused_deletes.get() + 1);
@@ -653,4 +673,119 @@ fn a_401_on_a_copy_stops_the_pass_and_keeps_the_copy_owed() {
     v.drain();
     assert_eq!(v.keys("pack/"), vec![graftyard_vault::pack_key(net, id)]);
     assert_eq!(v.state().missed, 0);
+}
+
+/// A pass rerun from an older `state/vault` repeats writes an earlier pass made under the lock. R2 checks the lock
+/// before `If-None-Match`, so each repeated create-only put fails with 409 rather than 412; the pass must take the
+/// same object as already stored, finish, and store nothing new.
+#[test]
+fn a_pass_rerun_from_an_older_state_moves_on_over_locked_objects_and_stores_nothing_new() {
+    let inst = RefCell::new(Install::default());
+    let v = Vault::new(&inst);
+    let net = NetworkId(DbId(1));
+    let id = PackId(Ulid((u128::from(T0) << 80) | 1));
+    let body = b"PACK one".to_vec();
+    let snap =
+        R2Key::Snapshot { chain: repo(1), tier: Tier::Core, from: Index(0), to: Index(2), digest: Digest([4; 32]) };
+    {
+        let mut i = inst.borrow_mut();
+        i.packs.insert(id, (net, body.clone()));
+        i.snapshots.insert(snap.clone(), b"core rows at 2".to_vec());
+        // repo:5 first carried past index 1, so the pass fills entries/ too.
+        i.first.insert(repo(5), (4, true));
+        i.fill(repo(5), 6);
+        i.fill(ChainId::Release, 3);
+        i.add(repo(1), entry(1, T0, vec![push(1, Some(stored(id, &body)))]));
+        i.add(
+            repo(1),
+            entry(
+                2,
+                T0,
+                vec![RepoEvent::Archived(Archived {
+                    key: snap.clone(),
+                    from: Index(0),
+                    to: Index(2),
+                    from_at: Timestamp(T0),
+                    to_at: Timestamp(T0),
+                    digest: Digest([4; 32]),
+                })],
+            ),
+        );
+        i.feed(T0);
+    }
+    v.now.set(T0 + 30_000);
+    let older = v.bucket.borrow().get("state/vault").cloned();
+    assert!(older.is_none(), "the first pass starts from no state");
+    v.drain();
+    let held: Vec<(String, Vec<u8>)> = v
+        .keys("")
+        .into_iter()
+        .filter(|k| !k.starts_with("state/"))
+        .map(|k| {
+            let b = v.bucket.borrow()[&k].0.clone();
+            (k, b)
+        })
+        .collect();
+    assert!(held.iter().any(|(k, _)| k.starts_with("feed/")));
+    assert!(held.iter().any(|(k, _)| k.starts_with("entries/")));
+    assert!(held.iter().any(|(k, _)| k.starts_with("pack/")));
+    assert!(held.iter().any(|(k, _)| k.starts_with("snapshot/")));
+    let after = v.state();
+    // Back to no state: the next pass writes every object again, inside the lock.
+    v.bucket.borrow_mut().remove("state/vault");
+    v.now.set(T0 + 60_000);
+    let refused = v.refused_puts.get();
+    let (r, _) = block_on(pass(&v)).expect("a repeated pass over locked objects must not fail");
+    assert!(v.refused_puts.get() > refused, "the rerun hit the lock's 409");
+    let again: Vec<(String, Vec<u8>)> = v
+        .keys("")
+        .into_iter()
+        .filter(|k| !k.starts_with("state/"))
+        .map(|k| {
+            let b = v.bucket.borrow()[&k].0.clone();
+            (k, b)
+        })
+        .collect();
+    assert_eq!(again, held, "nothing new stored, nothing changed");
+    assert_eq!((r.packs, r.snapshots), (0, 0));
+    assert_eq!(v.state().feed, after.feed);
+    assert_eq!(v.state().missed, 0);
+}
+
+/// Another object at a key the vault means to write is never called stored: a feed object fails the pass, and a pack
+/// whose key holds other bytes counts missed and is left alone.
+#[test]
+fn another_object_at_the_key_is_never_taken_for_the_one_meant() {
+    let inst = RefCell::new(Install::default());
+    let v = Vault::new(&inst);
+    inst.borrow_mut().fill(ChainId::Ids, 2);
+    inst.borrow_mut().feed(T0);
+    let pos = *inst.borrow().objects.keys().next().unwrap();
+    let key = graftyard_vault::feed_key(pos);
+    v.bucket.borrow_mut().insert(key.clone(), (b"not the object".to_vec(), T0, Some("00".repeat(32))));
+    v.now.set(T0 + 30_000);
+    let e = block_on(pass(&v)).unwrap_err();
+    assert!(e.contains("holds another object"), "{e}");
+    assert_eq!(v.bucket.borrow()[&key].0, b"not the object");
+    // The same length and no digest metadata is not the same object either.
+    let held = Held { size: 8, sha256: None };
+    assert!(matches!(taken(Some(held), 8, Some(&Digest([1; 32]))), Taken::Different(_)));
+    assert_eq!(taken(Some(Held { size: 8, sha256: None }), 8, None), Taken::Same);
+    // A snapshot object has no digest to check, so its size alone tells another object apart.
+    assert!(matches!(taken(Some(Held { size: 9, sha256: None }), 8, None), Taken::Different(_)));
+
+    let inst = RefCell::new(Install::default());
+    let v = Vault::new(&inst);
+    let net = NetworkId(DbId(1));
+    let id = PackId(Ulid((u128::from(T0) << 80) | 1));
+    let body = b"PACK one".to_vec();
+    inst.borrow_mut().packs.insert(id, (net, body.clone()));
+    inst.borrow_mut().add(repo(1), entry(1, T0, vec![push(1, Some(stored(id, &body)))]));
+    inst.borrow_mut().feed(T0);
+    let pk = graftyard_vault::pack_key(net, id);
+    v.bucket.borrow_mut().insert(pk.clone(), (b"PACK two".to_vec(), T0, Some(Digest([2; 32]).hex())));
+    v.now.set(T0 + 30_000);
+    v.drain();
+    assert_eq!(v.state().missed, 1);
+    assert_eq!(v.bucket.borrow()[&pk].0, b"PACK two");
 }

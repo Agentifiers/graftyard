@@ -151,6 +151,25 @@ check pass1 || ok=0
 d=$(u "$F/_site/drive?chain=repo:900002"); sleep 5; u "$F/_sitecron?cron=*/15+*+*+*+*" >/dev/null; sleep 5
 r=$(u "$F/_cron"); echo "vault cron 2: $r"
 check pass2 || ok=0
+# A pass from an older state (none): it writes every object again, each create-only put is refused, and the pass
+# takes the same objects as stored and moves on. Local R2 has no locks, so the refusal here is the precondition's; the
+# hosted row repeats this under the lock, where it is a 409. Every stored object carries its SHA-256 as metadata. The
+# bad pack is owed again once its record is gone, so it is fetched and counted missed again; it is still not stored.
+u "$F/_dropstate" >/dev/null
+r=$(u "$F/_cron"); echo "vault cron rerun: $r"
+u "$F/_vault" >"$B/vault-rerun.json"
+python3 - "$B/vault-pass2.json" "$B/vault-rerun.json" "$F" <<'PY' || ok=0
+import json, sys, urllib.parse, urllib.request
+a, b, front = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3]
+was = {o["key"]: o["sha256"] for o in a["objects"] if not o["key"].startswith("state/")}
+now = {o["key"]: o["sha256"] for o in b["objects"] if not o["key"].startswith("state/")}
+same = was == now and b["state"] is not None and b["state"]["feed"] == a["state"]["feed"]
+meta = [json.load(urllib.request.urlopen(f"{front}/_meta?key={urllib.parse.quote(k)}")) for k in was]
+tagged = all(m and m["sha256"] == was[k] for k, m in zip(was, meta))
+print("rerun: " + ("ok   " if same and tagged else "FAIL ") + f"a pass from no state stored nothing new ({len(now)} objects) and every object carries its sha256 ({tagged})")
+sys.exit(0 if same and tagged else 1)
+PY
+grep -q "holds another object\|vault pass failed" "$B/dev.log" && { echo "FAIL: the rerun pass failed"; ok=0; }
 # Revocation: the token revokes itself through the edge; after READ_CACHE the vault's pass is refused, names the 401,
 # and stores nothing more, though a new object waits in the feed.
 rv=$(u -o /dev/null -w '%{http_code}' -X DELETE -H "authorization: Bearer $(cat "$B/keys/export.token")" \
@@ -159,7 +178,7 @@ rv=$(u -o /dev/null -w '%{http_code}' -X DELETE -H "authorization: Bearer $(cat 
 d=$(u "$F/_site/drive?chain=repo:900003"); sleep 5; u "$F/_sitecron?cron=*/15+*+*+*+*" >/dev/null; sleep 6
 r=$(u "$F/_cron"); echo "vault cron 3: $r"
 grep -q "vault pass failed: .*401" "$B/dev.log" || { echo "FAIL: no pass refused with the 401 named"; ok=0; }
-python3 - "$B/vault-pass2.json" "$(u "$F/_vault")" "$(u "$F/_export")" <<'PY' || ok=0
+python3 - "$B/vault-rerun.json" "$(u "$F/_vault")" "$(u "$F/_export")" <<'PY' || ok=0
 import json, sys
 a, b, exp = json.load(open(sys.argv[1])), json.loads(sys.argv[2]), json.loads(sys.argv[3])
 same = [o["key"] for o in a["objects"]] == [o["key"] for o in b["objects"]] and a["state"] == b["state"]
