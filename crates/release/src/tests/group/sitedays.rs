@@ -38,23 +38,28 @@ fn modes_since(o: &Ops, from: usize) -> Vec<(u8, Mode)> {
         .collect()
 }
 
-/// A side with `n` entries in the 200 ms bucket and `slow` of them in the bucket that holds `ms`.
+/// A side with `n` entries in the 200 ms bucket and `slow` of them in the bucket that holds `ms`, and `n` answers
+/// with 0.1% refused.
 fn lag_side(n: u64, slow: u64, ms: u64) -> Side {
-    let mut c = gate::Counters::default();
+    let mut c = gate::Counters { appends: n, acks: n - n / 1_000, ..Default::default() };
     (0..n - slow).for_each(|_| c.applied(200));
     (0..slow).for_each(|_| c.applied(ms));
-    Side { ack_bp: 9_990, ..c.side() }
+    c.side()
+}
+
+/// `s` with `appends` answers, `refused` of them refused.
+fn answers(s: Side, appends: u64, refused: u64) -> Side {
+    Side { appends, acks: appends - refused, ..s }
 }
 
 #[test]
 fn a_step_gate_breaches_on_each_input_at_its_bound_and_starves_under_step_min_entries() {
     let n = lag_side(5_000, 50, 300); // 99% at 200 ms: N's p99 is 200 ms
     assert_eq!(n.apply_lag_p99_ms, 200);
-    let ok = Side { ack_bp: 9_980, ..lag_side(gate::STEP_MIN_ENTRIES, 20, 300) };
-    assert_eq!(gate::judge_site(&ok, &n), Gate::Pass, "2% over N's p99, 0.1 points of ack rate, 1,000 entries");
+    let ok = lag_side(gate::STEP_MIN_ENTRIES, 20, 300);
+    assert_eq!(gate::judge_site(&ok, &n), Gate::Pass, "2% over N's p99, 1,000 entries and answers");
     let breach = |s: Side| matches!(gate::judge_site(&s, &n), Gate::Breach(_));
     assert!(breach(lag_side(1_000, 21, 300)), "2.1% of N+1 over N's p99");
-    assert!(breach(Side { ack_bp: 9_979, ..ok.clone() }), "more than 0.1 points under N's ack rate");
     assert!(breach(Side { exceptions: 1, ..ok.clone() }));
     assert!(breach(Side { step_downs: 1, ..ok.clone() }));
     // The 5 s backstop holds even when N is as slow: 1% of N+1 over it passes, 1.1% breaches.
@@ -88,7 +93,7 @@ fn counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_le
     b.applied(260); // the 1,000th entry: in the 300 ms bucket, past the 99th percentile
     a.add(&b);
     let side = a.side();
-    assert_eq!((side.entries, side.ack_bp), (1_000, 9_980));
+    assert_eq!((side.entries, side.appends, side.acks), (1_000, 1_000, 998));
     assert_eq!(side.apply_lag_p99_ms, 50, "990 + 9 of 1,000 entries at 40 ms: p99 is the 50 ms bucket");
     a.applied(260);
     assert_eq!(a.side().apply_lag_p99_ms, 50, "2 of 1,001 above the bucket still leave p99 in it");
@@ -96,13 +101,44 @@ fn counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_le
         a.applied(260);
     }
     assert_eq!(a.side().apply_lag_p99_ms, 300, "11 of 1,010 above: p99 moves to their bucket");
-    assert_eq!(gate::Counters::default().side().ack_bp, 10_000, "no AppendEntries answered is not a 0% ack rate");
-    // No N: half the entries at 3 s and an ack rate far under N's pass; the backstop and exceptions still breach.
+    // No N: half the entries at 3 s and 10% of answers refused pass; the backstop and exceptions still breach.
     let none = gate::Counters::default().side();
-    let n1 = Side { ack_bp: 9_000, ..lag_side(5_000, 2_500, 3_000) };
+    let n1 = answers(lag_side(5_000, 2_500, 3_000), 5_000, 500);
     assert_eq!(gate::judge_site(&n1, &none), Gate::Pass);
     assert!(matches!(gate::judge_site(&lag_side(5_000, 51, 10_000), &none), Gate::Breach(_)));
     assert!(matches!(gate::judge_site(&Side { exceptions: 1, ..n1 }, &none), Gate::Breach(_)));
+}
+
+/// `GATE_ACK_RATE` (R43): judged only from `STEP_MIN_ENTRIES` answers, and then only on an excess past 0.1 points by
+/// 3.09 standard errors, so neither the check row's healthy reading nor N's ordinary noise breaches.
+#[test]
+fn the_ack_rate_breaches_only_on_an_excess_past_its_margin_beyond_chance_and_starves_under_the_floor() {
+    let n = answers(lag_side(5_000, 0, 200), 5_000, 10); // N refuses 0.2%
+    // The gate check row's 10% step: 9,944 bp on about 180 answers for 100 entries, N at 10,000 bp.
+    let row_n = answers(lag_side(4_814, 0, 200), 8_000, 0);
+    assert_eq!(gate::judge_site(&answers(lag_side(100, 0, 200), 180, 1), &row_n), Gate::Starved(100));
+    // 1,000 answers at 0.3% against N's 0.2% is N's noise.
+    assert_eq!(gate::judge_site(&answers(lag_side(1_000, 0, 200), 1_000, 3), &n), Gate::Pass);
+    // A planted 2% refusal at 1,000 answers breaches.
+    let g = gate::judge_site(&answers(lag_side(1_000, 0, 200), 1_000, 20), &n);
+    assert!(matches!(&g, Gate::Breach(w) if w.contains("GATE_ACK_RATE")), "{g:?}");
+    // Entries without answers still starve: the ack rate needs STEP_MIN_ENTRIES answers too.
+    assert_eq!(gate::judge_site(&answers(lag_side(1_000, 0, 200), 999, 0), &n), Gate::Starved(999));
+    // At the bound: 3,000 answers against N's 10,000 at 0.2%. 24 refused (0.8%) is z 2.96 and passes; 25 is z 3.10
+    // and breaches. Two sides that refused nothing pass.
+    let big = answers(lag_side(10_000, 0, 200), 10_000, 20);
+    assert_eq!(gate::judge_site(&answers(lag_side(3_000, 0, 200), 3_000, 24), &big), Gate::Pass);
+    assert!(matches!(gate::judge_site(&answers(lag_side(3_000, 0, 200), 3_000, 25), &big), Gate::Breach(_)));
+    let clean = answers(lag_side(5_000, 0, 200), 5_000, 0);
+    assert_eq!(gate::judge_site(&answers(lag_side(1_000, 0, 200), 1_000, 0), &clean), Gate::Pass);
+    // N's own noise counts too: against an N of 1,000 answers at 1%, 110 of 5,000 (2.2%) is z 2.92 and passes, where
+    // N+1's error alone would read z 5.3.
+    let noisy = answers(lag_side(1_000, 0, 200), 1_000, 10);
+    assert_eq!(gate::judge_site(&answers(lag_side(5_000, 0, 200), 5_000, 110), &noisy), Gate::Pass);
+    assert!(matches!(gate::judge_site(&answers(lag_side(5_000, 0, 200), 5_000, 120), &noisy), Gate::Breach(_)));
+    // No N answers is no ack baseline.
+    let quiet = answers(lag_side(5_000, 0, 200), 0, 0);
+    assert_eq!(gate::judge_site(&answers(lag_side(1_000, 0, 200), 1_000, 100), &quiet), Gate::Pass);
 }
 
 /// BF-39 hosted's own histograms (`tests/m5/results/raw/bf39/gate.txt`) on drained site c, whose members are all
@@ -111,8 +147,11 @@ fn counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_le
 /// breaches, and so does the healthy step with half its entries a bucket slower.
 #[test]
 fn a_drained_sites_followers_pass_against_n_and_a_slower_n1_still_breaches() {
-    let side =
-        |lag: &[u64]| gate::Counters { entries: lag.iter().sum(), lag: lag.to_vec(), ..Default::default() }.side();
+    // As many answers as entries, all acked: this test judges the lag alone.
+    let side = |lag: &[u64]| {
+        let entries = lag.iter().sum();
+        gate::Counters { entries, appends: entries, acks: entries, lag: lag.to_vec(), ..Default::default() }.side()
+    };
     // R3's 12 minutes before the fault: 7,804 entries, 69% in the 1,000 to 1,500 ms bucket, the p99 there.
     let n = side(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 513, 428, 148, 266, 185, 205, 367, 318, 5_348, 10, 6, 2, 8]);
     assert_eq!(n.apply_lag_p99_ms, 1_500);
