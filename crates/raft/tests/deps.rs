@@ -170,8 +170,9 @@ fn deps_changed_by_the_entry_in_flight_are_read_after_it_applies() {
     assert_eq!((used.index.0, used.ids.as_slice()), (k + 1, [early.id, again[0].id].as_slice()));
 }
 
-/// Fails if a command admitted after the early read was asked for joins that batch: its admission postdates the
-/// read, so a revocation acknowledged in between would not bind it.
+/// Fails if a command admitted after the early read was asked for joins that batch on that read: its admission
+/// postdates the read, so a revocation acknowledged in between would not bind it. (A re-ask asked after it may bring
+/// it in, `reask-read`; here none answers before the entry in flight applies.)
 #[test]
 fn a_command_admitted_after_the_early_cut_waits_for_the_next_entry() {
     let mut c = warm(84);
@@ -181,14 +182,203 @@ fn a_command_admitted_after_the_early_cut_waits_for_the_next_entry() {
     let w = early_ask(&mut c, from);
     let late = admit(&mut c, A, 42, put_dep("z", "1"));
     answer(&mut c, A, &w, |_| Kv::default());
+    let answered = c.deps.len();
     flush(&mut c);
     assert_eq!(ids(&c, k + 1), [41], "a command admitted after the read joined its batch");
-    // The late command reads its own dependency for the entry after.
-    let next = asked(&c, A, from).into_iter().find(|d| d.id != w.id).expect("the late command's read");
-    answer(&mut c, A, &next, |_| Kv::default());
-    flush(&mut c);
+    // The late command reads its own dependency for the entry after; a re-ask asked before k applied is dropped.
+    let mut seen = vec![w.id];
+    for _ in 0..4 {
+        for d in asked(&c, A, answered) {
+            if !seen.contains(&d.id) {
+                seen.push(d.id);
+                answer(&mut c, A, &d, |_| Kv::default());
+            }
+        }
+        flush(&mut c);
+    }
     assert_eq!(result(&c, late), Some(Ok(true)));
     assert_eq!(ids(&c, k + 2), [42]);
+}
+
+/// `reask-read`: a command admitted after a frozen batch's read joins the batch once a re-ask, asked after its
+/// admission, answers before the entry in flight applies. The dependency changes between the batch's read and the
+/// re-ask (the re-ask carries a revocation): every command of the entry, the one cut first included, must decide on
+/// the re-ask alone. Fails if the late command rides the entry after (no top-up), if the batch's commands keep the
+/// first read beside the re-ask (two reads, so `decide` would see a stale one for the first command), or if
+/// `DepsUsed` names any read but the re-ask.
+#[test]
+fn a_re_ask_answered_before_the_apply_brings_in_the_late_command_and_every_command_decides_on_it() {
+    let mut c = warm(93);
+    let k = entry_in_flight(&mut c, 130, put("x", "1"));
+    let from = c.deps.len();
+    let first = admit(&mut c, A, 131, put_dep("y", "1"));
+    let w = early_ask(&mut c, from);
+    let late = admit(&mut c, A, 132, put_dep("z", "1"));
+    assert_eq!(c.m(A).last_index().0, k);
+    let from = c.deps.len();
+    answer(&mut c, A, &w, |_| Kv::default());
+    let re = asked(&c, A, from);
+    assert_eq!(re.len(), 1, "no re-ask once the batch's read answered with a command queued behind it");
+    assert_eq!(re[0].chains.as_slice(), [owner_chain(&c.m(A).group_fold().fold)]);
+    // Admitted after the re-ask was asked: it must not join on it.
+    let after = admit(&mut c, A, 133, put("q", "1"));
+    hold(&mut c);
+    answer(&mut c, A, &re[0], |_| revoked());
+    assert_eq!(c.m(A).last_index().0, k, "decided while the entry was in flight");
+    flush(&mut c);
+    assert_eq!(result(&c, after), Some(Ok(true)));
+    assert!(!ids(&c, k + 1).contains(&133), "a command admitted after the re-ask was asked joined on it");
+    // A refused command leaves no request row, so the entry is named by each refusal's index.
+    for t in [first, late] {
+        assert_eq!(
+            result(&c, t),
+            Some(Err(CommitError::Refused { index: graftyard_raft::Index(k + 1), err: KvErr::Revoked })),
+            "{t:?} did not decide in entry k+1 on the re-ask"
+        );
+    }
+    let used = &c.deps_used.last().expect("decided on reads").1;
+    assert_eq!((used.index.0, used.ids.as_slice()), (k + 1, [re[0].id].as_slice()));
+}
+
+/// `reask-read`: a re-ask still out when the entry in flight applies is dropped; the batch decides at once on the read
+/// it has, without the late command, and an answer to the dropped re-ask decides nothing. Fails if the batch waits
+/// for the re-ask (the decide is held), or if the dropped re-ask's answer, which carries a revocation, binds anything.
+#[test]
+fn an_unanswered_re_ask_never_holds_the_batch() {
+    let mut c = warm(94);
+    let k = entry_in_flight(&mut c, 140, put("x", "1"));
+    let from = c.deps.len();
+    let first = admit(&mut c, A, 141, put_dep("y", "1"));
+    let w = early_ask(&mut c, from);
+    let late = admit(&mut c, A, 142, put_dep("z", "1"));
+    let from = c.deps.len();
+    answer(&mut c, A, &w, |_| Kv::default());
+    // One re-ask out at a time: ticks with it unanswered ask no other.
+    for _ in 0..5 {
+        c.advance(100);
+        hold(&mut c);
+    }
+    let re = asked(&c, A, from);
+    assert_eq!(re.len(), 1, "a second re-ask left while one was out");
+    flush(&mut c);
+    assert_eq!(result(&c, first), Some(Ok(true)), "the batch waited for its re-ask");
+    assert_eq!(ids(&c, k + 1), [141]);
+    answer(&mut c, A, &re[0], |_| revoked());
+    let mut seen = vec![w.id, re[0].id];
+    for _ in 0..4 {
+        for d in asked(&c, A, from) {
+            if !seen.contains(&d.id) {
+                seen.push(d.id);
+                answer(&mut c, A, &d, |_| Kv::default());
+            }
+        }
+        flush(&mut c);
+    }
+    assert_eq!(result(&c, late), Some(Ok(true)), "the dropped re-ask's revocation bound a later entry");
+    assert_eq!(ids(&c, k + 2), [142]);
+}
+
+/// `reask-read`'s caps. Fails if a re-ask brings in a command past the batch's soft bytes, past AGENT_CMDS_ENTRY Agent
+/// commands, or when the re-ask's answer lacks a chain it asked (the batch would then decide on no read of it).
+#[test]
+fn a_re_ask_keeps_the_batchs_caps_and_needs_every_chain() {
+    use graftyard_raft::admit::{AGENT_CMDS_ENTRY, ActorKey, Admit, AdmitClass};
+    // Soft bytes: at 1 byte, the batch's first command fills it.
+    let mut c = warm(96);
+    c.m_mut(A).set_entry_soft(1);
+    let k = entry_in_flight(&mut c, 160, put("x", "1"));
+    let from = c.deps.len();
+    admit(&mut c, A, 161, put_dep("y", "1"));
+    let w = early_ask(&mut c, from);
+    admit(&mut c, A, 162, put_dep("z", "1"));
+    let from = c.deps.len();
+    answer(&mut c, A, &w, |_| Kv::default());
+    for r in asked(&c, A, from) {
+        answer(&mut c, A, &r, |_| Kv::default());
+    }
+    flush(&mut c);
+    assert_eq!(ids(&c, k + 1), [161], "a re-ask took the batch past its soft bytes");
+
+    // AGENT_CMDS_ENTRY: a cut of exactly that many Agent commands ends `Empty`, and takes no more.
+    let mut c = warm(97);
+    let k = entry_in_flight(&mut c, 170, put("x", "1"));
+    let agent = |c: &mut Cluster, i: u128| {
+        let a = Admit {
+            class: AdmitClass::Agent,
+            actor: Some(ActorKey(i as u64)),
+            push: false,
+            inline: 0,
+            placement_ok: true,
+            budget: None,
+        };
+        c.on(A, |m, now| m.commit_as(now, RequestId(Ulid(i)), put_dep(&format!("a{i}"), "1"), a)).expect("admitted");
+    };
+    for i in 0..AGENT_CMDS_ENTRY as u128 {
+        agent(&mut c, 2_000 + i);
+    }
+    let from = c.deps.len();
+    let w = early_ask(&mut c, from);
+    agent(&mut c, 2_999);
+    let from = c.deps.len();
+    answer(&mut c, A, &w, |_| Kv::default());
+    for r in asked(&c, A, from) {
+        answer(&mut c, A, &r, |_| Kv::default());
+    }
+    flush(&mut c);
+    assert_eq!(ids(&c, k + 1).len(), AGENT_CMDS_ENTRY, "a re-ask took the batch past AGENT_CMDS_ENTRY");
+
+    // A re-ask answered without the chain it asked changes nothing: the batch keeps its read and its commands.
+    let mut c = warm(98);
+    let k = entry_in_flight(&mut c, 180, put("x", "1"));
+    let from = c.deps.len();
+    let first = admit(&mut c, A, 181, put_dep("y", "1"));
+    let w = early_ask(&mut c, from);
+    admit(&mut c, A, 182, put_dep("z", "1"));
+    let from = c.deps.len();
+    answer(&mut c, A, &w, |_| Kv::default());
+    let re = asked(&c, A, from);
+    assert_eq!(re.len(), 1);
+    c.on(A, |m, now| m.deps_read(now, re[0].id, Vec::new()));
+    hold(&mut c);
+    flush(&mut c);
+    assert_eq!(result(&c, first), Some(Ok(true)), "a re-ask missing its chain replaced the batch's read");
+    assert_eq!(ids(&c, k + 1)[0], 181);
+}
+
+/// `reask-read` leaves a backlogged cut alone (`human-join` was reversed on B0-33, where frozen batches had an agent
+/// backlog behind them). With AGENT_CMDS_ENTRY plus one Agent commands queued before the early cut, the cut ends
+/// `AgentCmds`; a command admitted after it must ride the entry after, and no re-ask is asked. Fails if a cut that
+/// left a backlog takes a re-ask or a joiner.
+#[test]
+fn a_cut_that_left_a_backlog_asks_no_re_ask() {
+    use graftyard_raft::admit::{AGENT_CMDS_ENTRY, ActorKey, Admit, AdmitClass};
+    let mut c = warm(95);
+    let k = entry_in_flight(&mut c, 150, put("x", "1"));
+    let agent = |c: &mut Cluster, i: u128| {
+        let a = Admit {
+            class: AdmitClass::Agent,
+            actor: Some(ActorKey(i as u64)),
+            push: false,
+            inline: 0,
+            placement_ok: true,
+            budget: None,
+        };
+        c.on(A, |m, now| m.commit_as(now, RequestId(Ulid(i)), put_dep(&format!("a{i}"), "1"), a)).expect("admitted");
+    };
+    for i in 0..=AGENT_CMDS_ENTRY as u128 {
+        agent(&mut c, 1_000 + i);
+    }
+    let from = c.deps.len();
+    let w = early_ask(&mut c, from);
+    let late = admit(&mut c, A, 151, put_dep("z", "1"));
+    let from = c.deps.len();
+    answer(&mut c, A, &w, |_| Kv::default());
+    assert!(asked(&c, A, from).is_empty(), "a backlogged batch asked a re-ask");
+    hold(&mut c);
+    flush(&mut c);
+    assert_eq!(ids(&c, k + 1).len(), AGENT_CMDS_ENTRY, "the backlogged batch took more than its cut");
+    assert!(!ids(&c, k + 1).contains(&151), "a command admitted after a backlogged cut joined it");
+    let _ = late;
 }
 
 fn ids(c: &Cluster, i: u64) -> Vec<u128> {
