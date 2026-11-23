@@ -9,6 +9,8 @@ RUNS = {  # tag: (load start ISO, leader site, seconds of site-0 leadership to u
     'crA': ('2026-11-21T23:49:06Z', 300), 'm64r33': ('2026-11-21T00:11:46Z', 144),
     # B0-32 m3fhs1 on graft-m3f, for heavyturns.py: 90 s from this start is the burst's first second at the leader.
     'm3fhs1-b0-32': ('2026-11-21T03:54:39Z', 96),
+    # B0-32 m3fsf1 (stage-first measurement): 90 s from this start is 09:03:51Z, the burst's first big cut.
+    'm3fsf1-b0-32': ('2026-11-23T09:02:21Z', 96),
     'qlA': ('2026-11-22T16:24:36Z', 300), 'qlB': ('2026-11-22T17:09:28Z', 300), 'qlC': ('2026-11-22T17:52:14Z', 300),
     'pfA': ('2026-11-23T01:04:05Z', 296),
     'pgA': ('2026-11-23T02:20:20Z', 229)}

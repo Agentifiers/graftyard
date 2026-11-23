@@ -330,6 +330,66 @@ alone; gate capped at 300 ms):
 - **Row.** One B0-32 row on graft-m3f, after both users hand it back and the fix is cleared and merged: about $1, with
   a stop at $8. Better still, it runs after LM-1's cut merges, so one row reads both.
 
+## Row m3fsf1: B0-32 on main `e942cd53`, a stage-first measurement (2026-11-23, graft-m3f, `ROWS="b0-32"`)
+
+**A measurement, not a gate attempt.** The orchestrator cleared it to separate stage-first's effect (`agent-stage-first`, re-landed) from LM-1's apply cut. It was expected to land under the line, and it does not count toward the two-fails rule for B0-32's gate rows.
+
+**Slot.** One site day and edge day from main `e942cd53`, with test-faults, `--anchor`, `--ssh` and `--export-bucket graft-m3f-export`, and FORMATS through 32.26 plus 20.4 and 17.4. It was m3fa3's launcher with this checkout. Shard image `91a19f9f…` and sshfront `fc6eda91…` were reused, since `containers/` is unchanged since `8d390b0f`. edgeboot passed on both builds first. Then `retire-unjoined`'s sweep, and one B0-32 row. The stop was $3 on graft-m3f from the site day's start (08:40:15Z).
+
+**Committed raw files:** `tests/fanout/raw/rows-m3fsf1.status`, `{admit,terms,vmem}-m3fsf1-b0-32.jsonl`, `tsave-m3fsf1-b0-32.jsonl.xz`, `arrivals-m3fsf1.jsonl`, `shardgate-m3fsf1-b0-32-*.jsonl`, `retirenets-m3fsf1.log`, `reretire-graft-m3f.log`, the leader's Workers Logs for 09:03:40 to 09:04:10Z (`wl-m3/m3fsf1-b0-32-f0.json.xz`), and `lm1-rows-m3f-data/m3fsf1-raw/` (the client's summary and its 27 merge pushes).
+
+- **Site day and edge day** m3fsf, 08:40:15Z to 08:51:00Z, both exit 0, one run. Version ids: sites a `b6177530`, b `2684efd4`, c `55afa573`; edge `199acd25`.
+- **Sweep:** RERETIRE OK graft-m3f, 08:51Z to 08:57:24Z.
+- **Row:** repo 65613 (run `mwt1bvq7`), 8 learners, k 4, leader site 0 term 2. The burst's first 64-command cut was at 09:03:51.8Z on the leader's clock. Done line 09:06:27Z (exit 0). Harness outage 3 s (1.7%), valid.
+- **Spend and teardown:** $0.82 from 08:40:15Z to 09:08:28Z (graft-m3f prefix $0.70), against the $3 stop. SWEEP2 OK. 65613 retired: 11 names, 11 were joined, all now not joined with the row. Purged 3,097 objects, second pass 0, and no shard running at 09:11Z.
+
+| Line | m3fsf1 | m3fhs1 |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `full` | **323 of 500** (315 `ok` within 5 s, 8 `full`); 450 needed | 364 (157 + 207) |
+| No other refusal shape | `full` only, all 8 after a commit; none `advert` or `bound` | pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | peak 122,311 B, 69 commands; `pressure` never true | pass |
+| Merges in one of the next 2 entries, none over 2 s (edge clock) | 3 of 27 over 2 s (2,189, 3,592, 4,394 ms) | 1 of 33 |
+| Zero leader changes | term 2, site 0 throughout | pass |
+| Zero `suspect` | 0, with 0 asks and 0 misses | 1 |
+
+**Stage-first's flips: neither fires** [measured, `server-timing` and the cut trace]:
+- All 500 burst pushes staged first, and 0 of 492 `ok` committed twice (m3fhs1: 148 of 293).
+- Flip 1: staged-first `ok` commit stage p50 1,237 ms (p90 1,678), against 3 s. m3fhs1's single-commit `ok` pushes had p50 2,709 ms.
+- Flip 2: the largest burst entry held 64 Agent commands. Of 944 cuts, 3 ended `AgentCmds` (64 each, at 09:03:53.6 to :53.9Z) and 941 `Empty`. So the cap bound and nothing passed it.
+
+**Where the 5 s went now: the edge's front, not the commit** [measured, `server-timing`, p50 in ms]:
+
+| Stage | m3fsf1 `ok` (492) | m3fsf1 late `ok` (177) | m3fhs1 `ok` (293) | m3fhs1 late `ok` (136) |
+|---|---|---|---|---|
+| install | **1,580** | **2,322** | 524 | 533 |
+| front | 1,580 | 2,322 | 660 | 674 |
+| `rcwait` | **1,820** | **2,580** | 640 | 590 |
+| gate | 544 | 660 | 0 | 399 |
+| validate | 644 | 693 | 463 | 445 |
+| last commit | 1,237 | **1,577** | 2,710 | 2,948 |
+| total | 4,439 | 5,277 | 4,939 | 5,856 |
+
+- Capping the front at 600 to 1,000 ms gives 496 or 497 [inference, the same marks]. `b032share.py`'s commit levers: commit ×0.75 gives 458, and a 300 ms gate cap 424.
+- The gate is no longer slow: `gate_rows` p50 374 ms, p90 636 ms, on the 402 `ok` pushes that read it, against 1,110 and 4,052.
+- **Cause, from F112's cw1 row on graft-m1, the same signature:** on a cold isolate, `cold-write`'s install guess (the genesis record) is always wrong. The guessed read stayed alive, so the real read waited out `BATCH_STALE` (2 s) on the same rcache key. `cw-link-drop` (F112) drops the unkept guessed read first. This row's main had `cold-write` but not that fix. The rerun from a main with it decides the front.
+
+**The leader's burst CPU** [measured, `heavyturns.py m3fsf1-b0-32`, 941 joined slices; Workers Logs 09:03:51 to :56Z]:
+
+| Slice holds | m3fsf1, share of CPU, mean ms | m3fhs1 |
+|---|---|---|
+| Applying committed entries | 47%, 25.8 (43 events an entry, 0.60 ms an event) | 37%, 52.1 (1.00 ms an event) |
+| Deferred transaction | 21%, 9.2 (0.15 ms a statement) | 25%, 31.6 |
+| No traced work | 22%, 0.2 | 28%, 0.6 |
+| Cuts or sends | 5% | 8% |
+| Storage confirm | 5% | 2% |
+
+- Logged leader CPU over 6 burst seconds: 1,910 ms (m3fhs1: 2,555 over its 6), with the same input count (2,241 against 2,257).
+- `/commit` used 460 ms over 626 calls (0.73 ms a call; m3fhs1 741 over 775, 0.96 ms). The 256 KiB inline bodies are gone.
+- Learner `/raft`: 821 ms over 791 calls (1.04; m3fhs1 1,074 over 594).
+- `/outcome_by_request` is absent, since nothing asked.
+- So stage-first took about a quarter off the leader's burst CPU, and the commit stage halved.
+- Apply plus the transaction is now 68% of the joined CPU, at 0.60 ms an event. The next leader-side lever is apply, but with the commit stage at p50 1.2 to 1.6 s it is not this row's limit.
+
 ## Row m3fhs1: B0-32 on main `771e07e9`, shard image `6ee7a5ab` (A37's instrument row) (2026-11-21, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** One site day and edge day from main `771e07e9` with `--ssh` and test-faults, then `retire-unjoined`'s sweep, then one B0-32 row, stop $8 on graft-m3f from the site day's start (03:29:51Z). It is A37's instrument row: it splits a slow leader confirm into the leader's input stop and its output hold. It is also the first B0-32 row on shard image `6ee7a5ab`, so `garbled-body`'s container side (G35) runs.

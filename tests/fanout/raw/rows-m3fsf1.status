@@ -1,0 +1,53 @@
+2026-11-23T08:58:35Z start e942cd53 ~/workspace/b032sf1
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T08:58:51Z start sweep ok
+2026-11-23T08:58:53Z cost account 25.04 since 2026-11-23T00:00:00Z, run 0.01 since 2026-11-23T08:40:15Z, at b0-32
+2026-11-23T08:59:26.443Z m3org/fm3fsf1-b032 = 65613
+2026-11-23T08:59:32.605Z repo:65613 leader 0: config 6 learners [{"addr":192,"doName":"repo:65613#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65613#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65613#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65613#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65613#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65613#2#l5","join":200,"sit
+2026-11-23T08:59:35.059Z repo:65613 leader 0: set k 4: {"grants":[[0,[4,3,5]],[1,[4,3,5]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":224},"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T08:59:45.334Z repo:65613 leader 0: set k 4: {"grants":[[0,[4,3,5]],[1,[4,3,5]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":224},"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T08:59:55.768Z repo:65613 leader 0: set k 4: {"grants":[[0,[4,3,5]],[1,[4,3,5]]],"k":4,"meta":{"admit":{"retryAfterS":1,"waitMs":224},"configIndex":6,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-23T08:59:55.880Z repo:65613 leader 0: k 4 at 8
+2026-11-23T08:59:58Z b0-32 shard gate site 0: warm site 0 after 1.0 s
+2026-11-23T08:59:58Z b0-32 shard gate site 1: warm site 1 after 1.4 s
+2026-11-23T08:59:58Z b0-32 shard gate site 2: warm site 2 after 1.9 s
+2026-11-23T08:59:58Z b0-32 fm3fsf1-b032 65613 start
+2026-11-23T09:06:26.461Z repo:65613 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":146},"configIndex":6,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-23T09:06:26.564Z repo:65613 leader 0: k 1 at 979
+2026-11-23T09:06:27Z b0-32 fm3fsf1-b032 65613 done exit 0
+2026-11-23T09:06:32Z torn down 65613
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T09:07:59Z sweep ok
+ALLDONE
+b0-32 colos (voters' Reported rows):
+  colo LAX 3 {'leader': 1, 'promised': 2}
+harness outages (2026-11-23T09:02:41Z, the first request, to 2026-11-23T09:05:40Z; announced 2026-11-23T09:02:40Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-23T09:02:41Z", "2026-11-23T09:02:42Z"], ["2026-11-23T09:03:47Z", "2026-11-23T09:03:49Z"]], "outageSeconds": 3.0, "share": 0.0168, "valid": true}
+b0-32 colos (voters' Reported rows):
+  colo LAX 3 {'leader': 1, 'promised': 2}
+{"kind": "read:api", "measured": {"n": 33879, "served": 1.0, "p50": 196, "p99": 1377, "cap": 0}, "outagesRemoved": {"n": 33792, "served": 1.0, "p50": 196, "p99": 1374, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 5663, "served": 1.0, "p50": 217, "p99": 1394, "cap": 0}, "outagesRemoved": {"n": 5648, "served": 1.0, "p50": 217, "p99": 1389, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 26, "served": 0.8846, "p50": 775, "p99": 9320, "cap": 0}, "outagesRemoved": {"n": 25, "served": 0.88, "p50": 735, "p99": 9320, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 736, "served": 0.9932, "p50": 1468, "p99": 5018, "cap": 0}, "outagesRemoved": {"n": 719, "served": 0.993, "p50": 1457, "p99": 4838, "cap": 0}}
+site fault off: 200
+harness outages (2026-11-23T09:02:41Z, the first request, to 2026-11-23T09:05:40Z; announced 2026-11-23T09:02:40Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-23T09:02:41Z", "2026-11-23T09:02:42Z"], ["2026-11-23T09:03:47Z", "2026-11-23T09:03:49Z"]], "outageSeconds": 3.0, "share": 0.0168, "valid": true}
+{"kind": "read:api", "measured": {"n": 33879, "served": 1.0, "p50": 196, "p99": 1377, "cap": 0}, "outagesRemoved": {"n": 33792, "served": 1.0, "p50": 196, "p99": 1374, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 5663, "served": 1.0, "p50": 217, "p99": 1394, "cap": 0}, "outagesRemoved": {"n": 5648, "served": 1.0, "p50": 217, "p99": 1389, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 26, "served": 0.8846, "p50": 775, "p99": 9320, "cap": 0}, "outagesRemoved": {"n": 25, "served": 0.88, "p50": 735, "p99": 9320, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 736, "served": 0.9932, "p50": 1468, "p99": 5018, "cap": 0}, "outagesRemoved": {"n": 719, "served": 0.993, "p50": 1457, "p99": 4838, "cap": 0}}
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T09:08:28Z SWEEP2 OK
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T09:08:29Z SWEEP2 OK
+2026-11-23T09:08:28Z cost {"from": "2026-11-23T08:40:15Z", "to": "2026-11-23T09:08:28Z", "containers": 0.18, "do_rows": 0.51, "do_duration": 0.05, "do_requests": 0.04, "workers": 0.03, "usd": 0.82, "prefix": "graft-m3f", "prefix_usd": 0.7}
+FINISHED
+2026-11-23T09:08:29Z cost {"from": "2026-11-23T08:40:15Z", "to": "2026-11-23T09:08:29Z", "containers": 0.18, "do_rows": 0.51, "do_duration": 0.05, "do_requests": 0.04, "workers": 0.03, "usd": 0.82, "prefix": "graft-m3f", "prefix_usd": 0.7}
+FINISHED
