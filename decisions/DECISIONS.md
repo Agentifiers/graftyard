@@ -8342,7 +8342,7 @@ first shard staged. They keep today's rule: probe, then send once.
     rise was front, gate and commit, with validate p99 lower, so it backed nothing out: the lead's ruling, 2026-11-22.)
 - **Lower `VALIDATE_HEDGE`** if straddling pushes meet the line but the kill-phase p99 sits within 10% of 3 s.
 
-### `maint-yield`: a git cache shard's maintenance yields to moved load, for at most 10 minutes, 2026-11-22
+### `maint-yield`: a git cache shard's maintenance yields to moved load, for at most 6 minutes, 2026-11-22
 
 **Status.** Built, not yet hosted (branch `b034-yield-code`): the container's hold (`containers/git/server/maint.go`,
 `POST /maint/hold`), the shard object's call (`graftyard_git::maint_hold`, `workers/site/src/shard.rs`), and
@@ -8395,7 +8395,19 @@ is in. So any point is a safe point:
   (`promote_moves_on`). If every shard is held, the step fails and the next alarm tries again. Archiving and
   promotion still run: they are not maintenance, and the log needs them.
 
-**The deferral bound.** `MAINT_DEFER_MAX` is 10 minutes [guess], counted from the first start refused or run stopped
+**Shortened to 6 minutes (2026-11-23), by its own flip.** B0-34 mt19 (`tests/am1/results/b034-mt19.md`) was the
+first hosted row. Every-clone passed, at 100% in kill and in second. But site b's shard was held for 517.5 s, and its
+unkept packs reached 786 while held, past the 751 line. That meets "shorten `MAINT_DEFER_MAX` if a held shard's pack
+count reaches 751 within it", and the lead ruled to follow it.
+- **The new bound** is the kill's 120 s plus a rehydrate's 207 s, with about 30 s of room. At mt19's rate of 1.59
+  unkept packs a second while held, a hold that starts at 25 packs ends at about 597.
+- **The trigger is unchanged.** mt19's first hold came from a hedge's cold mark on a slow home, not from a failed
+  home (the same file, "Why site b was held from +67 s"). Holding only on a failed first try would need a new mark
+  from the edge, and an edge day, and the evidence for it is one row.
+- **The test.** `TestMaintDeferMaxFitsAFailoverAndThePackLine` (`containers/git/server/maint_test.go`) fails on 10
+  minutes, which projects to 979 packs, and on anything under 327 s. plant89's mutants 6 and 7 set 10 and 5 minutes.
+
+**The deferral bound.** `MAINT_DEFER_MAX` was 10 minutes [guess] (6 minutes since 2026-11-23, above), counted from the first start refused or run stopped
 since the last repack completed. Past it, moved load no longer stops the next repack, though client CPU can still delay
 its start by at most another `YIELD_HOLD`. Against what the deferral costs:
 - **Pack growth.** On mt18 the surviving site's shard went from 122 to 268 unkept packs in 230 s while its repack

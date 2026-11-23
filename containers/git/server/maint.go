@@ -22,10 +22,11 @@ import (
 var yieldHold = 60 * time.Second
 
 // maintDeferMax: how long maintenance may be held in all, from the first hold since the last completed maintenance
-// (MAINT_DEFER_MAX, 10 min [guess]: a kill's 120 s and a rehydrate's 166 to 207 s with room, and about 380 more packs
-// at mt18's 0.6 a second, under the 751 that slowed merges). Past it moved load no longer stops the next run, and
-// client CPU delays its start at most another yieldHold. A var for the tests.
-var maintDeferMax = 10 * time.Minute
+// (MAINT_DEFER_MAX, 6 min [guess]: a kill's 120 s and a rehydrate's 207 s with about 30 s of room). 10 min let B0-34
+// mt19's site b reach 786 unkept packs while held, past the 751 that slowed merges, so the flip shortened it
+// (`decisions/DECISIONS.md`, "`maint-yield`"). Past it moved load no longer stops the next run, and client CPU delays
+// its start at most another yieldHold. A var for the tests.
+var maintDeferMax = 6 * time.Minute
 
 // maintClock is the hold's clock; the tests step it rather than sleep, so a loaded runner cannot let a hold lapse
 // between two calls the test meant to fall inside it.
