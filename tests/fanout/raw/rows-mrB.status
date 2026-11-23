@@ -1,0 +1,121 @@
+2026-11-23T13:08:14Z start 7f80acb41 ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T13:08:34Z start sweep ok
+2026-11-23T13:08:34Z cost account 45.17 since 2026-11-23T00:00:00Z, run 0.0 since 2026-11-23T13:08:06Z, at b0-33
+2026-11-23T13:09:11.055Z m3org/fmrB-b033 = 131396
+2026-11-23T13:09:15.168Z repo:131396 leader 0: config 5 learners [{"addr":192,"doName":"repo:131396#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131396#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131396#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131396#2#l3","join":200,"site":0,"slot":3}]
+2026-11-23T13:09:15.621Z repo:131396 site 0: arrival mem (asked mem, status 200)
+2026-11-23T13:09:15.827Z repo:131396 site 1: arrival mem (asked mem, status 200)
+2026-11-23T13:09:16.051Z repo:131396 site 2: arrival mem (asked mem, status 200)
+2026-11-23T13:09:18.512Z repo:131396 leader 0: set k 4: {"grants":[[0,[0,6,3]],[2,[0,6,3]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":225},"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T13:09:28.856Z repo:131396 leader 0: set k 4: {"grants":[[0,[0,6,3]],[2,[0,6,3]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":225},"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T13:09:39.387Z repo:131396 leader 0: set k 4: {"grants":[[0,[0,6,3]],[2,[0,6,3]]],"k":4,"meta":{"admit":{"retryAfterS":1,"waitMs":225},"configIndex":5,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-23T13:09:39.536Z repo:131396 leader 0: k 4 at 8
+2026-11-23T13:09:42Z b0-33 shard gate site 0: warm site 0 after 1.1 s
+2026-11-23T13:09:42Z b0-33 shard gate site 1: warm site 1 after 1.5 s
+2026-11-23T13:09:42Z b0-33 shard gate site 2: warm site 2 after 1.7 s
+2026-11-23T13:09:42Z b0-33 fmrB-b033 131396 start
+2026-11-23T13:22:31.833Z repo:131396 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":295},"configIndex":5,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-23T13:22:32.000Z repo:131396 leader 0: k 1 at 1798
+2026-11-23T13:22:33Z b0-33 fmrB-b033 131396 done exit 0
+2026-11-23T13:22:41Z torn down 131396
+site fault off: 200
+git#2#pool:6 200
+git#2#pool:7 200
+git#2#pool:4 200
+git#2#pool:1 200
+git#0#pool:5 200
+git#0#pool:4 200
+git#0#pool:7 200
+git#0#pool:1 200
+{"torn_down": 8, "codes": {"200": 8}}
+sweep: no shard container running
+2026-11-23T13:23:06Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 11 {'leader': 1, 'promised': 10}
+placement baseline:
+leader site 0: setup 1-statement confirm p50 32 (n 653) p90 53 (placement baseline); unpaired p50 58 (n 651); pooled p50 55 (n 1542)
+  load: 1-statement p50 68 (n 360); unpaired p50 76 (n 303); pooled p50 71 p99 951 (n 1050)
+isolates: 7 members, 7 distinct ids, 0 changes; shared: none
+shared isolates:
+tsave-mrB.jsonl: 7 members, 7 isolates; no shared isolate
+harness outages (2026-11-23T13:15:51Z, the first request, to 2026-11-23T13:20:50Z; announced 2026-11-23T13:15:50Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-23T13:15:51Z", "2026-11-23T13:15:53Z"]], "outageSeconds": 2.0, "share": 0.0067, "valid": true}
+{"kind": "read:api", "measured": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}, "outagesRemoved": {"n": 0, "served": null, "p50": null, "p99": null, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 8173, "served": 0.9562, "p50": 1304, "p99": 139427, "cap": 317}, "outagesRemoved": {"n": 8130, "served": 0.956, "p50": 1301, "p99": 139427, "cap": 317}}
+{"kind": "merge:only", "measured": {"n": 22, "served": 0.3636, "p50": 13064, "p99": 15384, "cap": 0}, "outagesRemoved": {"n": 22, "served": 0.3636, "p50": 13064, "p99": 15384, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 12560, "served": 0.5625, "p50": 4458, "p99": 80996, "cap": 0}, "outagesRemoved": {"n": 12511, "served": 0.5608, "p50": 4467, "p99": 80996, "cap": 0}}
+5xx by reason (2026-11-23T13:12:01Z to 2026-11-23T13:22:16Z):
+{"logged": 6077, "edge5xx": 6077, "byStatus": {"503": 6077}}
+   2928 503 graphql
+   1988 503 rest-repo-write
+    499 503 task
+    317 503 upload-pack
+    231 503 renew
+     98 503 lease
+      9 503 merge
+      4 503 receive-pack
+      3 503 info-refs
+by reason:
+   2928 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+   1988 503 rest-repo-write  the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    499 503 task             the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+    316 503 upload-pack      git cache: N {"warming":true}
+    231 503 renew            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+     98 503 lease            the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      9 503 merge            the git cache: N {"warming":true}
+      4 503 receive-pack     git cache: no shard could check the pack (site N's shard answered N: {"warming":true}); retry
+      3 503 info-refs        the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+      1 503 upload-pack      the repository's access rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+push refusals by stage:
+{"agentPushes": {"ok": 8065, "full": 5493, "other": 2}, "fullBy": {"edge (bound_at_send)": 3058, "admission": 1140, "no commit stage": 1069, "expire_agents (queued)": 152, "edge (advert)": 74}, "fullMarks": {"ask": 3, "stagefirst": 131, "busy": 0, "missed": 0, "suspect": 0}}
+budget left at the first send | ok / full
+  under 1 s  | 350 / 3792
+  1 to 2 s   | 1170 / 255
+  2 to 3 s   | 1828 / 193
+  3 to 5 s   | 4717 / 110
+(run by hand at 2026-11-23T13:35:04Z: the orb service was stopped before b033.sh's last two steps)
+84 edgefull lines from 2026-11-23T13:12:01Z to 2026-11-23T13:22:16Z
+edge refusals (edgefull):
+{"lines": 84, "byKind": {"failOpen:push": 10, "refused:push": 74}, "isolates": 53, "spanS": 267, "refusedWaitMs": {"p10": 261, "p50": 386, "p90": 2609}, "budgetMs": {"p50": 126}}
+per isolate (running counts at their last line), 53 isolates; fail-open ceiling about 134 an isolate a chain over 267 s:
+  80494a13985be40f refused      8 failOpen     0 lines 8
+  7d771c4ba507cb3b refused      4 failOpen     0 lines 4
+  fd52b94c86a6376d refused      3 failOpen     0 lines 3
+  3cf946f15e9690a5 refused      3 failOpen     0 lines 3
+  62e7f90151b3cd5f refused      3 failOpen     0 lines 3
+  787877ac6a96c6e1 refused      3 failOpen     0 lines 3
+  19bb7d07c80af083 refused      3 failOpen     0 lines 3
+  214e33cd9ce1845b refused      3 failOpen     0 lines 3
+  26edc0d123ebf741 refused      2 failOpen     0 lines 2
+  d2640dcc0cfb1349 refused      2 failOpen     0 lines 2
+  sum: refused 74, failOpen 10; max failOpen 2
+10 s window (Cloudflare clock) | refused | failOpen | leader wait s (this, before) | agent cut/s | lane empty
+  13:16:20 |     8 |    0 | 1.8, 0.2 | 89.6 | False
+  13:16:30 |     3 |    0 | 0.0, 1.8 | 145.6 | False
+  13:17:30 |     1 |    0 | 0.0, 0.0 | 89.1 | False
+  13:17:50 |     1 |    0 | 0.2, 0.0 | 115.9 | False
+  13:18:00 |     2 |    0 | 1.9, 0.2 | 96.0 | False
+  13:18:10 |    10 |    3 | 0.0, 1.9 | 108.5 | False
+  13:18:20 |     4 |    2 | 0.1, 0.0 | 118.5 | False
+  13:18:40 |     2 |    0 | 0.0, 0.0 | 91.8 | False
+  13:18:50 |     3 |    1 | 0.0, 0.0 | 88.1 | False
+  13:19:00 |     3 |    0 | 0.0, 0.0 | 93.6 | False
+  13:19:10 |     6 |    0 | 0.0, 0.0 | 80.8 | False
+  13:19:20 |     3 |    0 | 0.0, 0.0 | 94.5 | False
+  13:19:30 |     4 |    2 | 0.0, 0.0 | 88.7 | False
+  13:19:40 |     3 |    0 | 0.0, 0.0 | 81.4 | False
+  13:19:50 |     0 |    1 | 0.0, 0.0 | 94.7 | True
+  13:20:00 |     7 |    0 | 0.0, 0.0 | 82.0 | False
+  13:20:10 |     7 |    0 | 0.0, 0.0 | 94.7 | False
+  13:20:20 |     2 |    0 | 0.0, 0.0 | 84.7 | False
+  13:20:30 |     1 |    1 | 0.0, 0.0 | 84.1 | True
+  13:20:50 |     4 |    0 | 0.0, 0.0 | 40.1 | False
+flip 2 (over-refusal): 19 of 19 refusing windows read a leader wait under 2.5 s (100%); flips over 10%: FLIPPED
+flip 3 (starvation): 1 refusing windows with the leader's agent lane empty; agent commands cut a second while refusing p50 89.6, saturated drain before refusing began p50 61.1 (compare with the matched baseline's agent commands cut a second at 90%)
+flip 4 (leader still refusing at pfA's counts, read with pushfull.py's admission and expire_agents): failOpen 10 against refused 74; fail-opens under half the refusals
+reask-read top-ups (Trace::TopUp rows on the leader): 370
+B033DONE

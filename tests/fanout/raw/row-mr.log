@@ -1,0 +1,20 @@
+start 2026-11-23T11:53:39Z 7f80acb41 guard wants a fast host
+edge: graft-m2b-edge serves 34cfafb9 at 100% (rev 7f80acb41), as tests/am1/raw/runs/fanout-mr-edge.log deployed
+2026-11-23T12:23:00Z run A: RERETIRE FAILED, set stopped
+ROWmrDONE
+--- second start (row-mr2) after the first reretire failed
+start 2026-11-23T12:24:50Z 7f80acb41 guard wants a fast host
+edge: graft-m2b-edge serves 34cfafb9 at 100% (rev 7f80acb41), as tests/am1/raw/runs/fanout-mr-edge.log deployed
+2026-11-23T12:55:53Z run A row starts (graft-m2b $5.01 today)
+2026-11-23T12:57:13Z run A guard error (exit 1), asking again
+2026-11-23T12:57:33Z run A guard error (exit 1), asking again
+2026-11-23T12:57:54Z run A guard error (exit 1), asking again
+2026-11-23T13:00:36Z run A repo 131395 hostguard repo:131395#1#f0: re-place, 34.0 ms of leader CPU a setup commit (52 commits, 1769 ms, line 28.4); GUARD: not a fast host, a1 ended before load, re-placing on a fresh repo
+2026-11-23T13:08:06Z run A done: 2026-11-23T13:07:55Z sweep exit 0 (kept: none) 2026-11-23T13:07:58Z meter (account, run) 45.17 0.49 after b033 and the sweep DONE 
+2026-11-23T13:08:07Z run B row starts (graft-m2b $5.49 today)
+2026-11-23T13:09:28Z run B guard error (exit 1), asking again
+2026-11-23T13:09:48Z run B guard error (exit 1), asking again
+2026-11-23T13:10:08Z run B guard error (exit 1), asking again
+2026-11-23T13:10:29Z run B guard error (exit 1), asking again
+2026-11-23T13:10:49Z run B guard error (exit 1), asking again
+2026-11-23T13:11:33Z run B repo 131396 hostguard repo:131396#1#f0: keep, 24.5 ms of leader CPU a setup commit (50 commits, 1225 ms, line 28.4); fast host wanted, load released
