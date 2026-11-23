@@ -1,0 +1,17 @@
+00:33:28 R3 uploaded: upload 00ed8e77 versions [("Site(SiteId(0))", "9fa7e7f3"), ("Site(SiteId(1))", "91b2a18a"), ("Site(SiteId(2))", "8e86f2c4")] images 0
+00:33:30 intent-siteday-c-R3 -> {"digest":"9e8cc8a4caf9066a18af3f8d02a4b03c9892265f10f3482936e9669eee2f214a","index":781,"status":201}
+01:36:26 leg 1 done: count 117 current None fullid 00ed8e773b600dd7c3c2320916c27b07cad98e7c1496b7bdf0daf98b64e9c406 
+01:37:11 intent-edgeroll-E4 -> {"digest":"2ae73a3bd1b90a42d62c33c7d9b61e6c019753e312377462f014cc109196ca3b","index":794,"status":201}
+2026-11-23T01:48:30.848Z fault-on {"now":1795398532524,"plan":{"site":2,"from":1795398532524,"until":1795402132524,"rate":0.3,"hang_ms":3000},"sites":[{"site":0,"status":200,"body":{"site":2,"from":1795398532524,"until":1795402132524,"rate":0.3,"hang_ms":3000,"group_only":false}},{"site":1,"status":200,"body":{"site":2,"from":1795398532524,"until":1795402132524,"rate":0.3,"hang_ms":3000,"group_only":false}},{"site":2,"status":200,"body":{"site":2,"from":1795398532524,"until":1795402132524,"rate":0.3,"hang_ms":3000,"group_only":false}}]}
+fault-off {"now":1795398874672,"plan":{"site":null,"from":0,"until":0},"sites":[{"site":0,"status":200,"body":{"site":null,"from":0,"until":0,"rate":null,"hang_ms":null,"group_only":false}},{"site":1,"status":2
+fault-on worker-clock 01:48:52.524Z; drain committed entry 120 at 01:52:31.788Z
+02:20:36 leg 1b done: count 125 current None fullid 00ed8e773b600dd7c3c2320916c27b07cad98e7c1496b7bdf0daf98b64e9c406 
+2026-11-23T02:23:12Z graft-m4a-ops 8047b005: exec-bf39-real.json (no GATE), ops_kill 2, step_min_entries 50, cron * * * * *
+2026-11-23T02:27:50Z undrain not reached: 30 min fault-free (lift 01:54:47Z worker), a->c 30/16635 (3.6x), b->c 64/18716 (6.8x) over UNDRAIN_AFTER; UNDRAIN_BURN 1x
+02:27:52 intent-siteday-c-R4 -> {"digest":"6620bbd2be7c25faff2ea6db53f48772d7d77a0265b9aae34febb278846f3aab","index":803,"status":201}
+2026-11-23T02:36:04Z leg 3: R4 1% starved (N+1 0 entries), paged 02:34:32Z worker; bench on 60 c-homed chains restarted
+2026-11-23T02:39:05Z leg 3: 88 more c-homed chains repo:7390400-7390499, bench3 at 15 puts/s beside bench
+2026-11-23T02:42:10Z leg 3 breach + Rollback committed 02:39:31-32Z worker; benches stopping
+03:06:03 leg 3 done: count 134 current None fullid 00ed8e773b600dd7c3c2320916c27b07cad98e7c1496b7bdf0daf98b64e9c406 
+2026-11-23T03:06:30Z done line (leg 3 IntentDone 03:05Z); cleanup: graft-m4a-ops 32f9d175 GATE=pending
+2026-11-23T03:07:13Z token graft-m4a-ops-deploy-2 (4306a84f) revoked; ops schedules []

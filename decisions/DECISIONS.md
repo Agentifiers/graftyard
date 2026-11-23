@@ -3397,7 +3397,8 @@ The fold gains what the executor needs: where each finished intent left each scr
 - `sitedays.rs`: `counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_leaves_only_the_cap` and `day_versions_names_the_site_days_n1_and_n_versions_only_while_a_site_day_runs`.
 - `crates/git/tests/shard.rs`: `container_day_covers_about_10_50_100_percent_of_shard_objects_each_step_covering_the_last`.
 - `tests/m0carried/plant87.py`: 37 of 37, 8 of them new.
-- Hosted: pending, with BF-39.
+- Hosted, BF-39 on graft-m4a (2026-11-23, `tests/m5/results/m5-wp4.md`): the members' `gate` and `site_health` objects counted and `graft-ops` read them; c drained by the drain key 3 min 39 s after a gray fault started, and the real gate breached and ran the pre-signed `Rollback` under kills.
+- Two [guess] values the row refutes, kept in code until a fix is chosen: `GATE_APPLY_LAG`'s 500 ms cap (every version read a p99 in the 1,000 to 1,500 ms bucket, R40) and `DRAIN_BURN` 10 x with `MIN_CALLS` 100 (steady load read 3 to 20 x from one observer, R41).
 
 **Flip.**
 - Edges' receipt misses, which DESIGN also counts into `SiteHealth`, show a gray site that member calls miss.
