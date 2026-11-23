@@ -15,7 +15,7 @@ sys.path.insert(0, "tests/fanout/b033probes/host")
 from common import RUNS, ms  # noqa: E402
 
 # Agent commands cut a second (`cuts.py`), b033-percmd.md and b033-quarter.md.
-CUT = {"blB": 118.3, "blA": 84.0, "blC2": 82.7, "qlA": 43.7, "qlB": 45.1, "qlC": 41.8}
+CUT = {"pfA": 47.8, "blB": 118.3, "blA": 84.0, "blC2": 82.7, "qlA": 43.7, "qlB": 45.1, "qlC": 41.8}
 
 for tag in sys.argv[1:] or CUT:
     rows = json.load(lzma.open(f"tests/fanout/raw/wl-{tag[:2]}/{tag}-f0.json.xz", "rt"))

@@ -81,7 +81,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict:
   repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" }, "colo-off": { type: "string" },
   run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
-  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, workflow: { type: "boolean" },
+  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, "seed-prs": { type: "string" }, workflow: { type: "boolean" },
   "ls-refs-shard": { type: "boolean" }, "ls-refs-shard-every": { type: "string" }, hosted: { type: "string" },
   hints: { type: "string" }, lean: { type: "boolean" } } });
 if (opt.hosted && !opt.b034) throw new Error("--hosted runs B0-34's load only: pass --b034");
@@ -650,6 +650,37 @@ if (plan.openPrs) {
   log(`open PRs ${openPrs.length}/${plan.openPrs} ${JSON.stringify(why).slice(0, 400)}`);
   // Each of the first agents pushes its PR's head branch, so every push is a head push that asks for a test merge.
   for (const [k, pr] of openPrs.slice(0, plan.agents).entries()) { agents[k].ref = pr.ref; agents[k].tip = pr.tip; agents[k].prN = pr.number; }
+}
+// `--seed-prs N` (exact-prefix's flip, `decisions/DECISIONS.md`): N draft PRs open before the window on branches no
+// agent pushes, `claude/a1-<run>-<i>s`, which sort among the agents' own `claude/a1-<run>-<i>` branches. So every
+// agent push's `pull_by_head` read starts among about N other PRs' rows, as a long run's would, and the row's shape
+// (which branches the agents push, and that none is a PR head) stays B0-33's. Counted in `openPrsAt`.
+let seededPrs = 0;
+if (opt["seed-prs"] !== undefined) {
+  const n = Number(opt["seed-prs"]);
+  const why = {};
+  const note = (k) => { why[k] = (why[k] ?? 0) + 1; };
+  for (let b = 0; b < n; b += 20) {
+    await Promise.all(Array.from({ length: Math.min(20, n - b) }, async (_, j) => {
+      const branch = `claude/a1-${RUN}-${b + j}s`;
+      let pushed = false;
+      for (let t = 0; t < 5 && !pushed; t++) {
+        const [res] = await push(app, `refs/heads/${branch}`, null, `a1/seed/${b + j}.txt`, randomBytes(200));
+        pushed = res === "ok";
+        if (!pushed) { note(`push ${String(res).slice(0, 40)}`); await sleep(2_000); }
+      }
+      if (!pushed) return;
+      for (let t = 0; t < 5; t++) {
+        const [r, pr] = await openPr(app, branch, true);
+        if (pr) { seededPrs++; return; }
+        note(`open ${r.status} ${JSON.stringify(r.body?.errors?.[0]?.message ?? r.body?.message ?? "").slice(0, 60)}`);
+        await sleep(2_000);
+      }
+    }));
+    if ((b / 20) % 10 === 9) log(`seeded PRs ${seededPrs}/${n}`);
+  }
+  writeRow(OUT, { step: "seeded PRs", seeded: seededPrs, asked: n, failures: why });
+  log(`seeded PRs ${seededPrs}/${n} ${JSON.stringify(why).slice(0, 400)}`);
 }
 
 // No learner catches up inside the window: before it starts, every learner must have applied the leader's commit
@@ -1429,7 +1460,7 @@ const sum = Object.fromEntries(Object.entries(lat).map(([k, xs]) => [k, { n: xs.
 const feedLat = seen.map((x) => x[2]);
 const v = {
   row, run: RUN, seconds, ...(stopped ? { stopped, ranSeconds: +ran.toFixed(1) } : {}), agents: plan.agents, offered: offered(plan), byKind: sum,
-  openPrsAt: Array.from({ length: Math.floor(ran / 15) + 1 }, (_, i) => [i * 15, openPrs.length + draftOpened.filter((ms) => ms <= i * 15_000).length]),
+  seededPrs, openPrsAt: Array.from({ length: Math.floor(ran / 15) + 1 }, (_, i) => [i * 15, openPrs.length + seededPrs + draftOpened.filter((ms) => ms <= i * 15_000).length]),
   ...(killLog.length ? { kills: killLog.map(({ sent, before, after, reset, killed, res }) => ({ sent, leader: before.leader, term: before.term, killed, reset, after: after.leader, termAfter: after.term, res })) } : {}),
   feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null, byMember: feedAnswers,
     ...(kills.length ? { outsideKills: (() => { const xs = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k)).map((x) => x[2]);
