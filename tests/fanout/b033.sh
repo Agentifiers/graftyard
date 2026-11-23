@@ -32,6 +32,9 @@ bash tests/fanout/outages.sh "$TAG" b0-33 "f$TAG-b033"
 # (pushfull.py on a1's per-push log), from the row's first to its last a1 row.
 run=$(grep -o 'a1-pushes-b0-33-[a-z0-9]*' $R/rows-$TAG.status 2>/dev/null | tail -1)
 [ -z "$run" ] && run=$(ls -t tests/am1/raw/a1-pushes-b0-33-*.jsonl 2>/dev/null | head -1 | xargs -r basename | sed 's/\.jsonl$//')
+# A row whose a1 the host guard ended before load (exit 4) wrote no push log: the newest one is another row's, and
+# reading it put erBA's 5xx, push refusals and edgefull lines in row B2's erCA and erCB status (2026-11-23).
+grep -q '^exit 4$' tests/am1/raw/runs/a1-b0-33-f$TAG-b033.log 2>/dev/null && { run=""; echo "no load (a1 exit 4): no push log to read" >> $R/rows-$TAG.status; }
 if [ -n "$run" ]; then
   py=tests/am1/raw/$run.jsonl
   from=$(head -1 $py | jq -r '.start/1000|todate'); to=$(tail -1 $py | jq -r '.end/1000|todate')

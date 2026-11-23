@@ -1,0 +1,23 @@
+start 2026-11-23T16:18:13Z 01471da2 guard wants a band host
+edge: graft-m2b-edge serves 32b6bdfb at 100% (rev 01471da2), as tests/am1/raw/runs/fanout-erC-edge.log deployed
+2026-11-23T16:51:41Z run A row starts (graft-m2b $12.84 today)
+2026-11-23T16:52:41Z run A guard error (exit 1), asking again
+2026-11-23T16:53:02Z run A guard error (exit 1), asking again
+2026-11-23T16:53:22Z run A guard error (exit 1), asking again
+2026-11-23T16:53:42Z run A guard error (exit 1), asking again
+2026-11-23T16:56:48Z run A repo 131401 hostguard repo:131401#1#f0: keep, 23.3 ms of leader CPU a setup commit (48 commits, 1118 ms, line 28.4); in no band of 31.0-31.5 39.7-46.1; GUARD: not a band host, a1 ended before load, re-placing on a fresh repo
+2026-11-23T17:05:48Z run A done: 2026-11-23T17:05:35Z sweep exit 1 (kept: none) 2026-11-23T17:05:37Z meter (account, run) 58.13 0.11 after b033 and the sweep DONE 
+2026-11-23T17:05:49Z run B row starts (graft-m2b $12.94 today)
+2026-11-23T17:07:09Z run B guard error (exit 1), asking again
+2026-11-23T17:07:30Z run B guard error (exit 1), asking again
+2026-11-23T17:07:50Z run B guard error (exit 1), asking again
+2026-11-23T17:09:27Z run B repo 131402 hostguard repo:131402#1#f0: keep, 27.1 ms of leader CPU a setup commit (43 commits, 1165 ms, line 28.4); in no band of 31.0-31.5 39.7-46.1; GUARD: not a band host, a1 ended before load, re-placing on a fresh repo
+2026-11-23T17:21:28Z run B done: 2026-11-23T17:21:26Z sweep exit 0 (kept: none) 2026-11-23T17:21:29Z meter (account, run) 58.25 0.1 after b033 and the sweep DONE 
+2026-11-23T17:21:29Z run C row starts (graft-m2b $13.04 today)
+2026-11-23T17:22:51Z run C guard error (exit 1), asking again
+2026-11-23T17:23:11Z run C guard error (exit 1), asking again
+2026-11-23T17:23:32Z run C guard error (exit 1), asking again
+2026-11-23T17:26:06Z run C repo 131403 hostguard repo:131403#1#f0: keep, 22.7 ms of leader CPU a setup commit (51 commits, 1158 ms, line 28.4); in no band of 31.0-31.5 39.7-46.1; GUARD: not a band host, a1 ended before load, re-placing on a fresh repo
+2026-11-23T17:39:36Z run C done: 2026-11-23T17:39:34Z sweep exit 0 (kept: none) 2026-11-23T17:39:36Z meter (account, run) 58.39 0.1 after b033 and the sweep DONE 
+2026-11-23T17:39:36Z third placement re-placed too: set stopped, swept; no placement in a band, no load (not a fail)
+ROWerCDONE

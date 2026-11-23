@@ -413,9 +413,250 @@ The lead cleared rules 1 and 2, ADVERT_STALE at 10 s [guess], the band guard, an
 - **Verdict lines for the rerun** include R2b's two numbers against erBA's: agent `ok` pushes (1,498) and agent
   commands cut a second while refusing (p50 78.7).
 
+## Row B2: the fail-open bound and the send check, hosted (2026-11-23)
+
+Site day -erC from main 01471da2 (test-faults), `siteday exit 0` (`siteday-erC.status`):
+- site-a 68bfb824, site-b dcf765b2, site-c c1ff421f;
+- edge graft-m2b-edge 32b6bdfb at 100%;
+- row B's shard image `sha256:db305d1e…`, built at 050eefc8. That build carries maint-yield at 10 min, not edae3c88's
+  6 min.
+
+Between 1d1bc221 (mrB's and msA's -mr build) and 01471da2, the site and container code changed only by `ADVERT_STALE`
+(`crates/raft/src/admit.rs`) and `take_probe` (`crates/lookup`). Both serve the edge.
+
+### erC: the band guard found no band host (not a fail)
+
+`GUARD_WANT=band`, at most 3 placements, RUN_STOP $4. All three placements read fast hosts, in neither band
+(31.0 to 31.5 ms, 39.7 to 46.1 ms). None got load.
+
+| Run | Repo | ms a setup commit | Cost |
+|---|---|---|---|
+| erCA | 131401 | 23.3 | $0.11 |
+| erCB | 131402 | 27.1 | $0.10 |
+| erCC | 131403 | 22.7 | $0.10 |
+
+- Each run tore down and swept; `ROWerCDONE`. erCA's sweep exited 1 on a Cloudflare API handshake timeout
+  (`costrow-erCA.status`, paths shown as `~`); rows.sh's teardown had already torn down 0, and erCB's and every later
+  sweep exited 0 with no shard container running.
+- **erCA's, erCB's and erCC's 5xx, pushfull and edgefull sections hold erBA's data**, not theirs. With no push log of
+  its own, b033.sh read the newest one, erBA's. `b033.sh` now skips those readers when a1 exited 4 (this branch).
+  erCA's and erCB's edgefull files were dropped; erCC's fetch was stopped by hand and its `B033DONE` appended with a
+  note.
+
+### erD: the fast set, the lead's change of plan
+
+`GUARD_WANT=fast` (under 28.4 ms), with mrB's load: `--seed-prs 1000`, 5,000 agents, 300 s, plus `--advert-probe`.
+RUN_STOP $10, DAY_STOP $20.74. The baseline is mrB and msA: the same load on fast hosts, on the -mr build.
+**erDA is also B0-33's third run**, on newer code.
+
+| Item | erDA |
+|---|---|
+| Repo, a1 run | 131404, `mwtl5ng2`; first placement kept, 24.7 ms a setup commit (53 commits) |
+| Probe | all checks passed; `agentRate` 353.5, `agentWaitMs` 175 |
+| Gates before load | learners 4/4 within one entry of 1005; shard gate warm on all three sites at 18:14:58–59Z in 2.3 to 2.8 s, 0 entries, not rehydrating |
+| Load (UTC) | 18:21:20 to 18:26:20; done line 18:48:06Z |
+| Cost | $3.08 for the run; graft-m2b $16.22 for the day at 18:53Z |
+| Sweep | exit 0, "no shard container running"; a final `teardown.py --sweep` tore down 0 |
+
+**edge-refusal-bound's flips, against mrB and msA (baseline) and erBA** [measured; `rows-erDA.status`,
+`edgefull-erDA.jsonl.xz`, `pushfull.py`]
+
+| Flip | erDA | mrB | msA | erBA |
+|---|---|---|---|---|
+| R1a / flip 1: Human, Bot or MQ write refused by the edge | **0** | 0 | 0 | 0 |
+| R1b: held past ADVERT_STALE, or a second probe inside ADVERT_TTL | 0, not met | | | |
+| R1c: stale sends past held refusals | 4 against 9, not met | | | |
+| R2b, push half: agent `ok` pushes | **8,369**, not met | 8,065 | 8,515 | 1,498 |
+| R2b, drain half: agent commands cut a second while refusing, p50 | **114.2**, not met | 89.6 | 98.9 | 78.7 |
+| Leader-side refusals (admission + `expire_agents` + no commit stage) | **846** | 2,361 | 1,378 | 6,433 (admission + `expire_agents` only) |
+| Old flip 2: refusing windows with a leader wait under 2.5 s | 30 of 30 | 19 of 19 | 25 of 25 | |
+
+- **edgefull**: 2,020 lines from 218 isolates.
+  - By kind: refused 1,927 push and 1 rest, held 9, probe 79, stale 4, failOpen 84.
+  - Where each push met the advert:
+    - refused: 77 at the check, 822 at the send, 1,029 at the stage;
+    - held: 4 at the check, 5 at the send;
+    - probe: 11 at the check, 68 at the send.
+  - For comparison, mrB refused 74 with 10 failOpen, and msA 155 with 47.
+- **pushfull**: 5,169 agent `full`s.
+  - At the edge: `bound_at_send` 2,374, advert at the stage 1,034, advert at the send 836, advert at the check 79.
+  - At the leader: admission 379, no commit stage 354, `expire_agents` 113.
+- On fast hosts, rule 2 moved the leader's refusals to the edge. Leader-side refusals fell to 846 from mrB's 2,361 and
+  msA's 1,378 (36% and 61%). Admission plus `expire_agents` fell to 492 from 1,292 and 1,181. Neither the agent pushes
+  completed nor the drain fell, so R2b does not fire.
+
+**B0-33's lines on erDA**, under main 4040b083's rulings (agent line 110/s; `suspect` counts `started` or `won`). Same
+method as LM-1's mrB and msA:
+- agent-class ok/s is `push:agent` plus `side:*` except `side:human`, codes ok, 200, 201 and 204, over 300 s;
+- commit p99 is the push log's `commit;dur` for `kind` human or merge, result ok;
+- `suspect` comes from `colos.py`, resets from `resets.py`.
+
+| Line | erDA | mrB | msA | Median of three |
+|---|---|---|---|---|
+| Human commit stage p99 (n) | 2,628 (80) | 2,603 (99) | 2,196 (95) | **2,603**, within 3,912 |
+| `merge` push commit stage p99 (n) | 2,466 (34) | 2,403 (40) | 1,565 (49) | 2,403 |
+| `merge` pushes over 2 s | **5 of 34** | 1 of 40 | 0 of 49 | the fail column, on mrB and erDA |
+| Agent-class answered ok/s | 115.9 | 107.3 | 106.8 | **107.3**: meets 110 at 90% (the lead's ruling) |
+| Leader changes | 0 | 0 | 0 | pass |
+| `suspect` started or won | 0 (12 Reported, all `promised`) | 0 | 0 | pass |
+| Wasm resets (leader / members) | 0 / 0 | 0 / 0 | 1 / 1 | |
+| Edge 503s | 5,228 | 6,077 | 8,333 | the refusal-shape line fails on all three |
+
+**The lead's ruling: erDA is valid, and B0-33 is not met on the three runs.** Human p99, the agent line at 90%, leader
+changes and `suspect` pass. Two lines fail: "any merge-queue command waiting over 2 s" (mrB and erDA), and "every
+refusal in the git `ng` or REST 429 shape" (all three).
+
+### The git cache `warming` 503s: the home shard's catch-up lag, on every run
+
+Read from site a's `GitShard` events in Workers Logs (`git#0#net:131404`; mrB's `git#0#net:131396`):
+- **The shard.** Site a's GitShard, the home shard, serves every merge plan. From load start it ingested flat out:
+  each 30 s window summed about 29 s of ingest, nearly every run ended `behind: true`, 200 to 490 packs (9 to 25 MB)
+  per window, and `room` waits grew from 1 to 8.7 s a window. erDA's lag lasted from 18:21:20Z to after the fetch's
+  end at 18:28:30Z. mrB's curve matches window for window (483, 480, 416, 414, 290 packs, about 29 s of ingest).
+- **The merges.** A merge plan whose commits the shard had not ingested waited out `MERGE_WAIT` (15 s) and answered
+  `warming` (`crates/git/src/merge_cache.rs`). It failed 17 of 23 PUT merges on erDA (all from the seventh on), 9 of 22
+  on mrB and 6 of 23 on msA, each at 15.0 to 16.3 s.
+- **The human pushes.** On erDA, 7 human pushes got "no shard could check the pack … `warming`", each holding one of
+  a1's 5 human slots 62 s, so 89 human pushes were `skipped: cap` (mrB 58, msA 55).
+- **Not the harness or the site day.** The shard gate passed. The image is the one mrB and msA ran. maint-yield holds
+  only non-home shards (`graftyard_git::maint_hold` needs `me != home`), and merges run on the home shard [inference
+  from code; this row read no `/procs`].
+- **Not the code under test.** Agent `ok` pushes, the shard's load, were 8,369 against 8,065 and 8,515.
+- The lead takes this to F112 as a G row.
+
+### (a) The merge line's 2 s tail: lane wait, not the round
+
+**The commands behind "merges over 2 s" are Human-class.**
+- The line counts a1's `merge` pushes: the admin PAT's git push to an `a1m-` ref before each PR merge
+  (`tests/am1/rest/a1.mjs`, `every("merge", …)`). `crate::admission` sends a plain user token's push as Human.
+- **No command in the code is classed `MergeQueue`.** `graftyard_git::agent::admit_class` answers Agent, Bot or Human.
+  No caller builds `AdmitClass::MergeQueue` outside `crates/raft/tests`.
+- The PUT merges themselves (`merge:only`'s 200s) never passed 2 s at the commit stage. Maxima: mrB 1,940 ms (13),
+  msA 1,169 (17), erDA 1,812 (6).
+
+So B0-33 measures no merge-queue command [measured from code]. What its fail column read is the Human lane.
+
+Split on the leader's trace (`b033probes/humansplit.py --kind merge` with the push log; each push rides the first cut at
+or after its admission, which is the push's `end` less its `commit` stage) [measured, with the clock offset's error]:
+
+| Run | Push (s into load) | Edge commit | Freeze wait | Held | Own round | Apply | Rest (call and return) |
+|---|---|---|---|---|---|---|---|
+| mrB | +292 | 2,403 | 818 | 164 | 378 | 0 | 1,043 |
+| erDA | +108 | 2,016 | 1,197 | 756 | 244 | 0 | −181 |
+| erDA | +149 | 2,313 | 928 | 300 | 0 | 0 | 1,085 |
+| erDA | +155 | 2,064 | 550 | 858 | 142 | 0 | 514 |
+| erDA | +222 | 2,075 | 1,081 | 116 | 380 | 0 | 498 |
+| erDA | +240 | 2,466 | 640 | 255 | 0 | 91 | 1,480 |
+
+The columns mean:
+- **Freeze wait:** admission to the cut that took the command.
+- **Held:** that cut to its entry's first append, frozen behind the entry in flight.
+- **Own round:** the append to the first voter ack.
+- **Rest:** the edge's `commit` stage less the leader's part (the call to the leader and the outcome's return).
+
+- **The round is never the tail.** Own rounds were 0 to 380 ms. Entry rounds ran p50 321 and p99 1,507 on erDA, and p99
+  1,000 and 772 on mrB and msA.
+- **The tail is lane wait plus transport.** Freeze wait plus held was 0.98 to 1.95 s, and 0.5 to 1.5 s of rest
+  remained.
+- **erDA's leader froze longer.** Batches cut while an entry was in flight then stayed frozen p50 222 and p99 1,687 ms
+  (mrB 130 / 1,000, msA 106 / 758). A frozen batch waited 62% of wall time (mrB 47%, msA 46%), and 78% of erDA's Humans
+  rode an entry holding 64 agent commands (mrB 28%).
+- That fits a leader whose CPU went more to agent entries: 24.7 ms a setup commit, and load-time confirms p50 78 ms
+  against mrB's 68 [inference].
+- **Read against the column:** it was written when the commit line was 1 s. A Human or merge-queue command's commit
+  under load is now judged by the 3,912 line, which these pushes pass. The 2 s tail is queue time in the Human lane
+  and the edge's call, not a slow round.
+
+### (b) erDA's 5,228 edge 503s
+
+From the edge's `fivexx` lines (`fivexxwhy.py`, route and reason), joined to a1's per-kind codes, whose token gives the
+caller class [measured]. a1's distinct 503s are 5,255 (it counts an upload-pack's 503 on both `read:ref` and
+`read:ref:front`, and a merge's on `merge` and `merge:only`): 39 more upload-pack 503s than the edge logged (254 against
+215) and 12 fewer GraphQL ones (2,586 against 2,598), whose class is not known. The table takes the edge's counts.
+
+| Class | Route | Write? | Reason | Rule | `Retry-After` | n |
+|---|---|---|---|---|---|---|
+| Agent (App) | GraphQL `addComment` | write | tier rows: every member shed the read | F65's member shed (`OVERLOADED`) | 1 | 1,844 |
+| Agent (App) | GraphQL `createPullRequest` (draft) | write | same | F65 shed | 1 | 436 |
+| Agent (App) | REST labels POST/DELETE | write | same | F65 shed | 1 | 1,893 |
+| Agent (App) | task PATCH (`side:taskEdit`, `side:standIn`) | write | same | F65 shed | 1 | 295 |
+| Agent (App) | lease renew | write | same | F65 shed | 1 | 154 |
+| Agent (App) | lease acquire and release | write | same | F65 shed | 1 | 47 |
+| Human (admin PAT) | GraphQL `addComment` (`side:human`) | write | same | F65 shed | 1 | 157 |
+| Human (member PAT) | GraphQL `addComment` (`fast-user`) | write | same | F65 shed | 1 | 149 |
+| Human (admin PAT) | PUT merge | write | the git cache: `warming` | MERGE_WAIT on the home shard | 5 (`unavailable`) | 17 |
+| Human (admin PAT) | receive-pack | write | no shard could check the pack: `warming` | shard validate, `VALIDATE_WAIT_HOME_S` | 2 (`shard_unavailable`) | 7 |
+| Human (admin PAT) | info/refs | read | access rows: every member shed the read | F65 shed, at the read gate | 1 | 2 |
+| Human (admin PAT) | upload-pack `ls-refs` | read | git cache: `warming` | shard catch-up (`warming()`) | **none** (`text`, lib.rs) | 215 |
+
+- **Agent: 4,669, all writes, all F65 member sheds with `Retry-After: 1`, none a 429.**
+- **Human: 547.** Shed writes 306, `warming` writes 24, `warming` reads 215, shed reads 2.
+- **Bot: 0**, since the row has no Bot token. a1's two "adv 503" human pushes are the 2 info-refs shed reads
+  [inference: same count, same route].
+- The one 503 with no `Retry-After` is the upload-pack `warming` path: the shard read's non-200 branch in
+  `workers/edge/src/lib.rs` (`git cache: {status} {why}`), sent with `text`.
+- None of the 5,228 is the leader's `full`. Those already answer 429 (`done_reply`); a1 counted 0 API 429s on erDA.
+
+### The smallest change that puts every agent-class refusal in the 429 shape (design only, at $0)
+
+**The rule.** When the members shed (`OVERLOADED`) a tier or command-rows read for a write the edge classes Agent,
+answer `Reply::secondary_rate_limit(1)` instead of `read_failed`'s 503. This is `gate_ng`'s rule for git pushes at the
+read gate (`workers/edge/src/lib.rs`), applied to the REST, GraphQL and task API writes. Every other failed read keeps
+its 503 with `Retry-After`.
+
+**Where.** Where a write's row read returns its error with the principal in hand: `read_repo`, which REST, GraphQL and
+the lease routes reach (`crate::api::read`), and the task path's `command_tier_rows` join (`workers/edge/src/api.rs`).
+One helper, `shed_reply(c, who, reply)`, turns a 503 whose reason carries `OVERLOADED` into the 429. `read_failed`
+keeps its shape for every other caller.
+- It answers 429 only when `c.write` holds, the error carries `OVERLOADED`, and the viewer would be classed Agent.
+  `crate::admission` reads that, which for an App token is the install's `AgentApp` rows; `advert_refusal` already
+  calls it on the same writes.
+- It is a no-op unless the viewer is an App, or a user token with an App or `X-Graftyard-Agent-Session`, the same
+  `bounded` test the push uses. So it reads nothing new for a plain user token.
+- GraphQL returns `read_repo`'s error `Reply` as its own HTTP status (`graphql_post`, `Err(r) => return Ok(r)`), so the
+  same 429 reaches `addComment` and the draft-PR mutation. These routes already answer edge-refusal's advert refusal
+  this way (`read_repo`), so the change adds no new shape, only a new cause for it.
+
+**The GHES invariant holds.**
+- A client that does not opt in gets no 429 here. A plain PAT is Human: `admission` returns `None` before any read.
+- An App token not marked `AgentApp` is Bot and keeps its 503.
+- Only the agent layer's own principals change. AGENTS.md's byte-diff row reads GHES 3.22 responses for non-opted-in
+  clients, which this leaves byte for byte.
+
+**What it would have done on erDA** [inference, counterfactual on the table above]:
+- 4,669 agent 503s become 429 with `Retry-After: 1`, and the refusal-shape line's agent half passes. The remaining 559
+  are Human.
+- **The line still fails as written**, because it reads "every refusal". 306 Human shed writes, 24 Human `warming`
+  writes, 2 Human shed reads and 215 Human `warming` reads stay 503.
+- Making those 429 would need a Human-class refusal shape, which the design forbids: Human writes are never refused
+  this way. They are not refusals in the design's sense but unavailability with `Retry-After`.
+- The 215 upload-pack `warming` 503s lack even `Retry-After`. Adding `retry-after: 1` there is a one-line fix in
+  that non-200 branch. It changes a 503's headers for every client, as GHES does on its own 503s
+  [unverified for GHES 3.22's upload-pack], so it needs the byte-diff row's check before it ships.
+- **Proposal:** the lead reads the line as "every agent-class refusal in the git `ng` or REST 429 shape; Human and Bot
+  unavailability as 503 with `Retry-After`". That is an operator decision, not an edit (`FRAME.md`).
+
+**Cost on B0-33's other lines** [inference]:
+- **Agent ok/s: none directly.** The 4,669 were refused either way. a1 retries neither shape within a sample, and a
+  real agent backs off on 429 as on 503.
+- **Leader load: none.** The member shed already happened, and the 429 is decided after it, at the edge, from the
+  same error.
+- **Human p99 and merges: none.** Human writes keep their path.
+- **Edge reads: none new.** The install's `Authz` is already read on these paths (`read_repo`'s advert check, the
+  task path's own join) and kept for the request (`Ctx::install`).
+- **`suspect` and leader changes: none.**
+- **The real cost** is that an agent client which treats 429 as a rate limit may back off longer than `Retry-After`
+  says. These routes already answer the advert's refusal as this 429, so agent clients already meet it [inference].
+
+**What would show it wrong:**
+- a Human or Bot write answered 429 by it, which is an invariant, as flip 1 is;
+- a shed error whose write committed anyway. It cannot: the shed comes before the command.
+
 ## Open
 
-- **The rerun of the fail-open bound and the send check.** It needs the lead's clearance after the code merges, and
-  runs on graft-m2b after LM-1's read-memo rows.
+- **The ruled B0-33 lines are not met.** "Any merge-queue command waiting over 2 s" read Human-class pushes, because no
+  command is classed MergeQueue. The refusal-shape line fails on Human unavailability as well as on agent sheds. Both
+  are the lead's to read (the section above).
+- **The rerun of the fail-open bound and the send check** ran as Row B2 (above).
 - Whether human p99 falls on a slow host is the row's question, not this file's. Edge refusal sheds agent work but does
   not cut apply CPU per entry at the same drain [inference].
