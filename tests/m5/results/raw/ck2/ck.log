@@ -1,0 +1,32 @@
+07:55:32 check row 2 start, main cd10ac82, $8 stop; m4a UTC day $13.75 at 07:51Z (B0-29)
+07:55:54 token graft-m4a-ops-deploy-4 minted (bc529e45), patched
+07:56:44 graft-m4a-ops 4ef7d70c from cd10ac82: exec-ck-real.json, GATE unset, OPS_STEP_MIN_ENTRIES 50, 60 s dwells, 1-minute cron
+07:56:48 ops cron removed and re-added at once (row 1: it fired 2 min after this)
+07:56:52 scratch Worker graft-m4a-ck-edge redeployed
+07:58:30 load 2x row 1: 160 c-homed chains, 4 benches (2 from observer a, 2 from b) x 6 workers x 5 puts/s; 40 a/b-homed chains 3 x 4
+08:01:23 ops cron fired from 08:00:03Z; c-homed load about 3,250 writes/min (row 1: about 2,850 at 06:43Z)
+08:01:23 JUDGED: posting SiteDay{c, R6}, GATE unset, undo Rollback{c, R5}; c runs site day 71's 4aa58601, group site_release c = R5
+08:01:26 intent-judged2-c-R6 -> {"digest":"82d342e6efc2ce984bd00b9e21980c014b3b12f510769db76c8935d6f1e325e5","index":860,"status":201}
+08:03:32 1% split: N+1 c7687c36 (R6) 1%, N 1704e715 (R5, the group's site_release for c), replacing day 71's 4aa58601
+08:08:43 1% step passed on the override only: N+1 71 entries / 102 answers, N 5,959 / 9,538 (08:08:03Z run); 10% deployed
+08:11:20 10% step passed on the override only: N+1 133 then 256 entries (194, 378 answers), N 6,845 then 13,726; the step committed after its 60 s dwell because OPS_STEP_MIN_ENTRIES 50 turned Starved into Pass. Redeploying graft-ops without the override so 50% and the first day are judged on the real floor
+08:17:55 50% judged on the real floor (no override): N+1 3,141 entries / 4,935 answers / 3 refused vs N 23,191 / 35,345 / 5 -> Pass at 08:14:04Z; 100% Pass at 1,130 entries in the same run; SiteRelease c=R6, SiteMode, first day running
+08:18:27 judged day done: IntentDone at 08:16:04Z (index 172). Load cut to 1x (2 c-benches, 1 a/b bench) for the drain leg, cost so far 4.39
+08:19:29 DRAIN LEG: gray fault on c set at 08:19:29.344Z: rate 0.3, hang_ms 3000; no intent current; drained []
+08:23:09 DRAIN committed: index 173 SiteMode Drain c (drain key 477de5) at 08:22:06.847Z, 134.8 s after the fault; graft-ops 08:22:03Z run: c burning (o0->c 1071/7606 missed, o1->c 398/2958)
+08:23:09 fault lifted at 08:23:09.370Z
+08:24:29 load cut to 0.5x for the undrain wait (1 c-bench from observer a, 1 a/b bench) to stay under the $8 stop; cost 5.08
+08:32:21 08:31:13 health: c's 15 min window still holds the fault (o0->c 3384/43372 = 7.8%); the 5 min window is clean (o0->c 12/16096); cost 5.93
+08:39:29 UNDRAIN committed: index 174 SiteMode Normal c (drain key 477de5) at 08:39:06.070Z, 15 min 56.7 s after the lift; cost 6.65
+08:39:31 slow-apply leg NOT RUN: cost 6.65 at the undrain, and a third site day plus cleanup would pass the $8 stop
+08:39:42 CLEANUP: benches stopped; graft-m4a-ops cron reset (yearly, then []) at 08:39:42Z
+08:44:25 ops cron still firing (Idle) at 08:44:03Z after the 08:39:42 reset; reset again at 08:44:25Z
+08:50:30 ops cron runs stopped: last at 08:48:03Z (9 min 21 s after the first reset); idle 2 min 17 s by 08:50:20Z
+08:50:40 graft-m4a-ops redeployed from exec-ck-pending.json (GATE=pending) at 08:50:40Z; trigger removed
+08:50:51 token graft-m4a-ops-deploy-4 revoked, file shredded
+08:50:52 scratch Worker graft-m4a-ck-edge deleted
+08:51:43 token revoke corrected: the first DELETE had no account base set; graft-m4a-ops-deploy-4 (bc529e45) revoked at 08:51:43Z
+08:59:47 orb clock is 22.7 s behind Cloudflare's (scratch edge now 08:19:52.087 when the orb read 08:19:29.344); entry and cron times here are Cloudflare's, log-line stamps the orb's
+08:59:47 corrected timings on Cloudflare's clock: fault 08:19:52.087 -> drain 08:22:06.847 = 134.8 s; lift 08:23:32.118 -> undrain 08:39:06.070 = 15 min 34.0 s
+08:59:49 DONE: cleanup verified (ops 8b6fe2e3 GATE=pending, no crons, token revoked, scratch Worker deleted, drained [], c leads its six home chains, /api/v3/meta 200, edge f4e193b9); row cost 6.82
+09:05:01 MID-DAY REDEPLOY (record, lead-accepted): graft-m4a-ops 87367b76 at 08:11:38Z orb (08:12:01Z Cloudflare), the same cd10ac82 test-faults build without OPS_STEP_MIN_ENTRIES, during the judged day's 50% step. Why: the 1% and 10% steps passed only on the override (N+1 at most 256 entries at 2x load); without it 50% and the first day are judged on the real STEP_MIN_ENTRIES floor. A test-ops change, not a load or spend change

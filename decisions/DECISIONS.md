@@ -3446,6 +3446,8 @@ The fold gains what the executor needs: where each finished intent left each scr
 
 **Hosted check row (2026-11-23, `tests/m5/results/m5-wp4.md`): not confirmed.** The judged day's N+1 never reached `STEP_MIN_ENTRIES` (0 to 58 entries at 1%, 22 to 100 at 10%), so the share rule was judged on no step; it read 0 bp over N's p99 and over 5 s on every window it saw. The day breached at 10% on `GATE_ACK_RATE` by chance (OPEN-QUESTIONS R43) and ran the `Rollback`, so N from the intent's start at 100% was not exercised either.
 
+**Hosted check row 2 (2026-11-23, `tests/m5/results/m5-wp4.md`, "Gate check row 2"): judged at 50%, not at 100%.** At 50%, on the real floor with no override, N+1 had 3,141 entries beside a real N (R5's `1704e715`) with 23,191 entries. N+1 put 22 bp over N's p99 (1,500 ms) and 0 bp over 5 s, so it passed. This is the first hosted step the share rule judged. 1% and 10% passed only on the test override (at most 256 N+1 entries per 60 s window, R38). At 100% and on the first day only the backstop judged (R44): N's new window at 100% held 207 entries, which is over 0, so the fallback to the intent's start never fired; and after `SiteRelease`, `day_versions` gives no N, because `running` is the day's own release.
+
 **Caveat: the replay flatters the rule.** N in the replay is R3's own healthy window, the same build as N+1, so N's p99 and N+1's tail come from the same distribution. A real N+1 runs beside a different N. The plants show it still catches regressions, but the hosted check row must judge against a real N: its site day leaves the previous version running beside N+1 at 1, 10 and 50%, with real counts on both.
 
 **Flip.**
@@ -3469,6 +3471,8 @@ The fold gains what the executor needs: where each finished intent left each scr
 - `sitedays.rs`, `the_ack_rate_breaches_only_on_an_excess_past_its_margin_beyond_chance_and_starves_under_the_floor`: the row's reading (100 entries, 1 refused of 180, N at 100%) is `Starved`; 1,000 answers at 0.3% against N's 0.2% pass (z 0.0); a planted 2% at 1,000 answers breaches (z 3.80); at 3,000 answers against N's 10,000 at 0.2%, 24 refused passes (z 2.96) and 25 breaches (z 3.10); against a noisy N (1,000 answers at 1%), 110 of 5,000 passes (z 2.92, where N+1's error alone would read 5.3) and 120 breaches; two clean sides pass; no N answers is no baseline.
 - `tests/m0carried/plant87.py`: 55 of 55, 7 of them for this rule.
 
+**Hosted check row 2 (2026-11-23, `tests/m5/results/m5-wp4.md`):** judged once, at 50%, and passed: N+1 refused 3 of 4,935 answers and N 5 of 35,345, z −1.50, against 3.09. Under the floor (100 to 847 N+1 answers at 1%, 10% and early 50%), no read breached, where row 1's rule had breached on chance at 10%. At 100% and on the first day no N answers reached the gate, so the ack rule had no baseline there (R44). No ack fault was planted hosted.
+
 **Flip.** A planted ack fault that the bound misses at 10% with 1,000 or more N+1 answers: then lower the margin or the z, or judge over the whole step's dwell.
 
 #### `drain-budget`: a missed call deadline is budgeted at 1 in 100, drained at 5 x over 5 minutes, and calm under 2 x over 15 minutes (2026-11-23)
@@ -3476,6 +3480,8 @@ The fold gains what the executor needs: where each finished intent left each scr
 **Status.** Code-only, not deployed; the thresholds live in `graft-ops`, so they ship on an ops deploy. R41 stays open: the values come from one install.
 
 **Hosted (2026-11-23):** not exercised. The gate check row stopped before its drain leg to stay under the $5 stop, so the values rest on the BF-39 replay alone (`tests/m5/results/m5-wp4.md`).
+
+**Hosted check row 2 (2026-11-23, `tests/m5/results/m5-wp4.md`, "Gate check row 2"): confirmed on one install.** On a gray fault on c (rate 0.3, 3 s hangs), `graft-ops` drained c at entry 173, 134.8 s after the fault (the replay gave 126 s). Both observers read c at 13.5 to 14.1% over 5 minutes, on 2,958 to 7,606 calls; the run before read 4.5% from o0, just under 5 x. It undrained c at entry 174, 15 min 34.0 s after the lift (the replay gave 15 min 40 s), at 0.80 to 0.90% over 15 minutes. Steady load at 2x and 1x read 0.07 to 0.17 x, with no false drain. One install, so R41 stays open.
 
 **Decision.** `ALLOWED_MISS_DENOM` 100 [measured, one install], `DRAIN_BURN` 5 x over `DRAIN_WINDOW` 5 min, `MIN_CALLS` 300, `UNDRAIN_BURN` 2 (under 2 x) over `UNDRAIN_AFTER` 15 min. The two-observer rule is unchanged.
 
