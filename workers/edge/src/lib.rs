@@ -1244,14 +1244,57 @@ pub(crate) async fn install_authz(c: &Ctx<'_>) -> Option<graftyard_identity::Aut
             None => c.system_record(ChainId::Names(account_shard(account))).await.ok(),
         };
         let read = |r: PlacementRecord| async move { authz_read(c, account, &r).await };
-        let started = guess.map(|r| (r.clone(), read(r)));
-        link(started, placement(c, account), read).await.ok()?.map(|(_, f)| f)
+        install_link(guess, placement(c, account), read).await.ok()?
     };
     // Boxed: the link holds two `Authz` reads, and inline in `fetch`'s future it took the edge past wasm's 1 MiB
     // stack on every request, as `beside` did (`tests/edgeboot/run.sh`).
     let got = Box::pin(read).await;
     c.install.replace(Some(got.clone()));
     got
+}
+
+/// `install_authz`'s two reads: the fold read on the guessed record beside the `Placement` read, kept when the row
+/// differs from the guess only in `at` (`kept_guess`), else read again on the row, as `link` does.
+async fn install_link<T, E, F1, F2>(
+    guess: Option<PlacementRecord>,
+    placement: F1,
+    read: impl Fn(PlacementRecord) -> F2,
+) -> std::result::Result<Option<T>, E>
+where
+    F1: std::future::Future<Output = std::result::Result<Option<PlacementRecord>, E>>,
+    F2: std::future::Future<Output = std::result::Result<Option<T>, E>>,
+{
+    let fresh = {
+        let guess = guess.clone();
+        async move { Ok(placement.await?.map(|r| kept_guess(guess.as_ref(), r))) }
+    };
+    let started = guess.map(|r| (r.clone(), read(r)));
+    Ok(link(started, fresh, read).await?.map(|(_, t)| t))
+}
+
+/// The install's `Placement` answer as `link` compares it with the guess: the guess itself when the two differ only in
+/// `at`, which no read uses, else the answer. The genesis `Names` record a cold isolate guesses is stamped `at` 1 and
+/// the install's row a later `at` (5 on graft-m1), so compared whole the guess was dropped on every cold isolate and
+/// the fold read waited behind the `Placement` read (B0-34 cw2: `install` median 199 ms past its `authz:1` read;
+/// `decisions/DECISIONS.md`, "`cold-write`", cw3).
+fn kept_guess(guess: Option<&PlacementRecord>, fresh: PlacementRecord) -> PlacementRecord {
+    fn same(a: &PlacementRecord, b: &PlacementRecord) -> bool {
+        // Destructured, so a field added to the record is compared or named here before this builds.
+        let PlacementRecord { name, sites, home, generation, moving_from, at: _ } = a;
+        *name == b.name
+            && *sites == b.sites
+            && *home == b.home
+            && *generation == b.generation
+            && match (moving_from, &b.moving_from) {
+                (None, None) => true,
+                (Some(x), Some(y)) => same(x, y),
+                _ => false,
+            }
+    }
+    match guess {
+        Some(g) if same(g, &fresh) => g.clone(),
+        _ => fresh,
+    }
 }
 
 /// Whether a push by `who` reads the install's `Authz` anyway: under 32.8 every push asks `agents::agentish`, which
@@ -5102,6 +5145,49 @@ mod tests {
         // A fresh read that fails fails the chain, guess or not.
         let down = |_: u8, _: u8| Err::<Option<u32>, _>("down".to_string());
         assert_eq!(run_chain(Some((1, 7)), Some(1), Some(7), down).0, Err("down".into()));
+    }
+
+    /// cw3: the install's guessed fold read is kept when the real `Placement` row differs from the guess only in `at`,
+    /// and read again on the real row when any field a read uses differs: name, sites, home, generation, or
+    /// `moving_from`, whose own `at` again does not count.
+    #[test]
+    fn the_install_guess_is_kept_across_the_stamp_and_dropped_on_any_other_field() {
+        use futures_util::FutureExt;
+        let genesis = record(PlacementName::Tri, &[0, 1, 2], 0);
+        let run = |guess: PlacementRecord, real: PlacementRecord| {
+            let reads = std::cell::RefCell::new(Vec::new());
+            let read = |r: PlacementRecord| {
+                reads.borrow_mut().push(r.clone());
+                std::future::ready(Ok::<_, String>(Some(r)))
+            };
+            let fresh = std::future::ready(Ok::<_, String>(Some(real)));
+            let got = super::install_link(Some(guess), fresh, read).now_or_never().expect("ready");
+            (got.unwrap().unwrap(), reads.into_inner())
+        };
+        let stamped = PlacementRecord { at: Timestamp(5), ..genesis.clone() };
+        let (answer, reads) = run(genesis.clone(), stamped);
+        assert_eq!((answer, reads.len()), (genesis.clone(), 1), "a guess that differs only in `at` is kept");
+        let others = [
+            ("generation", PlacementRecord { generation: 2, ..genesis.clone() }),
+            ("moving_from", PlacementRecord { moving_from: Some(Box::new(genesis.clone())), ..genesis.clone() }),
+            ("home", PlacementRecord { home: SiteId(1), ..genesis.clone() }),
+            ("sites", record(PlacementName::Tri, &[0, 1, 3], 0)),
+        ];
+        for (field, real) in others {
+            let (answer, reads) = run(genesis.clone(), PlacementRecord { at: Timestamp(5), ..real.clone() });
+            assert_eq!(answer.generation, real.generation, "{field}");
+            assert_eq!(reads.len(), 2, "a guess that differs in {field} is read again");
+            assert_eq!(reads[1], PlacementRecord { at: Timestamp(5), ..real }, "{field}: on the real row");
+        }
+        // `moving_from` compares as a record: its own `at` alone does not count, its members do.
+        let moved = |from: PlacementRecord| PlacementRecord {
+            generation: 2,
+            moving_from: Some(Box::new(from)),
+            ..genesis.clone()
+        };
+        let guess = moved(genesis.clone());
+        assert_eq!(run(guess.clone(), moved(PlacementRecord { at: Timestamp(9), ..genesis.clone() })).1.len(), 1);
+        assert_eq!(run(guess, moved(PlacementRecord { generation: 3, ..genesis.clone() })).1.len(), 2);
     }
 
     /// `beside`: rows read beside the front on a guessed repository are kept only when the resolve answered that same

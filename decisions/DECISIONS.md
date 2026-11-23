@@ -8860,6 +8860,16 @@ cw2's marks with `tests/coldwrite/hosted/price.py` (a model over the measured st
   config (`learn_config`). The pass should then try the config's member on that site, in place of the next bootstrap
   name, within the same SPREAD_TRIES. Priced as the upper bound above: median 778 to 760, p90 1,132 to 1,067. With
   lever 1: median 597, p90 879, p99 1,442 (git arm median 433, p90 458).
+- **Built, 2026-11-23: lever 1 only** (`kept_guess` and `install_link` in `workers/edge/src/lib.rs`; test
+  `the_install_guess_is_kept_across_the_stamp_and_dropped_on_any_other_field`; `tests/m0carried/plant100.py`, 8 of 8
+  caught). The comparison is field by field over `name`, `sites`, `home`, `generation` and `moving_from` (compared
+  the same way), with `at` alone left out.
+- **Lever 2' is not built: its premise is wrong.** The removed member's answer carries its own last config, not the
+  group's. `authz:7100001#1#f1` answers `notLeader` with config 211, `Degraded`, lost site 1, voters `#1#f0`, `#1#f1`
+  and `#1#f2` (`/read` with `index`, graft-m1, 2026-11-23). The site-1 voter `#3#f1` is in config 212, which the
+  removed member never received. `learn` already leaves out a `Degraded` config's lost site, so the pass moves to the
+  next member (F2 in all 9 of cw2's cases), as lever 2' would have done. Saving the F1 try needs the isolate to know
+  config 212 before its first read, which no answer it holds by then gives it. Back with the lead.
 - **Merges (B0-29, `tests/am1/results/b029-m4a.md`, A45): same code in part, small effect.**
   - A REST merge does not read the install `Authz` (no `install` mark on any of 332 merges; `admission` returns
     before it for a user token), so lever 1 does not reach it.
