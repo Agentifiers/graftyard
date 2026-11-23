@@ -2393,7 +2393,8 @@ async fn transfer(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, method: 
     let Ok(repo) = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(repo_id))).await else {
         return Ok(Reply::not_found());
     };
-    match crate::read_gate(c, &repo, Some(&who), None).await? {
+    let share = if c.read_class.get() { crate::colo::READ } else { crate::colo::OFF };
+    match crate::read_gate(c, &repo, Some(&who), None, share).await? {
         Ok(graftyard_identity::Decision::Allow) => {}
         Ok(_) => return Ok(Reply::not_found()),
         Err(e) => return Ok(read_failed("the repository's access rows did not answer; retry", &e)),
