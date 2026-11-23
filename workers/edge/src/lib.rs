@@ -1159,7 +1159,12 @@ pub(crate) async fn advert_refusal(
     push: bool,
     budget: std::time::Duration,
 ) -> Option<u32> {
-    let says = advert_says(graftyard_lookup::advert(ChainId::Repo(repo.id), graftyard_lookup::now_ms()), budget);
+    let heard = graftyard_lookup::advert(ChainId::Repo(repo.id), graftyard_lookup::now_ms());
+    #[cfg(feature = "test-faults")]
+    let heard = c.advert_force.map_or(heard, |wait_ms| {
+        graftyard_lookup::Heard::Fresh(graftyard_lookup::Advert { wait_ms, retry_after_s: 1 })
+    });
+    let says = advert_says(heard, budget);
     if says == AdvertSays::Send {
         return None;
     }
@@ -1894,6 +1899,11 @@ struct Ctx<'a> {
     /// and no members still takes `beside`'s cold-guess path.
     #[cfg(feature = "test-faults")]
     link_guess: Option<(i64, i64)>,
+    /// B0-33 row B's pre-load probe (`x-graft-advert: <ms>` with the bed token): this request reads a fresh advert of
+    /// that wait, as if its group's leader had just advertised it, so a test install shows `advert_refusal` and its
+    /// `advert` mark before any agent loads (`tests/am1/rest/a1.mjs`, `--advert-probe`).
+    #[cfg(feature = "test-faults")]
+    advert_force: Option<u64>,
     /// `authenticate`'s token's App, when it is a user-to-server token.
     token_app: std::cell::Cell<Option<graftyard_identity::AppId>>,
     /// `authenticate`'s token's optional fields: a `github_pat_`'s scope, which REST reads check (`usertok::reaches`).
@@ -1980,6 +1990,8 @@ impl<'a> Ctx<'a> {
             colo_off: false,
             #[cfg(feature = "test-faults")]
             link_guess: None,
+            #[cfg(feature = "test-faults")]
+            advert_force: None,
             token_app: std::cell::Cell::new(None),
             token_fields: std::cell::RefCell::new(token_fields),
             agent_session: false,
@@ -4064,6 +4076,18 @@ async fn serve(
                 let (r, o) = v.split_once(',')?;
                 Some((r.trim().parse().ok()?, o.trim().parse().ok()?))
             }),
+        #[cfg(feature = "test-faults")]
+        advert_force: req
+            .headers()
+            .get("x-graft-advert")?
+            .filter(|_| {
+                lean_asked(
+                    true,
+                    req.headers().get("x-bed-token").ok().flatten().as_deref(),
+                    env.secret("BED_TOKEN").ok().map(|s| s.to_string()).as_deref(),
+                )
+            })
+            .and_then(|v| v.trim().parse().ok()),
     };
     // A site's SSH front reaches the key lookup and git, and nothing else (`ssh`).
     if c.ssh_front && !ssh::front_path(&path) {

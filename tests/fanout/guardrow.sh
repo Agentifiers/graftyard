@@ -5,15 +5,20 @@
 # could not judge, is re-placed on a fresh repository. At most two re-places; if the third placement is also
 # re-placed, the set stops and the sweep runs. pgA's guard (by colo name) let an ORD leader through; this one judges
 # what the host measures.
-#   TAG=<prefix> [A1_EXTRA="--seed-prs 1000"] [EXPECT=2.5] [RUN_STOP=10] [DAY_STOP=33]
+# GUARD_WANT=slow inverts it for a row that measures slow-host behaviour (B0-33 row B, edge refusal: on a kept host
+# the leader never advertised a wait past the 5 s bound, `tests/am1/results/edge-refusal.md`). A leader over the line
+# is kept and one at or under it is re-placed. Unknown still fails closed, and the line is not widened. Such a row
+# reads slow hosts only, against baselines in the same setup-CPU band, never as typical-host behaviour.
+#   TAG=<prefix> [GUARD_WANT=fast|slow] [A1_EXTRA="--seed-prs 1000"] [EXPECT=2.5] [RUN_STOP=10] [DAY_STOP=33]
 #   EDGE_LOG=tests/am1/raw/runs/fanout-pf-edge.log bash tests/fanout/guardrow.sh   -> /tmp/row-<prefix>.log
 # Runs are <prefix>A, <prefix>B, <prefix>C. Everything but the guard is costrow.sh's ROW=b033 row as pfA and pgA ran it.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source tests/m3/rows/env.sh
 export NODE_USE_ENV_PROXY=1 NO_PROXY="$NO_PROXY,.workers.dev" no_proxy="$NO_PROXY,.workers.dev"
-P=${TAG:?} L=/tmp/row-$P.log
-echo "start $(date -u +%FT%TZ) $(git rev-parse --short HEAD)" >> $L
+P=${TAG:?} L=/tmp/row-$P.log WANT=${GUARD_WANT:-fast}
+case $WANT in fast) KEEP=0 MOVE=3 ;; slow) KEEP=3 MOVE=0 ;; *) echo "GUARD_WANT=$WANT: fast or slow" >&2; exit 1 ;; esac
+echo "start $(date -u +%FT%TZ) $(git rev-parse --short HEAD) guard wants a $WANT host" >> $L
 python3 tests/fanout/edgever.py "${EDGE_LOG:?}" >> $L 2>&1
 need_retire=1
 for R in A B C; do
@@ -36,8 +41,9 @@ for R in A B C; do
     EXPECT=${EXPECT:-2.5} EDGE_LOG=$EDGE_LOG LEARNERS="enam:2000,weur:1000,apac:1000" A1_EXTRA="${A1_EXTRA:-} --hold-file $HOLD" \
     bash tests/fanout/costrow.sh &
   log=tests/am1/raw/runs/a1-b0-33-f$P$R-b033.log
-  # The guard: ask hostguard.py every 20 s until it answers keep (exit 0) or re-place (exit 3). Unknown (exit 2) keeps
-  # asking; a1 holds meanwhile. Fails closed: a1's own HOLD_WAIT_MS (300 s) ends it before load with no verdict.
+  # The guard: ask hostguard.py every 20 s until it answers keep (exit 0) or re-place (exit 3); with GUARD_WANT=slow
+  # the two swap. Unknown (exit 2) keeps asking; a1 holds meanwhile. Fails closed: a1's own HOLD_WAIT_MS (300 s) ends
+  # it before load with no verdict.
   rid="" verdict="" replaced=0
   while [ -z "$verdict" ]; do
     grep -q "^DONE$" tests/fanout/raw/costrow-$P$R.status 2>/dev/null && break
@@ -46,9 +52,9 @@ for R in A B C; do
     [ -z "$rid" ] && continue
     g=$(python3 -W ignore tests/fanout/hostguard.py graft-m2b-site-a "repo:$rid#1#f0" "$RF" 2>/dev/null); rc=$?
     case $rc in
-      0) verdict=$g; echo go > $HOLD; echo "$(date -u +%FT%TZ) run $R repo $rid $g; load released" >> $L ;;
-      3) verdict=$g; echo stop > $HOLD; replaced=1
-         echo "$(date -u +%FT%TZ) run $R repo $rid $g; GUARD: a1 ended before load, re-placing on a fresh repo" >> $L ;;
+      $KEEP) verdict=$g; echo go > $HOLD; echo "$(date -u +%FT%TZ) run $R repo $rid $g; $WANT host wanted, load released" >> $L ;;
+      $MOVE) verdict=$g; echo stop > $HOLD; replaced=1
+         echo "$(date -u +%FT%TZ) run $R repo $rid $g; GUARD: not a $WANT host, a1 ended before load, re-placing on a fresh repo" >> $L ;;
       2) ;;
       *) echo "$(date -u +%FT%TZ) run $R guard error (exit $rc), asking again" >> $L ;;
     esac
@@ -59,6 +65,10 @@ for R in A B C; do
   until grep -q "B033DONE" tests/fanout/raw/rows-$P$R.status 2>/dev/null; do sleep 15; [ -n "$(grep -l 'stopped:\|STOP:' tests/fanout/raw/costrow-$P$R.status 2>/dev/null)" ] && break; done
   echo "$(date -u +%FT%TZ) run $R done: $(tail -3 tests/fanout/raw/costrow-$P$R.status | tr '\n' ' ')" >> $L
   grep -q "stopped:\|STOP:" tests/fanout/raw/costrow-$P$R.status && { echo "$(date -u +%FT%TZ) run $R hit a stop, set stopped" >> $L; break; }
+  # a1's `--advert-probe` failing is the build, not the host: another placement would fail it too.
+  grep -q "advert probe failed" $log 2>/dev/null && { echo "$(date -u +%FT%TZ) run $R ADVERT PROBE FAILED before load, set stopped" >> $L; break; }
+  # Flip 1 (edge-refusal) is an invariant: a1 ended the window on it, and the set stops for the lead.
+  grep -q "FLIP1:" $log 2>/dev/null && { echo "$(date -u +%FT%TZ) run $R FLIP1: a non-agent write refused by the advert, set stopped" >> $L; break; }
   [ $replaced = 0 ] && break
   [ $R = C ] && echo "$(date -u +%FT%TZ) third placement re-placed too: set stopped, swept" >> $L
   need_retire=0

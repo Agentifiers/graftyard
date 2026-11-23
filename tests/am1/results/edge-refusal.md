@@ -107,8 +107,60 @@ and `fivexx20-pgA.jsonl`. They are joined to the advert sampled 5, 10, 15 and 20
 - **`workers/edge/src/api.rs`, `a_leader_full_on_an_issue_or_merge_command_is_429_with_its_retry_after`.**
 - **Plant 92** (`tests/m0carried/plant92.py`): 11 of 11 caught. Mutant 0 is main's bucket rate; mutant 1, a drain not capped at the bucket, is caught by `the_advertised_agent_rate_never_passes_the_bucket`.
 
+## Row B: plan, cleared by the lead on 2026-11-23
+
+The lead reordered B0-33: row B (this change alone, on graft-m2b from merged main) runs before LM-1's apply-cut row,
+which then gets its own row on top. LM-1, graft-m2b's owner, cleared the install for it. Nothing has run yet.
+
+**This row reads slow hosts only. It is not typical-host behaviour.**
+- On a host `tests/fanout/hostguard.py` keeps (28.4 ms or less of leader CPU a setup commit), the leader never
+  advertised a wait past the 5 s bound: blB 0 of 20 saturated 10 s windows (largest wait 2.9 s), sabA 0 of 21 (3.8 s).
+  On re-placed hosts it did: pfA 21 of 24 (48.2 s), pgA 7 of 22 (38.8 s) [measured, `agentdrain.py`]. So a kept host
+  predicts about 0 edge refusals and reads nothing.
+- So the guard is inverted (`guardrow.sh`, `GUARD_WANT=slow`): a1 loads only on a leader over the line, and a leader at
+  or under it is re-placed. Unknown still fails closed. At most three placements; if none is slow, the set stops and is
+  reported, and the line is not widened.
+- Each reading is compared only with baselines in the same setup-CPU band: 39.7 to 46.1 ms (pfA, pgA, ncA) or 31.0
+  to 31.5 ms (blA, blC2, chA).
+
+**Build and load.** One test-faults site day on graft-m2b from merged main, with a new shard image, then pfA's load
+(`costrow.sh` ROW=b033 under `guardrow.sh`, no `--seed-prs`), with `a1.mjs --advert-probe`: before the hold, the leader's
+`/status` must carry `agentRate` and `agentWaitMs`, and a forced advert (`x-graft-advert` with the bed token, test-faults
+only) must refuse an agent push and an agent REST write with `advert` and neither of the admin's. A failed probe exits
+before load and stops the set.
+
+**Stops.** RUN_STOP $4 a placement; DAY_STOP at graft-m2b's day at the site day's start plus $8; charged to the B0-33
+research budget.
+
+**Flip 1 is an invariant and stops the row.** a1 ends the load window on any human, merge or fast-user write that
+carries the `advert` mark, writes it as `flip1` in the row, and `guardrow.sh` stops the set for the lead.
+
+**Pass, against the matched slow baseline** [the lead's ruling]:
+
+| Line | Baseline | Pass |
+|---|---|---|
+| Edge 503s | pfA 6,754, pgA 5,205 | At most half |
+| Leader `full` rendered 503 | pfA 2,754, pgA 1,728 | 0 |
+| Shed reads while the advert passed 5 s | pfA 3,593, pgA 2,277 | Down by at least half |
+| Agent `full`s the leader refused (admission plus `expire_agents`) | pfA 3,774 + 4,689 | At most 25% |
+| `ERR_HTTP2_STREAM_ERROR` on agent pushes | pfA 1,371, pgA 2,251 | At most a third |
+| Human commit stage p99 | pfA 9,394, pgA 11,018 | At most two thirds, with 0 leader changes |
+
+Human p99 within 20% of the baseline is flip 5; between the two marks, one run is inconclusive.
+
+**The confound.** Merged main also carries reask-read and stage-first-2 on the paths this row uses. The `advert`
+stage, the `edgefull` lines and the leader-`full`-as-503 count belong to edge refusal alone; the 503 total and human
+p99 do not. The row reports reask-read's top-ups (`Trace::TopUp`) and stage-first's `stagefirst` marks beside them.
+
+**Instruments** (`b033.sh` appends them to `rows-TAG.status`):
+- `pushfull.py`: an `edge (advert)` stage for agent pushes, apart from `bound_at_send`, admission and `expire_agents`.
+- `a1.mjs`: `api429`, every API 429 by caller (agent or not) and shape (`advert` or the leader's own), and `flip1`.
+- `edgefull.py`: the `edgefull` lines from Workers Logs, per isolate (`refused`, `failOpen`, against the about one
+  fail-open an isolate a chain per ADVERT_TTL ceiling) and per 10 s window, joined to the leader's cuts for flips 2 to 4.
+  The cuts run on the leader's clock, 1 to 3.5 s behind Cloudflare's, so a window is read with the one before it.
+
 ## Open
 
-- The hosted row waits for LM-1's apply cut and its row (the lead's A-then-B order for B0-33).
+- Row B's results, when it runs.
 - Whether human p99 falls on a slow host is the row's question, not this file's. Edge refusal sheds agent work but does
   not cut apply CPU per entry at the same drain [inference].

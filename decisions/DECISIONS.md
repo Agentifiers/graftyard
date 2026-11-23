@@ -8676,8 +8676,9 @@ tool-overhead p50 run on the second hosted day.
 
 ### `edge-refusal`: the edge refuses an agent write at the leader's measured drain, before it reaches the leader, 2026-11-23
 
-**Status.** Code-only, on branch `edge-refusal`. The hosted row is B in the lead's A-then-B order for B0-33, after
-LM-1's apply cut and its row. B0-33 step 3; the lead approved the design on 2026-11-23.
+**Status.** Merged (a60beca2), not yet measured hosted. B0-33 step 3; the lead approved the design on 2026-11-23. Its
+hosted row (row B) runs before LM-1's apply-cut row, on slow hosts only, with the host guard inverted
+(`tests/am1/results/edge-refusal.md`, "Row B"); it does not describe a typical host.
 
 **Decision.**
 - The leader measures its agent drain: the agent commands its cuts take while its agent lane stays non-empty, over

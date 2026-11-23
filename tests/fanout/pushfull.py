@@ -2,6 +2,8 @@
 """pushfull.py A1_PUSHES.jsonl [FROM_ISO TO_ISO] -> where each refused agent push (`full`) was refused, by stage, as
 m3f read B0-32 (`tests/am1/results/lm1-rows-m3f.md`, "Why full grew from 20 to 190"), from the per-push
 `server-timing` a1 writes (`timing`):
+  - edge (advert): `advert;dur=<advertised wait ms>`, refused at `receive_pack` on the leader's advert before staging or
+    any send (`decisions/DECISIONS.md`, "`edge-refusal`");
   - edge: `bound;dur=0`, refused at `bound_at_send` before any send;
   - admission: sent, and the last `commit` stage under 600 ms, so the leader answered `Full` on arrival;
   - expire: the last `commit` stage 600 ms or more, so the command queued and `expire_agents` answered `Full` when its
@@ -48,6 +50,8 @@ for line in open(path):
         continue
     if not r.get("timing"):
         where["untimed"] += 1
+    elif "advert" in s and "commit" not in s:
+        where["edge (advert)"] += 1
     elif "bound" in s and "commit" not in s:
         where["edge (bound_at_send)"] += 1
     elif s.get("commit") and s["commit"][-1] < ADMIT_MS:
