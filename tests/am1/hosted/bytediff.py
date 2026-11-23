@@ -5,18 +5,34 @@ and gh's default Accept, against graft-m1-edge. Run once before a deploy and onc
 
 bytediff.py run OUT [ROUNDS]     ROUNDS passes (default 10) over the request list into OUT/<n>.json, each reply as
                                  {status, headers (sorted, minus volatile), body bytes as text}
-bytediff.py diff A B             every request whose status, kept headers, or body differs, after masking
-                                 x-github-request-id, date, and the server-timing headers; exit 1 on any difference
+bytediff.py diff A B             every request whose status, kept headers, or body differs from A's reply with the
+                                 same status, after masking x-github-request-id, date, the server-timing headers and
+                                 the etag's value; exit 1 on any difference
 
 The tokens come from ~/.graft-integ/tokens.txt (the wp6 owner and writer) and never reach argv or a log line.
+
+Another install sets BYTEDIFF_OWNER, BYTEDIFF_REPOS (space separated) and BYTEDIFF_TOKENS, a file of `name token` lines
+read by BYTEDIFF_TOKEN_NAMES (default `admin member`, the owner first, then the plain user every request is sent as).
+graft-m2b's, the B0-33 row's (`tests/fanout/guardrow.sh`, BYTEDIFF_OUT), with `tests/m3/rows/env.sh` sourced:
+  BYTEDIFF_OWNER=m3org BYTEDIFF_REPOS="j4 b034-mono" BYTEDIFF_TOKENS=$M3_STATE/m3-tokens.txt bytediff.py run OUT 3
 """
 import base64, glob, json, os, re, sys, time, urllib.error, urllib.request
 
 EDGE = os.environ.get("GRAFT_EDGE", f"https://graft-m1-edge.{os.environ['CF_WORKERS_SUBDOMAIN']}.workers.dev")
 HOME = os.path.expanduser("~/.graft-integ")
-TOKENS = [l.split()[0] for l in open(f"{HOME}/tokens.txt").read().split("\n") if l.strip()]
+
+
+def tokens():
+    if "BYTEDIFF_TOKENS" not in os.environ:
+        return [l.split()[0] for l in open(f"{HOME}/tokens.txt").read().split("\n") if l.strip()]
+    named = dict(l.split()[:2] for l in open(os.environ["BYTEDIFF_TOKENS"]) if len(l.split()) >= 2)
+    return [named[n] for n in os.environ.get("BYTEDIFF_TOKEN_NAMES", "admin member").split()]
+
+
+TOKENS = tokens() if sys.argv[1:2] == ["run"] else []
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
-OWNER, REPOS = "wp6", ["wp6j", "wp3m", "main"]
+OWNER = os.environ.get("BYTEDIFF_OWNER", "wp6")
+REPOS = os.environ.get("BYTEDIFF_REPOS", "wp6j wp3m main").split()
 VOLATILE = {"x-github-request-id", "date", "cf-ray", "server-timing", "report-to", "nel", "server", "alt-svc",
             "cf-cache-status", "content-length", "x-graft-timing"}
 
@@ -24,7 +40,9 @@ VOLATILE = {"x-github-request-id", "date", "cf-ray", "server-timing", "report-to
 def redact(s):
     for t in TOKENS:
         s = s.replace(t, "[redacted]")
-    return s
+    # The edge's host names the account's workers.dev subdomain, which a committed baseline must not hold: written as
+    # EDGE, the same in every run, so a diff still compares every URL the edge answers.
+    return s.replace(EDGE.split("//", 1)[-1], "EDGE")
 
 
 def call(method, path, token, body=None):
@@ -78,7 +96,7 @@ def requests():
                         {"query": q, "variables": v, "operationName": d.get("operation")}))
     out += [("meta", "GET", "/api/v3/meta", None, None), ("user", "GET", "/api/v3/user", 1, None),
             ("rate", "GET", "/api/v3/rate_limit", 1, None), ("notfound", "GET", "/api/v3/nope", None, None),
-            ("agents-v3", "GET", "/api/v3/agents/repos/wp6/wp6j/tasks", 1, None)]
+            ("agents-v3", "GET", f"/api/v3/agents/repos/{OWNER}/{REPOS[0]}/tasks", 1, None)]
     return out
 
 
@@ -107,26 +125,40 @@ def run(out, rounds):
 
 
 def norm(c):
-    h = [(k, v) for k, v in c["headers"] if not k.startswith("x-ratelimit")]
+    # An `etag` is kept but not its value, which follows the repository's state, not the release: graft-m2b's m3org/j4
+    # answered byte-identical bodies under three etags in three rounds (2026-11-23).
+    h = [(k, "*" if k == "etag" else v) for k, v in c["headers"] if not k.startswith("x-ratelimit")]
     return c["status"], h, mask(c["body"])
 
 
 def diff(a, b):
-    bad = 0
-    total = 0
+    """Each reply against A's first reply to the same request with the same status. A 5xx whose status A never
+    answered that request is load, not a release: counted as unavailable and not compared (a tierOff shed on
+    graft-m2b's idle m3org/j4 answered one round of three, 2026-11-23), unless more than a tenth of B's replies are,
+    which is a release answering 5xx, not load. Any other status A never answered differs."""
+    bad = total = unavailable = 0
     fa, fb = sorted(glob.glob(f"{a}/*.json")), sorted(glob.glob(f"{b}/*.json"))
-    base = json.load(open(fa[0]))
+    base = {}
+    for f in fa:
+        for k, v in json.load(open(f)).items():
+            base.setdefault(k, {}).setdefault(v["status"], v)
     for f in fa + fb:
         cur = json.load(open(f))
         for k, v in cur.items():
             total += 1
-            if norm(v) != norm(base[k]):
+            was = base.get(k, {}).get(v["status"])
+            if was is None and v["status"] >= 500:
+                unavailable += 1
+                continue
+            if was is None or norm(v) != norm(was):
                 bad += 1
+                old = was or next(iter(base.get(k, {}).values()), {"status": None, "headers": [], "body": ""})
                 if bad <= 20:
                     print(f"DIFF {os.path.basename(os.path.dirname(f))}/{os.path.basename(f)} {k}: "
-                          f"{norm(base[k])[0]} -> {norm(v)[0]}\n  before {norm(base[k])[2][:300]}\n  after  {norm(v)[2][:300]}")
-    print(f"{total} replies compared against {os.path.basename(fa[0])} of {a}, {bad} differ")
-    return bad
+                          f"{norm(old)[0]} -> {norm(v)[0]}\n  before {norm(old)[1]} {norm(old)[2][:300]}"
+                          f"\n  after  {norm(v)[1]} {norm(v)[2][:300]}")
+    print(f"{total} replies compared against {a}, {bad} differ, {unavailable} unavailable (a 5xx {a} never answered)")
+    return bad + (unavailable if unavailable * 10 > total else 0)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,19 @@ PY
 }
 echo "start $(date -u +%FT%TZ) $(git rev-parse --short HEAD) guard wants a $WANT host" >> $L
 python3 tests/fanout/edgever.py "${EDGE_LOG:?}" >> $L 2>&1
+# The GHES invariant (AGENTS.md) before any load: plain-PAT REST and GraphQL reads against the edge, diffed with the
+# baseline BYTEDIFF_BASE took on an earlier edge (`tests/am1/hosted/bytediff.py`; the lead's ruling of 2026-11-23). Any
+# difference stops the set before its first placement. BYTEDIFF_BASE= (empty) skips it.
+BD_BASE=${BYTEDIFF_BASE-tests/fanout/raw/bytediff-m2b-pb}
+if [ -n "$BD_BASE" ]; then
+  BD=/tmp/bytediff-$P; rm -rf $BD
+  BYTEDIFF_OWNER=m3org BYTEDIFF_REPOS="j4 b034-mono" BYTEDIFF_TOKENS=$M3_STATE/m3-tokens.txt \
+    python3 tests/am1/hosted/bytediff.py run $BD 1 > $BD.log 2>&1
+  python3 tests/am1/hosted/bytediff.py diff $BD_BASE $BD > $BD.diff 2>&1; bd=$?
+  echo "$(date -u +%FT%TZ) bytediff against $BD_BASE: $(tail -1 $BD.diff)" >> $L
+  [ $bd = 0 ] || { echo "$(date -u +%FT%TZ) BYTEDIFF: a plain-PAT reply differs ($BD.diff), set stopped before load" >> $L
+    echo "ROW${P}DONE" >> $L; exit 1; }
+fi
 need_retire=1
 for R in A B C; do
   RF=$(date -u +%FT%TZ)
