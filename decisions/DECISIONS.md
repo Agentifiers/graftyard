@@ -8855,9 +8855,13 @@ tool-overhead p50 run on the second hosted day.
 
 ### `edge-refusal`: the edge refuses an agent write at the leader's measured drain, before it reaches the leader, 2026-11-23
 
-**Status.** Merged (a60beca2), not yet measured hosted. B0-33 step 3; the lead approved the design on 2026-11-23. Its
-hosted row (row B) runs before LM-1's apply-cut row, on slow hosts only, with the host guard inverted
-(`tests/am1/results/edge-refusal.md`, "Row B"); it does not describe a typical host.
+**Status.** Merged (a60beca2). B0-33 step 3; the lead approved the design on 2026-11-23.
+- Its hosted row (row B, erBA) ran on a slow host only (`tests/am1/results/edge-refusal.md`, "Row B: erBA"), so it does
+  not describe a typical host.
+- Flip 1 was not met: no Human, Bot or MergeQueue write was refused. The leader-`full` 503s fell to 0 and the h2 errors
+  to 1.
+- **Flip 4 is met.** On erBA, 6,032 Agent writes were sent on a lapsed advert, and the leader still refused 6,433, 76% of
+  pfA's count. So the fail-open path needs a bound, designed before code.
 
 **Decision.**
 - The leader measures its agent drain: the agent commands its cuts take while its agent lane stays non-empty, over
