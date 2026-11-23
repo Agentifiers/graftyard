@@ -11,7 +11,8 @@
 // "<name>", ..., "edge": "<name>"}, "deploy_token": <secret name>, "executor_key": <secret name>, "drain_key": <secret
 // name>, "releases": <release bucket>, "gate": "pending", "step_dwell_ms": n, "first_day_ms": n}`; the last three are
 // optional, and the dwells are for test installs only. BF-39's `"test_faults": true` builds the test-faults Worker and
-// takes `"ops_kill": n`, `"step_min_entries": n` and `"cron"`, each ignored without it. M5-WP6's `Rotate`:
+// takes `"ops_kill": n`, `"step_min_entries": n`, `"rotate_published_ms": n` (BF-46: `MintWrapKey`'s publish wait) and
+// `"cron"`, each ignored without it. M5-WP6's `Rotate`:
 // `"slots": {"DEPLOY_TOKEN": [<slot 0 secret name>, <slot 1 secret name>], "READ_TOKEN": [...], "MINT_WRAP_KEY": [...]}`
 // binds both slots of each as `<NAME>_0` and `<NAME>_1`, and the `Release` view names the active one
 // (`src/exec.rs`, `slot_binding`), so a `Rotate` ships no new version. Without it the unslotted bindings stand for slot 0.
@@ -84,6 +85,7 @@ if (executor) {
     ...(executor.first_day_ms != null ? { FIRST_DAY_MS: String(executor.first_day_ms) } : {}),
     ...(faults && executor.ops_kill != null ? { OPS_KILL: String(executor.ops_kill) } : {}),
     ...(faults && executor.step_min_entries != null ? { OPS_STEP_MIN_ENTRIES: String(executor.step_min_entries) } : {}),
+    ...(faults && executor.rotate_published_ms != null ? { OPS_ROTATE_PUBLISHED_MS: String(executor.rotate_published_ms) } : {}),
   };
   // `"cron": "* * * * *"` for BF-39's kills on a test install; the design's cadence otherwise.
   cfg.triggers = { crons: [faults && executor.cron ? executor.cron : "*/5 * * * *"] };

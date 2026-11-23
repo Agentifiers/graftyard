@@ -53,7 +53,7 @@ Tests (`crates/release/src/tests/group/run.rs`, through `ops::run` against the r
   holds `ROTATE_PUBLISHED_FOR` equal to `INSTALLATION_TOKEN_TTL`.
 - `cli` `a_rotate_intent_names_its_secret_and_slot`: `release entry` builds `{"Rotate": {"secret", "slot"}}`.
 
-plant95 (`tests/m0carried/plant95.py`): 14 of 14 caught.
+plant95 (`tests/m0carried/plant95.py`): 14 of 14 caught; 15 of 15 with BF-46 hosted prep's publish-wait mutant (2026-11-23).
 
 No wire enum changed: `Intent::Rotate`, `SecretName` and every tag are as before. `RotateStep` is new and never
 encoded; `rotate_steps` is a stored format up to each list's switch, because `apply` moves the slot at that index.
@@ -64,6 +64,53 @@ encoded; `rotate_steps` is a stored format up to each list's switch, because `ap
   the old value unused after the switch. It needs a `graft-ops` deployed with both slots of each bound, which is a new
   version of `graft-ops` (an `OpsRoll`, not a site day).
 - R45's rows.
+
+## BF-46 hosted: plan and prep (2026-11-23, $0; the run is cleared for graft-m4a after 00:00Z on 2026-11-24)
+
+The lead cleared the row with a $5 stop. M4-WP4 handed graft-ops over at 11:34Z, but graft-m4a's UTC day was at
+$35.23 of its $40 cap, so the row runs on the next UTC day. The driver is `tests/m5/bf46/row.sh`, with the phases
+setup, rotate, watch, logs, teardown and lists. Every log it writes goes through a scrub, and no token value is
+printed.
+
+- **Throwaway tokens, not the install's.**
+  - DeployToken: slots 0 and 1 are two new account tokens with Workers Scripts Write and Workers Containers Write.
+    Slot 0 is the secret graft-ops already binds, which held M4-WP4's revoked token.
+  - ReadToken: slots 0 and 1 are two new tokens with Workers R2 Storage Read.
+  - MintWrapKey: slot 1 is a new kid 2 drawn by `mintkey`. Slot 0 stays the install's kid 1.
+  - All four tokens are revoked at teardown, and the four new store secrets are deleted. The store holds 17 of its 100
+    secrets, so the row's four fit.
+- **Deployed with `deploy.mjs`, not by an `OpsRoll`.**
+  - Binding both slots is a binding change. An `OpsRoll` uploads with `keep_bindings` and changes only code
+    (`decisions/DECISIONS.md`, the `graft-ops` executor entry), and graft-m4a's group holds no Ops release.
+  - So the row deploys graft-ops with `workers/ops/deploy.mjs --executor` and its `"slots"` option, as every graft-m4a
+    ops deploy has been, from main once this head merges, because the publish-wait override below is in it.
+  - The build is test-faults with `GATE=pending` and a 1-minute cron.
+  - The switches then ship no version, which is what BF-46 measures: the ops deployment's version is read before and
+    after each `Rotate`.
+- **MintWrapKey's wait is lowered, and the results will say so.** `OPS_ROTATE_PUBLISHED_MS`, which only a test-faults
+  build reads (`tests/m5/opsfaults.sh`: product 0, test-faults 1), sets the publish wait to 10 minutes instead of one
+  hour. An hour of graft-m4a at its idle rate is cheap, but the row's other legs would wait on it. The retire it
+  commits is still dated `switched + SIGNING_KEY_CACHE + JOB_TOKEN_MAX + CLOCK_SKEW`, about 25 h later, so kid 1 stays
+  valid past the row.
+- **Live traffic.** `tests/m5/bf46/mint.mjs` mints an installation token through the edge every 10 s and reads
+  `m3org/j4` with it, recording each answer's status and the token's `kid`. A switch shows up as the kid moving from 1
+  to 2 within `SIGNING_KEY_CACHE` with no failed mint. A dry run at 12:14Z answered 201 with kid 1, and the read
+  answered 200.
+- **What the row reports.**
+  - Each probe's answer: the script count, and the bucket's location.
+  - Each `Switch`'s `IntentStep` index and time, and the slot read from the group after it.
+  - The publish and retire rows on `tokens:0`, with the time between publish and switch.
+  - The ops version before and after each switch.
+  - The mint counts, by status and kid.
+- **Restore.**
+  - Every slot goes back to 0 by a second `Rotate` of each secret. MintWrapKey's goes back to kid 1: its publish
+    rewrites kid 1's row with no `retired`, which clears the retire the first rotation set, and its retire dates kid 2
+    about 25 h out.
+  - graft-ops is redeployed from main `ad8fd52f` with 4bbfd9e5's configuration. `~/.graft-m4a/ops/exec-ck-pending.json`
+    was rebuilt from 4bbfd9e5's own bindings: `GATE=pending`, `OPS_STEP_MIN_ENTRIES` 50, both dwells at 60 s, and no
+    slots. Then the cron is turned off.
+- **Stop.** $5 on graft-m4a's day, counted with `tests/fanout/acctcost.py` (`PREFIX=graft-m4a`). graft-m4a idle cost
+  $0.01 from 11:35Z to 11:55Z.
 
 ## BM-5's revocation mid-roll, in memory (2026-11-23, code only)
 
