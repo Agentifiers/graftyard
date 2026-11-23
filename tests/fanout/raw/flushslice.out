@@ -1,0 +1,12 @@
+mrB: plain slices n 12482: CPU = 0.12 + 0.190 ms a call + 0.0072 ms an answer KB
+  one-statement flush slices n 68: CPU mean 5.3 p50 2.0; they answered 5.8 calls of 235 KB; answers predict 2.9; left mean 2.4 p50 0.2; with a storage confirm in the slice: 3
+  per entry replicated (~591): 2.1 call copies of 168 KB, 4.3 learner copies (4 learners), 574 KB held in answers
+m3fsf2-b0-32: plain slices n 976: CPU = 0.15 + 0.289 ms a call + 0.0075 ms an answer KB
+  one-statement flush slices n 8: CPU mean 22.9 p50 11.5; they answered 15.9 calls of 336 KB; answers predict 7.3; left mean 15.6 p50 5.3; with a storage confirm in the slice: 2
+  per entry replicated (~20): 1.9 call copies of 107 KB, 7.8 learner copies (8 learners), 684 KB held in answers
+m3fsf1-b0-32: plain slices n 889: CPU = 0.05 + 0.234 ms a call + 0.0047 ms an answer KB
+  one-statement flush slices n 5: CPU mean 3.2 p50 1.0; they answered 8.8 calls of 183 KB; answers predict 3.0; left mean 0.2 p50 -0.5; with a storage confirm in the slice: 0
+  per entry replicated (~27): 1.9 call copies of 47 KB, 7.1 learner copies (8 learners), 406 KB held in answers
+m3fg3-b0-32: plain slices n 565: CPU = 0.17 + 0.408 ms a call + 0.0081 ms an answer KB
+  one-statement flush slices n 3: CPU mean 16.3 p50 6.0; they answered 15.0 calls of 262 KB; answers predict 8.4; left mean 7.9 p50 -0.0; with a storage confirm in the slice: 0
+  per entry replicated (~14): 2.4 call copies of 140 KB, 9.6 learner copies (8 learners), 1012 KB held in answers

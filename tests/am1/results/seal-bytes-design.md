@@ -230,3 +230,113 @@ client's `at`, so a time window paired some asks with their neighbour's CPU.
 
 **Cost.** graft-m2b's day went from $16.22 at the handover to $16.37 after the site day and $16.43 after the row: $0.21
 in all, against the $3 stop. The sweep reported no shard container running.
+
+## 8. Lever A's bed split, and what fills the hosted flush slice (2026-11-23)
+
+The lead cleared this split at $0 after section 7 (no hosted run). There are two questions. What is a one-statement
+flush slice's other 4 to 22 ms made of? And does encoding each entry once save 7 to 10 ms an entry at 128 KB and 10
+peers?
+
+**What a one-statement flush slice holds** [measured, `tests/fanout/flushslice.py` on the committed traces, output in
+`tests/fanout/raw/flushslice.out`]. Each `/raft` slice's CPU also pays for the learner calls it answers. Their answers
+are mostly held AppendEntries (`Trace::RaftCall`). The script fits CPU on calls and answer KB over each row's plain
+slices (no apply, flush, send or confirm), and uses that fit to predict each flush slice's answers:
+
+| Row | Plain-slice fit | Flush slices | CPU mean, p50 | Calls, answer KB | Answers predict | Left, mean and p50 |
+|---|---|---|---|---|---|---|
+| mrB | 0.12 + 0.190 a call + 0.0072 a KB | 68 | 5.3, 2.0 | 5.8, 235 | 2.9 | 2.4, 0.2 |
+| m3fsf2 (52.5) | 0.15 + 0.289 + 0.0075 | 8 | 22.9, 11.5 | 15.9, 336 | 7.3 | 15.6, 5.3 |
+| m3fsf1 (27.3) | 0.05 + 0.234 + 0.0047 | 5 | 3.2, 1.0 | 8.8, 183 | 3.0 | 0.2, −0.5 |
+| m3fg3 (55.8) | 0.17 + 0.408 + 0.0081 | 3 | 16.3, 6.0 | 15.0, 262 | 8.4 | 7.9, 0.0 |
+
+- **The "flush slice" is mostly a learner-answer slice.** At the median, the calls the slice answered explain all of
+  its CPU on every row (left p50 between −0.5 and 5.3 ms). The means are pulled up by a few slices: mrB's 128 ms
+  outlier, and m3fsf2's 77 and 47 ms slices, two of which carried a storage confirm.
+- **Answer bytes cost 0.0047 to 0.0081 ms a KB hosted**, plus 0.19 to 0.41 ms a call. A postcard envelope encode is
+  0.0036 ms a KB in the bed (below), so an answer costs about one encode of what it carries at 1.3 times the bed
+  (m3fsf1) to 2.0 (mrB) and 2.1 to 2.3 (m3fsf2, m3fg3), plus the request.
+- **So section 7's "other 4 to 22 ms" is learners, not the flush.** Sections 3 and 4 priced the one-row flush at
+  16 to 23 ms on slow hosts because these slices were taken as flush-only. They are not: each answered 9 to 16 learner
+  calls carrying 180 to 800 KB of held entries.
+
+**Copies of each entry leaving the leader** [measured, same traces, per entry replicated in the window]:
+- mrB: 2.1 call copies (the two voters) of 168 KB and 4.3 learner copies (4 learners), 574 KB held in answers.
+- m3fsf2: 1.9 call copies of 107 KB and 7.8 learner copies (8 learners), 684 KB in answers.
+- m3fg3: 2.4 call copies of 140 KB and 9.6 learner copies, 1,012 KB in answers.
+- That is 6.4 to 12 copies an entry, about what "10 peers" assumed, and each copy is one envelope encode.
+
+**The bed's encodes** [measured, local workerd, `tests/leaderprof/encodes.sh` (`/encodes` in the bed), five asks at
+each size, 30 reps a stage, medians, ms]. The entry is B0-33's 60-command mix, with one inline pack of the given size
+and every other push stored. `raw_*` and `clone` read 0.0 to 0.03 at every size.
+
+| Inline KB | Canonical KB | Envelope KB | `raft::digest` | of it SHA-256 | `log` row | Envelope encode | Envelope decode | Pack as base64, encode / decode |
+|---|---|---|---|---|---|---|---|---|
+| 4 | 11 | 11 | 0.13 | 0.13 | 0.07 | 0.07 | 0.07 | 0.03 / 0.00 |
+| 32 | 39 | 48 | 0.37 | 0.37 | 0.20 | 0.20 | 0.23 | 0.17 / 0.17 |
+| 72 | 79 | 102 | 0.77 | 0.73 | 0.37 | 0.37 | 0.47 | 0.33 / 0.40 |
+| 95 | 102 | 132 | 0.97 | 0.97 | 0.47 | 0.47 | 0.60 | 0.43 / 0.53 |
+| 128 | 135 | 176 | 1.30 | 1.23 | 0.60 | 0.63 | 0.77 | 0.57 / 0.73 |
+| 256 | 263 | 347 | 2.47 | 2.47 | 1.23 | 1.23 | 1.60 | 1.20 / 1.50 |
+
+- **The digest is SHA-256.** `encode_entry` itself is 0.03 ms or less at every size, so the length checks
+  (`append_batch`, the catch-up and `Host::send`'s held bytes) cost nothing, and so does cloning an entry.
+- **A postcard encode, the `log` row or an envelope, is almost all base64.** `PackRef::Inline` serializes as base64
+  (`pack::b64`). At 128 KB the pack's base64 is 0.57 of the envelope's 0.63 ms. The same bytes as postcard bytes
+  encode and decode in 0.03 ms or less.
+
+**Lever A as designed: confirmed in range, but only at the top.** It keeps `push_entry`'s digest for
+`Write::Append`, saving one SHA-256, and encodes the envelope once for every copy. At 128 KB that is
+1.30 + (copies − 1) × 0.63 ms: **4.7 ms at 6.4 copies (mrB's count), 7.0 at 10, and 8.2 at 12** [measured unit costs,
+counted copies]. At B0-32's real entry sizes (section 4's correction), it is 4.0 ms an entry on m3fsf2 (72 KB, 9.7
+copies) and 6.1 on m3fg3 (95 KB, 12 copies). So 7 to 10 ms holds at 128 KB with 10 or more copies, and the condition
+reads **met at the bed's terms, under them at B0-32's measured sizes**.
+
+**Hosted, this work costs 1.3 to 2.3 times the bed**, by the answer-byte fit above, not the 7 to 50 times SQLite
+calls cost. Scaled so, lever A is about 8 ms an entry on m3fsf2 (4.0 × 2.1) and 14 on m3fg3 (6.1 × 2.3). Their
+leaders' CPU on all routes over the burst window is 2,550 ms and 1,835 ms. Over the entries those leaders replicated
+in it (about 20 and 14, by the AppendEntries rows' index span), that is 128 and 131 ms an entry, and lever A is 6 to
+11% of it. Over the 9 and 6 entries `heavyturns.py` counts as applied in joined slices, it is 3 to 5%. So x ≈ 0.89
+to 0.97: m3fsf2's line about 284 to 290 (section 4's marks: ×0.9 → 289), against ×0.63 for 450, and m3fg3 flat (it
+needs ×0.2). B0-33's mrB entries carry 8 to 10 KB inline, so lever A is under 1 ms an entry there.
+
+**A cheaper and larger lever in the same place: base64 out of the wire and the row** [inference from the table].
+Every copy of an inline pack, in the `log` row, every envelope and every `/entries` page, is base64 inside postcard.
+Encoding is 90% of an envelope's cost, and decoding the same again on each receiver. Bytes would make every encode
+and decode of the pack about free. They would also cut the canonical encode's hash input by nothing (SHA-256 runs
+over the raw pack either way), and every copy's size by 25%.
+- At 128 KB and 10 copies, alone, it removes 10 × 0.57 (envelopes) + 0.57 (row) ≈ 6.3 ms of the leader's encodes in
+  the bed, about 13 ms on a slow host. It also removes 0.73 ms of decode on every receiver, and a quarter of the bytes
+  held and sent.
+- With lever A in, the leader encodes each entry once, so base64 removal adds only that one encode's and the row's
+  base64 (about 1.1 ms at 128 KB). Together they take the bed's 9.5 ms of encodes at 128 KB and 10 copies (two
+  digests, the row, ten envelopes) to about 2: one SHA-256 and the envelopes' frames. Its own value after lever A is
+  the receivers' decode and the bytes.
+- **But it is a wire change.** `PackRef::Inline`'s serialized form is in the stored `log` row and in every
+  member-to-member envelope, so it changes `CODEC_VERSION` or `PackRef` (`crates/git/tests/wire_tags.golden` makes
+  variants append-only), and old rows must still read. It also needs a site day, and a rolling deploy mixes codecs
+  between members.
+- I'd scope it only for the receivers and the bytes. Both together, at B0-32's sizes and the hosted scale, take
+  about 10 to 16 ms an entry off the leader: x ≈ 0.88 to 0.92 by the replicated count, m3fsf2's line about 287 to
+  290, still short of ×0.63.
+
+**Second condition, my reading.** It holds only as "7 to 10 ms at 128 KB and 10 peers" in the bed; it is 4 to 6 ms
+at B0-32's measured entries (8 to 14 hosted). Either way it is 3 to 11% of a slow leader's per-entry CPU, so it can't
+lift B0-32 alone, as section 4 said. Its value is that it is pure CPU with no behavior change (`decide`, the log, the wire and every
+reply byte unchanged), and it compounds with base64 removal. It is a lead's call whether 3 to 11% is worth a raft
+change, the long sweep and Porcupine.
+
+**Design sketch, if built** (nothing built). Raft keeps the digest and size it already computes per entry.
+1. `crates/raft`: `Write::Append` carries `(LogEntry, Digest)` (or the member exposes `digest_of(i)`, which it
+   already has), and `SqlStore::write` uses it instead of `raft::digest(e)`. This is one SHA-256 less per entry on
+   every member, not just the leader.
+2. `workers/site/src/host.rs` `Host::call`: memoize the postcard bytes of an `Append`'s entries by (index, digest) for
+   the current send burst. Encode `[Envelope]` as postcard's frame around the cached entry bytes: postcard encodes a
+   `Vec` as a varint length then its items in order, so the envelope's bytes are the fields before `entries`, the
+   cached entry encodings, then the fields after (`commit`, `transfer`, `lead_seq`): byte-identical to
+   `codec::to_bytes(&[env])`.
+3. `workers/site/src/member.rs`: a learner's answer (`codec::to_bytes(&out)`) goes through the same splice for its held
+   `Append`s.
+4. **Tests.** The spliced bytes equal `codec::to_bytes` for envelopes of 0, 1 and several entries, with inline and
+   stored packs, decoded by the receiver's path. A plant drops the length prefix, or reuses a cached encoding for an
+   entry whose digest differs after a truncate. The long sweep and Porcupine run, since `crates/raft/src` changes.
+5. No wire, log-row, reply or design-doc change; DECISIONS gets an entry.
