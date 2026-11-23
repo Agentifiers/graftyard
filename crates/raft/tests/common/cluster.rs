@@ -33,6 +33,8 @@ pub struct Cluster {
     /// Every dependency read asked for, and every entry decided on reads, with the site and time.
     pub deps: Vec<(SiteId, Timestamp, DepsWanted)>,
     pub deps_used: Vec<(SiteId, DepsUsed)>,
+    /// Every `Out::topped` released: (site, commands moved, entry in flight).
+    pub topped: Vec<(SiteId, u32, graftyard_raft::Index)>,
     boots: u64,
     alarms: Vec<(SiteId, graftyard_raft::Alarm)>,
 }
@@ -48,6 +50,7 @@ impl Cluster {
             refused: Vec::new(),
             deps: Vec::new(),
             deps_used: Vec::new(),
+            topped: Vec::new(),
             boots: seed * 1000,
             alarms: Vec::new(),
         }
@@ -72,6 +75,7 @@ impl Cluster {
             self.refused.extend(out.refused.drain(..).map(|(i, r, _)| (s, i, r)));
             self.deps.extend(out.deps.drain(..).map(|d| (s, now, d)));
             self.deps_used.extend(out.deps_used.drain(..).map(|d| (s, d)));
+            self.topped.extend(out.topped.drain(..).map(|(n, i)| (s, n, i)));
             self.inbox.extend(out.early.drain(..).chain(out.messages.drain(..)));
             self.resolutions.extend(out.resolutions.drain(..).map(|r| (s, r)));
             self.alarms.extend(out.alarms.drain(..).map(|a| (s, a)));
@@ -135,6 +139,7 @@ impl Cluster {
         let now = self.now;
         self.deps.extend(out.deps.drain(..).map(|d| (s, now, d)));
         self.deps_used.extend(out.deps_used.drain(..).map(|d| (s, d)));
+        self.topped.extend(out.topped.drain(..).map(|(n, i)| (s, n, i)));
         if let Some(ack) = out.self_ack.take() {
             self.on(s, |m, now| m.self_ack(now, ack));
         }

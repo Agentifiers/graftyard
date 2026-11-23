@@ -238,6 +238,8 @@ fn a_re_ask_answered_before_the_apply_brings_in_the_late_command_and_every_comma
     }
     let used = &c.deps_used.last().expect("decided on reads").1;
     assert_eq!((used.index.0, used.ids.as_slice()), (k + 1, [re[0].id].as_slice()));
+    // Test hosts trace each top-up (`Out::topped`, the site's `Trace::TopUp`): the late command, behind entry k.
+    assert_eq!(c.topped, [(A, 1, graftyard_raft::Index(k))]);
 }
 
 /// `reask-read`: a re-ask still out when the entry in flight applies is dropped; the batch decides at once on the read
