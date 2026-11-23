@@ -108,7 +108,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SshCmd,
     },
-    /// Export tokens for the lifeboat feed (`cli/src/vault.rs`).
+    /// The vault Worker and export tokens for the lifeboat feed (`cli/src/vault.rs`).
     Vault {
         #[command(subcommand)]
         cmd: VaultCmd,
@@ -125,6 +125,30 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum VaultCmd {
+    /// Deploys the vault Worker, its bucket and lock rules, under CLOUDFLARE_VAULT_API_TOKEN.
+    Init {
+        #[arg(long)]
+        account: String,
+        /// The customer's Ed25519 private key: a 64-hex-character seed or a PEM PRIVATE KEY.
+        #[arg(long)]
+        key: PathBuf,
+        /// The folder `wrangler deploy --dry-run --outdir` wrote for the vault Worker.
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long, default_value = "graft-vault")]
+        bucket: String,
+        /// The R2 location hint used only when the bucket is created.
+        #[arg(long, default_value = "enam")]
+        region: String,
+        #[arg(long, default_value = "graft-vault")]
+        script: String,
+        /// The edge's base URL (default: https://<zone>).
+        #[arg(long)]
+        edge: Option<String>,
+        /// The export token's life in days, at most 400.
+        #[arg(long, default_value_t = 365)]
+        days: u64,
+    },
     /// Signs an export token offline and writes it to --out (mode 0600). Never prints the token or the key.
     Token {
         /// The customer's Ed25519 private key: a 64-hex-character seed or a PEM PRIVATE KEY.
@@ -447,6 +471,19 @@ fn run(cli: Cli) -> Res<()> {
             release::roll(config, &release, &entries, &key, ttl_s, out.as_deref(), edge.as_deref())
         }
         Cmd::Install { genesis, edge } => genesis::install(config, &genesis, edge.as_deref()),
+        Cmd::Vault { cmd: VaultCmd::Init { account, key, bundle, bucket, region, script, edge, days } } => vault::init(
+            config,
+            &vault::InitArgs {
+                account: &account,
+                key: &key,
+                bundle: &bundle,
+                bucket: &bucket,
+                region: &region,
+                script: &script,
+                edge: edge.as_deref(),
+                days,
+            },
+        ),
         Cmd::Vault { cmd: VaultCmd::Token { key, scope, holder, days, out } } => {
             vault::token(config, &vault::TokenArgs { key: &key, scope: &scope, holder: &holder, days, out: &out })
         }

@@ -94,7 +94,7 @@ jobs:
           key: lint
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: wasm32 clippy, site and edge, with and without test-faults, graft-front, and graft-runners
+      - name: wasm32 clippy, site and edge, with and without test-faults, graft-front, graft-runners, and the vault
         run: |
           for crate in workers/site workers/edge; do
             (cd "$crate" && cargo clippy --target wasm32-unknown-unknown -- -D warnings)
@@ -102,6 +102,7 @@ jobs:
           done
           (cd workers/front && cargo clippy --target wasm32-unknown-unknown -- -D warnings)
           (cd workers/runners && cargo clippy --target wasm32-unknown-unknown -- -D warnings)
+          (cd workers/vault && cargo clippy --target wasm32-unknown-unknown -- -D warnings)
 
   edgeboot:
     # The edge's own wasm, served in local workerd with no bindings, answers without a trap on the cold-guess path

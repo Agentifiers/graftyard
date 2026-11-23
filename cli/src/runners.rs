@@ -107,7 +107,7 @@ impl Bundle {
         Ok(Bundle { files })
     }
 
-    fn modules(&self) -> Vec<Module<'_>> {
+    pub(crate) fn modules(&self) -> Vec<Module<'_>> {
         self.files.iter().map(|(n, ct, b)| Module { name: n, content_type: ct, bytes: b }).collect()
     }
 }
