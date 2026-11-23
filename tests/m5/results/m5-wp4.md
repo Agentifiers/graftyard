@@ -191,3 +191,92 @@ Raw records in `raw/bf39/`:
 - `health.txt`: every voter's `site_health`, over 5 and 30 minutes, each minute.
 - `crons.txt`: `graft-ops` Workers Logs lines.
 - `opslog.json.gz`: every `graft-m4a-ops` log line from 00:17Z, which the kill counts come from.
+
+## Gate check row 2: the share and ack rules judged, and `drain-budget` hosted (2026-11-23, main `cd10ac82`)
+
+**Result: the first hosted step judged by the share and ack rules passed (50%), and the drain leg drained in 134.8 s and undrained 15 min 34.0 s after the lift, with no false drain. At 100% and on the first day N read as nothing, so only the 5 s backstop judged them (R44). The slow-apply leg was not run.** The lead accepted it. Done line 08:52Z (end state read). Spend $6.82 on graft-m4a from 07:55Z (`tests/fanout/acctcost.py`, PREFIX), against the $8 stop. Times are Cloudflare's: the orb's clock ran 22.7 s behind it, and `raw/ck2/ck.log` stamps lines with the orb's. Raw records in `raw/ck2/`.
+
+**Setup** (all in `tests/am1/results/install-m4a.md`):
+- Token `graft-m4a-ops-deploy-4` was minted at 07:56:16Z and revoked at 08:52:06Z.
+- No site day. The sites ran B0-29's site day 71 (main `ecd685ac`, test-faults): a `9fb2121a`, b `247e0365`, c `4aa58601`. The group's `site_release` for c was R5 from row 1.
+- `graft-ops` (`4ef7d70c`) was the test-faults build from `cd10ac82`, with `GATE` unset, `OPS_STEP_MIN_ENTRIES=50`, 60 s dwells and a 1-minute cron. The cron was removed and re-added at once, and it first fired at 08:00:03Z.
+- Load came from a redeployed scratch Worker `graft-m4a-ck-edge`, at 2x row 1: 160 c-homed chains from four benches (two from observer a, two from b) and 40 chains homed on a and b. That is about 3,250 c-homed writes/min, against row 1's 2,850.
+
+| Index | Group time | Entry | |
+| --- | --- | --- | --- |
+| 161 | 08:01:49Z | `Intent` SiteDay c R6, undo `Rollback{c, R5}` | **judged (`GATE` unset)**, N+1 `c7687c36` |
+| 162, 163 | 08:02:07Z, 08:02:08Z | `SiteMode` Drain c, `IntentStep` 0 | the 1% split is `c7687c36` 1%, **`1704e715` (R5) 99%**: N is the group's `site_release` for c, and day 71's `4aa58601` is replaced |
+| 164 | 08:08:08Z | `IntentStep` 1 (1%) | passed only on the override |
+| 165 | 08:10:05Z | `IntentStep` 2 (10%) | passed only on the override |
+| 166 | 08:14:08Z | `IntentStep` 3 (50%) | **judged by the share and ack rules**, with no override |
+| 167 to 171 | 08:14:11Z to 08:16:07Z | `SiteRelease` c R6, step 4 (100%), `SiteMode` Normal c, step 5, step 6 (first day) | only the backstop judged (R44) |
+| 172 | 08:16:08Z | `IntentDone` | |
+| 173 | 08:22:06.847Z | `SiteMode` Drain c, drain key | drain leg |
+| 174 | 08:39:06.070Z | `SiteMode` Normal c, drain key | drain leg |
+
+**Mid-day redeploy.** At 08:12:01Z, during the 50% step, `graft-m4a-ops` was redeployed as `87367b76`: the same `cd10ac82` build and executor file without `OPS_STEP_MIN_ENTRIES`. This was a test-ops change, not a load or spend change, and the lead accepted it.
+- Why: the 1% and 10% steps had passed only on the override. At 2x load, 10% gave N+1 at most 256 entries, which was the row's stop condition. Load was not raised.
+- Effect: 50%, 100% and the first day were judged on the real `STEP_MIN_ENTRIES` floor.
+
+**`judge_site`'s real verdicts on the judged day** (`graft-ops`' own lines, `raw/ck2/verdicts.txt`, where the share and the backstop are recomputed from the logged histogram). Counts are entries / answers / refused:
+
+| Step | Run | N+1 | N | Over N's p99 / over 5 s | Ack z | Verdict | Judged by |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1% | 08:03:08Z to 08:07:05Z | 0 / 0 / 0 | 95 to 1,982 | — | — | `Starved(0)`, paged at twice its dwell | — |
+| 1% | 08:08:07Z | 71 / 102 / 1 | 5,959 / 9,538 / 28 | 0 / 0 bp | 0.60 | `Pass` | **override only** |
+| 10% | 08:09:05Z | 133 / 194 / 0 | 6,845 / 10,542 / 0 | 0 / 0 bp | — | `Pass` | override only (step not yet committed) |
+| 10% | 08:10:05Z | 256 / 378 / 0 | 13,726 / 21,124 / 1 | 0 / 0 bp | −22.1 | `Pass` | **override only** |
+| 50% | 08:11:05Z | 200 / 321 / 0 | 6,887 / 10,532 / 3 | 0 / 0 bp | −7.8 | `Pass` | override (before the redeploy) |
+| 50% | 08:12:05Z, 08:13:06Z | 458, 847 | 13,691, 20,385 | 0 / 0 bp | | `Starved`, paged at twice its dwell | — |
+| 50% | 08:14:07Z | **3,141 / 4,935 / 3** | **23,191 / 35,345 / 5** | **22 / 0 bp** | **−1.50** | **`Pass`** | **share rule (cap 200 bp), ack rule (z 3.09), backstop** |
+| 100% | 08:14:08Z, 08:14:10Z | 109, 125 | **207** (N's new window) | — | | `Starved` | — |
+| 100% | 08:14:12Z to 08:14:17Z | 125 to 1,130 | **0** (no N after `SiteRelease`) | — / 0 bp | none | `Pass` at 1,130 | **backstop only** |
+| first day | 08:15:08Z, 08:16:06Z | 4,098, 8,097 / 12,385 / 1 | 0 | — / 0 bp | none | `Pass` | **backstop only** |
+
+- **The share and ack rules judged a hosted step for the first time, at 50%, and passed it:** 22 bp of N+1's entries over N's p99 (1,500 ms), against the 200 bp cap, at an ack z of −1.50. N+1 and N are the same code plus one unused module, so this is the healthy reading.
+- **1% and 10% passed only on the override.** No 60 s window at 10% reached 1,000 N+1 entries even at 2x load. The rules are not confirmed on those steps (R38).
+- **N at 100% and on the first day did not come from the intent's start** (R44). `ops::Exec::gate` falls back to the intent's start only when N's window counts 0 entries:
+  - at 100% before `SiteRelease`, N still counted 207 entries in the new window, under the floor, so there was no share baseline;
+  - after `SiteRelease c R6` (entry 167), `running` equals the day's release, so `day_versions` gives N as `None` and its counters as empty.
+  
+  The first day's passes at 1,130 to 8,097 N+1 entries were judged by the backstop alone.
+
+**Drain leg** (no intent current; load cut to 1x at 08:18:50Z; gray fault on c at rate 0.3 with 3 s hangs):
+
+| Event | Time | From the previous event | Evidence |
+| --- | --- | --- | --- |
+| Fault set | 08:19:52.087Z | | scratch edge `now` |
+| 08:21 run: not burning | 08:21:03Z | | o0→c 594 of 13,067 = 4.5%, under 5 x of 1 in 100 |
+| **Drain**, entry 173 | 08:22:06.847Z | **134.8 s** (replay: 126 s) | 08:22 run: o0→c 1,071 of 7,606 = 14.1%, o1→c 398 of 2,958 = 13.5%, both at least 5 x over 5 min and over `MIN_CALLS` 300 |
+| Fault lifted | 08:23:32.118Z | | |
+| **Undrain**, entry 174 | 08:39:06.070Z | **15 min 34.0 s** (replay: 15 min 40 s) | c's 15-minute rate o0→c 0.90%, o1→c 0.80%, under 2 x; a minute earlier o0→c read 3.6% |
+
+- Before the fault, under 2x and 1x load, c read 0.07 to 0.17 x on the 1-in-100 budget from each observer, and no site was drained apart from the judged day's own drain step. `STUCK_DAY` was not reached.
+- Load was cut to 0.5x at 08:24:52Z to stay under the stop. One c-bench and the a/b bench kept both observers over `MIN_CALLS`.
+
+**Not run.** At the undrain the row was at $6.65. A third site day for slow-apply would have passed the $8 stop, so no slow-apply breach was observed.
+
+**Cleanup.**
+- Benches stopped. The `graft-m4a-ops` cron was reset (a yearly cron, then `[]`) at 08:40:05Z, but it fired `Idle` runs until 08:48:03Z, so it was reset again at 08:44:48Z. There were no runs from 08:48:03Z to 08:50:43Z.
+- Then, at 08:51:03Z, `graft-m4a-ops` `8b6fe2e3`, `GATE=pending`, with schedules `[]`.
+- Token revoked at 08:52:06Z. The first `DELETE` was sent without the account base, and the token was found by name and revoked.
+- The scratch Worker was deleted.
+- End state at 08:52Z:
+  - count 175, `drained []`;
+  - a `9fb2121a`, b `247e0365`, c `c7687c36` (R6, and the group's `site_release` for c is R6);
+  - edge `f4e193b9` at 100% and `dd713c1c` at 0%, and `/api/v3/meta` answers 200;
+  - c leads 6 of 6 of its home chains;
+  - every site's schedules are `[]`.
+
+**Records this row changes:**
+- `decisions/DECISIONS.md`: hosted evidence for `gate-relative`, `gate-ack` and `drain-budget`.
+- `decisions/OPEN-QUESTIONS.md`: R38 (counting across the dwell, with 10 to 15 minute hosted dwells at 10% and 50%; 1% stays open), R41 (confirmed on one install), R43 (judged once, hosted), and the new R44, N at 100% and on the first day.
+
+Raw records in `raw/ck2/`:
+- `ck.log`: the driver's milestones, with orb times.
+- `answers.txt`: the intent post.
+- `entries.txt`: the group's entries 160 to 174, decoded with their signers.
+- `verdicts.txt`: each `graft-ops` gate line, with the recomputed share and backstop.
+- `gate.txt`: a scratch mirror of each minute's counts. Its `judge(...)` lines are the mirror's, not verdicts.
+- `health.txt`: every voter's `site_health` over 5 and 15 minutes, each minute.
+- `crons.txt`: `graft-ops` Workers Logs lines from 07:55Z.

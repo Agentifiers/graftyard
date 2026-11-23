@@ -1,0 +1,156 @@
+== 08:00:03 wall 2443 cpu 79 4ef7d70c ok
+   graft-ops Idle
+== 08:01:03 wall 2229 cpu 87 4ef7d70c ok
+   graft-ops Idle
+== 08:02:03 wall 8891 cpu 126 4ef7d70c ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } -> Starved(0)
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } -> Starved(0)
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } -> Starved(0)
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } -> Starved(0)
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(c7687c36-6b56-4991-be92-9c987fd99568), 1), (VersionId(1704e715-75d6-4e59-b324-cb8d17aa2255), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795420990399)), why: "STEP_DWELL" }
+== 08:03:03 wall 5512 cpu 156 4ef7d70c ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 179, acks: 179, step_downs: 0, entries: 95, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 3, 2, 4, 3, 9, 69] } -> St
+   graft-ops Wait { until: Some(Timestamp(1795420990399)), why: "STEP_DWELL" }
+== 08:04:03 wall 2766 cpu 78 4ef7d70c ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 679, acks: 679, step_downs: 0, entries: 378, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 8, 5, 11, 8, 9, 17, 32, 287] } 
+   graft-ops Wait { until: Some(Timestamp(1795421050399)), why: "STEP_MIN_ENTRIES" }
+== 08:05:04 wall 2080 cpu 87 4ef7d70c ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 1401, acks: 1397, step_downs: 0, entries: 802, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 20, 12, 30, 28, 28, 32, 62, 5
+   PAGE graft-ops: intent 01M83PS4MEMT03GXMXTSXVAX2Q: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic
+   graft-ops Paged("intent 01M83PS4MEMT03GXMXTSXVAX2Q: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic")
+== 08:06:03 wall 5258 cpu 153 4ef7d70c ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 2533, acks: 2527, step_downs: 0, entries: 1441, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 38, 23, 56, 44, 44, 62, 116,
+   PAGE graft-ops: intent 01M83PS4MEMT03GXMXTSXVAX2Q: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic
+   graft-ops Paged("intent 01M83PS4MEMT03GXMXTSXVAX2Q: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic")
+== 08:07:03 wall 2885 cpu 162 4ef7d70c ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 3461, acks: 3452, step_downs: 0, entries: 1982, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 52, 33, 71, 63, 53, 96, 149,
+   PAGE graft-ops: intent 01M83PS4MEMT03GXMXTSXVAX2Q: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic
+   graft-ops Paged("intent 01M83PS4MEMT03GXMXTSXVAX2Q: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic")
+== 08:08:03 wall 11255 cpu 188 4ef7d70c ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 102, acks: 101, step_downs: 0, entries: 71, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 4, 6, 6, 5, 6, 37] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 9538, acks: 9510, step_downs: 0, entries: 5959, lag
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 238, acks: 238, step_downs: 0, entries: 141, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 1, 9, 5, 5, 7, 11, 99] } -> 
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 1960, acks: 1960, step_downs: 0, entries: 1269, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 82, 43, 60, 55, 66, 110, 81,
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(c7687c36-6b56-4991-be92-9c987fd99568), 10), (VersionId(1704e715-75d6-4e59-b324-cb8d17aa2255), 90)])
+   graft-ops Wait { until: Some(Timestamp(1795421351972)), why: "STEP_DWELL" }
+== 08:09:03 wall 2489 cpu 91 4ef7d70c ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 194, acks: 194, step_downs: 0, entries: 133, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 8, 6, 11, 6, 8, 11, 12, 68] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 10542, acks: 10542, step_downs: 0, entries: 684
+   graft-ops Wait { until: Some(Timestamp(1795421351972)), why: "STEP_DWELL" }
+== 08:10:03 wall 6306 cpu 149 4ef7d70c ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 378, acks: 378, step_downs: 0, entries: 256, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 11, 13, 18, 14, 17, 20, 21, 138] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 21124, acks: 21123, step_downs: 0, entries
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 1, acks: 1, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 156, acks: 156, step_downs: 0, entries: 96, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 5, 7, 4, 2, 6, 5, 65] } -> St
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 1, acks: 1, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 244, acks: 244, step_downs: 0, entries: 143, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 7, 9, 4, 4, 9, 5, 103] } -> 
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(c7687c36-6b56-4991-be92-9c987fd99568), 50), (VersionId(1704e715-75d6-4e59-b324-cb8d17aa2255), 50)])
+   graft-ops Wait { until: Some(Timestamp(1795421467877)), why: "STEP_DWELL" }
+== 08:11:03 wall 2607 cpu 89 4ef7d70c ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 321, acks: 321, step_downs: 0, entries: 200, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 11, 12, 12, 6, 4, 17, 18, 114] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 10532, acks: 10529, step_downs: 0, entries: 
+   graft-ops Wait { until: Some(Timestamp(1795421467877)), why: "STEP_DWELL" }
+== 08:12:03 wall 2908 cpu 83 87367b76 ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 762, acks: 762, step_downs: 0, entries: 458, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 17, 16, 20, 17, 12, 41, 30, 297] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 20869, acks: 20865, step_downs: 0, entries
+   graft-ops Wait { until: Some(Timestamp(1795421527877)), why: "STEP_MIN_ENTRIES" }
+== 08:13:03 wall 3594 cpu 76 87367b76 ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 1403, acks: 1403, step_downs: 0, entries: 847, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 30, 28, 37, 36, 19, 77, 50, 559] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 31057, acks: 31053, step_downs: 0, entr
+   PAGE graft-ops: intent 01M83PS4MEMT03GXMXTSXVAX2Q: Site(SiteId(2))'s 50% step applied 847 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic
+   graft-ops Paged("intent 01M83PS4MEMT03GXMXTSXVAX2Q: Site(SiteId(2))'s 50% step applied 847 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic")
+== 08:14:04 wall 14223 cpu 131 87367b76 ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 4935, acks: 4932, step_downs: 0, entries: 3141, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 25, 139, 115, 143, 151, 132, 266, 230, 1931, 7] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 35345, acks: 35340, step_do
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 181, acks: 181, step_downs: 0, entries: 109, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 3, 3, 4, 6, 8, 10, 69] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 304, acks: 304, step_downs: 0, entries: 207, lag:
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 212, acks: 212, step_downs: 0, entries: 125, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 3, 5, 6, 9, 10, 82] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 304, acks: 304, step_downs: 0, entries: 207, lag:
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 212, acks: 212, step_downs: 0, entries: 125, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 3, 5, 6, 9, 10, 82] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } -> 
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 294, acks: 294, step_downs: 0, entries: 186, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 9, 5, 4, 9, 14, 10, 20, 114] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } 
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 1188, acks: 1188, step_downs: 0, entries: 775, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 36, 37, 22, 41, 42, 57, 78, 457] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag:
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 1719, acks: 1719, step_downs: 0, entries: 1130, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 57, 54, 42, 60, 70, 88, 106, 646] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, la
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(2)), [(VersionId(c7687c36-6b56-4991-be92-9c987fd99568), 100)])
+   graft-ops Committed("SiteRelease")
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Wait { until: Some(Timestamp(1795421716753)), why: "first day" }
+== 08:15:03 wall 5394 cpu 109 87367b76 ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 6248, acks: 6247, step_downs: 0, entries: 4098, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38, 224, 173, 218, 197, 203, 340, 343, 2361, 1] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, ent
+   graft-ops Wait { until: Some(Timestamp(1795421716753)), why: "first day" }
+== 08:16:04 wall 5599 cpu 119 87367b76 ok
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 12385, acks: 12384, step_downs: 0, entries: 8097, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 101, 423, 320, 448, 382, 373, 702, 640, 4705, 3] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, 
+   graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 123, acks: 123, step_downs: 0, entries: 87, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 3, 0, 8, 3, 1, 3, 0, 54] } N Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } -> S
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("IntentDone")
+   graft-ops Idle
+== 08:17:03 wall 3285 cpu 94 87367b76 ok
+   graft-ops Idle
+== 08:18:03 wall 1810 cpu 77 87367b76 ok
+   graft-ops Idle
+== 08:19:03 wall 3459 cpu 85 87367b76 ok
+   graft-ops Idle
+== 08:20:03 wall 2500 cpu 82 87367b76 ok
+   graft-ops Idle
+== 08:21:03 wall 1934 cpu 90 87367b76 ok
+   graft-ops Idle
+== 08:22:03 wall 3948 cpu 190 87367b76 ok
+   graft-ops health: {0: Verdict { burning: false, calm: true }, 1: Verdict { burning: false, calm: true }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 7329, missed: 2 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 7606, m
+   graft-ops health: {0: Verdict { burning: false, calm: true }, 1: Verdict { burning: false, calm: true }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 7415, missed: 2 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 7707, m
+   graft-ops Committed("SiteMode")
+   graft-ops Idle
+== 08:23:03 wall 3554 cpu 81 87367b76 ok
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 8301, missed: 2 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 8615,
+   graft-ops Idle
+== 08:24:04 wall 4352 cpu 103 87367b76 ok
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 12700, missed: 2 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1339
+   graft-ops Idle
+== 08:25:03 wall 1628 cpu 133 87367b76 ok
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 16716, missed: 2 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1741
+   graft-ops Idle
+== 08:26:03 wall 3968 cpu 151 87367b76 ok
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 18895, missed: 5 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1957
+   graft-ops Idle
+== 08:27:03 wall 1784 cpu 107 87367b76 ok
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 19531, missed: 3 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 2013
+   graft-ops Idle
+== 08:28:03 wall 1619 cpu 98 87367b76 ok
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 19201, missed: 3 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1965
+   graft-ops Idle
+== 08:29:03 wall 2167 cpu 94 87367b76 ok
+   graft-ops Idle
+== 08:30:03 wall 3713 cpu 100 87367b76 ok
+   graft-ops Idle
+== 08:31:03 wall 1826 cpu 92 87367b76 ok
+   graft-ops Idle
+== 08:32:03 wall 2374 cpu 82 87367b76 ok
+   graft-ops Idle
+== 08:33:03 wall 3940 cpu 140 87367b76 ok
+   graft-ops Idle
+== 08:34:03 wall 2741 cpu 72 87367b76 ok
+   graft-ops Idle
+== 08:35:03 wall 2328 cpu 113 87367b76 ok
+   graft-ops Idle
+== 08:36:03 wall 2115 cpu 74 87367b76 ok
+   graft-ops Idle
+== 08:37:03 wall 1741 cpu 77 87367b76 ok
+   graft-ops Idle
+== 08:38:03 wall 2249 cpu 109 87367b76 ok
+   graft-ops Idle
+== 08:39:03 wall 3315 cpu 82 87367b76 ok
+   graft-ops Committed("SiteMode")
+   graft-ops Idle
+== 08:40:03 wall 4057 cpu 141 87367b76 ok
+   graft-ops Idle
+== 08:41:04 wall 4218 cpu 110 87367b76 ok
+   graft-ops Idle
+== 08:42:03 wall 3704 cpu 168 87367b76 ok
+   graft-ops Idle
+== 08:43:03 wall 5924 cpu 147 87367b76 ok
+   graft-ops Idle
+== 08:44:03 wall 5672 cpu 164 87367b76 ok
+   graft-ops Idle
+== 08:45:03 wall 6130 cpu 118 87367b76 ok
+   graft-ops Idle
+== 08:46:03 wall 4036 cpu 88 87367b76 ok
+   graft-ops Idle
+== 08:47:03 wall 5653 cpu 122 87367b76 ok
+   graft-ops Idle
+== 08:48:03 wall 4764 cpu 234 87367b76 ok
+   graft-ops Idle
