@@ -68,7 +68,7 @@ func (d *dropper) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func main() {
-	calls := flag.Int("calls", 30, "tools/list calls")
+	calls := flag.Int("calls", 30, "list_issues calls")
 	drop := flag.Bool("drop-token", false, "A43: drop the first code redemption's answer")
 	flag.Parse()
 	sub := os.Getenv("CF_WORKERS_SUBDOMAIN")
@@ -128,21 +128,38 @@ func main() {
 		out["authMs"] = time.Since(t0).Milliseconds()
 		out["protocol"] = cs.InitializeResult().ProtocolVersion
 		out["iss"] = iss
-		ok, lat, errs := 0, []int64{}, []string{}
+		// list_issues through graft-mcp, interleaved with the same REST read straight to the edge (M0-WP15's method).
+		member, edge := memberToken(), os.Getenv("GRAFT_EDGE")
+		ok, lat, direct, errs := 0, []int64{}, []int64{}, []string{}
+		args := map[string]any{"owner": "m3org", "repo": "j4", "per_page": 5}
 		for i := 0; i < *calls; i++ {
 			s := time.Now()
-			_, err := cs.ListTools(ctx, nil)
+			r, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "list_issues", Arguments: args})
 			lat = append(lat, time.Since(s).Milliseconds())
-			if err == nil {
+			if err == nil && !r.IsError {
 				ok++
 			} else if len(errs) < 3 {
+				if err == nil {
+					b, _ := json.Marshal(r.Content)
+					err = errors.New(string(b))
+				}
 				errs = append(errs, err.Error())
 			}
+			req, _ := http.NewRequestWithContext(ctx, "GET", edge+"/api/v3/repos/m3org/j4/issues?per_page=5", nil)
+			req.Header.Set("Authorization", "token "+member)
+			req.Header.Set("Accept", "application/vnd.graftyard.agent+json")
+			req.Header.Set("User-Agent", "am2-direct")
+			s = time.Now()
+			if resp, err := http.DefaultClient.Do(req); err == nil {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+			direct = append(direct, time.Since(s).Milliseconds())
 		}
-		sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
 		out["calls"], out["ok"], out["errors"] = *calls, ok, errs
 		if len(lat) > 0 {
-			out["clientP50"] = lat[len(lat)/2]
+			c, d := p50(lat), p50(direct)
+			out["clientP50"], out["directP50"], out["overheadP50"] = c, d, c-d
 		}
 		cs.Close()
 	}
@@ -155,4 +172,20 @@ func main() {
 	out["consents"], out["tokenCalls"], out["codeRedemptions"] = consents, d.calls, redemptions
 	b, _ := json.Marshal(out)
 	fmt.Println(string(b))
+}
+
+func p50(a []int64) int64 {
+	sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
+	return a[len(a)/2]
+}
+
+// memberToken is the member's PAT from $M3_STATE/m3-tokens.txt, as tests/am1/hosted/lib.mjs reads it.
+func memberToken() string {
+	b, _ := os.ReadFile(os.Getenv("M3_STATE") + "/m3-tokens.txt")
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if f := strings.Fields(l); len(f) == 2 && f[0] == "member" {
+			return f[1]
+		}
+	}
+	return ""
 }

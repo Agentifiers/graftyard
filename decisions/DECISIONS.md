@@ -8456,3 +8456,38 @@ that `colo-gate`'s stamp rule already bounds.
 - **The whole change.** A hosted row whose cold-isolate first POSTs show front plus gate p50 no better than 0.6 s
   (the base being 1.0 to 1.15 s on mt18): the bed's model is wrong. Find what the hosted path pays that the bed does
   not before changing anything further.
+
+### `am2-wp2a`: `graft-mcp`'s door is stateless JSON in both lanes, and its writes are the edge's GraphQL mutations, 2026-11-23
+
+**Status.** Built on branch `am2-wp2a`, code only (`tests/am2/results/am2-wp2a.md`). L0-08's 30-call cell and the
+tool-overhead p50 run on the second hosted day.
+
+**Decision.**
+- **The door is stateless and answers JSON only**, in the 2026-07-28 lane (per-request `_meta`, `server/discover`) and
+  the 2025-11-25 lane (`initialize`). It issues no `Mcp-Session-Id`, answers GET and DELETE 405, and advertises
+  `listChanged: false`.
+- **Writes are GraphQL mutations** on `/api/graphql` with the scoped token, because the edge serves no REST route for
+  creating an issue, a comment, or a pull request.
+- **The trust view replaces every text field**, and a text field the edge did not view is dropped, not passed raw.
+- **Arguments are single path segments.** A `ref` with a slash 404s rather than reaching another route.
+
+**Why.**
+- All four L0-08 clients accept `application/json` on both lanes, and none needs a session id, so a stateless door
+  needs no Durable Object and no session store [measured locally, 30 of 30 calls per client].
+- M0-WP15's prototype streamed SSE on the 2025-11-25 lane only because its SDK transport did; the clients did not ask
+  for it (`tests/m0/results/m0-wp15.md`).
+- GraphQL writes reuse the edge's own write paths, so rulesets and `Authz` decide, not `graft-mcp`.
+
+**Beat.**
+- A session-holding door on a Durable Object: a new failure domain, for nothing any client needs.
+- New REST write routes on the edge: an edge change for WP2a, and REST shapes GHES clients would then see.
+- Passing unviewed text through raw: the model would read text no trust view had checked.
+
+**Evidence.**
+- `workers/mcp/tests/wp2a.rs`, 9 tests; `workers/mcp/tests/a7.rs`.
+- `tests/m0carried/plant90.py`: 23 of 23 caught.
+
+**Flip.**
+- **Sessions.** If a client L0-08 adds needs `Mcp-Session-Id` or SSE, add them on that lane only.
+- **Slash refs.** If an agent needs `get_commit` on a branch with a slash, the edge's `commits/{ref}` route must take
+  more than one segment first; then allow `/` in `ref` and keep refusing `..`, `?`, and `#`.

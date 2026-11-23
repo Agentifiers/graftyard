@@ -36,6 +36,9 @@ pub const OWNER_LOGIN: &str = "acme";
 pub const REPO_NAME: &str = "mono";
 pub const REPO: RepoId = RepoId(DbId(4_242));
 
+/// A test's answer for an edge route: method, path with query, request headers, and body.
+pub type RestHook = dyn Fn(&str, &str, &[(&str, String)], &[u8]) -> Option<graftyard_mcp::tools::Answer>;
+
 /// One install's members plus the edge's stand-ins. `now` moves only when a test moves it.
 pub struct Bed {
     pub w: RefCell<World>,
@@ -57,6 +60,8 @@ pub struct Bed {
     pub deleted: RefCell<Vec<String>>,
     /// When set, the edge's `Identity` read answers this fold: a read from before a commit it raced.
     pub stale_identity: RefCell<Option<IdentityFold>>,
+    /// The edge's repository routes, as a test answers them: `None` from the hook falls through to the OAuth routes.
+    pub rest: RefCell<Option<Box<RestHook>>>,
     rng: Cell<u64>,
     sealer: Sealer,
     deny: Vec<String>,
@@ -141,6 +146,7 @@ impl Bed {
             calls: RefCell::new(Vec::new()),
             deleted: RefCell::new(Vec::new()),
             stale_identity: RefCell::new(None),
+            rest: RefCell::new(None),
             rng: Cell::new(0x9e37_79b9_7f4a_7c15),
             sealer: Sealer::new(vec![[0x5a; 32]]).unwrap(),
             deny: vec!["git.acme.test".into(), "acme.test".into()],
@@ -366,7 +372,27 @@ impl flow::Env for Bed {
         f.body.truncate(graftyard_mcp::CIMD_MAX_BYTES + 1);
         Ok(f)
     }
-    async fn edge(
+    async fn edge_answer(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        body: Option<Vec<u8>>,
+    ) -> Result<graftyard_mcp::tools::Answer, String> {
+        if let Some(rest) = self.rest.borrow().as_ref()
+            && let Some(a) = rest(method, path, headers, body.as_deref().unwrap_or_default())
+        {
+            self.calls.borrow_mut().push((method.into(), path.into()));
+            return Ok(a);
+        }
+        let (status, body) = self.oauth_edge(method, path, headers, body).await?;
+        Ok(graftyard_mcp::tools::Answer { status, headers: Vec::new(), body })
+    }
+}
+
+impl Bed {
+    /// The edge's OAuth, grant, and user routes over the members.
+    async fn oauth_edge(
         &self,
         method: &str,
         path: &str,
