@@ -1,0 +1,16 @@
+2026-11-23T03:31:47Z
+8dc9b691
+2026-11-23T03:49:12.657Z lf6: the record's test secret removed (the record as apps init registered it)
+file://~/workspace/gy-am2/tests/am2/hosted/l008.mjs:176
+    if (r.status !== 201) throw new Error(`grant: ${r.status} ${JSON.stringify(r.body).slice(0, 160)}`);
+                                ^
+
+Error: grant: 401 {"documentation_url":"https://docs.github.com/enterprise-server@3.22/graftyard/mcp","message":"X-Graftyard-User-Token must be a live user token of Graftyard MCP
+    at newGrant (file://~/workspace/gy-am2/tests/am2/hosted/l008.mjs:176:33)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async file://~/workspace/gy-am2/tests/am2/hosted/l008.mjs:194:17
+
+Node.js v26.12.0
+step exit 1
+2026-11-23T03:49:12Z
+DONE

@@ -48,6 +48,10 @@ const cfg = {
   name,
   main: join(out, "index.js"),
   compatibility_date: "2026-10-01",
+  // CIMD fetches go to clients' public URLs: route them as the Internet does. Without it a client_id on this
+  // account's own workers.dev (the test installs' CIMD host) answers error 1042 (m3fa2, 2026-11-23), as M0-WP15's
+  // graft-wp15-mcp set it.
+  compatibility_flags: ["global_fetch_strictly_public"],
   workers_dev: true,
   preview_urls: false,
   services: [{ binding: "EDGE", service: edge }],

@@ -1,0 +1,42 @@
+2026-11-23T03:25:59Z
+8dc9b691
+ build/BUILD-PLAN.md    | 10 ++++++++++
+ workers/mcp/deploy.mjs |  4 ++++
+ 2 files changed, 14 insertions(+)
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+    Finished `release` profile [optimized] target(s) in 0.09s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 2.89s
+[INFO]: 📦   Your wasm pkg is ready to publish at ~/workspace/gy-am2/workers/mcp/build/.tmp.
+
+  index.js  24.7kb
+
+⚡ Done in 12ms
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3f-mcp.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.166.0)
+───────────────────────────────────────────────
+Total Upload: 768.63 KiB / gzip: 261.32 KiB
+Worker Startup Time: 8 ms
+Your Worker has access to the following bindings:
+Binding                                                                                     Resource                  
+env.MCP_CLIENT_SECRET (bfaa0c1573de4775b1b92a12fb89acb4/graft-m3f-MCP_CLIENT_SECRET_A)      Secrets Store Secret      
+env.MCP_SEAL_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m3f-MCP_SEAL_KEY_A)                Secrets Store Secret      
+env.EDGE (graft-m3f-edge)                                                                   Worker                    
+env.MCP_CLIENT_ID ("Iv1.0000000000050000")                                                  Environment Variable      
+env.MCP_ORIGIN ("https://graft-m3f-mcp.graftyard-m0-be...")                                 Environment Variable      
+env.HOST_ORIGIN ("https://graft-m3f-edge.graftyard-m0-b...")                                Environment Variable      
+env.DENY_ZONES ("graft-m3f-edge.<sub>.work...")                                 Environment Variable      
+
+Uploaded graft-m3f-mcp (1.90 sec)
+Deployed graft-m3f-mcp triggers (0.69 sec)
+  https://graft-m3f-mcp.<sub>.workers.dev
+Current Version ID: 2bcace1d-31fb-4109-9587-bcdad5ac1cb7
+step exit 0
+2026-11-23T03:26:09Z
+DONE

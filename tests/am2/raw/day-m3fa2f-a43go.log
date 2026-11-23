@@ -1,0 +1,7 @@
+2026-11-23T04:02:49Z
+8dc9b691
+go a43 only, dropper drops a 200 redemption
+{"client":"go-v18","codeRedemptions":4,"connectError0":"calling \"initialize\": sending \"initialize\": Not Implemented","connectError1":"calling \"initialize\": sending \"initialize\": Not Implemented","connectError2":"calling \"initialize\": sending \"initialize\": Not Implemented","consents":2,"drop":true,"sdk":"github.com/modelcontextprotocol/go-sdk v1.8.0","tokenCalls":[{"grant":"authorization_code","status":400},{"grant":"authorization_code","status":200},{"grant":"authorization_code","status":400},{"grant":"authorization_code","status":200}]}
+step exit 0
+2026-11-23T04:03:10Z
+DONE

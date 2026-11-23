@@ -132,7 +132,9 @@ impl flow::Env for Live {
         body: Option<Vec<u8>>,
     ) -> std::result::Result<(u16, Vec<u8>), String> {
         let go = async {
+            // The edge refuses a request with no User-Agent, as GHES does (m3fa2: every edge call answered 403).
             let h = Headers::new();
+            h.set("user-agent", "graft-mcp")?;
             for (k, v) in headers {
                 h.set(k, v)?;
             }

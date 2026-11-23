@@ -1468,9 +1468,15 @@ and `graft-mcp` as `workers/mcp`, with the metadata, CIMD, PKCE, consent, callba
   refresh succeeds with the unscoped `ghu_` held, which is deleted after it.
 - 20 of 20 planted bugs caught (`tests/m0carried/plant86.py`).
 
+**Hosted, auth-only day m3fa2 (2026-11-23, graft-m3f).** LF-6 passes hosted, 100 of 100 each. L0-08's auth cells
+pass: wrong audience, refresh scope, replay, consent, and the held `ghu_`. A43: none of the four SDK clients retries a
+code after a lost `/token` answer; each goes back through consent. The day fixed graft-mcp's CIMD fetch
+(`global_fetch_strictly_public`) and its edge calls (`User-Agent`). L0-08's 30-call cell and the tool-overhead p50
+wait for WP2a (`tests/am2/results/am2-wp1.md`, "Hosted, auth-only day m3fa2").
+
 The hosted half needs:
 1. A site day onto a release that reads 0x14.4 and 0x11.4, then `FormatsEnable` for both. Until then the grant
-   endpoints and `token/scoped` answer 503.
+   endpoints and `token/scoped` answer 503. Done on graft-m3f for m3fa2, with FORMATS only.
 2. `graftyard apps init` on a test install, and `graft-mcp` deployed with its bindings.
 3. AM2-WP3's routing of `mcp.<host>`.
 4. L0-08 hosted, with the four SDK clients.
@@ -1482,6 +1488,16 @@ The hosted half needs:
 **Depends on.** AM2-WP1, AM1-WP4, AM1-WP5.
 
 **Acceptance.** No gate row of its own. It carries LM-2's MCP row.
+
+**Split (the lead's ruling, 2026-11-23).** WP2 ships in two parts, WP2a first.
+- **WP2a: what L0-08 needs.** The MCP door over Streamable HTTP in both lanes: the 2026-07-28 stateless lane with
+  `server/discover` and per-request `_meta`, and the 2025-11-25 `initialize` lane the TypeScript v1 SDK needs. Also
+  `call` with the static toolsets, `ToolError` with `retry_after_s` and the rate fields, the trust view, writes on the
+  scoped token, and the lease and feed tools. A second hosted day for L0-08's 30-call cell and the tool-overhead p50
+  runs once WP2a merges.
+- **WP2b: the tools that need new edge reads.** `coordination.overlaps` and `provenance.why` with their edge reads. The
+  edge read's design goes to the lead before any edge change, and is checked with B0-34's work on the edge's
+  cold-isolate write path (F112).
 
 ### AM2-WP3. `graft-mcp` release wiring
 

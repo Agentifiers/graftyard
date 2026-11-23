@@ -240,3 +240,96 @@ dead port. The aux config passes `wrangler deploy --dry-run`. Edgeboot does not 
    any remain. The records are pushed and graft-m3f is handed back.
 
 The total is about $1 against the $10 stop. The verdict lines are due within 30 minutes of the done line.
+
+## Hosted, auth-only day m3fa2 (2026-11-23)
+
+The lead cleared this auth-only day when WP2 ran past a day. It covers L0-08's auth cells, LF-6 through the edge, and
+A43. The 30-call cell and the tool-overhead p50 wait for the second day, after WP2a merges. It ran on graft-m3f, taken
+from B0-02 (`tests/am1/results/install-m3f.md`), under a $3 stop for the day.
+
+### Verdicts
+
+- **LF-6 hosted: pass**, 100 of 100 each (run m3fa2g, done line 04:32:20Z).
+  - **422:** `token/scoped` without `graftyard_grant`, with another user's grant, and with `graftyard_write` above the
+    grant, 100 of 100 each.
+  - **409, revoked:** a stale generation got 409 in 100 of 100. Each time the grant left the list, and its scoped
+    token and the user's unscoped `ghu_` answered 401 after.
+  - **401:** wrong client credentials on the grant list, on `/generation`, and on `token/scoped`, 300 of 300.
+  - **Control:** the right request answered 200 with GHES's `token/scoped` keys (`app`, `created_at`, `expires_at`,
+    `fingerprint`, `hashed_token`, `id`, `installation`, `note`, `note_url`, `scopes`, `token`, `token_last_eight`,
+    `updated_at`, `url`, `user`).
+- **L0-08's auth cells: pass** (run m3fa2c, through graft-mcp `eb673cf8` and the edge `67c9c2f5`).
+  - **Metadata:** RFC 9728 and RFC 8414 answer 200, with S256 only, CIMD, and `iss`. The door answers 401 with
+    `resource_metadata`.
+  - **Wrong audience:** 400 of 400 bad tokens refused, 100 each of the host's `ghu_`, a refresh token presented as
+    access, another key, and garbage. graft-mcp's token is 401 at the host's `/api/v3/user` and 404 at the host's
+    origin, and a suffix host gives no answer.
+  - **Refresh keeps its scope:** 100 of 100 chained refreshes kept `write:write tools:context,repos,issues,pull_requests`,
+    and 100 of 100 wider asks (`write_approve_merge`, an extra toolset) were `invalid_scope`.
+  - **Replayed refresh:** `invalid_grant`. The chain's newest refresh token is refused after it, and the grant leaves
+    the settings list.
+  - **Framed or skipped consent:** no code. The page sends `frame-ancestors 'none'` and `X-Frame-Options: DENY`.
+    Cross-site, no-Origin, and framed (`Sec-Fetch-Site: cross-site`) POSTs get 403. Skipped consent, another flow's
+    state, and a replayed callback get 400. A real consent issues a code.
+  - **Held `ghu_`:** the refresh answers 200, and the user's live unscoped rows go 6, 7, 7: the login adds the held
+    `ghu_`, and the refresh adds the next one and deletes the held one. A tail on the edge for a second login shows
+    the `DELETE /applications/{id}/token` answering 204 six seconds after the refresh's 200.
+- **A43: a lost code answer costs the user a second consent, in all four clients** (m3fa2e, m3fa2f).
+  - TS v2 (`@modelcontextprotocol/client` 2.4.0), TS v1 (`@modelcontextprotocol/sdk` 1.32.2), and Python (`mcp`
+    2.3.0): `finishAuth` failed on the dropped answer, and none redeemed the code again. Each client's next connect
+    got 401, went back through consent, and redeemed the new code with 200. That is two consents and two redemptions
+    each.
+  - Go (go-sdk v1.8.0): two consents. x/oauth2 probes the token endpoint's auth style, so each consent's first
+    redemption is a 400 and the second a 200. The first a43 run dropped that 400, which x/oauth2 treats as the probe,
+    so that run is void (m3fa2e). The driver now drops only a 200, and m3fa2f shows the second consent.
+  - No client retried a code, so A43's flip (a once-row on a `Tokens` shard) is not met. The stateless rule costs a
+    lost answer nothing a once-row would save, because a client that never retries needs a new consent either way.
+- **Not run on this day, as cleared:** the 30-call cell and the tool-overhead p50. Every client got through auth and
+  stopped at the door's 501 (`not_implemented`, WP2's tools), as expected. Python's session opened on 2026-07-28 and
+  answered 0 of 30 `tools/list`.
+
+### Fixes the day found (branch `am2-hosted-day`)
+
+- **graft-mcp's CIMD fetch** answered `invalid_client: client metadata fetch did not answer 200` for a client id on
+  the account's own `workers.dev`. That is Cloudflare's error 1042, a same-account fetch without
+  `global_fetch_strictly_public` [doc, Workers "Errors and exceptions"]. M0-WP15's `graft-wp15-mcp` set the flag, and
+  `workers/mcp/deploy.mjs` now does too. A CIMD document on another account never hits it.
+- **graft-mcp's edge calls** all answered 403. The edge refuses a request with no `User-Agent`, as GHES does, and the
+  service binding sends none. `workers/mcp/src/worker.rs` now sets `graft-mcp`. The local beds call the edge's code
+  directly, so neither showed it.
+- **`tests/am2/hosted/l008.mjs`:** LF-6's stale rounds reused one `ghu_`. The first stale generation correctly revokes
+  it, so every later round answered 401 (m3fa2c, m3fa2d). Each round now signs in again, the list and the wrong
+  credentials use a live token, and the rounds run five at a time.
+- **`tests/am2/hosted/goclient/main.go`:** the A43 dropper drops only a 200 redemption.
+
+### Runs
+
+| Tag | What | Result |
+| --- | --- | --- |
+| m3fa2 | init, claims, register, deploy, smoke, teardown | ok. graftyard-mcp answered `Taken` as App 327680, and graftyard-insights is new as App 4784128 |
+| m3fa2 l008 | all cases | stopped at the first login: CIMD's 1042 |
+| m3fa2b l008 | all cases | stopped at the first callback: the edge's 403 with no `User-Agent` |
+| m3fa2c l008 | all cases | meta, aud, refresh, replay, consent, and held pass. LF-6 stopped at the second grant (the driver's revoked `ghu_`) |
+| m3fa2d l008 | lf6 | the same driver bug |
+| m3fa2e l008 | lf6 | killed near stale round 111 by the orb's executor restart; void |
+| m3fa2e clients, a43 | the four SDK clients | the A43 result above. Go's drop is void |
+| m3fa2f a43go | Go with `--drop-token` | two consents |
+| m3fa2g l008 | lf6 | pass, as above |
+
+The restart killed m3fa2e before its `finally` put graftyard-mcp's record back. The record kept LF-6's test client
+secret (two secrets) until about 04:21Z, when it was restored from `apps-register.request.json` and read back with one
+secret. m3fa2g's `finally` restored it again at its end.
+
+### Versions, cost, and teardown
+
+- **Versions.** Sites a `8e3084cf`, b `b10d26f5`, and c `ba8635f4`, and the edge `67c9c2f5`, from `8dc9b691` (main
+  `8d390b0f`'s tree plus the install row). The shard image is `sha256:91a19f9f…`, built from that head's
+  `containers/git`. graft-mcp ran as `cc09e6ff`, then `2bcace1d` (the flag), then `eb673cf8` (the header), and the aux
+  as `4e8f0f06`.
+- **Cost.** graft-m3f's cost from the site day's start (02:53:41Z) to 04:33Z was $0.51 by `acctcost.py`
+  (`prefix_usd`) and $0.47 by `m2bcost.py`, against the day's $3 stop and the $10 for both days. No shard container
+  ran.
+- **Teardown** at 04:32:51Z. `graft-m3f-mcp` and `graft-m3f-mcp-aux` are deleted (both answer 404). The four secrets
+  are deleted from store `bfaa0c15…`, which holds 17 secrets after. The second day redeploys them with `apps init`,
+  after moving `~/.graft-m3f/apps` aside, because step 1 refuses while `apps.json` exists. `teardown.py --sweep`: no
+  shard container running.
