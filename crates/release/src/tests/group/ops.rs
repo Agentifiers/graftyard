@@ -398,6 +398,74 @@ fn an_abort_of_an_edge_roll_returns_the_edge_to_target_with_the_roll_kept_beside
     assert_eq!(o.deps[&Script::Edge].split, vec![(e2, 100), (version_of(3, Script::Edge), 0)]);
 }
 
+/// BM-5's revocation mid-roll ("Install operations", Revocation runbook): release 2 is rolling under vendor-signed
+/// intents when the customer signs `Halt`, then `Keys { vendor: None }`, then `Abort { intent, target: 1 }`, once with
+/// site 1's day at 10% and once with the edge's roll at 10%. `graft-ops` stops at the halt, runs the abort under the
+/// executor key with the vendor key gone, and a vendor-signed intent is refused. The sites that finished intents
+/// moved return to 1 by `release roll 1` signed by the customer, so every site and pinned script runs 1.
+#[test]
+fn bm5_halt_keys_vendor_none_then_abort_mid_roll_returns_every_script_to_n() {
+    for mid in [1usize, 5] {
+        let mut o = Ops::new(G::new());
+        upload_all(&mut o.g, 1);
+        o.roll_all(1);
+        upload_all(&mut o.g, 2);
+        for _ in 0..mid {
+            assert!(matches!(o.roll(2), Roll::Next { .. }));
+            o.finish();
+        }
+        let Roll::Next { intent: rolling, .. } = o.roll(2) else { panic!("no intent {mid}") };
+        let s = rolling.script().unwrap();
+        let (v1, v2) = (version_of(1, s), version_of(2, s));
+        while o.deps[&s].split != vec![(v2, 10), (v1, 90)] {
+            o.act();
+        }
+        let intent = o.g.f.current.as_ref().unwrap().intent.id;
+        let b = o.g.entry(ReleaseEntry::Halt { intent }, &[&CUSTOMER]);
+        o.g.ok(b);
+        let k = o.g.keys(|k| k.vendor = None);
+        let b = o.g.entry(ReleaseEntry::Keys(Box::new(k)), &[&CUSTOMER]);
+        o.g.ok(b);
+        assert_eq!(ops::next(&o.g.f, &o.world(), Dwell::default()), Action::Idle, "{s:?}: halted, graft-ops stops");
+        let b = o.g.entry(ReleaseEntry::Abort { intent, target: rel(1).0 }, &[&CUSTOMER]);
+        o.g.ok(b);
+        o.finish();
+        assert_eq!(ops::running(&o.g.f, s), Some(rel(1).0), "{s:?}");
+        let back = if s == Script::Edge { vec![(v1, 100), (v2, 0)] } else { vec![(v1, 100)] };
+        assert_eq!(o.deps[&s].split, back, "{s:?}");
+        // A vendor-signed intent, release roll's own included, is refused now.
+        let Roll::Next { intent: i, undo } = ops::next_roll(&o.g.f, rel(1).0) else { panic!("nothing to return") };
+        let vendor = ops::sign_intent(&o.g.f, i, &undo, &VENDOR, id(200), o.g.at, 4 * HOUR);
+        assert_eq!(o.g.no(vendor.encode()), Refusal::UnknownKey(public_key(&VENDOR)), "{s:?}");
+        // The customer signs release roll 1 for the scripts finished intents moved.
+        let mut rolled = Vec::new();
+        for n in 201..=220 {
+            match ops::next_roll(&o.g.f, rel(1).0) {
+                Roll::Next { intent, undo } => {
+                    let e = ops::sign_intent(&o.g.f, intent.clone(), &undo, &CUSTOMER, id(n), o.g.at, 4 * HOUR);
+                    o.g.ok(e.encode());
+                    rolled.push(intent);
+                    o.finish();
+                }
+                Roll::Done => break,
+                Roll::Wait(why) => panic!("{why}"),
+            }
+        }
+        let before: Vec<Intent> = o.rolled[o.rolled.len() - 1 - mid..o.rolled.len() - 1]
+            .iter()
+            .map(|i| match i {
+                Intent::SiteDay { target, .. } => Intent::SiteDay { target: *target, release: rel(1).0 },
+                i => panic!("{i:?}"),
+            })
+            .collect();
+        assert_eq!(rolled, before, "{s:?}: only the finished intents' scripts roll back");
+        for s in [&ALL[..], &[Script::Ops]].concat() {
+            assert_eq!(ops::running(&o.g.f, s), Some(rel(1).0), "{s:?}");
+        }
+        assert!(o.g.f.drained.is_empty());
+    }
+}
+
 /// A site an intent key drained is undrained only by an intent key: `graft-ops`'s site day skips its own drain and
 /// pages at undrain, and never signs that `Normal` with the drain key.
 #[test]

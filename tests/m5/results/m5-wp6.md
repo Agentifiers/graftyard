@@ -64,4 +64,27 @@ encoded; `rotate_steps` is a stored format up to each list's switch, because `ap
   the old value unused after the switch. It needs a `graft-ops` deployed with both slots of each bound, which is a new
   version of `graft-ops` (an `OpsRoll`, not a site day).
 - R45's rows.
-- BM-5's vendor-token revocation mid-roll.
+
+## BM-5's revocation mid-roll, in memory (2026-11-23, code only)
+
+Before this row, the group tests covered each piece of the runbook on its own:
+- `Halt` stops graft-ops (`an_abort_of_an_edge_roll_returns_the_edge_to_target_with_the_roll_kept_beside_it`);
+- `Keys { vendor: None }` refuses every replayed and re-signed entry (`bf6_...`);
+- a customer `Abort` after it ends the halted intent (`a_vendor_signed_intent_after_keys_vendor_none_is_refused`).
+
+No test ran the three in order mid-roll with graft-ops executing the `Abort`, and none checked BM-5's "every site and
+pinned script" back at N. `bm5_halt_keys_vendor_none_then_abort_mid_roll_returns_every_script_to_n`
+(`crates/release/src/tests/group/ops.rs`) adds that case. It runs twice: once with site 1's day at 10%, and once
+with the edge's roll at 10%. Each run checks these things:
+- graft-ops is idle while halted;
+- the `Abort` runs to `IntentDone` under the executor key with the vendor key gone. The site returns to N at 100%,
+  and the edge returns to N with R kept at 0%;
+- a vendor-signed intent from `release roll 1` is refused `UnknownKey`;
+- a customer-signed `release roll 1` rolls back only the sites whose finished days moved them, then every script runs
+  N with nothing drained.
+
+Planted mutant: an `Abort` that moves only an `EdgeRoll`'s script is caught by the site case, and the other 82
+release tests pass with it.
+
+An `Abort` moves only the intent it ends. Sites that earlier, finished intents moved return to N through customer-signed
+intents, which is what DESIGN's runbook says ("each site the intent touched"). BM-5's hosted half is still M5-WP7's.
