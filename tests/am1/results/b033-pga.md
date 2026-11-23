@@ -156,6 +156,63 @@ Two caveats on this join, from the lead's review of pfA. They apply to pfA's tab
   leader host. The next step is the $0 question of why hosted apply costs 1.25 to 3.17 ms an event, against the bed's
   0.11 ms a command.
 
+## The host guard
+
+The lead's ruling after pgA: judge the leader's host by what it measures during setup, not by its colo name, with a
+line derived from blB and qlC, written down before the next row. This section is that line. It costs $0: it reads
+Workers Logs that every row already writes.
+
+**The probe.**
+- a1's setup creates 100 tasks, one `/commit` each, at the same pace on every run: 44 to 48 in the first 60 s.
+- The leader object (`#1#f0`) does the same work for each, so its Workers Logs CPU on every route, over the first
+  60 s from its first `/commit`, divided by the `/commit` calls in that window, prices the host on a fixed workload.
+- It needs no clock but Cloudflare's, no trace, and nothing from the load. `tests/fanout/hostguard.py` reads it with
+  two Workers Logs calculations.
+
+**What it reads on the twelve B0-33 runs** [measured, `hostguard.py` replayed on each run's setup]:
+
+| Run | Leader colo | ms of leader CPU a setup commit | Load: ms an event applied (`heavyturns.py`) | Load: leader excess p50 ms (`second.py`) |
+|---|---|---|---|---|
+| qlC | EWR | 21.8 | 1.25 | |
+| qlB | MIA | 21.9 | 1.15 | |
+| qlA | MIA | 23.0 | 1.23 | |
+| sabA | EWR | 23.7 | | 360 |
+| blB | EWR | 23.7 | 1.59 | 373 |
+| crA | ORD | 26.2 | | 427 |
+| blA | IAD | 31.0 | 2.43 | 480 |
+| chA | IAD | 31.2 | | 446 to 480 (A41) |
+| blC2 | IAD | 31.5 | 3.50 | 446 |
+| ncA | ATL | 39.7 | | 703 |
+| pgA | ORD | 43.2 | 2.75 | 536 |
+| pfA | ATL | 46.1 | 3.17 | 643 |
+
+- **The runs fall into two groups with a gap between them**: 21.8 to 26.2 ms and 31.0 to 46.1 ms. The setup reading
+  orders the runs the way their loaded apply cost does, wherever both were measured. Every A41 slow-host run is in the
+  upper group.
+- **The colo name does not decide it.** Two ORD leaders read 26.2 (crA) and 43.2 (pgA). The same colo can be either
+  host [measured]. That is why the colo guard let pgA through.
+- **The 60 s window is stable.** On each run the reading at 30, 60 and 90 s agreed within about 3 ms (for example
+  pfA 44.1, 45.6, 44.6 and blB 24.6, 23.6, 23.7), so the verdict is ready about 60 s into setup, minutes before load.
+
+**The line** [inference: a ratio chosen from these runs, not a measured threshold]:
+- **Re-place when the setup reading is over 28.4 ms a commit.** That is 1.2 times the higher baseline reading, blB's
+  23.7 (qlC's is 21.8).
+- It keeps sabA, crA, blB, qlA, qlB and qlC, and re-places chA, blA, blC2, ncA, pfA and pgA.
+- crA sits under the line at 26.2, with load excess 427 ms against EWR's 360 to 373. The line keeps a host about 15%
+  slower than EWR and refuses one 30% slower. A tighter line would refuse crA as well.
+- The ticker-stall half of the ruling is not used. In every run's last minute before load the leader had no ticker wake
+  of 200 ms or more: the host gap shows only under load, and stalls are a leader-clock reading (A41's correction).
+  The setup's CPU per commit separates the hosts without them.
+
+**In the wrapper.** `tests/fanout/guardrow.sh` is pgA's set wrapper with the colo test replaced by `hostguard.py`.
+- Every 20 s during a1's setup it asks the guard. Exit 2 means not enough commits yet.
+- On exit 3 it stops a1 before load and re-places on a fresh repository, at most twice.
+- If the third placement is also over the line, it stops the set and the sweep runs.
+- It logs each verdict with its number, and the row's results must quote it.
+
+The setup extracts behind the table are `tests/fanout/raw/wl-setup/<tag>-setup.json.xz`: each run's leader object
+from a1's log start to load start, from `wlobj.py fetch`.
+
 ## Raws and tools
 
 - `tests/fanout/raw/` holds pgA's files:
