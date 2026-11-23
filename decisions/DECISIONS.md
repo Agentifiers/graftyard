@@ -3446,12 +3446,27 @@ The fold gains what the executor needs: where each finished intent left each scr
 
 **Hosted check row (2026-11-23, `tests/m5/results/m5-wp4.md`): not confirmed.** The judged day's N+1 never reached `STEP_MIN_ENTRIES` (0 to 58 entries at 1%, 22 to 100 at 10%), so the share rule was judged on no step; it read 0 bp over N's p99 and over 5 s on every window it saw. The day breached at 10% on `GATE_ACK_RATE` by chance (OPEN-QUESTIONS R43) and ran the `Rollback`, so N from the intent's start at 100% was not exercised either.
 
+**Hosted check row 2 (2026-11-23, `tests/m5/results/m5-wp4.md`, "Gate check row 2"): judged at 50%, not at 100%.** At 50%, on the real floor with no override, N+1 had 3,141 entries beside a real N (R5's `1704e715`) with 23,191 entries. N+1 put 22 bp over N's p99 (1,500 ms) and 0 bp over 5 s, so it passed. This is the first hosted step the share rule judged. 1% and 10% passed only on the test override (at most 256 N+1 entries per 60 s window, R38). At 100% and on the first day only the backstop judged (R44): N's new window at 100% held 207 entries, which is over 0, so the fallback to the intent's start never fired; and after `SiteRelease`, `day_versions` gives no N, because `running` is the day's own release.
+
 **Caveat: the replay flatters the rule.** N in the replay is R3's own healthy window, the same build as N+1, so N's p99 and N+1's tail come from the same distribution. A real N+1 runs beside a different N. The plants show it still catches regressions, but the hosted check row must judge against a real N: its site day leaves the previous version running beside N+1 at 1, 10 and 50%, with real counts on both.
 
 **Flip.**
 - The check row's healthy N+1 puts more than 2% of entries over a real N's p99 on any step.
 - A planted regression smaller than one bucket (under about 100 ms at 1,500 ms) passes and matters: then measure lag on entries that were not the last of their round.
 - N's rows from the intent's start are gone by 100% (a day longer than `GATE_KEEP_MS`): keep them longer, or carry N's p99 in the intent's state.
+- A hosted 100% step or first day whose share rule still reads no N (R44's fix, below).
+
+**R44's fix (2026-11-23, code-only, not deployed; the lead cleared it).** Gate check row 2 found that N at 100% and on the first day was never read from the intent's start. The fix has two parts:
+- `day_versions` takes N from the intent's pre-signed `Rollback` release for that site once `SiteRelease` names the day's own release. Before, `running` equalled the day's release, so there was no N.
+- `Exec::gate` reads N from the intent's start whenever N's step window has fewer than `STEP_MIN_ENTRIES` entries (`gate::n_from_start`). Before, it did so only at 0 entries, and row 2's 100% window held 207.
+
+Evidence:
+- `sitedays.rs`, `after_site_release_n_is_the_rollbacks_release_and_a_thin_n_window_reads_from_the_start`:
+  - N is unchanged before `SiteRelease` and is the `Rollback`'s release after it, with another site's rollback listed first;
+  - with no site rollback, N is `None`;
+  - `n_from_start` holds at 0, 207 and 999 entries and not at 1,000.
+- `tests/m0carried/plant98.py`: 4 of 4 caught.
+- plant87's mutant 50 was re-anchored and is still caught.
 
 #### `gate-ack`: the ack rate is judged from `STEP_MIN_ENTRIES` answers, on an excess beyond chance (2026-11-23)
 
@@ -3469,6 +3484,8 @@ The fold gains what the executor needs: where each finished intent left each scr
 - `sitedays.rs`, `the_ack_rate_breaches_only_on_an_excess_past_its_margin_beyond_chance_and_starves_under_the_floor`: the row's reading (100 entries, 1 refused of 180, N at 100%) is `Starved`; 1,000 answers at 0.3% against N's 0.2% pass (z 0.0); a planted 2% at 1,000 answers breaches (z 3.80); at 3,000 answers against N's 10,000 at 0.2%, 24 refused passes (z 2.96) and 25 breaches (z 3.10); against a noisy N (1,000 answers at 1%), 110 of 5,000 passes (z 2.92, where N+1's error alone would read 5.3) and 120 breaches; two clean sides pass; no N answers is no baseline.
 - `tests/m0carried/plant87.py`: 55 of 55, 7 of them for this rule.
 
+**Hosted check row 2 (2026-11-23, `tests/m5/results/m5-wp4.md`):** judged once, at 50%, and passed: N+1 refused 3 of 4,935 answers and N 5 of 35,345, z −1.50, against 3.09. Under the floor (100 to 847 N+1 answers at 1%, 10% and early 50%), no read breached, where row 1's rule had breached on chance at 10%. At 100% and on the first day no N answers reached the gate, so the ack rule had no baseline there (R44). No ack fault was planted hosted.
+
 **Flip.** A planted ack fault that the bound misses at 10% with 1,000 or more N+1 answers: then lower the margin or the z, or judge over the whole step's dwell.
 
 #### `drain-budget`: a missed call deadline is budgeted at 1 in 100, drained at 5 x over 5 minutes, and calm under 2 x over 15 minutes (2026-11-23)
@@ -3476,6 +3493,8 @@ The fold gains what the executor needs: where each finished intent left each scr
 **Status.** Code-only, not deployed; the thresholds live in `graft-ops`, so they ship on an ops deploy. R41 stays open: the values come from one install.
 
 **Hosted (2026-11-23):** not exercised. The gate check row stopped before its drain leg to stay under the $5 stop, so the values rest on the BF-39 replay alone (`tests/m5/results/m5-wp4.md`).
+
+**Hosted check row 2 (2026-11-23, `tests/m5/results/m5-wp4.md`, "Gate check row 2"): confirmed on one install.** On a gray fault on c (rate 0.3, 3 s hangs), `graft-ops` drained c at entry 173, 134.8 s after the fault (the replay gave 126 s). Both observers read c at 13.5 to 14.1% over 5 minutes, on 2,958 to 7,606 calls; the run before read 4.5% from o0, just under 5 x. It undrained c at entry 174, 15 min 34.0 s after the lift (the replay gave 15 min 40 s), at 0.80 to 0.90% over 15 minutes. Steady load at 2x and 1x read 0.07 to 0.17 x, with no false drain. One install, so R41 stays open.
 
 **Decision.** `ALLOWED_MISS_DENOM` 100 [measured, one install], `DRAIN_BURN` 5 x over `DRAIN_WINDOW` 5 min, `MIN_CALLS` 300, `UNDRAIN_BURN` 2 (under 2 x) over `UNDRAIN_AFTER` 15 min. The two-observer rule is unchanged.
 
@@ -6846,6 +6865,11 @@ Branch `write-identity`, code only, no hosted row (second-opinion review T-01a1f
 - **Why.** On m3fhs1, 148 of 293 `ok` burst pushes paid the refused first commit and the place. Of the 136 late `ok` pushes, 88 did. Without those two steps the within-5 s line goes from 364 to at most 437 alone. With a commit stage cut by 10% (LM-1's apply cut), it reaches 459 against the 450 needed [inference, `tests/fanout/b032share.py`, "B0-32 after m3fhs1"]. It also takes about 270 inline 256 KiB `/commit` bodies, and their base64 decode, off the leader's burst.
 - **Its row.** It runs after LM-1's apply cut merges, so one B0-32 row reads both. It cannot pass the line alone.
 - **Flip.** Revert if that row's staged-first `ok` pushes have a commit stage over 3 s at p50 (m3fhs1: 2,372 ms), or if any burst entry passes 64 Agent commands. The first means the bunching came back through the cap; the second, that the cap did not bind.
+- **Flip 1 sharpened, 2026-11-23 (orchestrator's ruling after B0-32 m3fsf2).** A fixed 3 s does not tell stage-first from the leader's load. Stage-first ran the same on m3fsf1 and m3fsf2 (every `ok` push staged first, none committed twice), yet its commit p50 was 1,237 ms on m3fsf1's leader and 3,757 ms on m3fsf2's. `tests/fanout/hostguard.py` keeps m3fsf1's leader (27.3 ms a setup commit) and re-places m3fsf2's (52.5) [measured, `tests/am1/results/lm1-rows-m3f.md`, "Row m3fsf2"]. The flip now compares under the same leader load:
+  - **Revert if, on a row whose leader `hostguard.py` keeps, staged-first `ok` burst pushes' commit stage p50 exceeds the whole commit path p50 of the matched row's two-commit pushes (refused commit, `stage`, second commit).** The matched row is the latest B0-32 row without stage-first. Until one runs on a kept host that is m3fhs1, at 3,983 ms (hostguard 33.6, re-place, so the bar is generous). m3fsf1 reads 1,237 against it.
+  - A row whose leader hostguard re-places does not judge this flip. Its commit stage measures the host.
+  - **Not used: the same row's inline pushes.** All burst pushes stage first, so the only inline pushes in a burst row are the background Agent and Human pushes. Taking those whose commit started in the burst's p10 to p90 window gives 20 on m3fsf1 (commit p50 580 ms against staged-first 1,230) and 5 on m3fsf2 (742 against 3,757). They are small packs spread through the window, while the burst's pushes arrive together. The ratio is 2.1 on m3fsf1, where stage-first plainly worked, so it measures arrival position, not staging.
+  - Unchanged: revert if any burst entry passes 64 Agent commands.
 - **Fallback, recorded and not built: refuse `full` at `Stage`.** When the leader answers `Stage` and the push's AGENT_PUSH_BOUND budget left is under 500 ms plus twice the first commit's time, the edge would answer `ng … agent admission full` instead of placing and committing again. It is safe: `Stage` queues nothing, so no acknowledgment can be lost. On the raws it turns late `ok` pushes into `full`: 23 on m3fhs1, and 33 to 66 on m3fgb1, m3fst1 and m3fpc1. It costs at most 2 in-time pushes, on m3fst1 [inference, the same marks]. It commits nothing more, so it is not built now. The orchestrator ruled to revisit it if the cut plus stage first land 25 or fewer short on the next row.
 
 ### `agent-cmds-entry`: an entry holds at most `AGENT_CMDS_ENTRY` (64) Agent commands, on every group, 2026-11-20
@@ -8141,6 +8165,60 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
 - A release needs the vault deployed by `graft-ops`: the vault account would have to trust an install token, which
   DESIGN's failure domain forbids, so this needs an operator decision.
 
+### `rotate-probe`: how `graft-ops` runs `Rotate`, and the one call that confirms each new value, 2026-11-23
+
+**Decision.**
+- The active slot of each rotated secret is in the `Release` fold (`ReleaseFold::slots`): the `Rotate`'s switch step's
+  `IntentStep` sets it, and every reader of the secret takes the slot from its view and binds both slots, so a switch
+  is a committed entry and no new script version. A secret no rotation has switched reads slot 0.
+- `graft-ops` binds `DEPLOY_TOKEN_0`/`_1`, `READ_TOKEN_0`/`_1` and `MINT_WRAP_KEY_0`/`_1`; slot 0 falls back to the
+  unslotted binding an install before M5-WP6 has. `/mint` reads `MintWrapKey`'s slot from the script's own view, only
+  when its minter needs a key.
+- The steps (`crates/release` `rotate_steps`), each a host step and then its `IntentStep`:
+  - `DeployToken`: **probe** `GET /accounts/{id}/workers/scripts` with the new token, then **switch**.
+  - `ReadToken`: **probe** `GET /accounts/{id}/r2/buckets/{first site's bucket}` with the new token and require a
+    `location` in the answer, then **switch**.
+  - `MintWrapKey`: **publish** the new slot's `PutVerifyingKey { retired: None }` on `TokenShard(0)` as the operator,
+    **wait** one installation-token lifetime from that step, **switch**, then **retire** the old `kid` at the switch
+    plus `SIGNING_KEY_CACHE`, `JOB_TOKEN_MAX`, and `CLOCK_SKEW` (`rotation_step`). Unwrapping the new slot is its probe.
+- A failed host step pages and commits nothing; the next run tries it again. Every probe runs on `graft-ops`' cron,
+  never on a request path.
+- A `Rotate` of a secret `graft-ops` switches no slot of, or to the active slot, pages by name and steps nothing until
+  the customer's `Abort`, which ends it with the slot unchanged (R45). The agents account's `AgentsAppKey` and
+  `WorkspaceAppKey` page in the install's `graft-ops` and are its own `graft-ops`'s to step.
+- `rotate_steps` is a stored format up to each list's switch: `apply` moves the slot at that index, so a release may
+  add steps only after it, and a refused secret may gain a list.
+
+**Why.**
+- The rotation table names the confirming call for `DeployToken` and `ReadToken` already; each is the token's own
+  scope and an operator-side read.
+- A view-held slot is the one reader-visible switch that needs no Secrets Store write by `graft-ops` (which holds no
+  token that can write it) and no new version, which would reset a site's members.
+- The `MintWrapKey` order is SHARED's rule that a key is published one token lifetime before it signs and retires a
+  cache plus the longest token after the switch.
+
+**What it beat.**
+- **A variable naming the active slot**, as `SSH_HOST_KEY_ACTIVE` does: a variable change is a new version.
+- **Skipping a refused `Rotate` with `IntentDone`**: the customer would read a rotation as done that switched nothing.
+- **A probe by minting a token**: it would sign with the new key before its row has been published a lifetime.
+
+**Evidence.** `crates/release` (`run.rs`):
+`bf46_a_token_rotate_probes_the_new_slot_then_switches_with_no_deploy`,
+`bf46_a_failed_probe_pages_and_never_switches`,
+`bf46_mint_wrap_key_publishes_waits_a_token_lifetime_switches_then_retires`,
+`bf46_a_rotate_graft_ops_does_not_run_pages_by_name_and_an_abort_ends_it`,
+`bf46_the_install_graft_ops_leaves_the_agents_secrets_to_the_agents_account`, and
+`a_killed_graft_ops_reruns_a_rotate_step_and_commits_each_step_once`. `workers/ops`
+`a_mint_wrap_key_rotate_publishes_the_new_key_and_retires_the_old_after_the_longest_token`. The R2 get-bucket answer
+carries `location` (https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/get/). plant95
+(`tests/m0carried/plant95.py`).
+
+**Flip.**
+- BF-46 hosted shows a reader still using the old value after its view moved (A17's question, a Secrets Store `get()`
+  that does not see the new slot's value): the switch then needs the reader to re-read on the slot change.
+- A script other than `graft-ops` gains a view and both slots of a refused secret (R45): its row gains a step list.
+- A Cloudflare permission change makes either probe pass with a token that cannot deploy or read.
+
 ### `vault-roll`: `vault upgrade` is a step of `release roll` on the operator's machine, not a group intent, 2026-11-23
 
 **Decision.** Operator ruling, 2026-11-23, for BF-47. `release roll R` runs the vault step after `McpRoll` and before
@@ -8771,8 +8849,9 @@ tool-overhead p50 run on the second hosted day.
 
 ### `edge-refusal`: the edge refuses an agent write at the leader's measured drain, before it reaches the leader, 2026-11-23
 
-**Status.** Code-only, on branch `edge-refusal`. The hosted row is B in the lead's A-then-B order for B0-33, after
-LM-1's apply cut and its row. B0-33 step 3; the lead approved the design on 2026-11-23.
+**Status.** Merged (a60beca2), not yet measured hosted. B0-33 step 3; the lead approved the design on 2026-11-23. Its
+hosted row (row B) runs before LM-1's apply-cut row, on slow hosts only, with the host guard inverted
+(`tests/am1/results/edge-refusal.md`, "Row B"); it does not describe a typical host.
 
 **Decision.**
 - The leader measures its agent drain: the agent commands its cuts take while its agent lane stays non-empty, over

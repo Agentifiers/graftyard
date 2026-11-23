@@ -37,6 +37,17 @@ if [ -n "$run" ]; then
   from=$(head -1 $py | jq -r '.start/1000|todate'); to=$(tail -1 $py | jq -r '.end/1000|todate')
   { echo "5xx by reason ($from to $to):"; python3 tests/fanout/fivexxwhy.py "$from" "$to"; } >> $R/rows-$TAG.status 2>&1
   { echo "push refusals by stage:"; python3 tests/fanout/pushfull.py $py; } >> $R/rows-$TAG.status 2>&1
+  # edge-refusal (B0-33 row B): the edge's `edgefull` lines and their join to the leader's cuts, flips 2 to 4
+  # (`decisions/DECISIONS.md`, "`edge-refusal`"). An edge without them logs none, and the summary says so.
+  python3 tests/fanout/edgefull.py fetch "$from" "$to" $R/edgefull-$TAG.jsonl >> $R/rows-$TAG.status 2>&1
+  { echo "edge refusals (edgefull):"; python3 tests/fanout/edgefull.py read $R/edgefull-$TAG.jsonl "$TAG"; } >> $R/rows-$TAG.status 2>&1
 fi
+# The confound on merged main (B0-33 row B): reask-read's top-ups on the leader (`Trace::TopUp`, kind 34), whole trace.
+python3 -c "import json,lzma,sys
+rows=set()
+for l in lzma.open(sys.argv[1],'rt') if sys.argv[1].endswith('.xz') else open(sys.argv[1]):
+    d=json.loads(l)
+    if 'rows' in d and str(d.get('site'))==str(d.get('leader')): rows.update(tuple(r) for r in d['rows'] if r[1]==34)
+print('reask-read top-ups (Trace::TopUp rows on the leader):', len(rows))" $R/tsave-$TAG.jsonl >> $R/rows-$TAG.status 2>&1
 echo B033DONE >> $R/rows-$TAG.status
 exec sleep infinity

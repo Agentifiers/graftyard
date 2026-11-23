@@ -20,6 +20,10 @@
 //!   `IntentDone` ends it.
 //! - **`release roll`.** `next_roll` picks the first intent of the roll order that R has not finished, skipping a script
 //!   or images R leaves unchanged, with its pre-signed undos.
+//! - **`Rotate`** (M5-WP6). `group::rotate_steps` lists a secret's steps; the host runs each (`Exec::rotate`) and then
+//!   commits its `IntentStep`. The switch step's `IntentStep` moves the fold's active slot, which every reader of the
+//!   secret takes from its view. A `Rotate` of a secret this `graft-ops` does not switch, or to the active slot, pages
+//!   by name and moves nothing until the customer's `Abort`.
 
 use std::collections::BTreeMap;
 
@@ -27,10 +31,10 @@ use graftyard_types::{ReleaseId, SiteId, Timestamp};
 use sha2::{Digest as _, Sha256};
 
 use crate::gate::{STUCK_DAY, Verdict};
-use crate::group::{Current, ReleaseFold, Upload, roll_steps, undo_entry, verify_raw};
+use crate::group::{Current, ReleaseFold, RotateStep, Upload, roll_steps, rotate_steps, undo_entry, verify_raw};
 use crate::types::{
-    DayTarget, Format, FormatSet, ImageRef, Intent, IntentState, ReleaseEntry, ReleaseUploaded, Script, Signature,
-    VersionId,
+    DayTarget, Format, FormatSet, ImageRef, Intent, IntentState, ReleaseEntry, ReleaseUploaded, Script, SecretName,
+    Signature, VersionId,
 };
 use crate::{Refusal, SignedEntry};
 
@@ -107,6 +111,47 @@ pub enum Action {
     Wait { until: Option<Timestamp>, why: Box<str> },
     /// Write a page and move nothing.
     Page(Box<str>),
+    /// Run `step` of a `Rotate` to `slot` on the host; once it succeeds, commit the current step's `IntentStep`.
+    Rotate { secret: SecretName, slot: u8, step: RotateStep },
+}
+
+/// How long a new installation-token signing key's `VerifyingKey` row is published before `graft-ops` signs with it:
+/// one installation-token lifetime, `graftyard_identity::stateless::INSTALLATION_TOKEN_TTL`, so every edge has read
+/// the row (`rotation_step`). `workers/ops`'s tests hold the two equal.
+pub const ROTATE_PUBLISHED_FOR: u64 = 3_600_000;
+
+/// A `Rotate`'s next action (`group::rotate_steps`). An `Abort` of one moves nothing, so it ends at once and leaves the
+/// slot the last switch chose.
+fn rotate_next(fold: &ReleaseFold, c: &Current, secret: SecretName, slot: u8, w: &World) -> Action {
+    let id = c.intent.id;
+    let done = Action::Commit { body: ReleaseEntry::IntentDone { intent: id }, signer: Signer::Executor };
+    if !matches!(c.state, IntentState::Running { .. }) {
+        return done;
+    }
+    // Refused by name, never skipped: it stays current, paging, until the customer signs an `Abort` (R45).
+    let steps = match rotate_steps(secret) {
+        Ok(s) => s,
+        Err(why) => return Action::Page(format!("intent {}: graft-ops refuses Rotate {secret:?}: {why}", id.0).into()),
+    };
+    if c.next == 0 && fold.slot(secret) == slot {
+        return Action::Page(
+            format!("intent {}: graft-ops refuses Rotate {secret:?} to slot {slot}, the active slot", id.0).into(),
+        );
+    }
+    let step = ReleaseEntry::IntentStep { intent: id, step: c.next };
+    match steps.get(usize::from(c.next)) {
+        None => done,
+        Some(RotateStep::Switch) => Action::Commit { body: step, signer: Signer::Executor },
+        Some(RotateStep::Wait) => {
+            let until = Timestamp(c.since.0.saturating_add(ROTATE_PUBLISHED_FOR));
+            if w.now < until {
+                Action::Wait { until: Some(until), why: format!("{secret:?}'s new key is published").into() }
+            } else {
+                Action::Commit { body: step, signer: Signer::Executor }
+            }
+        }
+        Some(s) => Action::Rotate { secret, slot, step: *s },
+    }
 }
 
 /// One step of an intent, an undo, or an `Abort`.
@@ -272,6 +317,9 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
     let Some(c) = fold.current.as_deref() else { return Action::Idle };
     if let IntentState::Halted { .. } = c.state {
         return Action::Idle;
+    }
+    if let Intent::Rotate { secret, slot } = c.intent.intent {
+        return rotate_next(fold, c, secret, slot, w);
     }
     let id = c.intent.id;
     let steps = match steps(fold, c, dwell) {
@@ -835,6 +883,15 @@ pub trait Exec {
     async fn tagged(&mut self, release: ReleaseId, scripts: &[Script]) -> Result<BTreeMap<Script, VersionId>, String>;
     /// Uploads one script's modules as a version tagged with `release`, without deploying it.
     async fn upload(&mut self, s: Script, release: ReleaseId, modules: &[(String, Vec<u8>)]) -> Result<(), String>;
+    /// Runs one host step of a `Rotate` to `slot` (`decisions/DECISIONS.md`, "`rotate-probe`"). Idempotent: a step
+    /// rerun after a kill finds its work done.
+    async fn rotate(
+        &mut self,
+        fold: &ReleaseFold,
+        secret: SecretName,
+        slot: u8,
+        step: RotateStep,
+    ) -> Result<(), String>;
 }
 
 /// What a run did, one line per action.
@@ -947,6 +1004,25 @@ pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
             Action::Undo(u) => {
                 let kind = u.body.kind();
                 (u.encode(), kind)
+            }
+            // A step that fails leaves its `IntentStep` uncommitted and pages, because the new slot's value is the
+            // customer's to fix; the next run tries the step again.
+            Action::Rotate { secret, slot, step } => {
+                if let Err(x) = e.rotate(&fold, secret, slot, step).await {
+                    let why = format!("Rotate {secret:?} to slot {slot}, {step:?}: {x}");
+                    e.page(&why);
+                    log.push(Ran::Paged(why.into()));
+                    break;
+                }
+                let c = fold.current.as_deref().expect("a Rotate is current");
+                let body = ReleaseEntry::IntentStep { intent: c.intent.id, step: c.next };
+                match signed(e, &fold, body, Signer::Executor) {
+                    Ok(b) => (b, "IntentStep"),
+                    Err(r) => {
+                        log.push(r);
+                        break;
+                    }
+                }
             }
         };
         if !submitted(e, &bytes, kind, &mut log).await {

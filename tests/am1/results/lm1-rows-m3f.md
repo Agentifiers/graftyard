@@ -330,6 +330,154 @@ alone; gate capped at 300 ms):
 - **Row.** One B0-32 row on graft-m3f, after both users hand it back and the fix is cleared and merged: about $1, with
   a stop at $8. Better still, it runs after LM-1's cut merges, so one row reads both.
 
+## Row m3fsf2: B0-32 on main `7a1d74c9`, the stage-first rerun after `cw-link-drop` (2026-11-23, graft-m3f, `ROWS="b0-32"`)
+
+**A measurement, not a gate attempt**, cleared by the orchestrator to confirm F112's `cw-link-drop` (`abbc9a0b`) on the burst's front. It does not count toward the two-fails rule. The only product change from m3fsf1 is `cw-link-drop` (`git diff e942cd53 7a1d74c9` touches `workers/edge/src/lib.rs` alone).
+
+**Slot.** Same launcher, flags, images and FORMATS as m3fsf1, from main `7a1d74c9`. The stop was $3 on graft-m3f from the first site-day try (09:16:02Z).
+- **Site day:**
+  - The first try failed at site a with wrangler's "Container application settings were not fully applied" (exit 1, nothing else deployed).
+  - The rerun with `--skip-build` (`tests/am1/results/install-m3f.md`'s workaround) ran 09:30:42Z to 09:32:02Z, site and edge exit 0.
+  - Version ids: sites a `9928437d`, b `d1d60f93`, c `e4d2a5ac`; edge `f54e3ada`.
+- **Sweep:** RERETIRE OK graft-m3f.
+- **Row:** start 09:38:41Z. Repo 65614 (run `mwt2rovr`), 8 learners, k 4, leader site 0 term 2. The burst's first second on the leader was 09:44:11Z. Done line 09:46:48Z (exit 0). Harness outage 4 s (2.2%), valid.
+- **Spend and teardown:** $0.70 on graft-m3f from 09:16:02Z ($3.91 account-wide). 65614 was retired (12 names, all not joined) and purged (3,348 objects, second pass 0), and no shard was running at 09:56Z.
+
+**Committed raw files:** `tests/fanout/raw/rows-m3fsf2.status`, `{admit,terms,vmem}-m3fsf2-b0-32.jsonl`, `tsave-m3fsf2-b0-32.jsonl.xz`, `arrivals-m3fsf2.jsonl`, `shardgate-m3fsf2-b0-32-*.jsonl`, `retirenets-m3fsf2.log`, `reretire-graft-m3f.log`, the leader's Workers Logs for 09:44:02 to 09:44:32Z (`wl-m3/m3fsf2-b0-32-f0.json.xz`), and `lm1-rows-m3f-data/m3fsf2-raw/` (the client's summary and its 26 merge pushes).
+
+| Line | m3fsf2 | m3fsf1 |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `full` | **284 of 500** (145 `ok` within 5 s, 139 `full`); 450 needed | 323 |
+| No other refusal shape | `full` only: 124 after a commit, 15 `bound`, none `advert` | pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | peak 109,043 B; `pressure` never true | pass |
+| Merges, none over 2 s (edge clock) | 1 of 26 over 2 s (6,935 ms) | 3 of 27 |
+| Zero leader changes | term 2, site 0 throughout | pass |
+| Zero `suspect` | **65**, with 65 missed and 306 asks | 0 |
+
+**The front is fixed** [measured, `server-timing`, p50 in ms]:
+
+| Stage | m3fsf2 `ok` (361) | m3fsf2 late `ok` (216) | m3fsf1 `ok` (492) | m3fhs1 `ok` (293) |
+|---|---|---|---|---|
+| install | **560** | 580 | 1,580 | 524 |
+| front | 569 | 600 | 1,580 | 660 |
+| `rcwait` | **760** | 780 | 1,820 | 640 |
+| gate | 419 | 489 | 544 | 0 |
+| validate | 563 | 595 | 644 | 463 |
+| last commit | **3,757** | **4,069** | 1,237 | 2,710 |
+| total | 5,823 | 6,494 | 4,439 | 4,939 |
+
+- All 495 pushes that reached commit staged first, and 0 of 361 `ok` committed twice.
+- Commit p50 by send order: 1,945 ms for pushes 0 to 99, then 3,645 to 4,067 ms for each later hundred.
+- Counterfactuals (`b032share.py`): a commit cap of 2 s gives 483, commit ×0.6 gives 471, and a 300 ms gate cap 290.
+
+**Stage-first's flips** [measured]:
+- 64 Agent commands at most per entry: 2 cuts ended `AgentCmds` at 64 each, and 783 ended `Empty`.
+- Staged-first commit p50 3,757 ms is over the 3 s bound as first written. The orchestrator ruled it does not trip, since stage-first ran the same on m3fsf1 at 1,237 ms. The flip is sharpened in DECISIONS `agent-stage-first`.
+
+**The leader's host is slow: hostguard re-places it** [measured, `tests/fanout/hostguard.py graft-m3f-site-a repo:N#1#f0`, replayed on each row's setup]:
+
+| Row | ms of leader CPU a setup commit | Verdict (line 28.4) |
+|---|---|---|
+| m3fsf2 (repo 65614) | **52.5** (40 commits, 2,100 ms) | re-place |
+| m3fsf1 (65613) | 27.3 (41 commits, 1,120 ms) | keep |
+| m3fhs1 (65608) | 33.6 (40 commits, 1,344 ms) | re-place |
+
+- 52.5 is past every B0-33 host in `b033-pga.md`'s table (pfA 46.1). The burst's own figures match a slow host, not a heavier load:
+  - deferred statements cost 0.78 ms each against 0.15;
+  - apply 1.11 ms an event against 0.60;
+  - storage confirm mean 7.6 ms against 2.7;
+  - learner `/raft` 1.62 ms a call against 1.04.
+- **The burst did not reach this leader any tighter.** Its densest second took 223 `/commit` (m3fsf1 275). Per 500 ms the leader started at most 122 (m3fsf1 158). The edge's first commit sends spread p10 to p90 over 6.3 s (m3fsf1 6.0 s).
+- So the reading sent with the verdict lines, that the fixed front sent the same pushes to the leader 1.5 s tighter, is wrong. The commit stage here measures the host [inference from both].
+
+| Leader burst CPU (`heavyturns.py`) | m3fsf2 | m3fsf1 |
+|---|---|---|
+| Deferred transaction | 41%, 34.3 ms mean, 0.78 ms a statement | 21%, 0.15 ms a statement |
+| Applying committed entries | 27%, 45.4 ms an entry, 1.11 ms an event, 76 statements and 73 KB queued an entry | 47%, 0.60 ms an event |
+| No traced work | 22% | 22% |
+| Storage confirm | 5%, 7.6 ms mean | 5%, 2.7 ms |
+| Workers Logs CPU, first 6 burst seconds | 2,550 ms (then 1,631 over the next 6) | 1,910 ms |
+
+**The 65 suspects** [measured, push log and the three voters' Workers Logs]:
+- Each of the 65 is one `/commit` send with no reply at `COMMIT_RECEIPT` (2 s). It made one `/outcome_by_request` ask with no 200 within `CALL_DEADLINE` (1 s), one `missed` with `report` (not `busy`), and a second send that then committed. All 65 are `ok`, none within 5 s (commit p50 4,851 ms).
+- All 65 were reported to the same leader, f0. The two followers took 4 `/suspect` each, after `SUSPECT_GAP`'s dedup, and no election followed.
+- **63 of the 65 are pushes whose isolate held no leader** (`probe` in `server-timing`, the create probe of a cold isolate):
+  - 63 of 187 probed pushes suspected, against 2 of 313 that had a cached leader.
+  - A cold isolate has heard no 200 from the leader within 2 s, so `receipt`'s `busy` cannot spare it [inference from `busy` in `crates/lookup/src/lib.rs`]. The row's `busy` count is 0.
+- **The leader answered its asks fast once it ran them.** Its 340 `/outcome_by_request` ran between 09:44:13 and 09:44:17Z, wall p50 149 ms, max 448. 14 were `canceled`: their callers had gone before the leader started them.
+  - So the missed second was spent before the leader's handler: in the edge isolate, on the wire, or in the leader's input queue. This is the same split as m3fhs1's trace, and it cannot be separated here.
+  - The leader logged 1,669 ms of CPU in those 4 seconds, a floor, on a host hostguard re-places [inference that its input queue held them].
+- **The asks are an effect of the slow commit, with a small cost of their own.**
+  - An ask is sent only after a send has gone 2 s with no reply. m3fsf1, whose leader committed every burst push within 2 s, sent 0 asks.
+  - Here 358 of the 485 burst commit stages ran over 2 s.
+  - The asks cost the leader 251 ms of CPU (0.74 ms each), 15% of its CPU in the 4 seconds they ran [measured]. That adds load in the seconds already saturated, but does not start the saturation.
+
+**What B0-32 needs next** [inference]:
+- On m3fsf1's kept host, with this row's front, the line is about 496 to 497. That is m3fsf1's own counterfactual, its front capped at 600 to 1,000 ms. m3fsf2's front p50 is 569 on `ok` and 600 on late `ok`.
+- That counterfactual moves no arrival. m3fsf2 shows the fixed front did not bunch arrivals at the leader.
+- So the next gate row needs the host guard (`guardrow.sh`'s hold and re-place) on graft-m3f's B0-32 row. Then it reads stage-first plus the front on a host like m3fsf1's.
+- A statement cut for slow hosts (LM-1's area) is not designed yet, and read-memo saves 0% of a push entry's apply-turn calls. Neither is in this sizing.
+
+## Row m3fsf1: B0-32 on main `e942cd53`, a stage-first measurement (2026-11-23, graft-m3f, `ROWS="b0-32"`)
+
+**A measurement, not a gate attempt.** The orchestrator cleared it to separate stage-first's effect (`agent-stage-first`, re-landed) from LM-1's apply cut. It was expected to land under the line, and it does not count toward the two-fails rule for B0-32's gate rows.
+
+**Slot.** One site day and edge day from main `e942cd53`, with test-faults, `--anchor`, `--ssh` and `--export-bucket graft-m3f-export`, and FORMATS through 32.26 plus 20.4 and 17.4. It was m3fa3's launcher with this checkout. Shard image `91a19f9f…` and sshfront `fc6eda91…` were reused, since `containers/` is unchanged since `8d390b0f`. edgeboot passed on both builds first. Then `retire-unjoined`'s sweep, and one B0-32 row. The stop was $3 on graft-m3f from the site day's start (08:40:15Z).
+
+**Committed raw files:** `tests/fanout/raw/rows-m3fsf1.status`, `{admit,terms,vmem}-m3fsf1-b0-32.jsonl`, `tsave-m3fsf1-b0-32.jsonl.xz`, `arrivals-m3fsf1.jsonl`, `shardgate-m3fsf1-b0-32-*.jsonl`, `retirenets-m3fsf1.log`, `reretire-graft-m3f.log`, the leader's Workers Logs for 09:03:40 to 09:04:10Z (`wl-m3/m3fsf1-b0-32-f0.json.xz`), and `lm1-rows-m3f-data/m3fsf1-raw/` (the client's summary and its 27 merge pushes).
+
+- **Site day and edge day** m3fsf, 08:40:15Z to 08:51:00Z, both exit 0, one run. Version ids: sites a `b6177530`, b `2684efd4`, c `55afa573`; edge `199acd25`.
+- **Sweep:** RERETIRE OK graft-m3f, 08:51Z to 08:57:24Z.
+- **Row:** repo 65613 (run `mwt1bvq7`), 8 learners, k 4, leader site 0 term 2. The burst's first 64-command cut was at 09:03:51.8Z on the leader's clock. Done line 09:06:27Z (exit 0). Harness outage 3 s (1.7%), valid.
+- **Spend and teardown:** $0.82 from 08:40:15Z to 09:08:28Z (graft-m3f prefix $0.70), against the $3 stop. SWEEP2 OK. 65613 retired: 11 names, 11 were joined, all now not joined with the row. Purged 3,097 objects, second pass 0, and no shard running at 09:11Z.
+
+| Line | m3fsf1 | m3fhs1 |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `full` | **323 of 500** (315 `ok` within 5 s, 8 `full`); 450 needed | 364 (157 + 207) |
+| No other refusal shape | `full` only, all 8 after a commit; none `advert` or `bound` | pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | peak 122,311 B, 69 commands; `pressure` never true | pass |
+| Merges in one of the next 2 entries, none over 2 s (edge clock) | 3 of 27 over 2 s (2,189, 3,592, 4,394 ms) | 1 of 33 |
+| Zero leader changes | term 2, site 0 throughout | pass |
+| Zero `suspect` | 0, with 0 asks and 0 misses | 1 |
+
+**Stage-first's flips: neither fires** [measured, `server-timing` and the cut trace]:
+- All 500 burst pushes staged first, and 0 of 492 `ok` committed twice (m3fhs1: 148 of 293).
+- Flip 1: staged-first `ok` commit stage p50 1,237 ms (p90 1,678), against 3 s. m3fhs1's single-commit `ok` pushes had p50 2,709 ms.
+- Flip 2: the largest burst entry held 64 Agent commands. Of 944 cuts, 3 ended `AgentCmds` (64 each, at 09:03:53.6 to :53.9Z) and 941 `Empty`. So the cap bound and nothing passed it.
+
+**Where the 5 s went now: the edge's front, not the commit** [measured, `server-timing`, p50 in ms]:
+
+| Stage | m3fsf1 `ok` (492) | m3fsf1 late `ok` (177) | m3fhs1 `ok` (293) | m3fhs1 late `ok` (136) |
+|---|---|---|---|---|
+| install | **1,580** | **2,322** | 524 | 533 |
+| front | 1,580 | 2,322 | 660 | 674 |
+| `rcwait` | **1,820** | **2,580** | 640 | 590 |
+| gate | 544 | 660 | 0 | 399 |
+| validate | 644 | 693 | 463 | 445 |
+| last commit | 1,237 | **1,577** | 2,710 | 2,948 |
+| total | 4,439 | 5,277 | 4,939 | 5,856 |
+
+- Capping the front at 600 to 1,000 ms gives 496 or 497 [inference, the same marks]. `b032share.py`'s commit levers: commit ×0.75 gives 458, and a 300 ms gate cap 424.
+- The gate is no longer slow: `gate_rows` p50 374 ms, p90 636 ms, on the 402 `ok` pushes that read it, against 1,110 and 4,052.
+- **Cause, from F112's cw1 row on graft-m1, the same signature:** on a cold isolate, `cold-write`'s install guess (the genesis record) is always wrong. The guessed read stayed alive, so the real read waited out `BATCH_STALE` (2 s) on the same rcache key. `cw-link-drop` (F112) drops the unkept guessed read first. This row's main had `cold-write` but not that fix. The rerun from a main with it decides the front.
+
+**The leader's burst CPU** [measured, `heavyturns.py m3fsf1-b0-32`, 941 joined slices; Workers Logs 09:03:51 to :56Z]:
+
+| Slice holds | m3fsf1, share of CPU, mean ms | m3fhs1 |
+|---|---|---|
+| Applying committed entries | 47%, 25.8 (43 events an entry, 0.60 ms an event) | 37%, 52.1 (1.00 ms an event) |
+| Deferred transaction | 21%, 9.2 (0.15 ms a statement) | 25%, 31.6 |
+| No traced work | 22%, 0.2 | 28%, 0.6 |
+| Cuts or sends | 5% | 8% |
+| Storage confirm | 5% | 2% |
+
+- Logged leader CPU over 6 burst seconds: 1,910 ms (m3fhs1: 2,555 over its 6), with the same input count (2,241 against 2,257).
+- `/commit` used 460 ms over 626 calls (0.73 ms a call; m3fhs1 741 over 775, 0.96 ms). The 256 KiB inline bodies are gone.
+- Learner `/raft`: 821 ms over 791 calls (1.04; m3fhs1 1,074 over 594).
+- `/outcome_by_request` is absent, since nothing asked.
+- So stage-first took about a quarter off the leader's burst CPU, and the commit stage halved.
+- Apply plus the transaction is now 68% of the joined CPU, at 0.60 ms an event. The next leader-side lever is apply, but with the commit stage at p50 1.2 to 1.6 s it is not this row's limit.
+
 ## Row m3fhs1: B0-32 on main `771e07e9`, shard image `6ee7a5ab` (A37's instrument row) (2026-11-21, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** One site day and edge day from main `771e07e9` with `--ssh` and test-faults, then `retire-unjoined`'s sweep, then one B0-32 row, stop $8 on graft-m3f from the site day's start (03:29:51Z). It is A37's instrument row: it splits a slow leader confirm into the leader's input stop and its output hold. It is also the first B0-32 row on shard image `6ee7a5ab`, so `garbled-body`'s container side (G35) runs.

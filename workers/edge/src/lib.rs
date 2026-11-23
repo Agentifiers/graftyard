@@ -280,7 +280,9 @@ where
 /// `guess` is the guessed answer and `next`'s read on it, which runs beside `prev`; it is kept only if `prev` answered
 /// what the guess said, else dropped once `prev` answers and read again on `prev`'s answer. So the pair is always the
 /// one the reads in turn would give, a guessed read that was not kept counts for nothing, its error included, and the
-/// answer is never the guess.
+/// answer is never the guess. A guessed read that is not kept is dropped before the read again starts: alive, a
+/// write-class one held its key's batch (`rcache::batched`), and the read again waited out BATCH_STALE behind it
+/// (B0-34 cw1: 16 of 19 cold first POSTs paid an `install` of about 2 s, `rcwait` 1,800 to 1,940 ms).
 async fn link<A, T, E, F1, F2>(
     guess: Option<(A, F2)>,
     prev: F1,
@@ -296,13 +298,13 @@ where
         let Some(a) = prev.await? else { return Ok(None) };
         return Ok(next(a.clone()).await?.map(|t| (a, t)));
     };
-    let (prev, started) = (std::pin::pin!(prev), std::pin::pin!(started));
-    let (a, started) = match select(prev, started).await {
+    let (a, started) = match select(std::pin::pin!(prev), Box::pin(started)).await {
         Either::Left((a, started)) => (a, Either::Left(started)),
         Either::Right((t, prev)) => (prev.await, Either::Right(t)),
     };
     let Some(a) = a? else { return Ok(None) };
     if a != g {
+        drop(started);
         return Ok(next(a.clone()).await?.map(|t| (a, t)));
     }
     let t = match started {
@@ -1159,7 +1161,12 @@ pub(crate) async fn advert_refusal(
     push: bool,
     budget: std::time::Duration,
 ) -> Option<u32> {
-    let says = advert_says(graftyard_lookup::advert(ChainId::Repo(repo.id), graftyard_lookup::now_ms()), budget);
+    let heard = graftyard_lookup::advert(ChainId::Repo(repo.id), graftyard_lookup::now_ms());
+    #[cfg(feature = "test-faults")]
+    let heard = c.advert_force.map_or(heard, |wait_ms| {
+        graftyard_lookup::Heard::Fresh(graftyard_lookup::Advert { wait_ms, retry_after_s: 1 })
+    });
+    let says = advert_says(heard, budget);
     if says == AdvertSays::Send {
         return None;
     }
@@ -1894,6 +1901,11 @@ struct Ctx<'a> {
     /// and no members still takes `beside`'s cold-guess path.
     #[cfg(feature = "test-faults")]
     link_guess: Option<(i64, i64)>,
+    /// B0-33 row B's pre-load probe (`x-graft-advert: <ms>` with the bed token): this request reads a fresh advert of
+    /// that wait, as if its group's leader had just advertised it, so a test install shows `advert_refusal` and its
+    /// `advert` mark before any agent loads (`tests/am1/rest/a1.mjs`, `--advert-probe`).
+    #[cfg(feature = "test-faults")]
+    advert_force: Option<u64>,
     /// `authenticate`'s token's App, when it is a user-to-server token.
     token_app: std::cell::Cell<Option<graftyard_identity::AppId>>,
     /// `authenticate`'s token's optional fields: a `github_pat_`'s scope, which REST reads check (`usertok::reaches`).
@@ -1980,6 +1992,8 @@ impl<'a> Ctx<'a> {
             colo_off: false,
             #[cfg(feature = "test-faults")]
             link_guess: None,
+            #[cfg(feature = "test-faults")]
+            advert_force: None,
             token_app: std::cell::Cell::new(None),
             token_fields: std::cell::RefCell::new(token_fields),
             agent_session: false,
@@ -4064,6 +4078,18 @@ async fn serve(
                 let (r, o) = v.split_once(',')?;
                 Some((r.trim().parse().ok()?, o.trim().parse().ok()?))
             }),
+        #[cfg(feature = "test-faults")]
+        advert_force: req
+            .headers()
+            .get("x-graft-advert")?
+            .filter(|_| {
+                lean_asked(
+                    true,
+                    req.headers().get("x-bed-token").ok().flatten().as_deref(),
+                    env.secret("BED_TOKEN").ok().map(|s| s.to_string()).as_deref(),
+                )
+            })
+            .and_then(|v| v.trim().parse().ok()),
     };
     // A site's SSH front reaches the key lookup and git, and nothing else (`ssh`).
     if c.ssh_front && !ssh::front_path(&path) {
@@ -5115,6 +5141,41 @@ mod tests {
         assert_eq!(link(Err("down".into())), Err("down".into()));
         assert_eq!(link(Ok(None)), Ok(None));
         assert_eq!(link(Ok(Some(2))), Ok(Some((2, 20))));
+        // A guessed read still running when `prev` names another answer is dropped before the read again starts, so
+        // it holds nothing the read again waits on (a write-class read's batch, `rcache::batched`). `prev` answers on
+        // its second poll, so the guessed read has started by then.
+        struct Held<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for Held<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+        let running = std::cell::Cell::new(false);
+        let guessed = async {
+            running.set(true);
+            let _held = Held(&running);
+            std::future::pending::<Result<Option<i64>, String>>().await
+        };
+        let mut polled = false;
+        let prev = std::future::poll_fn(move |cx| {
+            if std::mem::replace(&mut polled, true) {
+                std::task::Poll::Ready(Ok::<_, String>(Some(2)))
+            } else {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        });
+        let again = |a: i64| {
+            let held = running.get();
+            futures_util::future::Either::Right(async move { Ok::<_, String>((!held).then_some(a * 10)) })
+        };
+        let mut got = std::pin::pin!(super::link(Some((1, futures_util::future::Either::Left(guessed))), prev, again));
+        let got = loop {
+            if let Some(v) = got.as_mut().now_or_never() {
+                break v;
+            }
+        };
+        assert_eq!(got, Ok(Some((2, 20))), "the read again ran while the guessed read was still held");
     }
 
     /// The git read gate on a cached `Authz`: a decision that does not allow is made again on a fresh read (a grant

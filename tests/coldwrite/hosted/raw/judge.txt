@@ -1,0 +1,28 @@
+isolates whose first push since SINCE was not the cell's: 0
+205 POSTs, 205 edge push lines in the window, 0 POSTs with no line
+isolates 27, colos {None: 55, 'LAX': 150}
+cold first POST, git, front+gate: n 4, median 2136, p90 2752, p99 2752, max 2752 ms
+  gates: {'colo': 4}
+  front: n 4, median 2123, p90 2747, p99 2747, max 2747 ms; gate: n 4, median 6, p90 13, p99 13, max 13 ms
+  client ms: n 4, median 2675, p90 3832, p99 3832, max 3832 ms
+cold first POST, fetch, front+gate: n 7, median 2589, p90 2787, p99 2787, max 2787 ms
+  gates: {'read': 7}
+  front: n 7, median 2292, p90 2408, p99 2408, max 2408 ms; gate: n 7, median 297, p90 496, p99 496, max 496 ms
+  client ms: n 7, median 3362, p90 3542, p99 3542, max 3542 ms
+cold first POST, other, front+gate: n 4, median 2682, p90 2704, p99 2704, max 2704 ms
+  gates: {'read': 4}
+  front: n 4, median 2411, p90 2428, p99 2428, max 2428 ms; gate: n 4, median 406, p90 441, p99 441, max 441 ms
+  client ms: n 4, median 3248, p90 3362, p99 3362, max 3362 ms
+cold first POST, ro, front+gate: n 3, median 2568, p90 2831, p99 2831, max 2831 ms
+  gates: {'read': 3}
+  front: n 3, median 2292, p90 2407, p99 2407, max 2407 ms; gate: n 3, median 396, p90 424, p99 424, max 424 ms
+  client ms: n 3, median 3457, p90 3518, p99 3518, max 3518 ms
+cold first POST after an advertisement (git), edge total: n 4, median 2575, p90 3701, p99 3701, max 3701 ms
+warm POST (git, second on its connection), front+gate: n 41, median 396, p90 2124, p99 2314, max 2314 ms
+  gates: {'colo': 32, 'isolate': 9}
+every git first POST, front+gate: n 41, median 511, p90 1500, p99 2752, max 2752 ms
+  gates: {'colo': 32, 'isolate': 9}
+refusals by arm and cause:
+    41 ro post: http 403 Permission denied
+fetch/other/ro POSTs whose gate came from the data center's entry: 0
+ro POSTs not refused 403: 0 of 41

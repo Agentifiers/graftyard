@@ -186,6 +186,58 @@ fn day_versions_names_the_site_days_n1_and_n_versions_only_while_a_site_day_runs
     assert_eq!(gate::day_versions(&o.g.f), None, "no site day current");
 }
 
+/// Once `SiteRelease` names the day's own release (100% and the first day), N is the pre-signed `Rollback`'s release
+/// for the site, not nothing; and N's step window counts as N only from `STEP_MIN_ENTRIES` entries, so at 100% the
+/// host reads N from the intent's start (OPEN-QUESTIONS R44, gate check row 2's 207 entries).
+#[test]
+fn after_site_release_n_is_the_rollbacks_release_and_a_thin_n_window_reads_from_the_start() {
+    let mut o = Ops::new(G::new());
+    upload_all(&mut o.g, 1);
+    o.roll_all(1);
+    upload_all(&mut o.g, 2);
+    upload_all(&mut o.g, 3);
+    o.next_id += 1;
+    // Another site's rollback and a release that is not the site's N come first, so the site's own is the one read.
+    let undo = [
+        ReleaseEntry::Rollback { target: DayTarget::Site(SiteId(0)), release: rel(3).0 },
+        ReleaseEntry::Rollback { target: DayTarget::Site(SiteId(1)), release: rel(1).0 },
+    ];
+    let b = o.g.intent(o.next_id, super::ops::site_day(1, 2), &undo, &VENDOR);
+    o.g.ok(b);
+    let s = Script::Site(SiteId(1));
+    let want = Some((SiteId(1), version_of(2, s), Some(version_of(1, s))));
+    assert_eq!(gate::day_versions(&o.g.f), want, "before SiteRelease");
+    for _ in 0..50 {
+        if o.g.f.site_release.get(&1) == Some(&rel(2).0) {
+            break;
+        }
+        o.act();
+    }
+    assert_eq!(o.g.f.site_release.get(&1), Some(&rel(2).0));
+    assert!(o.g.f.current.is_some(), "the first day still runs");
+    assert_eq!(gate::day_versions(&o.g.f), want, "after SiteRelease: N is the Rollback's release");
+    o.finish();
+    // Without a site rollback in the undo list, N after SiteRelease is unknown.
+    upload_all(&mut o.g, 4);
+    o.next_id += 1;
+    let b = o.g.intent(o.next_id, super::ops::site_day(1, 4), &[], &VENDOR);
+    o.g.ok(b);
+    for _ in 0..50 {
+        if o.g.f.site_release.get(&1) == Some(&rel(4).0) {
+            break;
+        }
+        o.act();
+    }
+    assert_eq!(gate::day_versions(&o.g.f), Some((SiteId(1), version_of(4, s), None)));
+    o.finish();
+
+    let n = |entries| gate::Counters { entries, ..Default::default() };
+    assert!(gate::n_from_start(&n(0)));
+    assert!(gate::n_from_start(&n(207)), "gate check row 2's 100% window");
+    assert!(gate::n_from_start(&n(gate::STEP_MIN_ENTRIES - 1)));
+    assert!(!gate::n_from_start(&n(gate::STEP_MIN_ENTRIES)), "a full window beside N+1 is N's own");
+}
+
 #[test]
 fn a_site_burns_only_when_both_other_sites_report_it_and_each_report_counts_once_it_has_min_calls() {
     let voters = [SiteId(0), SiteId(1), SiteId(2)];
