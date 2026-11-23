@@ -139,7 +139,7 @@ The first cost model found three costs that the DSQL design hid.
 | --- | --- | --- | --- | --- | --- |
 | 50 | $238 | $248 | $133 | $1,287 | $2,292 |
 | 300 | $1,016 | $929 | $599 | $2,573 | $4,466 |
-| 2,000 | $9,332 | $9,229 | $5,395 | $12,432 | $20,636 |
+| 2,000 | $9,335 | $9,232 | $5,395 | $12,432 | $20,636 |
 
 At 50 developers the cheapest reliable setups are the Cloudflare default at $238 (RPO zero across three continents, on the Pro plan with a 100 MB HTTPS push cap and an unpriced Spectrum add-on), AWS `scrappy` at $226 (one Region with a cold recovery Region, so a Region loss is not RPO zero), and AWS `scrappy-paired` at $388 (RPO zero across two Regions).
 
@@ -189,4 +189,4 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 | --- | --- | --- | --- | --- |
 | 50 | $238 | $22 | $259 | 9% |
 | 300 | $1,016 | $329 | $1,345 | 32% |
-| 2,000 | $9,332 | $2,935 | $12,266 | 31% |
+| 2,000 | $9,335 | $2,939 | $12,274 | 31% |

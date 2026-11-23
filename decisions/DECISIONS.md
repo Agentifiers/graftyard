@@ -7843,6 +7843,78 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
 - A vault row measures vault lag over 30 s, or the queue's delivery delay past a round's requested delay grows beyond
   m3fr37's about 5 s: rounds move to a Durable Object alarm on site A's `export` registry object.
 
+### `vault-worker`: the vault keeps the feed as served, copies what entries name after checking it, and moves only an unlocked cursor, 2026-11-22
+
+**Decision.** M5-WP5's vault, code only (`workers/vault`, `cli/src/vault.rs`):
+- **Layout.** One bucket in the vault account. `feed/<minute>/<seq>` holds each `ExportObject` byte for byte as
+  `export/batches` served it; `entries/<chain>/<from>-<to>` holds entries the feed never carried; snapshots and packs
+  keep their install keys (`snapshot/`, `pack/<network>/`). Every object there is put create-only. `graftyard vault
+  init` locks those four prefixes for 35 days (`vault-{feed,entries,snapshot,pack}-35d`, Age 3,024,000 s), keeping
+  any other rule the bucket holds, and never locks `state/`.
+- **Cursor.** `state/vault` (`VaultState`: the feed's `FeedState`, owed backfills and copies, GC candidates, deleted
+  repositories, and the missed and undecoded counts) is the only object rewritten. It is written compare-and-swap on
+  its etag, after the objects it covers, so a pass that loses the race stops and a crash repeats work without skipping
+  any.
+- **Feed.** A pass pages `batches` after its position, checks each object with the feed's own `check_object` against
+  its cursors, stores it, then moves them. A chain first carried past index 1 is filled from `chains/{c}/entries`
+  from 1, or, on a 410, from the newest snapshot below its first carried index. A 410 on `batches` (the vault fell
+  past the 7-day lifecycle) lists again from the oldest object, skips what it holds, and fills any gap the same way.
+- **Copies.** Repository-family rows are decoded: each stored pack they name (`packs_of`, plus `Promoted` and
+  `Compacted.produced`) is streamed from `packs/{id}?network=` into a multipart upload of 8 MiB parts and completed
+  only if its length and SHA-256 match the entry's `PackRef`, and each snapshot an `Archived` names is copied object by
+  object, each checked against its frame's SHA-256. A copy the install answers 404 or 410 for, or whose bytes fail the
+  check, is counted `missed` and alarmed, not retried.
+- **GC.** Only packs the install's GC can delete are candidates: `Compacted.consumed` after `CONSUMED_KEEP`, and a
+  deleted repository's packs after `retain_until`. Each is probed at most daily and deleted `RESTORE_WINDOW` after the
+  first probe that found it gone (404). A 410 is a loss at the install, never a GC.
+- **Worker.** A `* * * * *` cron runs passes every 10 s for 45 s [guess], each bounded to 20 batch pages, 20
+  backfills, 40 copies and 50 probes [guess]. A 401 stops the invocation; a 5xx is retried on the next pass. The
+  Worker has no fetch route. `network_of(repo:<id>)` is `network:<id>`, as every push path places packs
+  [inference: forks into a shared network are not built].
+- **`graftyard vault init`.** Under `CLOUDFLARE_VAULT_API_TOKEN` (the vault account's, never an install token): refuses
+  a key that is not install.toml's customer key before any API call, mints and verifies an install-scoped token with
+  holder `vault`, creates the bucket if missing, puts the lock rules, deploys the bundle with `VAULT`, `GRAFTYARD_URL`
+  and the token as the secret `EXPORT_TOKEN`, and sets the cron. It prints the jti, scope, holder and exp, never the
+  token.
+
+**Why.**
+- Keeping each object as served lets a restore check it with the feed's own frames and digests, with no second format.
+- A pack is checked against the entry that names it, not the `X-Graftyard-Checksum` header the same edge sends, so an
+  install that serves wrong bytes cannot lock them into the vault for 35 days.
+- The cursor must move, and a locked object cannot be overwritten; one unlocked object written compare-and-swap is
+  the smallest state that does both.
+- The install deletes a stored pack only after a roll consumed it or a purge of its deleted repository, so probing
+  only those packs keeps GC reads proportional to what GC can remove.
+
+**What it beat.**
+- **Pack copies from the `Committed` markers' listing.** The vault cannot list the install's buckets, and the export
+  token reaches only the four endpoints.
+- **The cursor in a Durable Object.** The vault account would gain a class and a failure domain for one small object.
+- **One prefix-wide lock.** It would lock `state/` and freeze the cursor at its first write.
+- **Trusting the edge's checksum header.** The edge that serves the pack also writes the header.
+
+**Evidence.**
+- `workers/vault/tests/vault.rs` against `export::serve` with a bucket that refuses overwrites and deletes under lock:
+  every chain's every entry once with `Release` and `Ids`, a raced pass, a corrupt and a lost pack, and a backfill;
+  a consumed pack deleted only `RESTORE_WINDOW` after the first 404; a revoked token moving nothing. Four unit tests
+  (`SnapshotReader` across any chunking, `PackCheck`, `gc_step`, `absorb`). The CLI's three `vault init` tests.
+- `tests/vaultbed/run.sh` in local workerd at $0: exportbed's three site scripts, the edge's own build with the
+  install's anchor and a real `jti` row, and the vault's own build. The vault stored all 3 then 4 `export/` objects
+  byte for byte, the 9 MiB pack in two parts with the entry's SHA-256, and never the bad pack (counted missed); after
+  `DELETE export/token` (204) and READ_CACHE its pass was refused and stored nothing; 0 wasm traps.
+- `tests/m0carried/plant88.py`.
+- Cost: `scripts/cost.py` prices the vault's multipart Class A per pack (create, parts, complete), a `state/vault`
+  write per feed object, a Class B HEAD per pack and a state read per pass, and one `batches` request per pass (five
+  a minute) instead of one per feed object: the vault line moves $157 → $160 at 2,000 developers, the base $9,332 →
+  $9,335, and 50 and 300 developers are unchanged.
+
+**Flip.**
+- A vault row measures lag over 30 s with the feed on time: raise the pass bounds or poll more often.
+- A restore finds a pack an entry names missing from `pack/` without a `missed` count: copies move from entries to a
+  listing the export endpoints serve.
+- Forks share a network: `network_of` must read the repository's network from its fold.
+- Open with it: OPEN-QUESTIONS R39 (per-org pull caps, `vault init` from an unverified bundle, the pass constants).
+
 ### `validate-hedge`: a human push's buffered validate asks every site left after 1 s, beside the first, 2026-11-22
 
 **Status.** Built on branch `validate-fallback`, not yet on a hosted row. Edge only (`workers/edge/src/lib.rs`,

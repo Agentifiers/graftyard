@@ -1,0 +1,30 @@
+[package]
+name = "graftyard-vault"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The vault Worker (`design/DESIGN.md`, "Install operations", Vault; Shape, "Lifeboat feed"): in the vault account, it
+# pulls the install's export endpoints into its own bucket under 35-day bucket locks. `pass` is plain Rust over a
+# `Host`, tested natively against the export endpoints' own rules (`tests/vault.rs`); `worker` is the Workers host.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+graftyard-fold = { path = "../../crates/fold" }
+graftyard-git = { path = "../../crates/git" }
+graftyard-raft = { path = "../../crates/raft" }
+graftyard-types.workspace = true
+postcard.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+futures-util = { version = "0.3", default-features = false }
+worker.workspace = true
+
+[dev-dependencies]
+futures-executor = "0.3"
+smallvec.workspace = true

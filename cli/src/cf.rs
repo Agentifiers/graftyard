@@ -351,6 +351,17 @@ impl Cf {
             .map(|_| ())
     }
 
+    /// The bucket's object-lock rules, or an empty list when it has none.
+    pub fn bucket_lock(&self, bucket: &str) -> Res<Vec<Value>> {
+        let v = self.call("GET", &format!("/r2/buckets/{bucket}/lock"), &[], None)?;
+        Ok(v["result"]["rules"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// Replaces the bucket's object-lock rules with `rules`.
+    pub fn put_bucket_lock(&self, bucket: &str, rules: &[Value]) -> Res<()> {
+        self.json("PUT", &format!("/r2/buckets/{bucket}/lock"), &[], &json!({ "rules": rules })).map(|_| ())
+    }
+
     // ---- Secrets Store ----
 
     /// The id of the store named `name`, created when missing.

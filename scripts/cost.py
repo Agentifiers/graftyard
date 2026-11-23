@@ -168,6 +168,9 @@ ROW_KB = 0.62                      # member SQLite bytes per fold row, in KB: (d
 REMOVED_DAYS = 35                  # removed members run deleteAll() after 35 days
 AVG_PACK_MB = 50                   # average stored pack, for per-object pack copies [guess]
 VAULT_LOCK_DAYS = 35               # bucket lock retention in the vault account
+VAULT_PART_MB = 8                  # `graftyard_vault::PART_BYTES`: multipart part size of a vault copy
+VAULT_PASSES = DAYS * 24 * 60 * 5  # vault passes: a `* * * * *` cron that polls every 10 s for 45 s
+                                   # (`graftyard_vault::POLL_EVERY_MS`, `POLL_FOR_MS`), five passes a minute
 FEED_OBJECTS = DAYS * 24 * 240     # feed rounds and ChangeBatch objects at most, one every 15 s: a round is due
                                    # FEED_EVERY_MS (10 s) after the last claim, and hosted queue delivery adds about
                                    # 5 s [measured, m3fr37, tests/m5/results/m5-wp5-hosted.md]
@@ -406,7 +409,8 @@ def model(tier, variant="design", split=None):
 	lease_rpcs = w["reads"] * LEASE_MISS if members > 1 else 0.0
 	ring_reqs = (append_rpcs + lease_rpcs + w["reads"] * 1.5 + w["entries"]) if variant == "separate" else 0.0
 	queue_msgs = (w["pushes"] * 3 + w["jobs"] * 3)
-	vault_pulls = (w["pushes"] + FEED_OBJECTS) if vault else 0.0
+	# The vault's pulls at the edge: one `batches` page a pass, and one pack read per stored pack.
+	vault_pulls = (w["pushes"] + VAULT_PASSES) if vault else 0.0
 	edge_reqs = w["api"] + w["git_ops"] * GIT_REQS + queue_msgs + vault_pulls
 	cpu = (w["api"] * CPU_MS["api"] + (w["fetches"] + w["jobs"]) * GIT_REQS * CPU_MS["git"]
 		+ w["pushes"] * CPU_MS["push"] + ring_reqs * CPU_MS["ring"] + queue_msgs * CPU_MS["queue"]
@@ -576,12 +580,18 @@ def model(tier, variant="design", split=None):
 
 	if vault:
 		# Vault account: its own Workers Paid plan; one locked copy of packs (with the cruft a lock retains), member
-		# snapshots, and the change feed; one Class A per pack, idx, feed object, and snapshot.
+		# snapshots, and the change feed (`workers/vault`). Class A: a pack is a multipart create, its PART_BYTES parts,
+		# and a complete; a feed object one create-only put, and `state/vault` one write per pass that moved anything
+		# (at most one per object); a snapshot copy about four objects. Class B: a HEAD before each pack copy, and one
+		# `state/vault` read per pass. Deletes are free. Its cron's invocations and subrequests stay inside the plan.
 		vault_gb = t["git_gb"] * churn * VAULT_LOCK_DAYS / 30 + t["core_gb"] + t["aux_gb"] + w["entries"] * 2 / 1024 / 1024
-		vault_a = w["pushes"] * 2 + FEED_OBJECTS + w["groups"] * 4
+		pack_parts = 2 + math.ceil(ACTIVITY["push_mb"] / VAULT_PART_MB)
+		vault_a = w["pushes"] * pack_parts + FEED_OBJECTS * 2 + w["groups"] * 4
+		vault_b = w["pushes"] + VAULT_PASSES
 		lines["Vault account (plan, locked R2 copy, writes)"] = (price("cf.workers.paid.subscription")
 			+ over(vault_gb, INCLUDED["r2_storage"]) * price("cf.r2.standard.storage")
-			+ over(vault_a, INCLUDED["r2_a"]) / 1e6 * price("cf.r2.standard.class_a"))
+			+ over(vault_a, INCLUDED["r2_a"]) / 1e6 * price("cf.r2.standard.class_a")
+			+ over(vault_b, INCLUDED["r2_b"]) / 1e6 * price("cf.r2.standard.class_b"))
 	if variant != "artifacts":
 		lines["Runner account (Workers Paid; runner compute excluded)"] = price("cf.workers.paid.subscription")
 	return lines

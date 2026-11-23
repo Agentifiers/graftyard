@@ -991,6 +991,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "graftyard-vault"
+version = "0.1.0"
+dependencies = [
+ "futures-executor",
+ "futures-util",
+ "graftyard-fold",
+ "graftyard-git",
+ "graftyard-raft",
+ "graftyard-types",
+ "postcard",
+ "serde",
+ "serde_json",
+ "sha2",
+ "smallvec",
+ "worker",
+]
+
+[[package]]
 name = "graftyard-wire"
 version = "0.1.0"
 dependencies = [

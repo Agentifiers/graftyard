@@ -65,6 +65,7 @@ Implementation will find places where the design is wrong. When it does, fix the
 - Never write the project's old name. `scripts/check_names.py` lists any occurrence outside `history/`.
 - A change under `workers/edge/` or any crate the edge links runs `bash tests/edgeboot/run.sh` and `PRODUCT=1 bash tests/edgeboot/run.sh` before it merges (CI job `edgeboot`): they serve the edge's own wasm in local workerd, which no native test or clippy does, and fail on a 500 or a wasm trap.
 - A change to `workers/site/src/export_feed.rs` or `workers/site/src/registry.rs` runs `bash tests/exportbed/run.sh` before it merges (not in CI: it builds the site, about 11 minutes): it runs the site's own build as three scripts in local workerd with a local export bucket and fails unless one leader report, one round claim, one `export/` object and the queued round after it go through. m3fx49's feed carried nothing because of SQL that no native test ran, and m3fx49b's queued round arrived as `{}`.
+- A change under `workers/vault/`, `cli/src/vault.rs`, or the export endpoints the vault pulls (`crates/git/src/export.rs`, `workers/edge/src/export.rs`) runs `bash tests/vaultbed/run.sh` before it merges (not in CI: it builds the site, the edge and the vault): it runs the vault's own build against exportbed's site scripts and the edge's own build in local workerd and fails unless every `export/` object reaches the vault byte for byte, a pack an entry names is copied and checked, and a revoked token moves nothing.
 
 ## What not to do
 
