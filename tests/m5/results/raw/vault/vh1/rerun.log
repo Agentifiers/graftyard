@@ -1,0 +1,9 @@
+2026-11-23T04:59:43Z
+vault account: the runner account, standing in for a vault account
+older state: position 000029923495/0000000001 chains 3194
+{"objects": 460, "by_prefix": {"feed": 455, "pack": 2, "snapshot": 2, "state": 1}}
+{"put": "state/vault", "create_only": false, "status": 200, "errors": []}
+state/vault set back to the older one; waiting 130 s for two cron invocations
+{"objects": 464, "by_prefix": {"feed": 459, "pack": 2, "snapshot": 2, "state": 1}}
+{"get": "state/vault", "status": 200, "bytes": 50608}
+{"locked_before": 459, "locked_after": 463, "changed": [], "gone": [], "new": 4, "new_prefixes": ["feed"], "position_after": "000029923501/0000000002", "missed": 6, "undecoded": 0}

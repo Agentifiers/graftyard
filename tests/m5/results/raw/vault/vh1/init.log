@@ -1,0 +1,11 @@
+2026-11-23T04:43:59Z
+vault account: the runner account, standing in for a vault account
+7db2a284
+release b32c4e31bf86f845220771581736b53046be001c343eb3007fe0575e453c944d
+  graft-m3f-vault-standin: created in ENAM
+  graft-m3f-vault-standin: lock rules 4 (35 days on feed/, entries/, snapshot/, pack/)
+  graft-m3f-vault-standin: release b32c4e31bf86f845220771581736b53046be001c343eb3007fe0575e453c944d deployed, pull cron * * * * *, export token jti 01M83BFM4ENPP12CXC3BRTX36B scope install holder "vault" exp 1795495439 (1 days)
+init exit 0
+{"lock": 200, "errors": [], "rules": [{"id": "vault-entries-35d", "enabled": true, "prefix": "entries/", "condition": {"type": "Age", "maxAgeSeconds": 3024000}}, {"id": "vault-feed-35d", "enabled": true, "prefix": "feed/", "condition": {"type": "Age", "maxAgeSeconds": 3024000}}, {"id": "vault-pack-35d", "enabled": true, "prefix": "pack/", "condition": {"type": "Age", "maxAgeSeconds": 3024000}}, {"id": "vault-snapshot-35d", "enabled": true, "prefix": "snapshot/", "condition": {"type": "Age", "maxAgeSeconds": 3024000}}]}
+{"schedules":["* * * * *"]}
+{"secrets":["EXPORT_TOKEN secret_text"]}
