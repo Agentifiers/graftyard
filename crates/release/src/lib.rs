@@ -28,8 +28,8 @@ use smallvec::SmallVec;
 
 pub use codec::Malformed;
 pub use group::{
-    Accepted, Current, Drained, Pointers, ReleaseFold, STALE_MAX, Upload, ZERO_ACKS, formats_enable_message,
-    presign_undo, roll_steps, undo_entry,
+    Accepted, Current, Drained, Pointers, ReleaseFold, RotateStep, STALE_MAX, Upload, ZERO_ACKS,
+    formats_enable_message, presign_undo, roll_steps, rotate_steps, undo_entry,
 };
 pub use types::{
     Bound, DayTarget, Format, FormatSet, Genesis, ImageRef, InstallId, Intent, IntentId, IntentState, KeyId, Keys,

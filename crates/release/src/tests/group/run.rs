@@ -32,6 +32,9 @@ struct Fake {
     /// happen, and every later call of that run fails. `None` never kills.
     kill_after: Option<usize>,
     next_v: u8,
+    /// Each `Rotate` host step run, in order; a step named in `rotate_fails` fails instead.
+    rotated: Vec<(SecretName, u8, crate::RotateStep)>,
+    rotate_fails: Option<crate::RotateStep>,
 }
 
 impl Fake {
@@ -57,6 +60,8 @@ impl Fake {
             api_down: false,
             kill_after: None,
             next_v: 1,
+            rotated: Vec::new(),
+            rotate_fails: None,
         }
     }
 
@@ -176,6 +181,23 @@ impl Exec for Fake {
         self.next_v += 1;
         self.tags.insert((release.0, s), VersionId([self.next_v; 16]));
         self.uploads.push(s);
+        Ok(())
+    }
+
+    async fn rotate(
+        &mut self,
+        _fold: &ReleaseFold,
+        secret: SecretName,
+        slot: u8,
+        step: crate::RotateStep,
+    ) -> Result<(), String> {
+        if self.killed() {
+            return Err("killed".into());
+        }
+        if self.rotate_fails == Some(step) {
+            return Err("the new slot's value was refused".into());
+        }
+        self.rotated.push((secret, slot, step));
         Ok(())
     }
 }
@@ -464,4 +486,155 @@ fn killed_roll(seed: u64) -> usize {
     assert_eq!(f.deps[&Script::Edge].split, vec![(edge(&r2), 100), (edge(&r1), 0)]);
     assert!(f.pages.is_empty(), "{:?}", f.pages);
     kills
+}
+
+// ---- M5-WP6: `Rotate` (BF-46's in-memory half) ----
+
+/// A `Rotate` signed by `signer` and committed, with nothing else current.
+fn rotate(f: &mut Fake, n: u8, secret: SecretName, slot: u8, signer: &[u8; 32]) {
+    let b = f.g.intent(n, Intent::Rotate { secret, slot }, &[], signer);
+    f.g.ok(b);
+}
+
+/// Every `IntentStep` and `IntentDone` of the last intent, in log order.
+fn last_intent_entries(f: &Fake) -> Vec<ReleaseEntry> {
+    let start = f.g.log.iter().rposition(|b| matches!(SignedEntry::decode(b).unwrap().body, ReleaseEntry::Intent(_)));
+    f.g.log[start.unwrap() + 1..].iter().map(|b| SignedEntry::decode(b).unwrap().body).collect()
+}
+
+/// `DeployToken` and `ReadToken`: one confirming call with the new slot's value, then the switch, which moves the
+/// slot every reader takes from the view; no script is deployed. A second `Rotate` back to slot 0 runs the same way.
+#[test]
+fn bf46_a_token_rotate_probes_the_new_slot_then_switches_with_no_deploy() {
+    let mut f = Fake::new(G::new());
+    for (n, secret) in [(30, SecretName::DeployToken), (31, SecretName::ReadToken)] {
+        assert_eq!(f.g.f.slot(secret), 0);
+        rotate(&mut f, n, secret, 1, &CUSTOMER);
+        let log = f.cron(5);
+        assert!(f.g.f.current.is_none(), "{log:?}");
+        assert_eq!(f.g.f.slot(secret), 1, "{secret:?} switched");
+        assert_eq!(f.rotated.last(), Some(&(secret, 1, crate::RotateStep::Probe)));
+        let steps: Vec<_> = last_intent_entries(&f).into_iter().map(|e| e.kind()).collect();
+        assert_eq!(steps, ["IntentStep", "IntentStep", "IntentDone"]);
+    }
+    rotate(&mut f, 32, SecretName::DeployToken, 0, &VENDOR);
+    f.cron(5);
+    assert_eq!((f.g.f.slot(SecretName::DeployToken), f.g.f.slot(SecretName::ReadToken)), (0, 1));
+    assert!(f.deploys.is_empty() && f.uploads.is_empty(), "no new script version");
+    assert!(f.pages.is_empty(), "{:?}", f.pages);
+}
+
+/// A probe the new value fails: the step pages and nothing moves, run after run, until the customer fixes the value.
+/// The switch is never committed before its probe passed.
+#[test]
+fn bf46_a_failed_probe_pages_and_never_switches() {
+    let mut f = Fake::new(G::new());
+    rotate(&mut f, 30, SecretName::DeployToken, 1, &CUSTOMER);
+    f.rotate_fails = Some(crate::RotateStep::Probe);
+    for _ in 0..3 {
+        let log = block_on(ops::run(&mut f, Dwell::default()));
+        assert!(matches!(log.last(), Some(Ran::Paged(why)) if why.contains("DeployToken")), "{log:?}");
+    }
+    assert_eq!(f.g.f.slot(SecretName::DeployToken), 0);
+    assert_eq!(f.g.f.current.as_deref().unwrap().next, 0, "no step committed");
+    f.rotate_fails = None;
+    f.cron(5);
+    assert_eq!(f.g.f.slot(SecretName::DeployToken), 1);
+}
+
+/// `MintWrapKey`: publish the new key's `VerifyingKey` row, wait one installation-token lifetime from that step, switch,
+/// then retire the old key. The switch waits the full lifetime, measured from the publish step's commit.
+#[test]
+fn bf46_mint_wrap_key_publishes_waits_a_token_lifetime_switches_then_retires() {
+    use crate::RotateStep::*;
+    let mut f = Fake::new(G::new());
+    rotate(&mut f, 30, SecretName::MintWrapKey, 1, &CUSTOMER);
+    let log = block_on(ops::run(&mut f, Dwell::default()));
+    assert_eq!(f.rotated, [(SecretName::MintWrapKey, 1, Publish)]);
+    let published = f.g.f.current.as_deref().unwrap().since;
+    assert!(
+        matches!(log.last(), Some(Ran::Wait { until: Some(t), .. }) if t.0 == published.0 + ops::ROTATE_PUBLISHED_FOR),
+        "{log:?}"
+    );
+    // A minute short of the lifetime: still waiting, still slot 0.
+    f.g.at = Timestamp(published.0 + ops::ROTATE_PUBLISHED_FOR - 60_000);
+    block_on(ops::run(&mut f, Dwell::default()));
+    assert_eq!(f.g.f.slot(SecretName::MintWrapKey), 0);
+    f.g.at = Timestamp(published.0 + ops::ROTATE_PUBLISHED_FOR);
+    f.cron(5);
+    assert!(f.g.f.current.is_none());
+    assert_eq!(f.g.f.slot(SecretName::MintWrapKey), 1);
+    let (_, switched) = f.g.f.slots[&SecretName::MintWrapKey];
+    assert!(switched.0 >= published.0 + ops::ROTATE_PUBLISHED_FOR, "switched only after the lifetime");
+    assert_eq!(f.rotated, [(SecretName::MintWrapKey, 1, Publish), (SecretName::MintWrapKey, 1, Retire)]);
+}
+
+/// A `Rotate` this `graft-ops` does not switch, or one to the active slot, is refused by name: a page each run and no
+/// step, until the customer's `Abort` ends it with the slot unchanged.
+#[test]
+fn bf46_a_rotate_graft_ops_does_not_run_pages_by_name_and_an_abort_ends_it() {
+    for (secret, slot, said) in [
+        (SecretName::SshHostKeys, 1, "SSH_HOST_KEY_ACTIVE"),
+        (SecretName::McpAppKey, 1, "binds no slot"),
+        (SecretName::HostedRunnersAppKey, 1, "runner account"),
+        (SecretName::SecretsWrapKey, 1, "no row"),
+        (SecretName::TunnelToken, 1, "retired"),
+        (SecretName::DeployToken, 0, "the active slot"),
+    ] {
+        let mut f = Fake::new(G::new());
+        rotate(&mut f, 30, secret, slot, &CUSTOMER);
+        let log = block_on(ops::run(&mut f, Dwell::default()));
+        assert!(
+            matches!(log.last(), Some(Ran::Paged(why)) if why.contains(said) && why.contains("refuses")),
+            "{secret:?}: {log:?}"
+        );
+        assert!(f.rotated.is_empty() && f.g.f.current.as_deref().unwrap().next == 0, "{secret:?}");
+        f.g.upload(1);
+        let b = f.g.entry(ReleaseEntry::Abort { intent: id(30), target: rel(1).0 }, &[&CUSTOMER]);
+        f.g.ok(b);
+        f.cron(3);
+        assert!(f.g.f.current.is_none(), "{secret:?}: the Abort ended it");
+        assert_eq!(f.g.f.slot(secret), 0, "{secret:?}");
+    }
+}
+
+/// The agents account's secrets are its own `graft-ops`'s: the install's pages and steps nothing, and the agents
+/// executor key may step them.
+#[test]
+fn bf46_the_install_graft_ops_leaves_the_agents_secrets_to_the_agents_account() {
+    let mut f = Fake::new(G::new());
+    rotate(&mut f, 30, SecretName::AgentsAppKey, 1, &CUSTOMER);
+    let log = block_on(ops::run(&mut f, Dwell::default()));
+    assert!(matches!(log.last(), Some(Ran::Paged(why)) if why.contains("agents account")), "{log:?}");
+    let b = f.g.entry(ReleaseEntry::IntentStep { intent: id(30), step: 0 }, &[&AGENTS]);
+    f.g.ok(b);
+}
+
+/// BF-39's rule for `Rotate`: killed after one to three calls in every run (a view read, a host step, a commit), a `MintWrapKey` rotation still commits each
+/// step once, in order, with one `IntentDone`, and the host steps it reruns are the idempotent ones.
+#[test]
+fn a_killed_graft_ops_reruns_a_rotate_step_and_commits_each_step_once() {
+    let mut f = Fake::new(G::new());
+    rotate(&mut f, 30, SecretName::MintWrapKey, 1, &CUSTOMER);
+    let mut rng: u64 = 0x46;
+    for _ in 0..200 {
+        if f.g.f.current.is_none() {
+            break;
+        }
+        rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        f.kill_after = Some(1 + ((rng >> 33) % 3) as usize);
+        block_on(ops::run(&mut f, Dwell::default()));
+        f.kill_after = None;
+        f.g.at = Timestamp(f.g.at.0 + 20 * 60_000);
+    }
+    assert!(f.g.f.current.is_none());
+    let steps: Vec<_> = last_intent_entries(&f)
+        .into_iter()
+        .map(|e| match e {
+            ReleaseEntry::IntentStep { step, .. } => i32::from(step),
+            _ => -1,
+        })
+        .collect();
+    assert_eq!(steps, [0, 1, 2, 3, -1], "each step once, in order, then one IntentDone");
+    assert_eq!(f.g.f.slot(SecretName::MintWrapKey), 1);
 }

@@ -11,20 +11,37 @@
 //! `{"Halt": {"intent": "<ulid>"}}`, `{"Intent": {"id": "<ulid>", "ttl_s": 3600, "intent": {"EdgeRoll": {"release":
 //! "<hex>"}}, "undo": [{"EdgePointer": {"pin": "<hex>"}}], "undo_key": "<private key path>"}}`, and
 //! `{"Undo": {"intent": "<ulid>", "entry": {"EdgePointer": {"pin": "<hex>"}}}}`, which binds a pre-signed undo to its
-//! parent for the `sign` that pre-signed it, and `{"StaleMode": {"scope": {"Repo": 7}, "until_s": 600}}`.
+//! parent for the `sign` that pre-signed it, and `{"StaleMode": {"scope": {"Repo": 7}, "until_s": 600}}`. An intent may
+//! be `{"Rotate": {"secret": "DeployToken", "slot": 1}}` (M5-WP6).
 
 use std::fs;
 use std::path::Path;
 
 use graftyard_release::{
     Bound, DayTarget, Format, FormatSet, ImageRef, Intent, IntentId, KeyId, Mode, ReleaseEntry, ReleaseUploaded, Scope,
-    Script, Signature, SignedEntry, SignedIntent, SiteMode, presign_undo,
+    Script, SecretName, Signature, SignedEntry, SignedIntent, SiteMode, presign_undo,
 };
 use graftyard_types::{AccountId, ChainId, DbId, Digest, ReleaseId, RepoId, SiteId, Timestamp, Ulid};
 use serde_json::Value;
 
 use crate::config::{InstallToml, Res, now, parse_public_key, random, read_private_key, unhex};
 use crate::genesis::{Answer, post_entry};
+
+/// Every `SecretName`, so `Rotate` parses one by its name.
+const SECRET_NAMES: [SecretName; 12] = [
+    SecretName::DeployToken,
+    SecretName::ReadToken,
+    SecretName::TunnelToken,
+    SecretName::MintWrapKey,
+    SecretName::SshHostKeys,
+    SecretName::McpAppKey,
+    SecretName::McpClientSecret,
+    SecretName::InsightsAppKey,
+    SecretName::AgentsAppKey,
+    SecretName::WorkspaceAppKey,
+    SecretName::SecretsWrapKey,
+    SecretName::HostedRunnersAppKey,
+];
 
 fn field<'a>(v: &'a Value, k: &str) -> Res<&'a Value> {
     v.get(k).ok_or_else(|| format!("missing field {k:?} in {v}"))
@@ -102,6 +119,19 @@ fn intent(v: &Value) -> Res<Intent> {
         "McpRoll" => Intent::McpRoll { release: release_id(b, "release")? },
         "ReplaceMember" => Intent::ReplaceMember { lost: site(b, "lost")?, spare: site(b, "spare")? },
         "RestorePlacement" => Intent::RestorePlacement { site: site(b, "site")? },
+        // `{"Rotate": {"secret": "DeployToken", "slot": 1}}` (M5-WP6): the secret by its `SecretName`.
+        "Rotate" => {
+            let name = str_field(b, "secret")?;
+            let secret = SECRET_NAMES
+                .iter()
+                .find(|s| format!("{s:?}") == name)
+                .copied()
+                .ok_or_else(|| format!("secret {name:?} is not a SecretName"))?;
+            Intent::Rotate {
+                secret,
+                slot: field(b, "slot")?.as_u64().filter(|s| *s <= 1).ok_or("slot is 0 or 1")? as u8,
+            }
+        }
         _ => return Err(format!("intent {k:?} is not built in this tool")),
     })
 }
@@ -748,5 +778,16 @@ mod tests {
         let err = step(Some(&wrong), &own2).unwrap_err();
         assert!(err.contains("is not release"), "{err}");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `release entry`'s `Rotate` intent names its secret by `SecretName` and its slot, 0 or 1; any other is refused.
+    #[test]
+    fn a_rotate_intent_names_its_secret_and_slot() {
+        let i = intent(&serde_json::json!({ "Rotate": { "secret": "MintWrapKey", "slot": 1 } })).unwrap();
+        assert_eq!(i, Intent::Rotate { secret: SecretName::MintWrapKey, slot: 1 });
+        let i = intent(&serde_json::json!({ "Rotate": { "secret": "ReadToken", "slot": 0 } })).unwrap();
+        assert_eq!(i, Intent::Rotate { secret: SecretName::ReadToken, slot: 0 });
+        assert!(intent(&serde_json::json!({ "Rotate": { "secret": "DeployToken", "slot": 2 } })).is_err());
+        assert!(intent(&serde_json::json!({ "Rotate": { "secret": "Deploy", "slot": 1 } })).is_err());
     }
 }

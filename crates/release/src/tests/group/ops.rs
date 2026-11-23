@@ -79,6 +79,7 @@ impl Ops {
             Action::Wait { until: Some(t), .. } => self.g.at = Timestamp(self.g.at.0.max(t.0)),
             Action::Wait { until: None, why } => panic!("waits with no time: {why}"),
             Action::Page(why) => panic!("paged: {why}"),
+            Action::Rotate { .. } => panic!("a roll runs no Rotate step"),
             Action::Idle => {}
         }
         a

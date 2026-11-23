@@ -21,6 +21,8 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 # with each owner's X25519 `SealKey`. No default features, so it builds for wasm32; the Worker supplies randomness.
 crypto_box = { version = "0.9", default-features = false, features = ["alloc", "rand_core", "salsa20", "seal"] }
 graftyard-identity = { path = "../../crates/identity" }
+# `RotateStep` for `rotate_command`, native and wasm32 (M5-WP6).
+graftyard-release = { path = "../../crates/release" }
 graftyard-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -32,5 +34,4 @@ web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Crypto", "F
 # lookup. Only the Worker build runs it.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 graftyard-lookup = { path = "../../crates/lookup" }
-graftyard-release = { path = "../../crates/release" }
 sha2.workspace = true

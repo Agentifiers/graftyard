@@ -155,8 +155,25 @@ async fn actions(mut req: Request, env: &Env, path: &str) -> Result<Response> {
     }
 }
 
+/// `MintWrapKey`'s active slot (M5-WP6, `Rotate`): from this script's `Release` view, refreshed as the edge refreshes
+/// its own (`view::ensure`), when the script binds the members (`--executor`); slot 0 otherwise. Read only when the
+/// minter needs a key, at most once per `SIGNING_KEY_CACHE`. `None` when the script binds the members but holds no
+/// view yet: a guessed slot would be cached for `SIGNING_KEY_CACHE`, so the mint answers 503 and the edge retries.
+async fn mint_slot(env: &Env, ctx: &Context) -> Option<u8> {
+    let (Ok(sites), Ok(install), Ok(customer)) =
+        (env.var("GRAFTYARD_SITES"), env.var("GRAFTYARD_INSTALL"), env.var("GRAFTYARD_CUSTOMER_KEY"))
+    else {
+        return Some(0);
+    };
+    let sites = serde_json::from_str::<graftyard_types::SiteTable>(&sites.to_string()).ok()?;
+    let anchor = graftyard_release::Anchor::from_vars(&install.to_string(), &customer.to_string()).ok()?;
+    let b = graftyard_lookup::Bindings { env, sites: &sites };
+    graftyard_lookup::view::ensure(&b, &anchor, Some(ctx)).await;
+    graftyard_lookup::view::with(|r| (r.count() > 0).then(|| r.fold.slot(graftyard_release::SecretName::MintWrapKey)))
+}
+
 #[event(fetch)]
-async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     if req.method() == Method::Post && req.path().starts_with("/actions/") {
         let path = req.path();
         return actions(req, &env, &path).await;
@@ -177,9 +194,12 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let now = Timestamp(Date::now().as_millis());
     // The secret is read only when the minter's key is missing or `SIGNING_KEY_CACHE` old.
     let text = if MINTER.with(|m| m.borrow().needs_key(now)) {
-        match env.secret_store("MINT_WRAP_KEY")?.get().await? {
-            Some(t) => t,
-            None => return Response::error("MintWrapKey is not set", 503),
+        let Some(slot) = mint_slot(&env, &ctx).await else {
+            return Response::error("MintWrapKey: no Release view yet", 503);
+        };
+        match crate::exec::slot_value(&env, graftyard_release::SecretName::MintWrapKey, slot).await {
+            Ok(t) => t,
+            Err(e) => return Response::error(format!("MintWrapKey: {e}"), 503),
         }
     } else {
         String::new()

@@ -60,6 +60,42 @@ pub fn wrap(wrap: [u8; 32], kid: Kid, nonce: [u8; 12], seed: &SigningSecret) -> 
     MintWrapKey { wrap: hex(&wrap), kid: kid.0, nonce: hex(&nonce), wrapped: hex(&ct) }
 }
 
+/// The `TokenShard(0)` command a `MintWrapKey` `Rotate` step commits as the operator (M5-WP6;
+/// `decisions/DECISIONS.md`, "`rotate-probe`"): `Publish` the new slot's key with no `retired`, or `Retire` the old
+/// slot's key one `SIGNING_KEY_CACHE`, one `JOB_TOKEN_MAX` and one `CLOCK_SKEW` after `switched`, as `rotation_step`
+/// says. A rerun after a kill commits the same row again, which `decide` takes, since the key is unchanged. `None`
+/// for a step that commits nothing. `old_text` is read only at `Retire`; an old slot holding the new slot's kid is an
+/// error, since retiring it would retire the key that signs.
+pub fn rotate_command(
+    step: graftyard_release::RotateStep,
+    new_text: &str,
+    old_text: &str,
+    switched: graftyard_types::Timestamp,
+) -> Result<Option<graftyard_identity::TokensCmd>, KeyError> {
+    use graftyard_identity::stateless::{KeyEpoch, RotationStep, rotation_step};
+    use graftyard_identity::{TokensCmd, TokensOp};
+    use graftyard_types::CredentialShard;
+    let (kid, new) = unwrap(new_text)?;
+    let op = match step {
+        graftyard_release::RotateStep::Publish => TokensOp::PutVerifyingKey { kid, key: new.public(), retired: None },
+        graftyard_release::RotateStep::Retire => {
+            let (old_kid, old) = unwrap(old_text)?;
+            if old_kid == kid {
+                return Err(bad("the old slot's key has the new slot's kid"));
+            }
+            let epoch = |kid, switched| KeyEpoch { kid, published: switched, switched: Some(switched) };
+            let RotationStep::Retire { kid, at } =
+                rotation_step(&epoch(old_kid, switched), &epoch(kid, switched), switched)
+            else {
+                unreachable!("a switched key retires")
+            };
+            TokensOp::PutVerifyingKey { kid, key: old.public(), retired: Some(at) }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(TokensCmd { cred: CredentialShard::NONE, op }))
+}
+
 /// The key source over a `MintWrapKey` secret's text the host already read. Secrets Store reads are asynchronous, so
 /// the host reads the secret only when `Minter::needs_key` says the next mint asks for a key.
 pub struct MintKeySource<'a>(pub &'a str);
@@ -320,5 +356,42 @@ mod tests {
         let mut t = w.clone();
         t.ciphertext[0] ^= 1;
         assert!(both.unwrap(&t).is_err());
+    }
+
+    /// M5-WP6's `MintWrapKey` rows: `Publish` names the new slot's kid and key with no `retired`; `Retire` names the
+    /// old slot's, retired a cache, the longest token lifetime and a skew after the switch, as `mint-key step` says.
+    #[test]
+    fn a_mint_wrap_key_rotate_publishes_the_new_key_and_retires_the_old_after_the_longest_token() {
+        use graftyard_identity::stateless::{CLOCK_SKEW, INSTALLATION_TOKEN_TTL, JOB_TOKEN_MAX, SIGNING_KEY_CACHE};
+        use graftyard_identity::{TokensOp, stateless::SigningSecret};
+        use graftyard_release::RotateStep;
+        use graftyard_types::Timestamp;
+        let text = |kid: u32, seed: u8| {
+            serde_json::to_string(&wrap([seed; 32], Kid(kid), [1; 12], &SigningSecret([seed; 32]))).unwrap()
+        };
+        let (old, new) = (text(3, 7), text(4, 8));
+        let switched = Timestamp(1_800_000_000_000);
+        let publish = rotate_command(RotateStep::Publish, &new, &old, switched).unwrap().unwrap();
+        assert!(publish.cred.is_operator());
+        assert_eq!(
+            publish.op,
+            TokensOp::PutVerifyingKey { kid: Kid(4), key: SigningSecret([8; 32]).public(), retired: None }
+        );
+        let retire = rotate_command(RotateStep::Retire, &new, &old, switched).unwrap().unwrap();
+        let after = (SIGNING_KEY_CACHE + JOB_TOKEN_MAX + CLOCK_SKEW).as_millis() as u64;
+        assert_eq!(
+            retire.op,
+            TokensOp::PutVerifyingKey {
+                kid: Kid(3),
+                key: SigningSecret([7; 32]).public(),
+                retired: Some(Timestamp(switched.0 + after))
+            }
+        );
+        // The executor waits one installation-token lifetime between the two, the same constant `rotation_step` uses.
+        assert_eq!(graftyard_release::ops::ROTATE_PUBLISHED_FOR, INSTALLATION_TOKEN_TTL.as_millis() as u64);
+        // An old slot holding the new kid would retire the key that signs: refused. A probe step commits nothing.
+        assert!(rotate_command(RotateStep::Retire, &new, &text(4, 9), switched).is_err());
+        assert!(rotate_command(RotateStep::Probe, &new, &old, switched).unwrap().is_none());
+        assert!(rotate_command(RotateStep::Publish, "not a key", &old, switched).is_err());
     }
 }

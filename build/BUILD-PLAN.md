@@ -1434,6 +1434,8 @@ The vault's restore is gated by BM-7 (M7-WP8).
 
 It also carries BM-5's vendor-token revocation mid-roll.
 
+**Pure half built (2026-11-23), code only, hosted rows pending** (`tests/m5/results/m5-wp6.md`). BF-44 passes in memory on tests that predate this package: an undo not in the parent's list, or in it under another key, is refused `NotAnUndo`, and a `Resume` after `Keys { vendor: None }` is refused with no undo and with one still under the vendor key. `graft-ops` executes `Rotate`: the `Release` fold holds each secret's active slot, the switch step's `IntentStep` moves it, and `graft-ops` binds both slots of `DeployToken`, `ReadToken` and `MintWrapKey` and reads the slot from its view, so no switch is a new version. Each new value is confirmed by one call off the request path: the scripts list, a bucket's `location`, or the new key's `VerifyingKey` row published one token lifetime before the switch (`decisions/DECISIONS.md`, "`rotate-probe`"). A `Rotate` of a secret `graft-ops` holds no slot of, or to the active slot, pages by name until the customer's `Abort` (OPEN-QUESTIONS R45). plant95 catches 14 of 14. Left: BF-46 hosted for the three rows `graft-ops` runs, and the R45 rows.
+
 ### M5-WP7. Milestone 5 gate
 
 **Build.** Nothing new.
