@@ -1,0 +1,34 @@
+2026-11-23T11:55:25Z start 66a9a257 ~/workspace/b032g
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T11:55:41Z start sweep ok
+2026-11-23T11:55:43Z cost account 43.53 since 2026-11-23T00:00:00Z, run 0.25 since 2026-11-23T10:49:38Z, at b0-32
+2026-11-23T11:56:14.010Z m3org/fm3fg2C-b032 = 65617
+2026-11-23T11:56:20.200Z repo:65617 leader 0: config 6 learners [{"addr":192,"doName":"repo:65617#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65617#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65617#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65617#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65617#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65617#2#l5","join":200,"sit
+2026-11-23T11:56:22.819Z repo:65617 leader 0: set k 4: {"grants":[[0,[5,4,2]],[2,[5,4,2]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":223},"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T11:56:33.267Z repo:65617 leader 0: set k 4: {"grants":[[0,[5,4,2]],[2,[5,4,2]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":223},"configIndex":6,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T11:56:43.822Z repo:65617 leader 0: set k 4: {"grants":[[0,[5,4,2]],[2,[5,4,2]]],"k":4,"meta":{"admit":{"retryAfterS":1,"waitMs":223},"configIndex":6,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-23T11:56:43.933Z repo:65617 leader 0: k 4 at 8
+2026-11-23T11:56:47Z b0-32 shard gate site 0: warm site 0 after 1.1 s
+2026-11-23T11:56:47Z b0-32 shard gate site 1: warm site 1 after 1.3 s
+2026-11-23T11:56:47Z b0-32 shard gate site 2: warm site 2 after 1.8 s
+2026-11-23T11:56:47Z b0-32 fm3fg2C-b032 65617 start
+2026-11-23T11:59:16.744Z repo:65617 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":99},"configIndex":6,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-23T11:59:16.844Z repo:65617 leader 0: k 1 at 115
+2026-11-23T11:59:18Z b0-32 fm3fg2C-b032 65617 done exit 4
+2026-11-23T11:59:23Z torn down 65617
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T12:00:49Z sweep ok
+ALLDONE
+b0-32 colos (voters' Reported rows):
+  colo LAX 3 {'leader': 1, 'promised': 2}
+outages: no load window in tests/am1/raw/runs/a1-b0-32-fm3fg2C-b032.log
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T12:01:15Z SWEEP2 OK
+2026-11-23T12:01:15Z cost {"from": "2026-11-23T10:49:38Z", "to": "2026-11-23T12:01:15Z", "containers": 0.39, "do_rows": 5.5, "do_duration": 1.69, "do_requests": 0.48, "workers": 0.05, "usd": 8.11, "prefix": "graft-m3f", "prefix_usd": 0.35}
+FINISHED

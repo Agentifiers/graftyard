@@ -1,0 +1,18 @@
+2026-11-23T11:37:15Z start 66a9a257, run stop $3 on graft-m3f from 2026-11-23T10:49:38Z
+2026-11-23T11:42:54Z placement B (m3fg2B) starts
+2026-11-23T11:44:35Z placement B guard error (exit 1), asking again
+2026-11-23T11:44:55Z placement B guard error (exit 1), asking again
+2026-11-23T11:45:15Z placement B guard error (exit 1), asking again
+2026-11-23T11:45:36Z placement B guard error (exit 1), asking again
+2026-11-23T11:45:56Z placement B guard error (exit 1), asking again
+2026-11-23T11:46:19Z placement B repo 65616 hostguard repo:65616#1#f0: re-place, 37.9 ms of leader CPU a setup commit (42 commits, 1591 ms, line 28.4); GUARD: a1 ends before load
+2026-11-23T11:49:19Z placement B done: 2026-11-23T11:47:08Z b0-32 fm3fg2B-b032 65616 done exit 4
+2026-11-23T11:55:20Z placement B retire and purge of 65616 exit 0: 2026-11-23T11:55:20.572Z purge: {"dry": false, "purged": 1, "objects": 20, "refused": [], "second": 0}
+2026-11-23T11:55:20Z placement C (m3fg2C) starts
+2026-11-23T11:57:00Z placement C guard error (exit 1), asking again
+2026-11-23T11:57:21Z placement C guard error (exit 1), asking again
+2026-11-23T11:58:48Z placement C repo 65617 hostguard repo:65617#1#f0: re-place, 30.7 ms of leader CPU a setup commit (44 commits, 1352 ms, line 28.4); GUARD: a1 ends before load
+2026-11-23T12:01:18Z placement C done: 2026-11-23T11:59:18Z b0-32 fm3fg2C-b032 65617 done exit 4
+2026-11-23T12:10:20Z placement C retire and purge of 65617 exit 0: 2026-11-23T12:10:20.307Z purge: {"dry": false, "purged": 1, "objects": 19, "refused": [], "second": 0}
+2026-11-23T12:10:20Z third placement re-placed too: set stopped without load, not a fail
+GUARDm3fg2DONE
