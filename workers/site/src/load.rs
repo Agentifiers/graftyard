@@ -565,6 +565,12 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     if let Err(e) = save_job(h, &marked) {
         return note(h, format!("load job not saved: {e}"));
     }
+    if !install {
+        let from = job.next.saturating_sub(1);
+        let to = job.through.min(from + BATCH_ROWS);
+        let name = h.core.borrow().as_ref().map(|c| c.join.me.do_name.to_string()).unwrap_or_default();
+        crate::alarm_steps::note_scan(&sql, &name, "load", from, to, None);
+    }
     match batch(h, &sql, job).await {
         // A load that only waits for the leader's next request tries again at its pace.
         Ok(true) if loaded => h.arm_in(raft::CALL_DEADLINE.as_millis() as i64),

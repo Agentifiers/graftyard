@@ -138,6 +138,13 @@ every pack past it pays the bucket place on its push path, inside B0-32's 5 s li
 burst. The owner is B0-32's thread, which landed `agent-stage-first` and `AGENT_CMDS_ENTRY`; any change edits both
 documents' agent block identically.
 
+**Correction from B0-32** [inference from its cut rows, 2026-11-23]. The bytes are not the burst pushes': those are
+256 KiB and stage first (485 of 500 on m3fsf2 and 496 of 500 on m3fg3 carry `stagefirst`). Entries' inline bytes come
+from journey 9's background agent pushes of 10 to 70 KB. Entries are also smaller than bigTx suggests: the burst
+window's cut rows (`tests/m0/cuttrace/cuts.py`) average 72 KB an entry on m3fsf2 and 95 KB on m3fg3, and bigTx's ~128 KB
+is its ≥100 KB sample. So 62% fewer bytes needs an inline cap near 16 KiB (m3fsf2) or 24 KiB (m3fg3), not 50 KB:
+clipping at 50 KiB removes only 32% and 38%. Probe (c) still gates lever B.
+
 **The caveat on both.** Over the burst seconds the leader averaged 0.42 vCPU (m3fsf2) and 0.31 (m3fg3), so its commit
 stage is lumpy turns and stalls, not a full CPU; CPU-proportional x is optimistic (B0-32's note, which I read the same
 way). The flush fit cannot split per transaction from per byte on B0-32's raws, because nearly every one-row `log`

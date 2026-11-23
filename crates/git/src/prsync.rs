@@ -151,6 +151,11 @@ impl<T: Ord + Clone> Dispatcher<T> {
         (applied > self.scanned).then_some((self.scanned, applied))
     }
 
+    /// The last entry this dispatcher has read: a new leadership's starts at 0, and `to_read` lifts it to the cursor.
+    pub fn scanned(&self) -> Index {
+        self.scanned
+    }
+
     /// Records what entry `index` touched. Entries come in order, right after `to_read`.
     pub fn read(&mut self, index: Index, prs: Vec<T>) {
         debug_assert_eq!(index.0, self.scanned.0 + 1, "entries are read in order");

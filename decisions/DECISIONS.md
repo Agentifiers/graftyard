@@ -9129,3 +9129,36 @@ clearance after this merges and runs on graft-m2b after LM-1's read-memo rows.
   bound that the rerun measures.
 - **Under-read left.** Leader refusals over 50% of pfA's count with both rules live. Then the 23% of lane growth in
   flight is what is left, and the lever moves to the leader's own admission.
+
+### `seal-batch`: no multi-row seal statements; the hosted per-call probe decides, 2026-11-23
+
+**Status.** Ruled by the lead on 2026-11-23 from `tests/am1/results/seal-bytes-design.md`. Not built. Plant 101 stays
+held for it. The probe that settles it, `/bench_seed {"sqlProbe": ...}` (`workers/site/src/sqlprobe.rs`, test installs
+only) with `tests/fanout/sqlprobe.mjs` and `tests/fanout/sqlprobe.py`, rides branch `probe-steps`.
+
+**Decision.** The fold tiers keep one statement per row at `seal`. `request`, `c_ref` and `m_provenance` are not
+written as multi-row statements.
+
+**Why.**
+- On B0-33's mix the batch removes 31 to 33% of the leader's statements, but it prices at 2.1 to 3.4% of leader CPU,
+  because the leader runs well under one vCPU and most of a transaction's cost is not per statement [inference from
+  measured rows, `seal-bytes-design.md`, sections 1 and 2].
+- On B0-32 it prices at about 0: m3fsf2 284 → 284 to 286, m3fg3 262 → 262. Flush CPU there fits 19.0 ms plus 0.15 ms a
+  statement (m3fsf2) and 15.9 ms plus about 0 (m3fg3), and apply only queues statements [measured, B0-32's pricing in
+  `tests/am1/results/lm1-rows-m3f.md`, "Statement cut priced for B0-32"].
+- Locally, 62 to 65% of a one-row statement is per call [measured, workerd]. Hosted, nothing yet separates per call
+  from per row [guess].
+
+**What it beat.**
+- **Building the batch now.** It needs BF-12's duplicate check reworked (`RETURNING rid` on test installs, the rids not
+  returned being the duplicates [verified in local workerd]) and plant 101, for a few percent of CPU.
+- **Batching every verb and table pair.** 33 to 36% of fold-write statements on B0-32, still under 4% of its CPU.
+
+**Evidence.** `tests/am1/results/seal-bytes-design.md`; `tests/am1/results/b033-readmemo.md`;
+`tests/am1/results/lm1-rows-m3f.md`.
+
+**Flip.**
+- **Build it:** a guarded B0-33 or B0-32 row whose leader runs at 0.8 vCPU or more over its load window, with the
+  deferred transaction at 30% or more of leader CPU, and probe arms (a) and (b) showing hosted per-call cost at 50% or
+  more of a one-row statement.
+- **Never build it:** probe arm (b) costs as much hosted as arm (a), so there is no per-call cost to remove.

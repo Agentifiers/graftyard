@@ -51,6 +51,8 @@ mod search;
 mod shard;
 mod snap;
 mod split;
+#[cfg(feature = "test-faults")]
+mod sqlprobe;
 mod sweep;
 mod tier;
 mod txn;

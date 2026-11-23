@@ -250,8 +250,10 @@ fn load_meta(h: &Rc<Host<Repo>>, sql: &SqlStorage) -> Result<bool> {
         return Ok(false);
     }
     let tiers = fold.tiers();
+    let name = c.join.me.do_name.to_string();
     drop(core);
     let q = "SELECT row FROM log WHERE idx > ? AND idx <= ? ORDER BY idx";
+    crate::alarm_steps::note_scan(sql, &name, "snap", from.0, target.0.min(from.0 + META_BATCH), None);
     for r in rows(sql, q, vec![i(from.0), i(target.0.min(from.0 + META_BATCH))])? {
         let e: raft::LogEntry<git::repo::RepoEvent> =
             raft::codec::from_bytes(blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?;

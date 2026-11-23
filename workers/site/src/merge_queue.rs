@@ -235,6 +235,18 @@ fn scan(h: &Rc<Host<Repo>>, d: &mut Dispatcher<RefName>, repo: RepoId, cursor: I
     let fold = &c.m.group_fold().fold;
     let sql = h.state.storage().sql();
     let from = cursor.max(Index(fold.first_index().0.saturating_sub(1)));
+    let start = from.max(d.scanned());
+    let to = applied.0.min(start.0 + git::prsync::SCAN_MAX);
+    if applied > start {
+        crate::alarm_steps::note_scan(
+            &sql,
+            c.join.me.do_name.as_ref(),
+            "merge_queue",
+            start.0,
+            to,
+            Some(c.m.log_base().index.0),
+        );
+    }
     git::queue_consumer::scan(d, &fold.core, repo, from, applied, |i| {
         c.m.entry_at(i).map(|e| (e.clone(), 0)).or_else(|| crate::host::stored_entry_sized::<Repo>(&sql, i))
     })
