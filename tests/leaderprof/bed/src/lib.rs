@@ -35,6 +35,8 @@
 //!   reads them), and `scan_one` and `scan_256` (a one-row and a 256-row fold scan, one batch of
 //!   `graftyard_fold::Read::prefix`).
 //!
+//! - `/encodes?kb=K&peers=P`: lever A's split, the encodes and digests a member runs per entry of K KB of inline
+//!   packs (`encodes`).
 //! - `memo=0` reads SQLite on every fold read, as before `read-memo`; the default is the product's memo
 //!   (`workers/site/src/tier.rs`, "Read memo"). `foldReads` answers each tier's (SQLite reads, memo answers).
 //! - `/memo_scratch` and `/memo`: read-memo's checks (`tests/leaderprof/memo.sh`).
@@ -1176,9 +1178,129 @@ impl DurableObject for L {
             "/prof" => Response::from_json(&self.prof(&url).await?),
             "/memo" => Response::from_json(&self.memo_check(&url)?),
             "/memo_scratch" => Response::from_json(&self.memo_scratch()?),
+            "/encodes" => Response::from_json(&encodes(&url)?),
             _ => Response::error("not found", 404),
         }
     }
+}
+
+/// Lever A's split (`tests/am1/results/seal-bytes-design.md`, section 8): the encodes and digests a hosted member runs
+/// per entry whose agent inline packs total `kb` KB (the rest of the entry B0-33's mix of `cmds` commands, every other
+/// push stored), each repeated `reps` times so the isolate's 1 ms clock resolves it. Stages, in ms per call:
+/// - `push_digest`: `raft::digest`, as `push_entry`'s `digest_len` and `SqlStore`'s `Write::Append` each run it;
+///   `canon_only` and `sha_only` split it into `encode_entry` and SHA-256.
+/// - `append_row`: `codec::to_bytes(e)`, the `log` row.
+/// - `encode_len`: `encode_entry(e).len()`, as `append_batch`, the catch-up and `Host::send`'s held bytes run it.
+/// - `envelope` and `envelope_decode`: one AppendEntries envelope encoded (`Host::call`, a learner's answer) and decoded
+///   (the receiver).
+/// - `clone`: the entry cloned into an AppendReq (`self.log[window].to_vec()`).
+/// - `b64_encode`, `b64_decode`, `raw_encode`, `raw_decode`, `pack_clone`: the `kb` KB pack alone, as
+///   `PackRef::Inline` serializes it (base64, `pack::b64`) and as postcard bytes, and a copy of it.
+/// `perEntryMs` prices `peers` copies: `once` is two digests and the row, `perPeer` an envelope, two lengths and a clone,
+/// and `leverARemoves` what encoding each entry once would drop (one digest, every length, all but one envelope, every
+/// clone).
+fn encodes(url: &Url) -> Result<Value> {
+    let q = |k: &str, d: u64| url.query_pairs().find(|(n, _)| n == k).and_then(|(_, v)| v.parse().ok()).unwrap_or(d);
+    let (kb, cmds, peers, reps) = (q("kb", 128) as usize, q("cmds", 60) as usize, q("peers", 10) as u8, q("reps", 20));
+    let fx = Fixtures::new()?;
+    let (mut cs, _) = commands(&fx, cmds, 1, 0, None)?;
+    // The entry's inline bytes set to `kb` KB: the first push's pack holds them all, every other push is stored.
+    let mut left = kb << 10;
+    for c in cs.iter_mut() {
+        for ev in c.events.iter_mut() {
+            if let RepoEvent::Refs { pack: Some(p), .. } = ev {
+                *p = if left > 0 {
+                    let b = graftyard_git::pack::PackRef::Inline(noise(left, 5));
+                    left = 0;
+                    b
+                } else {
+                    graftyard_git::pack::PackRef::Stored {
+                        id: graftyard_git::pack::PackId(Ulid(9)),
+                        checksum: graftyard_types::Digest([3; 32]),
+                        bytes: 1,
+                        sites: graftyard_types::SiteSet(7),
+                    }
+                };
+            }
+        }
+    }
+    let e = entry(2, PREV_ZERO, &cs, 1);
+    let canon = graftyard_raft::encode_entry(&e).len();
+    let row = codec::to_bytes(&e).len();
+    let env = append(&e, 1, 2);
+    let envelope = codec::to_bytes(std::slice::from_ref(&env)).len();
+    let mut ms: BTreeMap<&str, f64> = BTreeMap::new();
+    let mut time = |name: &'static str, f: &mut dyn FnMut()| {
+        let a = now();
+        for _ in 0..reps {
+            f();
+        }
+        ms.insert(name, (now() - a) / reps as f64);
+    };
+    time("push_digest", &mut || {
+        std::hint::black_box(graftyard_raft::digest(&e));
+    });
+    time("canon_only", &mut || {
+        std::hint::black_box(graftyard_raft::encode_entry(&e));
+    });
+    let bytes = graftyard_raft::encode_entry(&e);
+    time("sha_only", &mut || {
+        use sha2::Digest as _;
+        std::hint::black_box(sha2::Sha256::digest(&bytes));
+    });
+    time("append_row", &mut || {
+        std::hint::black_box(codec::to_bytes(&e));
+    });
+    time("encode_len", &mut || {
+        std::hint::black_box(graftyard_raft::encode_entry(&e).len());
+    });
+    time("envelope", &mut || {
+        std::hint::black_box(codec::to_bytes(std::slice::from_ref(&env)));
+    });
+    time("clone", &mut || {
+        std::hint::black_box(vec![e.clone()]);
+    });
+    // What a receiver pays: the envelope decoded (a follower's `/raft` body, a learner's answer), and the `log` row
+    // decoded (`stored_entry`, `/entries`).
+    let env_bytes = codec::to_bytes(std::slice::from_ref(&env));
+    time("envelope_decode", &mut || {
+        std::hint::black_box(codec::from_bytes::<Vec<Envelope<RepoEvent>>>(&env_bytes).ok());
+    });
+    // The inline pack's share: `kb` KB as postcard's base64 string (`pack::b64`, as `PackRef::Inline` serializes),
+    // against the same bytes as postcard bytes (`serialize_bytes`), each encoded and decoded.
+    struct Raw<'a>(&'a [u8]);
+    impl serde::Serialize for Raw<'_> {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+            s.serialize_bytes(self.0)
+        }
+    }
+    let pack = noise(kb << 10, 5);
+    let as_b64 = codec::to_bytes(&graftyard_git::pack::PackRef::Inline(pack.clone()));
+    let as_raw = codec::to_bytes(&Raw(&pack));
+    time("b64_encode", &mut || {
+        std::hint::black_box(codec::to_bytes(&graftyard_git::pack::PackRef::Inline(pack.clone())));
+    });
+    time("b64_decode", &mut || {
+        std::hint::black_box(codec::from_bytes::<graftyard_git::pack::PackRef>(&as_b64).ok());
+    });
+    time("raw_encode", &mut || {
+        std::hint::black_box(codec::to_bytes(&Raw(&pack)));
+    });
+    time("raw_decode", &mut || {
+        std::hint::black_box(postcard::from_bytes::<&[u8]>(&as_raw[1..]).ok());
+    });
+    time("pack_clone", &mut || {
+        std::hint::black_box(pack.clone());
+    });
+    let p = f64::from(peers);
+    let once = ms["push_digest"] + ms["push_digest"] + ms["append_row"];
+    let per_peer = 2.0 * ms["encode_len"] + ms["envelope"] + ms["clone"];
+    // Lever A keeps `push_entry`'s digest and size, so it drops `append_digest`, both lengths per peer, and all but
+    // one postcard encode, spliced into each peer's envelope; the clone goes with sharing the entry.
+    let lever = ms["push_digest"] + p * (2.0 * ms["encode_len"]) + (p - 1.0) * ms["envelope"] + p * ms["clone"];
+    Ok(json!({ "kb": kb, "cmds": cmds, "peers": peers, "reps": reps, "canonBytes": canon, "rowBytes": row,
+        "envelopeBytes": envelope, "ms": ms, "perEntryMs": { "once": once, "perPeer": per_peer,
+        "total": once + p * per_peer, "leverARemoves": lever } }))
 }
 
 /// A peer that reads the AppendEntries body and answers a small 200, as a follower's `/raft` answer would be.
