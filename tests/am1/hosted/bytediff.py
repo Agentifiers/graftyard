@@ -131,11 +131,25 @@ def norm(c):
     return c["status"], h, mask(c["body"])
 
 
+def excusable(method, path, body):
+    """Whether a 5xx on this request may be load: a REST or GraphQL read only. A write, a GraphQL mutation, and git's
+    protocol (info/refs, upload-pack, receive-pack) never are (the lead's ruling of 2026-11-23)."""
+    p = path.split("?")[0]
+    if not p.startswith("/api/") or p.endswith(("/info/refs", "/git-upload-pack", "/git-receive-pack")):
+        return False
+    if p.endswith("/graphql"):
+        return method == "POST" and not str((body or {}).get("query", "")).lstrip().startswith("mutation")
+    return method in ("GET", "HEAD")
+
+
 def diff(a, b):
     """Each reply against A's first reply to the same request with the same status. A 5xx whose status A never
-    answered that request is load, not a release: counted as unavailable and not compared (a tierOff shed on
-    graft-m2b's idle m3org/j4 answered one round of three, 2026-11-23), unless more than a tenth of B's replies are,
-    which is a release answering 5xx, not load. Any other status A never answered differs."""
+    answered that request is load, not a release, when the request is a REST or GraphQL read (`excusable`): counted
+    as unavailable, printed, and not compared (a tierOff shed on graft-m2b's idle m3org/j4 answered one round of
+    three, 2026-11-23), unless more than a tenth of B's replies are, which is a release answering 5xx, not load. On a
+    write, a mutation, git's protocol, or a request this install's list does not name, it differs. Any other status A
+    never answered differs."""
+    reqs = {name: (method, path, body) for name, method, path, _, body in requests()}
     bad = total = unavailable = 0
     fa, fb = sorted(glob.glob(f"{a}/*.json")), sorted(glob.glob(f"{b}/*.json"))
     base = {}
@@ -148,8 +162,13 @@ def diff(a, b):
             total += 1
             was = base.get(k, {}).get(v["status"])
             if was is None and v["status"] >= 500:
-                unavailable += 1
-                continue
+                method, path, body = reqs.get(k, ("?", "?", None))
+                where = f"{os.path.basename(os.path.dirname(f))}/{os.path.basename(f)} {k}: {method} {path} {v['status']}"
+                if excusable(method, path, body):
+                    unavailable += 1
+                    print(f"UNAVAILABLE {where} (a read, excused as load)")
+                    continue
+                print(f"UNAVAILABLE {where} (not a REST or GraphQL read: counted as a difference)")
             if was is None or norm(v) != norm(was):
                 bad += 1
                 old = was or next(iter(base.get(k, {}).values()), {"status": None, "headers": [], "body": ""})
