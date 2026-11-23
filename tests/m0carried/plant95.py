@@ -60,6 +60,9 @@ MUTANTS = [
      "graftyard_release::RotateStep::Publish => {\n            let (kid, old) = unwrap(old_text)?;\n            let _ = new;\n            TokensOp::PutVerifyingKey { kid, key: old.public(), retired: None }\n        }", OPSLIB),
     ("an old slot with the new kid is retired", LIB,
      '            if old_kid == kid {', '            if false && old_kid == kid {', OPSLIB),
+    ("a test install's publish wait is ignored (BF-46 hosted's OPS_ROTATE_PUBLISHED_MS)", OPS,
+     'let until = Timestamp(c.since.0.saturating_add(published));',
+     'let until = Timestamp(c.since.0.saturating_add(ROTATE_PUBLISHED_FOR + 0 * published));', REL),
 ]
 
 

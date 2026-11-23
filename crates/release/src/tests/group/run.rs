@@ -70,7 +70,7 @@ impl Fake {
     fn cron(&mut self, n: usize) -> Vec<Ran> {
         let mut all = Vec::new();
         for _ in 0..n {
-            let log = block_on(ops::run(self, Dwell { step: 0, first_day: 0 }));
+            let log = block_on(ops::run(self, Dwell { step: 0, first_day: 0, ..Dwell::default() }));
             let idle = matches!(log.last(), Some(Ran::Idle));
             all.extend(log);
             self.g.at = Timestamp(self.g.at.0 + 60_000);
@@ -301,7 +301,7 @@ fn a_lost_commit_answer_is_resent_meets_409_and_the_run_goes_on() {
             break;
         }
         f.lose_next = i % 3 == 0;
-        runs.push(block_on(ops::run(&mut f, Dwell { step: 0, first_day: 0 })));
+        runs.push(block_on(ops::run(&mut f, Dwell { step: 0, first_day: 0, ..Dwell::default() })));
         f.g.at = Timestamp(f.g.at.0 + 60_000);
     }
     assert!(f.g.f.current.is_none(), "{runs:?}");
@@ -344,14 +344,14 @@ fn an_edge_breach_with_the_api_down_commits_the_pointer_undo_and_deploys_later()
     assert!(roll(&mut f, r2, 110));
     assert!(matches!(f.g.f.current.as_deref().unwrap().intent.intent, Intent::EdgeRoll { .. }));
     // The 1% step deploys, then the API goes down and the gate breaches.
-    block_on(ops::run(&mut f, Dwell { step: HOUR, first_day: HOUR }));
+    block_on(ops::run(&mut f, Dwell { step: HOUR, first_day: HOUR, ..Dwell::default() }));
     let e1 = f.tags[&(r1.0, Script::Edge)];
     let e2 = f.tags[&(r2.0, Script::Edge)];
     assert_eq!(f.deps[&Script::Edge].split, vec![(e2, 1), (e1, 99)]);
     f.api_down = true;
     f.gate = Gate::Breach("GATE_EXCEPTIONS".into());
     let deploys = f.deploys.len();
-    let log = block_on(ops::run(&mut f, Dwell { step: HOUR, first_day: HOUR }));
+    let log = block_on(ops::run(&mut f, Dwell { step: HOUR, first_day: HOUR, ..Dwell::default() }));
     assert!(log.contains(&Ran::Committed("EdgePointer")), "{log:?}");
     assert_eq!(f.g.f.pointers.edge, Some(e1), "the pin moved to N with the API down");
     assert_eq!(f.deploys.len(), deploys, "nothing deployed while the API was down");
@@ -394,7 +394,7 @@ fn bf7_a_refused_rollback_pages_from_the_run_and_moves_nothing() {
             break;
         }
         f.gate = Gate::Pass;
-        let log = block_on(ops::run(&mut f, Dwell { step: 0, first_day: HOUR }));
+        let log = block_on(ops::run(&mut f, Dwell { step: 0, first_day: HOUR, ..Dwell::default() }));
         if matches!(log.last(), Some(Ran::Wait { .. })) {
             break;
         }
@@ -407,7 +407,7 @@ fn bf7_a_refused_rollback_pages_from_the_run_and_moves_nothing() {
     f.g.ok(e.encode());
     let before = (f.g.f.clone(), f.deploys.len());
     f.gate = Gate::Breach("GATE_APPLY_LAG".into());
-    let log = block_on(ops::run(&mut f, Dwell { step: 0, first_day: HOUR }));
+    let log = block_on(ops::run(&mut f, Dwell { step: 0, first_day: HOUR, ..Dwell::default() }));
     assert_eq!(log.last(), Some(&Ran::Refused { kind: "Rollback", variant: "UnreadableFormat".into() }), "{log:?}");
     assert_eq!(f.pages.len(), 1, "{:?}", f.pages);
     assert!(f.pages[0].contains("Rollback refused, UnreadableFormat"), "{}", f.pages[0]);
@@ -457,7 +457,7 @@ fn killed_roll(seed: u64) -> usize {
             rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
             f.kill_after = Some(1 + ((rng >> 33) % 3) as usize);
             kills += 1;
-            block_on(ops::run(&mut f, Dwell { step: 0, first_day: 0 }));
+            block_on(ops::run(&mut f, Dwell { step: 0, first_day: 0, ..Dwell::default() }));
             f.kill_after = None;
             f.g.at = Timestamp(f.g.at.0 + 60_000);
         }
@@ -567,6 +567,20 @@ fn bf46_mint_wrap_key_publishes_waits_a_token_lifetime_switches_then_retires() {
     let (_, switched) = f.g.f.slots[&SecretName::MintWrapKey];
     assert!(switched.0 >= published.0 + ops::ROTATE_PUBLISHED_FOR, "switched only after the lifetime");
     assert_eq!(f.rotated, [(SecretName::MintWrapKey, 1, Publish), (SecretName::MintWrapKey, 1, Retire)]);
+    // A test install's lowered wait (`OPS_ROTATE_PUBLISHED_MS`) moves the switch, and only the switch: back to slot 0.
+    let short = Dwell { rotate_published: 120_000, ..Dwell::default() };
+    rotate(&mut f, 31, SecretName::MintWrapKey, 0, &CUSTOMER);
+    block_on(ops::run(&mut f, short));
+    let published = f.g.f.current.as_deref().unwrap().since;
+    f.g.at = Timestamp(published.0 + 60_000);
+    block_on(ops::run(&mut f, short));
+    assert_eq!(f.g.f.slot(SecretName::MintWrapKey), 1, "a minute in: still slot 1");
+    f.g.at = Timestamp(published.0 + 120_000);
+    for _ in 0..5 {
+        block_on(ops::run(&mut f, short));
+    }
+    assert!(f.g.f.current.is_none());
+    assert_eq!(f.g.f.slot(SecretName::MintWrapKey), 0);
 }
 
 /// A `Rotate` this `graft-ops` does not switch, or one to the active slot, is refused by name: a page each run and no

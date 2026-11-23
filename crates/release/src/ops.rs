@@ -48,11 +48,14 @@ pub const FIRST_DAY: u64 = 24 * 3_600_000;
 pub struct Dwell {
     pub step: u64,
     pub first_day: u64,
+    /// A `MintWrapKey` `Rotate`'s wait between publish and switch: `ROTATE_PUBLISHED_FOR`, lowered only by a
+    /// test-faults `graft-ops` (`OPS_ROTATE_PUBLISHED_MS`).
+    pub rotate_published: u64,
 }
 
 impl Default for Dwell {
     fn default() -> Dwell {
-        Dwell { step: STEP_DWELL, first_day: FIRST_DAY }
+        Dwell { step: STEP_DWELL, first_day: FIRST_DAY, rotate_published: ROTATE_PUBLISHED_FOR }
     }
 }
 
@@ -122,7 +125,7 @@ pub const ROTATE_PUBLISHED_FOR: u64 = 3_600_000;
 
 /// A `Rotate`'s next action (`group::rotate_steps`). An `Abort` of one moves nothing, so it ends at once and leaves the
 /// slot the last switch chose.
-fn rotate_next(fold: &ReleaseFold, c: &Current, secret: SecretName, slot: u8, w: &World) -> Action {
+fn rotate_next(fold: &ReleaseFold, c: &Current, secret: SecretName, slot: u8, w: &World, published: u64) -> Action {
     let id = c.intent.id;
     let done = Action::Commit { body: ReleaseEntry::IntentDone { intent: id }, signer: Signer::Executor };
     if !matches!(c.state, IntentState::Running { .. }) {
@@ -143,7 +146,7 @@ fn rotate_next(fold: &ReleaseFold, c: &Current, secret: SecretName, slot: u8, w:
         None => done,
         Some(RotateStep::Switch) => Action::Commit { body: step, signer: Signer::Executor },
         Some(RotateStep::Wait) => {
-            let until = Timestamp(c.since.0.saturating_add(ROTATE_PUBLISHED_FOR));
+            let until = Timestamp(c.since.0.saturating_add(published));
             if w.now < until {
                 Action::Wait { until: Some(until), why: format!("{secret:?}'s new key is published").into() }
             } else {
@@ -319,7 +322,7 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
         return Action::Idle;
     }
     if let Intent::Rotate { secret, slot } = c.intent.intent {
-        return rotate_next(fold, c, secret, slot, w);
+        return rotate_next(fold, c, secret, slot, w, dwell.rotate_published);
     }
     let id = c.intent.id;
     let steps = match steps(fold, c, dwell) {

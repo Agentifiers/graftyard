@@ -15,7 +15,8 @@
 //!   the release id as its `workers/tag` and `keep_bindings` for every binding type, so it carries the deployed
 //!   version's bindings and changes only code [inference: a release that changes a binding is a separate operation].
 //! - **Pages** are `console_error!("PAGE graft-ops ...")` lines, which the install's log alert matches.
-//! - **Dwell.** `STEP_DWELL_MS` and `FIRST_DAY_MS` lower the dwells on a test install only.
+//! - **Dwell.** `STEP_DWELL_MS` and `FIRST_DAY_MS` lower the dwells on a test install only, and a test-faults build's
+//!   `OPS_ROTATE_PUBLISHED_MS` lowers a `MintWrapKey` `Rotate`'s publish wait (BF-46 hosted).
 //! - **BF-39 (`test-faults` builds only).** `OPS_KILL=<n>` kills each run after a uniform 0 to n of its view reads,
 //!   deploys, and commits: that call and every later one fail unsent, as `crates/release`'s in-memory BF-39 kills its
 //!   fake, so a run can die between a deploy and its `IntentStep`. `OPS_STEP_MIN_ENTRIES=<n>` passes a step that
@@ -563,13 +564,18 @@ impl Exec for Live<'_> {
         match (secret, step) {
             // The deploy token's own scope: the call `graft-ops` makes before every deploy.
             (SecretName::DeployToken, RotateStep::Probe) => {
-                self.api_as(&new, Method::Get, "/workers/scripts", None, false).await.map(|_| ())
+                let v = self.api_as(&new, Method::Get, "/workers/scripts", None, false).await?;
+                let n = v["result"].as_array().map_or(0, Vec::len);
+                console_log!("graft-ops Rotate DeployToken slot {slot} probe: {n} scripts listed");
+                Ok(())
             }
             // Workers R2 Storage Read, the read token's scope, on the first site's bucket.
             (SecretName::ReadToken, RotateStep::Probe) => {
                 let site = fold.genesis.as_ref().and_then(|g| g.sites.first()).ok_or("no site in the view")?;
                 let v = self.api_as(&new, Method::Get, &format!("/r2/buckets/{}", site.bucket), None, false).await?;
-                v["result"]["location"].as_str().map(|_| ()).ok_or_else(|| "no bucket location in the answer".into())
+                let at = v["result"]["location"].as_str().ok_or("no bucket location in the answer")?;
+                console_log!("graft-ops Rotate ReadToken slot {slot} probe: {} location {at}", site.bucket);
+                Ok(())
             }
             (SecretName::MintWrapKey, RotateStep::Publish | RotateStep::Retire) => {
                 // The old key is the other slot's: at `Retire` the switch has already made `slot` the active one.
@@ -583,8 +589,13 @@ impl Exec for Live<'_> {
                 let chain = ChainId::Tokens(TokenShard(0));
                 let record = graftyard_lookup::system_record(&self.bindings(), &self.anchor, chain).await?;
                 let cmd = serde_json::to_value(&cmd).map_err(|e| e.to_string())?;
-                let done = graftyard_lookup::commit(&self.bindings(), chain, &record, cmd).await?;
-                if done.get("ok").is_some() { Ok(()) } else { Err(format!("tokens:0 refused the key row: {done}")) }
+                // The command names the kid, the public half and `retired`: nothing secret, so the log line keeps it.
+                let done = graftyard_lookup::commit(&self.bindings(), chain, &record, cmd.clone()).await?;
+                if done.get("ok").is_none() {
+                    return Err(format!("tokens:0 refused the key row: {done}"));
+                }
+                console_log!("graft-ops Rotate MintWrapKey slot {slot} {step:?}: tokens:0 committed {cmd}");
+                Ok(())
             }
             (s, st) => Err(format!("no host step {st:?} for {s:?}")),
         }
@@ -595,7 +606,16 @@ impl Exec for Live<'_> {
 fn dwell(env: &Env) -> Dwell {
     let ms = |n: &str| env.var(n).ok().and_then(|v| v.to_string().parse().ok());
     let d = Dwell::default();
-    Dwell { step: ms("STEP_DWELL_MS").unwrap_or(d.step), first_day: ms("FIRST_DAY_MS").unwrap_or(d.first_day) }
+    // BF-46 on a test install: a `MintWrapKey` `Rotate`'s publish wait, read only by a test-faults build.
+    #[cfg(feature = "test-faults")]
+    let rotate_published = ms("OPS_ROTATE_PUBLISHED_MS").unwrap_or(d.rotate_published);
+    #[cfg(not(feature = "test-faults"))]
+    let rotate_published = d.rotate_published;
+    Dwell {
+        step: ms("STEP_DWELL_MS").unwrap_or(d.step),
+        first_day: ms("FIRST_DAY_MS").unwrap_or(d.first_day),
+        rotate_published,
+    }
 }
 
 /// One cron run. Each action is one log line, so Workers Logs hold the run's record.
