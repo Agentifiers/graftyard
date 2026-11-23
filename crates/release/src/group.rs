@@ -38,6 +38,49 @@ pub fn roll_steps(i: &Intent) -> Option<&'static [u8]> {
 /// The secrets the agents account's `graft-ops` rotates, whose `Rotate` the agents executor key may step.
 const AGENTS_SECRETS: [SecretName; 2] = [SecretName::AgentsAppKey, SecretName::WorkspaceAppKey];
 
+/// One step of a `Rotate` as the install's `graft-ops` runs it (`design/DESIGN.md`, "Install operations", Rotation
+/// runbook; `decisions/DECISIONS.md`, "`rotate-probe`").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RotateStep {
+    /// The one confirming call with the new slot's value.
+    Probe,
+    /// `MintWrapKey`: the new slot's key unwraps, and its `VerifyingKey` row is committed on `TokenShard(0)`.
+    Publish,
+    /// `MintWrapKey`: one installation-token lifetime after the row, so every edge has read it.
+    Wait,
+    /// The switch: when this step's `IntentStep` commits, the fold's `slots` names the new slot, and every reader of
+    /// the secret takes it from its view, with no new script version.
+    Switch,
+    /// `MintWrapKey`: the old slot's key is retired one cache, one longest token lifetime, and one skew after the
+    /// switch.
+    Retire,
+}
+
+/// A `Rotate`'s steps for `secret`, or why the install's `graft-ops` refuses it by name: a secret it holds no slot
+/// of, or one another account's script rotates (`decisions/OPEN-QUESTIONS.md`, R45). `apply` moves `slots` at the
+/// `Switch` step's index, so each list up to and including its `Switch` is a stored format, as the wire enums are: a
+/// release may add steps only after it, and a secret refused here may gain a list (`decisions/DECISIONS.md`,
+/// "`rotate-probe`"). `decide` does not read it.
+pub fn rotate_steps(secret: SecretName) -> Result<&'static [RotateStep], &'static str> {
+    use RotateStep::*;
+    match secret {
+        SecretName::DeployToken | SecretName::ReadToken => Ok(&[Probe, Switch]),
+        SecretName::MintWrapKey => Ok(&[Publish, Wait, Switch, Retire]),
+        SecretName::TunnelToken => Err("retired with Tunnel; nothing binds it"),
+        SecretName::SshHostKeys => {
+            Err("its active slot is the site scripts' SSH_HOST_KEY_ACTIVE variable, so a switch is a site day (R45)")
+        }
+        SecretName::McpAppKey | SecretName::McpClientSecret | SecretName::InsightsAppKey => {
+            Err("graft-ops binds no slot of it: graft-mcp or the site scripts hold it (R45)")
+        }
+        SecretName::AgentsAppKey | SecretName::WorkspaceAppKey => Err("the agents account's graft-ops rotates it"),
+        SecretName::HostedRunnersAppKey => Err("graft-runners holds it, in the runner account (R45)"),
+        SecretName::SecretsWrapKey => {
+            Err("the rotation table has no row for it; its rotation is the rewrap route (R45)")
+        }
+    }
+}
+
 /// The bytes the release-signing half of `FormatsEnable` signs: the format alone, so the release record can carry it.
 pub fn formats_enable_message(f: Format) -> Vec<u8> {
     let mut m = b"graftyard/formats-enable/1".to_vec();
@@ -148,6 +191,9 @@ pub struct ReleaseFold {
     pub containers: BTreeMap<u8, ReleaseId>,
     /// The release each registered lifeboat's decoder reports (`LifeboatDecoder`), which `FormatsEnable` waits for.
     pub lifeboat_release: BTreeMap<Box<str>, ReleaseId>,
+    /// Each rotated secret's active slot and the time its `Rotate`'s switch step committed; a secret missing here
+    /// reads slot 0 (`slot`).
+    pub slots: BTreeMap<SecretName, (u8, Timestamp)>,
 }
 
 /// The one event an accepted entry commits: the entry's canonical stored bytes, so every member applies and digests
@@ -231,6 +277,11 @@ pub(crate) fn undo_bound(install: crate::InstallId, id: IntentId) -> Bound {
 }
 
 impl ReleaseFold {
+    /// The slot every reader of `secret` uses: the last switched `Rotate`'s, or slot 0.
+    pub fn slot(&self, secret: SecretName) -> u8 {
+        self.slots.get(&secret).map_or(0, |(s, _)| *s)
+    }
+
     fn keys(&self) -> &Keys {
         self.keys.as_ref().expect("an installed group holds Keys")
     }
@@ -797,6 +848,11 @@ impl ReleaseFold {
             }
             ReleaseEntry::IntentStep { .. } => {
                 let c = self.current.as_mut().expect("checked");
+                if let (IntentState::Running { .. }, Intent::Rotate { secret, slot }) = (c.state, &c.intent.intent)
+                    && rotate_steps(*secret).ok().and_then(|s| s.get(usize::from(c.next))) == Some(&RotateStep::Switch)
+                {
+                    self.slots.insert(*secret, (*slot, at));
+                }
                 c.next += 1;
                 c.since = at;
                 if let IntentState::Running { step } = &mut c.state {

@@ -268,7 +268,7 @@ pub enum DayTarget {
     Containers(SiteId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SecretName {
     DeployToken,
     ReadToken,

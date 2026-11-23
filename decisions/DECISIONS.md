@@ -8160,6 +8160,60 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
 - A release needs the vault deployed by `graft-ops`: the vault account would have to trust an install token, which
   DESIGN's failure domain forbids, so this needs an operator decision.
 
+### `rotate-probe`: how `graft-ops` runs `Rotate`, and the one call that confirms each new value, 2026-11-23
+
+**Decision.**
+- The active slot of each rotated secret is in the `Release` fold (`ReleaseFold::slots`): the `Rotate`'s switch step's
+  `IntentStep` sets it, and every reader of the secret takes the slot from its view and binds both slots, so a switch
+  is a committed entry and no new script version. A secret no rotation has switched reads slot 0.
+- `graft-ops` binds `DEPLOY_TOKEN_0`/`_1`, `READ_TOKEN_0`/`_1` and `MINT_WRAP_KEY_0`/`_1`; slot 0 falls back to the
+  unslotted binding an install before M5-WP6 has. `/mint` reads `MintWrapKey`'s slot from the script's own view, only
+  when its minter needs a key.
+- The steps (`crates/release` `rotate_steps`), each a host step and then its `IntentStep`:
+  - `DeployToken`: **probe** `GET /accounts/{id}/workers/scripts` with the new token, then **switch**.
+  - `ReadToken`: **probe** `GET /accounts/{id}/r2/buckets/{first site's bucket}` with the new token and require a
+    `location` in the answer, then **switch**.
+  - `MintWrapKey`: **publish** the new slot's `PutVerifyingKey { retired: None }` on `TokenShard(0)` as the operator,
+    **wait** one installation-token lifetime from that step, **switch**, then **retire** the old `kid` at the switch
+    plus `SIGNING_KEY_CACHE`, `JOB_TOKEN_MAX`, and `CLOCK_SKEW` (`rotation_step`). Unwrapping the new slot is its probe.
+- A failed host step pages and commits nothing; the next run tries it again. Every probe runs on `graft-ops`' cron,
+  never on a request path.
+- A `Rotate` of a secret `graft-ops` switches no slot of, or to the active slot, pages by name and steps nothing until
+  the customer's `Abort`, which ends it with the slot unchanged (R45). The agents account's `AgentsAppKey` and
+  `WorkspaceAppKey` page in the install's `graft-ops` and are its own `graft-ops`'s to step.
+- `rotate_steps` is a stored format up to each list's switch: `apply` moves the slot at that index, so a release may
+  add steps only after it, and a refused secret may gain a list.
+
+**Why.**
+- The rotation table names the confirming call for `DeployToken` and `ReadToken` already; each is the token's own
+  scope and an operator-side read.
+- A view-held slot is the one reader-visible switch that needs no Secrets Store write by `graft-ops` (which holds no
+  token that can write it) and no new version, which would reset a site's members.
+- The `MintWrapKey` order is SHARED's rule that a key is published one token lifetime before it signs and retires a
+  cache plus the longest token after the switch.
+
+**What it beat.**
+- **A variable naming the active slot**, as `SSH_HOST_KEY_ACTIVE` does: a variable change is a new version.
+- **Skipping a refused `Rotate` with `IntentDone`**: the customer would read a rotation as done that switched nothing.
+- **A probe by minting a token**: it would sign with the new key before its row has been published a lifetime.
+
+**Evidence.** `crates/release` (`run.rs`):
+`bf46_a_token_rotate_probes_the_new_slot_then_switches_with_no_deploy`,
+`bf46_a_failed_probe_pages_and_never_switches`,
+`bf46_mint_wrap_key_publishes_waits_a_token_lifetime_switches_then_retires`,
+`bf46_a_rotate_graft_ops_does_not_run_pages_by_name_and_an_abort_ends_it`,
+`bf46_the_install_graft_ops_leaves_the_agents_secrets_to_the_agents_account`, and
+`a_killed_graft_ops_reruns_a_rotate_step_and_commits_each_step_once`. `workers/ops`
+`a_mint_wrap_key_rotate_publishes_the_new_key_and_retires_the_old_after_the_longest_token`. The R2 get-bucket answer
+carries `location` (https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/get/). plant95
+(`tests/m0carried/plant95.py`).
+
+**Flip.**
+- BF-46 hosted shows a reader still using the old value after its view moved (A17's question, a Secrets Store `get()`
+  that does not see the new slot's value): the switch then needs the reader to re-read on the slot change.
+- A script other than `graft-ops` gains a view and both slots of a refused secret (R45): its row gains a step list.
+- A Cloudflare permission change makes either probe pass with a token that cannot deploy or read.
+
 ### `vault-roll`: `vault upgrade` is a step of `release roll` on the operator's machine, not a group intent, 2026-11-23
 
 **Decision.** Operator ruling, 2026-11-23, for BF-47. `release roll R` runs the vault step after `McpRoll` and before

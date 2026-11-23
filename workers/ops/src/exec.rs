@@ -26,13 +26,19 @@
 //!   `graftyard_release::gate::judge_site`; every other intent's gate is pending until its inputs are counted. Each
 //!   run reads every voter site's `site_health` object and asks `gate::verdict`. A test install's `GATE` variable
 //!   (`pass`, `pending`, or `breach:<why>`) overrides the gate; unset, the gate is read.
+//! - **`Rotate` (M5-WP6).** Each rotatable secret this script holds has two Secrets Store bindings, `<NAME>_0` and
+//!   `<NAME>_1` (`slot_binding`), and the `Release` view names the active one (`ReleaseFold::slot`), so a switch is a
+//!   committed `IntentStep` and no new script version. Slot 0 of `DEPLOY_TOKEN` and `MINT_WRAP_KEY` falls back to the
+//!   unslotted binding an install before M5-WP6 has. The probes call nothing on a request path
+//!   (`decisions/DECISIONS.md`, "`rotate-probe`"): `DeployToken` lists the install's scripts, `ReadToken` reads one
+//!   site bucket's `location`, and `MintWrapKey`'s steps commit and retire its `VerifyingKey` rows on `TokenShard(0)`.
 
 use std::collections::BTreeMap;
 
 use graftyard_lookup::{Bindings, Hooks, commit_hedged, now_ms, view, within};
 use graftyard_release::ops::{self, Deployment, Dwell, Exec, Gate, Ran, RawBundle, Signer, Split, Submit};
-use graftyard_release::{Anchor, ReleaseFold, Script, Signature, SignedEntry, VersionId, gate};
-use graftyard_types::{ChainId, ReleaseId, SiteId, SiteTable, Timestamp};
+use graftyard_release::{Anchor, ReleaseFold, RotateStep, Script, SecretName, Signature, SignedEntry, VersionId, gate};
+use graftyard_types::{ChainId, ReleaseId, SiteId, SiteTable, Timestamp, TokenShard};
 use serde_json::{Value, json};
 use worker::wasm_bindgen::JsValue;
 use worker::*;
@@ -77,6 +83,8 @@ pub struct Live<'a> {
     anchor: Anchor,
     account: String,
     token: String,
+    /// The `DeployToken` slot `token` came from.
+    token_slot: u8,
     scripts: BTreeMap<String, String>,
     executor: [u8; 32],
     drain: Option<[u8; 32]>,
@@ -94,6 +102,34 @@ async fn secret(env: &Env, binding: &str) -> std::result::Result<String, String>
         .ok_or_else(|| format!("{binding} is empty"))
 }
 
+/// The Secrets Store binding of `secret`'s `slot` (`ReleaseFold::slot`). Slot 0 of a secret an install before M5-WP6
+/// bound unslotted falls back to that binding.
+pub fn slot_binding(secret: SecretName, slot: u8) -> std::result::Result<String, String> {
+    let base = match secret {
+        SecretName::DeployToken => "DEPLOY_TOKEN",
+        SecretName::ReadToken => "READ_TOKEN",
+        SecretName::MintWrapKey => "MINT_WRAP_KEY",
+        s => return Err(format!("graft-ops binds no slot of {s:?}")),
+    };
+    Ok(format!("{base}_{slot}"))
+}
+
+/// `secret`'s value in `slot`, from its slotted binding, or the unslotted one for slot 0.
+pub async fn slot_value(env: &Env, name: SecretName, slot: u8) -> std::result::Result<String, String> {
+    let name = slot_binding(name, slot)?;
+    match secret_opt(env, &name).await? {
+        Some(v) => Ok(v),
+        None if slot == 0 => secret(env, name.trim_end_matches("_0")).await,
+        None => Err(format!("{name} is not bound or is empty")),
+    }
+}
+
+/// A binding's value, `None` when the binding is missing or empty.
+async fn secret_opt(env: &Env, binding: &str) -> std::result::Result<Option<String>, String> {
+    let Ok(s) = env.secret_store(binding) else { return Ok(None) };
+    s.get().await.map_err(|e| format!("{binding}: {e}"))
+}
+
 async fn seed(env: &Env, binding: &str) -> std::result::Result<[u8; 32], String> {
     let s = secret(env, binding).await?;
     unhex(&s).and_then(|b| b.try_into().ok()).ok_or_else(|| format!("{binding} is not a 32-byte seed in hex"))
@@ -106,12 +142,16 @@ impl<'a> Live<'a> {
         let anchor = Anchor::from_vars(&var(env, "GRAFTYARD_INSTALL")?, &var(env, "GRAFTYARD_CUSTOMER_KEY")?)
             .map_err(|e| format!("anchor: {e}"))?;
         let scripts = serde_json::from_str(&var(env, "OPS_SCRIPTS")?).map_err(|e| format!("OPS_SCRIPTS: {e}"))?;
+        // The deploy token's active slot, from the view this isolate holds; a cold isolate reads slot 0 until its
+        // first refresh, which a run makes before any API call, and `api` reads the slot again then.
+        let deploy_slot = view::with(|r| r.fold.slot(SecretName::DeployToken));
         Ok(Live {
             env,
             sites,
             anchor,
             account: var(env, "CF_ACCOUNT")?,
-            token: secret(env, "DEPLOY_TOKEN").await?,
+            token: slot_value(env, SecretName::DeployToken, deploy_slot).await?,
+            token_slot: deploy_slot,
             scripts,
             executor: seed(env, "EXECUTOR_KEY").await?,
             // A drain key is needed only at a site day's drain and undrain; a missing one fails those steps alone.
@@ -154,8 +194,29 @@ impl<'a> Live<'a> {
         body: Option<JsValue>,
         json_body: bool,
     ) -> std::result::Result<Value, String> {
+        self.api_as(&self.token, method, path, body, json_body).await
+    }
+
+    /// The deploy token of the slot the view names now: after a `Rotate`'s switch commits, the next call uses it.
+    async fn follow_deploy_slot(&mut self) -> std::result::Result<(), String> {
+        let slot = view::with(|r| r.fold.slot(SecretName::DeployToken));
+        if slot != self.token_slot {
+            self.token = slot_value(self.env, SecretName::DeployToken, slot).await?;
+            self.token_slot = slot;
+        }
+        Ok(())
+    }
+
+    async fn api_as(
+        &self,
+        token: &str,
+        method: Method,
+        path: &str,
+        body: Option<JsValue>,
+        json_body: bool,
+    ) -> std::result::Result<Value, String> {
         let h = Headers::new();
-        h.set("authorization", &format!("Bearer {}", self.token)).map_err(|e| e.to_string())?;
+        h.set("authorization", &format!("Bearer {token}")).map_err(|e| e.to_string())?;
         if json_body {
             h.set("content-type", "application/json").map_err(|e| e.to_string())?;
         }
@@ -208,6 +269,7 @@ impl Exec for Live<'_> {
             view::refresh_now(&self.bindings(), &self.anchor).await;
             let st = view::status();
             if st["fails"].as_u64() == before {
+                self.follow_deploy_slot().await?;
                 return Ok(view::with(|r| r.fold.clone()));
             }
             err = st["lastError"].as_str().unwrap_or("the refresh failed").to_string();
@@ -483,6 +545,49 @@ impl Exec for Live<'_> {
             form.append_with_blob_and_filename(n, &blob, n).map_err(|e| format!("{e:?}"))?;
         }
         self.api(Method::Post, &format!("/workers/scripts/{name}/versions"), Some(form.into()), false).await.map(|_| ())
+    }
+
+    /// One host step of a `Rotate` (`decisions/DECISIONS.md`, "`rotate-probe`"). Every call is to the Cloudflare API or
+    /// a `Tokens` leader from this cron, never on a request path, and each is safe to repeat.
+    async fn rotate(
+        &mut self,
+        fold: &ReleaseFold,
+        secret: SecretName,
+        slot: u8,
+        step: RotateStep,
+    ) -> std::result::Result<(), String> {
+        if self.killed("rotate") {
+            return Err("OPS_KILL".into());
+        }
+        let new = slot_value(self.env, secret, slot).await?;
+        match (secret, step) {
+            // The deploy token's own scope: the call `graft-ops` makes before every deploy.
+            (SecretName::DeployToken, RotateStep::Probe) => {
+                self.api_as(&new, Method::Get, "/workers/scripts", None, false).await.map(|_| ())
+            }
+            // Workers R2 Storage Read, the read token's scope, on the first site's bucket.
+            (SecretName::ReadToken, RotateStep::Probe) => {
+                let site = fold.genesis.as_ref().and_then(|g| g.sites.first()).ok_or("no site in the view")?;
+                let v = self.api_as(&new, Method::Get, &format!("/r2/buckets/{}", site.bucket), None, false).await?;
+                v["result"]["location"].as_str().map(|_| ()).ok_or_else(|| "no bucket location in the answer".into())
+            }
+            (SecretName::MintWrapKey, RotateStep::Publish | RotateStep::Retire) => {
+                // The old key is the other slot's: at `Retire` the switch has already made `slot` the active one.
+                let old = match step {
+                    RotateStep::Retire => slot_value(self.env, secret, 1 - slot).await?,
+                    _ => String::new(),
+                };
+                let switched = fold.slots.get(&secret).map_or(Timestamp(0), |(_, t)| *t);
+                let cmd = crate::rotate_command(step, &new, &old, switched).map_err(|e| e.to_string())?;
+                let Some(cmd) = cmd else { return Ok(()) };
+                let chain = ChainId::Tokens(TokenShard(0));
+                let record = graftyard_lookup::system_record(&self.bindings(), &self.anchor, chain).await?;
+                let cmd = serde_json::to_value(&cmd).map_err(|e| e.to_string())?;
+                let done = graftyard_lookup::commit(&self.bindings(), chain, &record, cmd).await?;
+                if done.get("ok").is_some() { Ok(()) } else { Err(format!("tokens:0 refused the key row: {done}")) }
+            }
+            (s, st) => Err(format!("no host step {st:?} for {s:?}")),
+        }
     }
 }
 
