@@ -93,9 +93,50 @@ PASS
   $2,935 → $2,939 and $12,266 → $12,274; 50 and 300 developers are unchanged. Copied to DESIGN, AGENT-LAYER, AWS.md;
   `costs_report.py` rerun. OPEN-QUESTIONS K5 cites the 50-developer base, which did not move.
 
+## R39 (b) and the lock's 409 (2026-11-23, code only, $0)
+
+- **Signed vault artifact** (`crates/release/src/ops.rs`, `check_vault`). A release's `vault/` folder is taken only
+  when `release.json` verifies under `Keys.release`, lists every `vault/` file given with its SHA-256, every listed
+  file is given, and `vault/entry.js` exists. `graftyard vault init --release D --release-key K` verifies before any
+  API call; `graftyard vault upgrade` verifies first, refuses a script with no deployment, leaves a release already at
+  100%, and otherwise uploads with `keep_bindings` (`r2_bucket`, `plain_text`, `secret_text`) and deploys at 100%. The
+  release id is each version's `workers/tag`.
+- **Lock before precondition.** Cloudflare's bucket-locks page (Notes) says a lock rule is checked before
+  `If-None-Match`, so a repeated create-only put returns 409 `ObjectLockedByBucketPolicy`, and the old `put_new`
+  would have failed the pass. Every locked object now stores its SHA-256 as metadata; any refused put is judged by a
+  HEAD (same size and digest: stored, move on; another object or nothing: fail the pass). A pack is HEADed before its
+  copy against its entry's length and checksum; a snapshot object by its size.
+- **Tests.** `cargo test -p graftyard-vault`: 4 unit and 9 integration tests. The test bucket now answers a held key
+  with 409 before the precondition, as R2 does: a pass rerun from an older `state/vault` moves on over every locked
+  object and stores nothing new; another object at a feed key fails the pass and stays; another pack at a pack key is
+  counted missed and stays. `cargo test -p graftyard -- vault`: 7 tests, including six tampered or unsigned releases
+  refused by `init` and `upgrade` before any API call, and `upgrade` keeping the bindings. `crates/release`:
+  `the_vault_worker_comes_only_from_a_verified_release`.
+- **plant88**: 33 mutants (10 new: four on the refused-put judgment, three on `check_vault`, three on `upgrade`). The
+  first run caught 31: a size mismatch with no digest known passed as the same object (a test now checks the snapshot
+  case), and one mutant did not compile; both are caught now.
+- **Bed.** `tests/vaultbed/run.sh` adds a rerun after pass 2: `state/vault` dropped, one more invocation, and the
+  check that no object changed, the feed state equals pass 2's, every object carries its own SHA-256, and no pass
+  failed. Local R2 has no locks, so the bed covers the 412 half; the 409 half is the hosted row's. Run from scratch
+  (2026-11-23): PASS, 0 wasm traps. The rerun pass re-read all four feed objects and the pack and stored nothing
+  (`objects=4 existed=1 missed=1`, the bad pack still missed), every object carried its own SHA-256, and no pass
+  failed:
+
+  ```
+  vault cron rerun: {"ms":40159,"outcome":null}
+  rerun: ok   a pass from no state stored nothing new (5 objects) and every object carries its sha256 (True)
+  revoke: 204
+  vault cron 3: {"ms":35,"outcome":null}
+  revoked: ok   nothing stored and the state unmoved, with a new object waiting (True)
+  ```
+- **Hosted row, when cleared** (runner account as a labelled stand-in, stop at $3 or 2 hours): after BF-49's passes,
+  put back an older `state/vault` and run one pass; expect no failure and nothing new stored. Teardown: PUT the lock
+  config with no rules, GET to confirm none, empty the bucket, delete it, delete the script and its secret, then list
+  to confirm each is gone.
+
 ## Left
 
 1. **Hosted:** `graftyard vault init` into a vault account, then BF-49's row with the vault pulling a real install
    and the export `jti` revoked. Not cleared.
-2. **`graftyard vault upgrade`** and BF-47; `vault init` should take the same verified release (R39 (b)).
+2. BF-47 (`release roll` running `vault upgrade` hosted); `vault upgrade` and the verified `vault init` are built.
 3. **Per-org pull caps** (R39 (a)).

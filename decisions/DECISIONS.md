@@ -7913,7 +7913,55 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
 - A restore finds a pack an entry names missing from `pack/` without a `missed` count: copies move from entries to a
   listing the export endpoints serve.
 - Forks share a network: `network_of` must read the repository's network from its fold.
-- Open with it: OPEN-QUESTIONS R39 (per-org pull caps, `vault init` from an unverified bundle, the pass constants).
+- Open with it: OPEN-QUESTIONS R39 (per-org pull caps, the pass constants); `vault init` from an unverified bundle
+  is replaced by `vault-release`.
+
+### `vault-release`: the vault Worker deploys only from a verified release, and a refused create-only put is judged by HEAD, 2026-11-23
+
+**Decision.** Code only (`crates/release/src/ops.rs`, `cli/src/vault.rs`, `workers/vault`), closing R39 (b) in code:
+- **The artifact.** A release carries the vault Worker as a `vault/` folder its `release.json` lists, each file with its
+  SHA-256. `check_vault` takes it only when `release.json` verifies under `Keys.release` (as `release.sig`), every
+  `vault/` file it is given is listed with that digest, every listed one is given, and `vault/entry.js` exists. No
+  `Script` names the folder, so `graft-ops` never deploys it.
+- **`vault init --release D --release-key K`** verifies before any API call and deploys with the release id as the
+  version's `workers/tag`. **`vault upgrade`** verifies first, refuses a script with no deployment, does nothing when
+  that release already serves 100%, and otherwise uploads a version with `keep_bindings` (`r2_bucket`, `plain_text`,
+  `secret_text`), so the bucket, the URL and `EXPORT_TOKEN` stay, then deploys it at 100%.
+- **Create-only puts.** Every locked object stores its SHA-256 as custom metadata. A put refused by its precondition
+  (412) or by a lock rule (409 `ObjectLockedByBucketPolicy`) is judged by a HEAD: the same size and digest is "already
+  stored" and the pass moves on; another object, or a refusal with nothing at the key, fails the pass. A pack is HEADed
+  before its copy and judged against its entry's length and checksum; a snapshot object by its size, whose frame digest
+  was checked when it was first written.
+
+**Why.**
+- R2 checks a lock rule before `If-None-Match`, so a write that fails both returns 409, not 412 (Cloudflare R2 bucket
+  locks, Notes). Taking a refusal as "stored" without looking would hide another object at the key; taking it as a
+  failure would fail every pass that repeats an earlier one's writes, which is what a lost compare-and-swap on
+  `state/vault` or a timed-out pass does.
+- No install token reaches the vault account, so the release must be checked on the operator's machine, under the same
+  key `graft-ops` checks a release with.
+
+**What it beat.**
+- **Matching the 409 body only.** Another lock refusal or a different object would read as stored.
+- **A new `Script` variant for the vault.** `Script` is a wire enum `graft-ops` deploys from; the vault account is out
+  of its reach by design.
+- **`keep_bindings` off, bindings re-sent.** The CLI would need the export token again, which only `vault init` mints.
+
+**Evidence.**
+- `crates/release` `the_vault_worker_comes_only_from_a_verified_release`; `cli/src/vault.rs`: a release signed by another
+  key, a changed module, an unlisted module, a missing listed module, no `entry.js`, and one changed byte of
+  `release.json`, each refused by `init` and `upgrade` before any API call; `upgrade` keeping the bindings, then leaving a release already at 100%.
+- `workers/vault/tests/vault.rs` with a bucket that refuses a held key with 409 before the precondition, as R2 does:
+  a pass rerun from an older `state/vault` stores nothing new and fails nothing; another object at a feed key fails
+  the pass and stays; another pack at a pack key is missed and stays.
+- `tests/vaultbed/run.sh`: a pass rerun after `state/vault` is dropped, in local workerd (local R2 has no locks, so
+  this covers the 412 half); `tests/m0carried/plant88.py`.
+
+**Flip.**
+- A hosted vault row sees a lock refusal that is neither 409 nor judged by the HEAD: the put's error handling moves to
+  that answer.
+- A release needs the vault deployed by `graft-ops`: the vault account would have to trust an install token, which
+  DESIGN's failure domain forbids, so this needs an operator decision.
 
 ### `validate-hedge`: a human push's buffered validate asks every site left after 1 s, beside the first, 2026-11-22
 

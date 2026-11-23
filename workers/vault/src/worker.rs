@@ -4,9 +4,12 @@
 //! - **Copies stream.** A pack or snapshot object goes into a multipart upload in `PART_BYTES` parts as it arrives,
 //!   checked as it goes (`PackCheck`, `SnapshotReader`), and the upload completes only once the check passed; a
 //!   failed check aborts it, so a bad copy never becomes an object the lock would keep, and no object is held whole.
-//! - **Create-only.** Every put but the state's carries `If-None-Match: *`, and a copy first HEADs its key, so a
-//!   pass never overwrites what an earlier one stored (and the lock would refuse it anyway). The state is written on
-//!   its etag.
+//! - **Create-only.** Every put but the state's carries `If-None-Match: *` and the object's SHA-256 as `sha256`
+//!   metadata, and a copy first HEADs its key, so a pass never overwrites what an earlier one stored. R2 checks a lock
+//!   rule before the precondition, so a repeated put under a lock fails with `ObjectLockedByBucketPolicy` rather than
+//!   412 (https://developers.cloudflare.com/r2/buckets/bucket-locks/, Notes); `put_once` and a failed upload's
+//!   completion judge the key by HEAD instead (`taken`): the same object moves on, another one fails. The state is
+//!   written on its etag.
 //! - **Triggers.** The `* * * * *` cron runs passes for up to `POLL_FOR_MS`, one every `POLL_EVERY_MS` while the last
 //!   found nothing left, back to back while it did. Each pass logs one line (`Report::line`), as an error when the
 //!   feed lags past `LAG_ALARM_MS` or a copy was missed. The Worker serves no route.
@@ -15,7 +18,7 @@ use futures_util::StreamExt;
 use graftyard_types::{ChainId, Digest, Index, NetworkId, Timestamp};
 use worker::*;
 
-use crate::{Copied, Got, Host, PART_BYTES, PackCheck, SnapPart, SnapshotReader};
+use crate::{Copied, Got, Held, Host, PART_BYTES, PackCheck, SnapPart, SnapshotReader, Taken, taken};
 use graftyard_git::pack::PackId;
 
 /// Every export request names this agent: the front refuses a request with none (`tests/m5/bf49/pull.py`).
@@ -50,8 +53,26 @@ impl Live {
         Fetch::Request(req).send().await.map_err(|e| format!("GET {path}: {e}"))
     }
 
-    async fn exists(&self, key: &str) -> std::result::Result<bool, String> {
-        Ok(self.bucket.head(key).await.map_err(err)?.is_some())
+    async fn held(&self, key: &str) -> std::result::Result<Option<Held>, String> {
+        let Some(o) = self.bucket.head(key).await.map_err(err)? else { return Ok(None) };
+        Ok(Some(Held { size: o.size(), sha256: o.custom_metadata().map_err(err)?.remove("sha256") }))
+    }
+
+    /// An upload that would not complete, judged by what holds its key: a lock rule refuses completing an upload whose
+    /// key an earlier pass already wrote, which is the same object only if `taken` says so.
+    async fn finished(
+        &self,
+        up: Upload,
+        key: &str,
+        len: u64,
+        sha256: Option<&Digest>,
+    ) -> std::result::Result<Copied, String> {
+        let Err(e) = up.finish().await else { return Ok(Copied::Stored) };
+        match taken(self.held(key).await?, len, sha256) {
+            Taken::Same => Ok(Copied::Exists),
+            Taken::Different(why) => Ok(Copied::Corrupt(format!("{key} holds another object: {why}"))),
+            Taken::Absent => Err(format!("{key}: {e}")),
+        }
     }
 }
 
@@ -63,8 +84,14 @@ struct Upload {
 }
 
 impl Upload {
-    async fn start(b: &Bucket, key: &str) -> std::result::Result<Upload, String> {
-        let up = b.create_multipart_upload(key).execute().await.map_err(err)?;
+    async fn start(b: &Bucket, key: &str, sha256: Option<&Digest>) -> std::result::Result<Upload, String> {
+        let mut c = b.create_multipart_upload(key);
+        if let Some(d) = sha256 {
+            c = c.custom_metadata(
+                [("sha256".to_string(), d.hex())].into_iter().collect::<std::collections::HashMap<_, _>>(),
+            );
+        }
+        let up = c.execute().await.map_err(err)?;
         Ok(Upload { up, parts: Vec::new(), buf: Vec::with_capacity(PART_BYTES) })
     }
 
@@ -122,15 +149,17 @@ impl Host for Live {
         bytes: u64,
     ) -> std::result::Result<Copied, String> {
         let key = crate::pack_key(network, id);
-        if self.exists(&key).await? {
-            return Ok(Copied::Exists);
+        match taken(self.held(&key).await?, bytes, Some(&checksum)) {
+            Taken::Same => return Ok(Copied::Exists),
+            Taken::Different(why) => return Ok(Copied::Corrupt(format!("{key} holds another object: {why}"))),
+            Taken::Absent => {}
         }
         let mut r = self.fetch(&format!("packs/{id}?network={}", network.0.0)).await?;
         if r.status_code() != 200 {
             return Ok(Copied::Status(r.status_code()));
         }
         let mut check = PackCheck::new(checksum, bytes);
-        let mut up = Upload::start(&self.bucket, &key).await?;
+        let mut up = Upload::start(&self.bucket, &key, Some(&checksum)).await?;
         let mut body = r.stream().map_err(err)?;
         while let Some(chunk) = body.next().await {
             let chunk = match chunk {
@@ -152,8 +181,7 @@ impl Host for Live {
             up.abort().await;
             return Ok(Copied::Corrupt(format!("{key}: {e}")));
         }
-        up.finish().await?;
-        Ok(Copied::Stored)
+        self.finished(up, &key, bytes, Some(&checksum)).await
     }
 
     async fn copy_snapshot(&self, chain: ChainId, at: Index) -> std::result::Result<Copied, String> {
@@ -163,14 +191,14 @@ impl Host for Live {
         }
         let mut rd = SnapshotReader::default();
         let mut out = Copied::Exists;
-        // The object being written: `None` while skipping one the vault already holds.
-        let mut up: Option<Upload> = None;
+        // The object being written, its key and length: `None` while skipping one the vault already holds.
+        let mut up: Option<(Upload, String, u64)> = None;
         let mut body = r.stream().map_err(err)?;
         while let Some(chunk) = body.next().await {
             let parts = match chunk.map_err(err).and_then(|c| rd.push(&c)) {
                 Ok(p) => p,
                 Err(e) => {
-                    if let Some(u) = up.take() {
+                    if let Some((u, ..)) = up.take() {
                         u.abort().await;
                     }
                     return Err(e);
@@ -178,27 +206,31 @@ impl Host for Live {
             };
             for p in parts {
                 match p {
-                    SnapPart::Start { key, .. } => {
+                    SnapPart::Start { key, len } => {
                         if !crate::snapshot_of(&key, chain) {
                             return Ok(Copied::Corrupt(format!("{key} is not a snapshot of {chain}")));
                         }
-                        up = if self.exists(&key).await? {
-                            None
-                        } else {
-                            Some(Upload::start(&self.bucket, &key).await?)
+                        // A snapshot key names its range and digest, so an object of the frame's length there is it.
+                        up = match taken(self.held(&key).await?, len, None) {
+                            Taken::Same => None,
+                            Taken::Different(why) => {
+                                return Ok(Copied::Corrupt(format!("{key} holds another object: {why}")));
+                            }
+                            Taken::Absent => Some((Upload::start(&self.bucket, &key, None).await?, key, len)),
                         };
                     }
                     SnapPart::Bytes(b) => {
-                        if let Some(u) = up.as_mut() {
+                        if let Some((u, ..)) = up.as_mut() {
                             u.push(&b).await?;
                         }
                     }
                     SnapPart::End { ok } => match (up.take(), ok) {
-                        (Some(u), true) => {
-                            u.finish().await?;
-                            out = Copied::Stored;
-                        }
-                        (Some(u), false) => {
+                        (Some((u, key, len)), true) => match self.finished(u, &key, len, None).await? {
+                            Copied::Stored => out = Copied::Stored,
+                            Copied::Exists => {}
+                            other => return Ok(other),
+                        },
+                        (Some((u, ..)), false) => {
                             u.abort().await;
                             return Ok(Copied::Corrupt(format!(
                                 "a snapshot object of {chain} at {} fails its digest",
@@ -211,7 +243,7 @@ impl Host for Live {
             }
         }
         if !rd.finished() {
-            if let Some(u) = up.take() {
+            if let Some((u, ..)) = up.take() {
                 u.abort().await;
             }
             return Err(format!("the snapshot of {chain} at {} ended mid-object", at.0));
@@ -224,15 +256,22 @@ impl Host for Live {
         Ok(self.fetch(&format!("packs/{id}?network={}", network.0.0)).await?.status_code())
     }
 
-    async fn put_new(&self, key: &str, body: &[u8]) -> std::result::Result<bool, String> {
+    async fn put_create(&self, key: &str, body: &[u8], sha256: &Digest) -> std::result::Result<bool, String> {
+        let meta: std::collections::HashMap<String, String> =
+            [("sha256".to_string(), sha256.hex())].into_iter().collect();
         let put = self
             .bucket
             .put(key, body.to_vec())
+            .custom_metadata(meta)
             .only_if(Conditional { etag_does_not_match: Some("*".into()), ..Default::default() })
             .execute()
             .await
             .map_err(err)?;
         Ok(put.is_some())
+    }
+
+    async fn head(&self, key: &str) -> std::result::Result<Option<Held>, String> {
+        self.held(key).await
     }
 
     async fn state(&self) -> std::result::Result<Option<(Vec<u8>, String)>, String> {

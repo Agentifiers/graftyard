@@ -170,8 +170,13 @@ pub trait Host {
     async fn copy_snapshot(&self, chain: ChainId, at: Index) -> Result<Copied, String>;
     /// Whether the install still serves a pack: the status of `packs/{id}?network=`, its body unread.
     async fn pack_status(&self, network: NetworkId, id: PackId) -> Result<u16, String>;
-    /// A create-only put: false when the key exists.
-    async fn put_new(&self, key: &str, body: &[u8]) -> Result<bool, String>;
+    /// A create-only put (`If-None-Match: *`) carrying `sha256` as the object's `sha256` metadata: true when it
+    /// created the object, false when the precondition refused it. R2 checks a bucket lock before the precondition, so
+    /// a create-only put to a key a lock holds fails with `ObjectLockedByBucketPolicy` (409), not 412, and comes back
+    /// as `Err`; `put_once` asks `head` either way.
+    async fn put_create(&self, key: &str, body: &[u8], sha256: &Digest) -> Result<bool, String>;
+    /// The object at `key`: its size and its `sha256` metadata, if any.
+    async fn head(&self, key: &str) -> Result<Option<Held>, String>;
     /// `state/vault` and its etag.
     async fn state(&self) -> Result<Option<(Vec<u8>, String)>, String>;
     /// Writes `state/vault` only if its etag is still `etag` (`None`: only if absent). The new etag, or `None` when
@@ -180,6 +185,57 @@ pub trait Host {
     async fn list(&self, prefix: &str) -> Result<Vec<String>, String>;
     /// False when a lock rule refused it.
     async fn delete(&self, key: &str) -> Result<bool, String>;
+}
+
+/// What `head` sees at a key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Held {
+    pub size: u64,
+    pub sha256: Option<String>,
+}
+
+/// The object at a key against the one the vault means to write there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Taken {
+    Absent,
+    /// The same object: its size, and its `sha256` metadata where the vault knows the digest before writing.
+    Same,
+    /// Another object holds the key; the lock keeps it, so the vault must never call it stored.
+    Different(String),
+}
+
+/// Judges `held` against an object of `len` bytes with SHA-256 `sha256`. A pack's, feed object's, or entries page's
+/// digest is known before the write and stored as metadata, so it must match. A snapshot object's is known only after
+/// its bytes have streamed, and its key names the snapshot's range and digest, so its size stands in (`None`).
+pub fn taken(held: Option<Held>, len: u64, sha256: Option<&Digest>) -> Taken {
+    let Some(h) = held else { return Taken::Absent };
+    if h.size != len {
+        return Taken::Different(format!("{} bytes where {len} were meant", h.size));
+    }
+    match (sha256, h.sha256.as_deref()) {
+        (None, _) => Taken::Same,
+        (Some(want), Some(got)) if got == want.hex() => Taken::Same,
+        (Some(want), got) => {
+            Taken::Different(format!("sha256 {} where {} was meant", got.unwrap_or("unknown"), want.hex()))
+        }
+    }
+}
+
+/// Writes `body` at `key` once: true when this call stored it, false when the same object was already there. A
+/// refused put, by its precondition or by a lock rule, is judged by `head`, so a pass that repeats an earlier one's
+/// writes moves on, and another object at the key, or a refusal with nothing there, fails the pass.
+pub async fn put_once<H: Host>(h: &H, key: &str, body: &[u8]) -> Result<bool, String> {
+    let sha = Digest(Sha256::digest(body).into());
+    let refused = match h.put_create(key, body, &sha).await {
+        Ok(true) => return Ok(true),
+        Ok(false) => None,
+        Err(e) => Some(e),
+    };
+    match taken(h.head(key).await?, body.len() as u64, Some(&sha)) {
+        Taken::Same => Ok(false),
+        Taken::Different(why) => Err(format!("{key} holds another object: {why}")),
+        Taken::Absent => Err(format!("{key}: {}", refused.unwrap_or_else(|| "refused, and nothing is there".into()))),
+    }
 }
 
 /// One pass's counts, logged as one line.
@@ -539,7 +595,7 @@ pub async fn pass<H: Host>(h: &H) -> Result<(Report, VaultState), String> {
                 }
             }
             export::check_object(&o, &cursors).map_err(|e| format!("feed {}: {e}", pos.text()))?;
-            h.put_new(&feed_key(pos), raw).await?;
+            put_once(h, &feed_key(pos), raw).await?;
             take_object(&mut st, &o);
             r.objects += 1;
             took += 1;
@@ -580,7 +636,7 @@ pub async fn pass<H: Host>(h: &H) -> Result<(Report, VaultState), String> {
                 for row in rows {
                     export::frame(&mut page, row);
                 }
-                h.put_new(&entries_key(chain, b.next, to), &page).await?;
+                put_once(h, &entries_key(chain, b.next, to), &page).await?;
                 absorb(&mut st, chain, rows);
                 r.backfilled += rows.len();
                 if to.0 + 1 >= b.until.0 {

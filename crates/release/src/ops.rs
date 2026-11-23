@@ -564,6 +564,54 @@ pub fn check_bundle(
     })
 }
 
+/// The bundle folder the vault Worker's modules are under. No `Script` names it: `graft-ops` never deploys into the
+/// vault account, so `check_bundle` leaves the folder alone and only `graftyard vault init` and `vault upgrade` take it.
+pub const VAULT_FOLDER: &str = "vault/";
+
+/// The vault Worker of one verified release: its id and its modules, folder removed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultArtifact {
+    pub release: ReleaseId,
+    pub modules: Vec<(String, Vec<u8>)>,
+}
+
+/// Takes a release's vault Worker only when `release.json` verifies under `release_key` (the genesis's
+/// `Keys.release`), lists every file under `vault/` it is given with that file's SHA-256, every `vault/` file it lists
+/// is given, and the folder holds `entry.js`. Files outside `vault/` are not read, so a whole release folder passes.
+pub fn check_vault(
+    release_key: &crate::types::KeyId,
+    record: &[u8],
+    sig: Signature,
+    files: &[(String, Vec<u8>)],
+) -> Result<VaultArtifact, Refusal> {
+    verify_raw(release_key, record, &sig).map_err(|_| bad("release.json does not verify under Keys.release"))?;
+    let rec: serde_json::Value = serde_json::from_slice(record).map_err(|_| bad("release.json is not JSON"))?;
+    let listed: BTreeMap<&str, &str> = rec["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| Some((f["name"].as_str()?, f["sha256"].as_str()?)))
+        .filter(|(n, _)| n.starts_with(VAULT_FOLDER))
+        .collect();
+    let mut modules = Vec::new();
+    for (name, bytes) in files {
+        let Some(module) = name.strip_prefix(VAULT_FOLDER) else { continue };
+        let want = crate::types::hex(&Sha256::digest(bytes));
+        if listed.get(name.as_str()) != Some(&want.as_str()) {
+            return Err(bad(format!("release.json lists no {name} with SHA-256 {want}")));
+        }
+        modules.push((module.to_string(), bytes.clone()));
+    }
+    if let Some(missing) = listed.keys().find(|n| !files.iter().any(|(f, _)| f == *n)) {
+        return Err(bad(format!("the release holds no {missing}, which release.json lists")));
+    }
+    if !modules.iter().any(|(m, _)| m == "entry.js") {
+        return Err(bad("the release has no vault/entry.js"));
+    }
+    modules.sort();
+    Ok(VaultArtifact { release: ReleaseId(Sha256::digest(record).into()), modules })
+}
+
 fn parse_formats(b: &[u8]) -> Option<FormatSet> {
     let text = std::str::from_utf8(b).ok()?;
     let mut v = Vec::new();

@@ -6,6 +6,8 @@
 // - `GET /_sitecron`: site 0's `scheduled` handler, which kicks a feed round; `GET /_cron`: the vault's, one pass loop.
 // - `GET /_vault`: every object in the vault's bucket with its size and SHA-256, and its state; `GET /_export`: the
 //   same for the install's export bucket.
+// - `GET /_dropstate`: deletes the vault's `state/vault`, so the next pass starts from no state and writes every object
+//   again; `GET /_meta?key=`: an object's size and `sha256` metadata.
 async function listed(bucket, prefix) {
   const out = [];
   let cursor;
@@ -37,6 +39,14 @@ export default {
       const t0 = Date.now();
       const r = await (url.pathname === "/_cron" ? env.VAULT : env.SITE).scheduled({ cron: q("cron") ?? "* * * * *" });
       return Response.json({ ms: Date.now() - t0, outcome: r?.outcome ?? null });
+    }
+    if (url.pathname === "/_dropstate") {
+      await env.VAULTB.delete("state/vault");
+      return new Response("ok");
+    }
+    if (url.pathname === "/_meta") {
+      const o = await env.VAULTB.head(q("key"));
+      return Response.json(o ? { size: o.size, sha256: o.customMetadata?.sha256 ?? null } : null);
     }
     if (url.pathname === "/_vault") {
       const s = await env.VAULTB.get("state/vault");
