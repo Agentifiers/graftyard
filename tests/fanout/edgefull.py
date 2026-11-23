@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """edgefull.py: B0-33 row B's edge refusals, from the edge's `edgefull` log lines (`workers/edge/src/lib.rs`, `mod
-edgefull`), read against `decisions/DECISIONS.md`, "`edge-refusal`", flips 2 to 4.
+edgefull`), read against `decisions/DECISIONS.md`, "`edge-refusal`", flips 2 to 4, and "`edge-refusal-bound`", flips
+R1b and R1c.
 
   edgefull.py fetch FROM_ISO TO_ISO OUT.jsonl [SCRIPT]   every `edgefull` line SCRIPT (default graft-m2b-edge) logged
                                                          in the window, one JSON object a line with its Workers Logs
@@ -30,6 +31,11 @@ BOUND_MS = 5_000
 AGENT_CMDS_ENTRY = 64
 # A chain fails open at most once an ADVERT_TTL per isolate (2 s, `graftyard_raft::admit::ADVERT_TTL`).
 ADVERT_TTL_MS = 2_000
+# A lapsed full advert holds Agent writes this long (`graftyard_raft::admit::ADVERT_STALE`).
+ADVERT_STALE_MS = 10_000
+# edge-refusal-bound's flip R2b (`decisions/DECISIONS.md`): erBA's agent commands cut a second while refusing, p50, and
+# its agent `ok` pushes. A rerun below either reverts the send check.
+ERBA_CUT_P50, ERBA_AGENT_OK = 78.7, 1_498
 ms = lambda s: int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
 
 
@@ -95,15 +101,18 @@ def read(path, tag=None):
         print("no edgefull lines: the edge refused nothing and sent nothing on a lapsed full advert")
         return
     kinds = collections.Counter((x["edgefull"], "push" if x.get("push") else "rest") for x in lines)
-    iso = collections.defaultdict(lambda: {"refused": 0, "failOpen": 0, "lines": 0})
+    iso = collections.defaultdict(lambda: {"refused": 0, "failOpen": 0, "held": 0, "probe": 0, "stale": 0, "lines": 0})
     for x in lines:
         i = iso[x["isolate"]]
-        i["refused"], i["failOpen"] = max(i["refused"], x["refused"]), max(i["failOpen"], x["failOpen"])
+        for k in ("refused", "failOpen", "held", "probe", "stale"):
+            i[k] = max(i[k], x.get(k, 0))
         i["lines"] += 1
     t0, t1 = min(x["t"] for x in lines), max(x["t"] for x in lines)
     span_s = max(1.0, (t1 - t0) / 1000)
-    refused = [x for x in lines if x["edgefull"] == "refused"]
-    opened = [x for x in lines if x["edgefull"] == "failOpen"]
+    # edge-refusal-bound: `held` refuses on a lapsed advert as `refused` does on a fresh one; `probe` and `stale` are
+    # the writes a lapsed full advert let through, which an edge before it logged as `failOpen`.
+    refused = [x for x in lines if x["edgefull"] in ("refused", "held")]
+    opened = [x for x in lines if x["edgefull"] in ("failOpen", "probe", "stale")]
     waits = [x["waitMs"] for x in refused if x.get("waitMs") is not None]
     print(json.dumps({"lines": len(lines), "byKind": {f"{a}:{b}": n for (a, b), n in sorted(kinds.items())},
                       "isolates": len(iso), "spanS": round(span_s),
@@ -114,7 +123,8 @@ def read(path, tag=None):
     print(f"per isolate (running counts at their last line), {len(iso)} isolates; fail-open ceiling about "
           f"{ceiling:.0f} an isolate a chain over {span_s:.0f} s:")
     for k, v in top[:10]:
-        print(f"  {k} refused {v['refused']:6d} failOpen {v['failOpen']:5d} lines {v['lines']}")
+        print(f"  {k} refused {v['refused']:6d} held {v['held']:5d} probe {v['probe']:4d} stale {v['stale']:4d} "
+              f"failOpen {v['failOpen']:5d} lines {v['lines']}")
     print(f"  sum: refused {sum(v['refused'] for v in iso.values())}, failOpen {sum(v['failOpen'] for v in iso.values())}"
           f"; max failOpen {max(v['failOpen'] for v in iso.values())}")
     win = collections.defaultdict(lambda: [0, 0])
@@ -143,6 +153,7 @@ def read(path, tag=None):
                 rates.append(rate)
         fmt = lambda w: "-" if not w or w[0] is None else f"{w[0] / 1000:.1f}"
         print(f"  {at} | {r:5d} | {o:4d} | {fmt(here)}, {fmt(before)} | {rate if rate is not None else '-'} | {empty}")
+    bound(lines)
     if not lw:
         return
     first = min((k for k in win if win[k][0]), default=None)
@@ -153,12 +164,37 @@ def read(path, tag=None):
     print(f"flip 3 (starvation): {starved} refusing windows with the leader's agent lane empty; agent commands cut a "
           f"second while refusing p50 {pct(rates, .5)}, saturated drain before refusing began p50 {pct(pre, .5)} "
           "(compare with the matched baseline's agent commands cut a second at 90%)")
+    # edge-refusal-bound's flip R2b, its drain half (the other half is pushfull.py's agent `ok` against erBA's 1,498).
+    r2b = pct(rates, .5)
+    print(f"flip R2b (drain half): agent commands cut a second while refusing p50 {r2b} against erBA's {ERBA_CUT_P50}: "
+          + ("FLIPPED, revert the send check" if r2b is not None and r2b < ERBA_CUT_P50 else "not met"))
     so = sum(v["failOpen"] for v in iso.values())
     sr = sum(v["refused"] for v in iso.values())
     print(f"flip 4 (leader still refusing at pfA's counts, read with pushfull.py's admission and expire_agents): "
           f"failOpen {so} against refused {sr}; "
           + ("fail-opens pass half the refusals: the bursts are fail-opens" if sr and so > sr / 2 else
              "refusals near 0: check whether adverts reach the edge" if sr < 10 else "fail-opens under half the refusals"))
+
+
+def bound(lines):
+    """edge-refusal-bound's flips R1b and R1c, and the refusals by where they met the advert (`at`)."""
+    held = [x for x in lines if x["edgefull"] == "held"]
+    stale = [x for x in lines if x["edgefull"] == "stale"]
+    if not held and not stale and not any(x["edgefull"] == "probe" for x in lines):
+        return
+    at = collections.Counter((x["edgefull"], x.get("at", "check")) for x in lines)
+    print("by where the write met the advert: " + ", ".join(f"{a}@{b} {n}" for (a, b), n in sorted(at.items())))
+    over = sum(1 for x in held if x.get("ageMs", 0) > ADVERT_STALE_MS)
+    probes = collections.defaultdict(list)
+    for x in lines:
+        if x["edgefull"] == "probe":
+            probes[(x["isolate"], x["repo"])].append(x["t"])
+    # The edge stamps a probe on its own clock; Workers Logs' timestamp can differ by a few ms, so 50 ms of slack.
+    twice = sum(1 for ts in probes.values() for a, b in zip(sorted(ts), sorted(ts)[1:]) if b - a < ADVERT_TTL_MS - 50)
+    print(f"flip R1b (invariant): {over} held past ADVERT_STALE, {twice} second probes within ADVERT_TTL for one chain "
+          f"and isolate: {'FLIPPED' if over or twice else 'not met'}")
+    print(f"flip R1c (probes not bringing adverts back): stale sends {len(stale)} against held refusals {len(held)}: "
+          f"{'FLIPPED' if len(stale) > len(held) else 'not met'}")
 
 
 if __name__ == "__main__":

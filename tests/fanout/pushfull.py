@@ -4,6 +4,9 @@ m3f read B0-32 (`tests/am1/results/lm1-rows-m3f.md`, "Why full grew from 20 to 1
 `server-timing` a1 writes (`timing`):
   - edge (advert): `advert;dur=<advertised wait ms>`, refused at `receive_pack` on the leader's advert before staging or
     any send (`decisions/DECISIONS.md`, "`edge-refusal`");
+  - edge (advert, at send) and (advert, at stage): refused on the advert at the first commit send, after `budget`, or
+    before the Stage re-send, after a commit (`decisions/DECISIONS.md`, "`edge-refusal-bound`"). Each refusal on a
+    fresh advert or held on a lapsed one carries the same mark;
   - edge: `bound;dur=0`, refused at `bound_at_send` before any send;
   - admission: sent, and the last `commit` stage under 600 ms, so the leader answered `Full` on arrival;
   - expire: the last `commit` stage 600 ms or more, so the command queued and `expire_agents` answered `Full` when its
@@ -50,8 +53,14 @@ for line in open(path):
         continue
     if not r.get("timing"):
         where["untimed"] += 1
-    elif "advert" in s and "commit" not in s:
+    elif "advert" in s and "budget" not in s:
         where["edge (advert)"] += 1
+    elif "advert" in s and "commit" not in s:
+        # edge-refusal-bound's send check: after `bound_at_send` set the budget, before the first commit.
+        where["edge (advert, at send)"] += 1
+    elif "advert" in s and r["timing"].rfind("advert;") > r["timing"].rfind("commit;"):
+        # ... and before the Stage re-send: the `advert` mark follows the last commit.
+        where["edge (advert, at stage)"] += 1
     elif "bound" in s and "commit" not in s:
         where["edge (bound_at_send)"] += 1
     elif s.get("commit") and s["commit"][-1] < ADMIT_MS:
@@ -63,6 +72,10 @@ for line in open(path):
     for m in ("ask", "stagefirst", "busy", "missed", "suspect"):
         marks[m] += 1 if m in s else 0
 print(json.dumps({"agentPushes": dict(n), "fullBy": dict(where.most_common()), "fullMarks": dict(marks)}))
+# edge-refusal-bound's flip R2b, its push half (`decisions/DECISIONS.md`): agent `ok` pushes under erBA's 1,498 revert
+# the send check. Its drain half is edgefull.py's.
+print(f"flip R2b (push half): agent ok pushes {n['ok']} against erBA's 1498: "
+      + ("FLIPPED, revert the send check" if n["ok"] < 1498 else "not met"))
 print("budget left at the first send | ok / full")
 for _, _, label in BANDS:
     print(f"  {label:10s} | {budget[label]['ok']} / {budget[label]['full']}")

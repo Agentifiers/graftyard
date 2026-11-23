@@ -9,7 +9,13 @@
 # the leader never advertised a wait past the 5 s bound, `tests/am1/results/edge-refusal.md`). A leader over the line
 # is kept and one at or under it is re-placed. Unknown still fails closed, and the line is not widened. Such a row
 # reads slow hosts only, against baselines in the same setup-CPU band, never as typical-host behaviour.
-#   TAG=<prefix> [GUARD_WANT=fast|slow] [A1_EXTRA="--seed-prs 1000"] [EXPECT=2.5] [RUN_STOP=10] [DAY_STOP=33]
+# GUARD_WANT=band (edge-refusal-bound's rerun) keeps a leader whose reading falls inside one of GUARD_BAND's bands (ms
+# of leader CPU a setup commit, `lo-hi` separated by spaces, default the lead's two: 31.0-31.5, blA and blC2's, and
+# 39.7-46.1, pfA, pgA and ncA's) and re-places any other. The log names the band and the baseline the run is judged
+# against before load. Unknown still fails closed; if no placement lands in a band the set stops without load (not a
+# fail), and the bands are not widened.
+#   TAG=<prefix> [GUARD_WANT=fast|slow|band] [GUARD_BAND="31.0-31.5 39.7-46.1"] [A1_EXTRA="--seed-prs 1000"]
+#   [EXPECT=2.5] [RUN_STOP=10] [DAY_STOP=33]
 #   EDGE_LOG=tests/am1/raw/runs/fanout-pf-edge.log bash tests/fanout/guardrow.sh   -> /tmp/row-<prefix>.log
 # Runs are <prefix>A, <prefix>B, <prefix>C. Everything but the guard is costrow.sh's ROW=b033 row as pfA and pgA ran it.
 set -uo pipefail
@@ -17,7 +23,26 @@ cd "$(dirname "$0")/../.."
 source tests/m3/rows/env.sh
 export NODE_USE_ENV_PROXY=1 NO_PROXY="$NO_PROXY,.workers.dev" no_proxy="$NO_PROXY,.workers.dev"
 P=${TAG:?} L=/tmp/row-$P.log WANT=${GUARD_WANT:-fast}
-case $WANT in fast) KEEP=0 MOVE=3 ;; slow) KEEP=3 MOVE=0 ;; *) echo "GUARD_WANT=$WANT: fast or slow" >&2; exit 1 ;; esac
+case $WANT in fast) KEEP=0 MOVE=3 ;; slow) KEEP=3 MOVE=0 ;; band) KEEP=10 MOVE=11 ;;
+  *) echo "GUARD_WANT=$WANT: fast, slow or band" >&2; exit 1 ;; esac
+BAND=${GUARD_BAND:-31.0-31.5 39.7-46.1}
+# band: hostguard's verdict line (`... , 36.1 ms of leader CPU a setup commit ...`) read against BAND. Prints the band and
+# its baseline and exits 10 inside one, 11 outside every one; any other hostguard answer passes through.
+band_of() {
+  local out rc; out=$(python3 -W ignore tests/fanout/hostguard.py "$@" 2>/dev/null); rc=$?
+  [ $rc = 0 ] || [ $rc = 3 ] || { echo "$out"; return $rc; }
+  python3 - "$out" "$BAND" <<'PY'
+import re, sys
+out, bands = sys.argv[1], sys.argv[2].split()
+m = re.search(r"([0-9.]+) ms of leader CPU a setup commit", out)
+per = float(m.group(1)) if m else None
+base = {"31.0-31.5": "blA/blC2 (before the drain change)", "39.7-46.1": "pfA/pgA"}
+hit = next((b for b in bands if per is not None and float(b.split("-")[0]) <= per <= float(b.split("-")[1])), None)
+print(f"{out.strip()}; band {hit}, judged against {base.get(hit, 'no named baseline')}" if hit else
+      f"{out.strip()}; in no band of {' '.join(bands)}")
+sys.exit(10 if hit else 11)
+PY
+}
 echo "start $(date -u +%FT%TZ) $(git rev-parse --short HEAD) guard wants a $WANT host" >> $L
 python3 tests/fanout/edgever.py "${EDGE_LOG:?}" >> $L 2>&1
 need_retire=1
@@ -50,7 +75,8 @@ for R in A B C; do
     sleep 20
     [ -z "$rid" ] && rid=$(awk -v n="f$P$R-b033" '$1==n{print $2}' "$M3_STATE/am1-runs-repos.txt")
     [ -z "$rid" ] && continue
-    g=$(python3 -W ignore tests/fanout/hostguard.py graft-m2b-site-a "repo:$rid#1#f0" "$RF" 2>/dev/null); rc=$?
+    if [ $WANT = band ]; then g=$(band_of graft-m2b-site-a "repo:$rid#1#f0" "$RF"); rc=$?
+    else g=$(python3 -W ignore tests/fanout/hostguard.py graft-m2b-site-a "repo:$rid#1#f0" "$RF" 2>/dev/null); rc=$?; fi
     case $rc in
       $KEEP) verdict=$g; echo go > $HOLD; echo "$(date -u +%FT%TZ) run $R repo $rid $g; $WANT host wanted, load released" >> $L ;;
       $MOVE) verdict=$g; echo stop > $HOLD; replaced=1
@@ -70,7 +96,7 @@ for R in A B C; do
   # Flip 1 (edge-refusal) is an invariant: a1 ended the window on it, and the set stops for the lead.
   grep -q "FLIP1:" $log 2>/dev/null && { echo "$(date -u +%FT%TZ) run $R FLIP1: a non-agent write refused by the advert, set stopped" >> $L; break; }
   [ $replaced = 0 ] && break
-  [ $R = C ] && echo "$(date -u +%FT%TZ) third placement re-placed too: set stopped, swept" >> $L
+  [ $R = C ] && echo "$(date -u +%FT%TZ) third placement re-placed too: set stopped, swept$([ $WANT = band ] && echo '; no placement in a band, no load (not a fail)')" >> $L
   need_retire=0
 done
 echo "ROW${P}DONE" >> $L

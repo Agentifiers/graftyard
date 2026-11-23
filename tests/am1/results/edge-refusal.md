@@ -397,9 +397,25 @@ ends "and a lapsed advert are sent" becomes:
 > per ADVERT_TTL as a probe, whose answer carries the next advert, and refuses the rest, until ADVERT_STALE (10 s
 > [guess]) with none heard.
 
+### Built (2026-11-23, after the lead's ruling)
+
+The lead cleared rules 1 and 2, ADVERT_STALE at 10 s [guess], the band guard, and flip R2b (`decisions/DECISIONS.md`,
+"`edge-refusal-bound`").
+- **Edge** (`workers/edge/src/lib.rs`): `advert_says` answers `Hold` on a lapsed full advert up to ADVERT_STALE and
+  `Stale` past it. `advert_refusal` lets the chain's probe through (`probe_goes`, `graftyard_lookup::take_probe`) and
+  refuses the rest with `advert`. `receive_pack` calls it again at the first commit send (`At::Send`) and before the
+  Stage re-send (`At::Stage`). `edgefull` lines carry `at`, `ageMs` and the `held`, `probe` and `stale` counts.
+- **Readers.** `pushfull.py` splits `edge (advert, at send)` and `edge (advert, at stage)`, and prints flip R2b's push
+  half. `edgefull.py` prints flips R1b and R1c and R2b's drain half. Both read erBA's raws unchanged.
+- **Guard.** `guardrow.sh` `GUARD_WANT=band` with `GUARD_BAND` logs the band and the baseline before load: pfA/pgA for
+  39.7 to 46.1 ms, blA/blC2 for 31.0 to 31.5 ms. The lower band's baselines predate the drain change. No placement in
+  a band stops the set without load, which is not a fail.
+- **Verdict lines for the rerun** include R2b's two numbers against erBA's: agent `ok` pushes (1,498) and agent
+  commands cut a second while refusing (p50 78.7).
+
 ## Open
 
-- **The fail-open bound and the send check, designed above.** They need the lead's ruling before code. The rerun needs
-  the band guard and the lead's clearance after the code merges.
+- **The rerun of the fail-open bound and the send check.** It needs the lead's clearance after the code merges, and
+  runs on graft-m2b after LM-1's read-memo rows.
 - Whether human p99 falls on a slow host is the row's question, not this file's. Edge refusal sheds agent work but does
   not cut apply CPU per entry at the same drain [inference].

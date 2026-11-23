@@ -2034,6 +2034,30 @@ pub fn note_advert(chain: ChainId, v: &Value, now: u64) {
     });
 }
 
+thread_local! {
+    /// Per isolate: when each chain's last probe on a lapsed full advert went (`take_probe`).
+    static PROBES: RefCell<HashMap<ChainId, u64>> = RefCell::new(HashMap::new());
+}
+
+/// edge-refusal-bound's probe: whether an Agent write on `chain` at `now`, while this isolate's advert that said full
+/// has lapsed, goes through as the chain's probe: true for the first one in each ADVERT_TTL, which this records, and
+/// false for every other, which the edge refuses. The probe's answer carries the leader's next advert (`heard`), which
+/// ends the hold or renews it.
+pub fn take_probe(chain: ChainId, now: u64) -> bool {
+    let ttl = graftyard_raft::admit::ADVERT_TTL.as_millis() as u64;
+    PROBES.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.get(&chain).is_some_and(|&at| now.saturating_sub(at) < ttl) {
+            return false;
+        }
+        if m.len() > 4_096 {
+            m.clear();
+        }
+        m.insert(chain, now);
+        true
+    })
+}
+
 /// `chain`'s advert at `now`: `Fresh` within ADVERT_TTL of when it was heard, and never from the future.
 pub fn advert(chain: ChainId, now: u64) -> Heard {
     let ttl = graftyard_raft::admit::ADVERT_TTL.as_millis() as u64;
@@ -3243,6 +3267,22 @@ mod tests {
         assert_eq!(advert(chain, 13_000), Heard::Lapsed(a, 3_000), "a deposed leader's advert is ignored");
         note_advert(chain, &reply(3, 100), 13_000);
         assert_eq!(advert(chain, 13_000), Heard::Fresh(Advert { wait_ms: 100, retry_after_s: 9 }));
+    }
+
+    /// edge-refusal-bound: on a lapsed full advert, one probe a chain an isolate per ADVERT_TTL (2 s) goes, at the TTL
+    /// and not a millisecond before it, and each chain has its own.
+    #[test]
+    fn one_probe_a_chain_goes_per_advert_ttl() {
+        let (a, b) = (
+            ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(9_401))),
+            ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(9_403))),
+        );
+        assert!(take_probe(a, 20_000), "the first is the probe");
+        assert!(!take_probe(a, 20_001), "the next is held");
+        assert!(!take_probe(a, 21_999), "held until ADVERT_TTL");
+        assert!(take_probe(b, 21_999), "another chain has its own probe");
+        assert!(take_probe(a, 22_000), "the next probe at ADVERT_TTL");
+        assert!(!take_probe(a, 22_500));
     }
 
     /// A capped read's answer is the leader saying "busy, retry": never a missed member, which `call_opt` reports

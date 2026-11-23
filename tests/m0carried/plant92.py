@@ -32,7 +32,9 @@ MUTANTS = [
     ("a fresh advert at the budget refuses", EDGE,
      "    let past = |a: &graftyard_lookup::Advert| u128::from(a.wait_ms) > budget.as_millis();\n",
      "    let past = |a: &graftyard_lookup::Advert| u128::from(a.wait_ms) >= budget.as_millis();\n", EDGE_T),
-    ("a lapsed advert still refuses", EDGE, "        Heard::Lapsed(a, _) if past(&a) => AdvertSays::FailOpen,\n",
+    # edge-refusal-bound: a lapsed advert now holds (plant 99); refusing on it as if fresh is still a bug.
+    ("a lapsed advert refuses as if fresh", EDGE,
+     "        Heard::Lapsed(a, age) if past(&a) && age <= stale => AdvertSays::Hold(a, age),\n",
      "        Heard::Lapsed(a, _) if past(&a) => AdvertSays::Refuse(a),\n", EDGE_T),
     ("every class is refused", EDGE, "        (s, Some(graftyard_git::group::ClassWire::Agent)) if reaches => s,\n",
      "        (s, Some(_)) if reaches => s,\n", EDGE_T),

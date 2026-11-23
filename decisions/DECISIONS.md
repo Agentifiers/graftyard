@@ -9051,3 +9051,69 @@ push log:
 
 Disclosure flips: any case where a caller with no read access to the repository gets 429 where it would have got 404,
 and where the 503 path would not have answered.
+
+### `edge-refusal-bound`: a lapsed full advert holds Agent writes, one probe a chain per ADVERT_TTL, and a push meets the advert again at each commit send, 2026-11-23
+
+**Status.** Code built and tested at $0. Rules 1 and 2 were cleared by the lead on 2026-11-23. The rerun needs the lead's
+clearance after this merges and runs on graft-m2b after LM-1's read-memo rows.
+
+**Decision.**
+- **Rule 1, the fail-open bound.** On a lapsed advert (older than ADVERT_TTL) whose wait passes an Agent-classed write's
+  bound, the edge isolate sends that chain's first Agent write in each ADVERT_TTL as the probe
+  (`graftyard_lookup::take_probe`) and refuses every other one in the `full` shape, with the lapsed advert's retry hint
+  and the `advert` mark (`held`).
+  - The probe's answer carries the leader's next advert in `meta.admit`, whether the leader admitted it, refused it, or
+    expired it. That advert ends or renews the hold. A probe with no answer leaves the advert lapsed, and the next probe
+    goes one ADVERT_TTL later.
+  - A push that went as the probe stays the probe at its own send checks (`Ctx::probe`).
+  - Past ADVERT_STALE (10 s [guess]) with no advert heard, every write is sent (`stale`), so an advert path that stops
+    answering refuses agents for at most 10 s. Basis: on erBA a push the leader refused got its answer p99 6.5 s and at
+    most 8.7 s after the edge's check [measured, `tests/am1/results/edge-refusal.md`, "Rule 1"].
+  - Only an Agent-classed write whose token reaches the repository is held. The hold goes through `advert_verdict`, the
+    rule that refuses on a fresh advert, so Human, Bot and MergeQueue writes are sent at once (flip R1a).
+- **Rule 2, the send check.** A push meets the advert again at its first commit send, on the `budget_ms` that
+  `bound_at_send` set, and before its Stage re-send, on the budget set again there. It is refused in the same
+  `ng … agent admission full` shape with `advert;dur=`, and nothing reaches the group. It reads nothing new. REST and
+  GraphQL writes keep their one check at the top of `read_repo`.
+- **The `edgefull` line** carries `at` (`check`, `send` or `stage`), `ageMs`, and the isolate's running counts `refused`,
+  `held`, `probe` and `stale`. `failOpen` is probes plus stale sends, the writes a lapsed full advert let through.
+
+**Why.**
+- B0-33 row B (erBA, a slow host) left the leader refusing 6,433 pushes, 76% of pfA's 8,463, against a 50% line
+  [measured]. 1,481 of those were fail-opens. The other 5,352 the edge sent on a live advert. Replayed against the
+  advert rebuilt from the leader's cuts (`tests/fanout/advertcf.py`): 55% spent their own budget after `receive_pack`'s
+  check, p50 2.1 s, mostly push context; 23% met a lane that grew in flight; 2% met a falling drain; no clock effect
+  was found [inference, the replay].
+- Counterfactual on erBA: rule 1 alone 5,976 (71% of pfA); rule 2 alone 2,052 (24%); both 1,595 to 2,796 (19 to 33%)
+  across the replay's variants [inference].
+
+**What it beat.**
+- **Rule 1 alone**, the shape first proposed. It fails the line, because erBA's fail-opens were mostly REST writes
+  (4,547 of 6,032), which the leader's push refusals do not count.
+- **A more conservative advert** (the wait times 1.25, or the budget less 500 ms). It refuses more in-time pushes, 785
+  to 822 of 1,498, for 8 to 12% of pfA, while the cause it would mask is the check's position.
+- **Failing fully open at once on a lapse**, as edge-refusal did. Up to 164 writes an isolate went out together.
+
+**Evidence.**
+- `tests/am1/results/edge-refusal.md`, "The fail-open bound and the send check: design"; `tests/fanout/advertcf.py`.
+- `workers/edge`: `the_edge_refuses_only_an_agent_write_whose_fresh_advert_passes_its_budget`,
+  `a_probe_push_is_not_held_by_its_own_probe_at_its_send` and
+  `the_send_check_reads_the_advert_at_each_commit_send_on_the_budget_left_there`.
+- `crates/lookup`: `one_probe_a_chain_goes_per_advert_ttl`.
+- `tests/m0carried/plant99.py`: 6 of 6 planted bugs caught. `tests/m0carried/plant92.py`: still 11 of 11.
+
+**Flip.** These go beside `edge-refusal`'s flips 1 to 5, read from the `edgefull` lines (`edgefull.py`), the push log
+(`pushfull.py`) and the leader's `Trace::Cut` rows:
+- **R1a (invariant).** A Human, Bot or MergeQueue write held on a lapsed advert: it must be 0. Held refusals carry
+  `advert`, so a1's `flip1` stops the row.
+- **R1b (invariant).** A `held` line older than ADVERT_STALE, or two `probe` lines for one chain from one isolate within
+  ADVERT_TTL: it must be 0.
+- **R1c.** `stale` sends outnumber `held` refusals. Then the probes are not bringing adverts back.
+- **R2.** The send check refuses in more than 10% of refusing 10 s windows whose leader cuts show an empty agent lane,
+  read with the window before.
+- **R2b.** The rerun's agent `ok` pushes fall below erBA's 1,498, or its agent commands cut a second while refusing fall
+  below erBA's p50 of 78.7. Then revert rule 2: the edge exists to waste less agent work, not to trade completed
+  pushes for fewer leader refusals. The first-order replay put the over-refusal at 407 to 789 of 1,498, an upper
+  bound that the rerun measures.
+- **Under-read left.** Leader refusals over 50% of pfA's count with both rules live. Then the 23% of lane growth in
+  flight is what is left, and the lever moves to the leader's own admission.

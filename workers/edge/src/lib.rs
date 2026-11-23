@@ -1096,24 +1096,46 @@ fn bound_at_send(agent: bool, left: Option<std::time::Duration>) -> std::result:
 }
 
 /// What the leader's last advert (`graftyard_lookup::advert`) says of a write with `budget` left: send it, refuse it
-/// at the edge (the advert is fresh and its wait passes the budget), or send it although the last advert said full,
-/// because that advert lapsed. An isolate that refuses everything hears no new advert, so it sends again each
-/// ADVERT_TTL; `edgefull` counts those sends per isolate.
+/// at the edge (the advert is fresh and its wait passes the budget), hold it on a lapsed advert that said full
+/// (edge-refusal-bound: one probe a chain an isolate per ADVERT_TTL goes through and the rest are refused, so an
+/// isolate that refuses everything and hears no advert does not let a burst through when it lapses), or send it
+/// because that advert is past ADVERT_STALE (`Stale`: the advert path is down, and the leader decides).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AdvertSays {
     Send,
     Refuse(graftyard_lookup::Advert),
-    FailOpen,
+    /// The lapsed advert and its age in ms.
+    Hold(graftyard_lookup::Advert, u64),
+    Stale(u64),
 }
 
 fn advert_says(h: graftyard_lookup::Heard, budget: std::time::Duration) -> AdvertSays {
     use graftyard_lookup::Heard;
     let past = |a: &graftyard_lookup::Advert| u128::from(a.wait_ms) > budget.as_millis();
+    let stale = graftyard_raft::admit::ADVERT_STALE.as_millis() as u64;
     match h {
         Heard::Fresh(a) if past(&a) => AdvertSays::Refuse(a),
-        Heard::Lapsed(a, _) if past(&a) => AdvertSays::FailOpen,
+        Heard::Lapsed(a, age) if past(&a) && age <= stale => AdvertSays::Hold(a, age),
+        Heard::Lapsed(a, age) if past(&a) => AdvertSays::Stale(age),
         _ => AdvertSays::Send,
     }
+}
+
+/// Whether a held write goes as its chain's probe: a request that already went as one (a push at its send checks after
+/// `receive_pack`'s) always does, else the chain's first in ADVERT_TTL on this isolate (`graftyard_lookup::take_probe`).
+/// Without the first, a probe push would be held at its own send by its own probe.
+fn probe_goes(already: bool, chain: ChainId, now: u64) -> bool {
+    already || graftyard_lookup::take_probe(chain, now)
+}
+
+/// Where a write meets the advert (edge-refusal-bound): a push at `receive_pack` and a REST, GraphQL or agent-API
+/// write at the top of `read_repo` (`Check`), a push again at its first commit send (`Send`) and before its Stage
+/// re-send (`Stage`), each with what is left of its bound there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum At {
+    Check,
+    Send,
+    Stage,
 }
 
 /// `advert_says` for a caller of `class` (`admission`, `None` for Human): only an Agent-classed caller whose token
@@ -1153,15 +1175,23 @@ fn token_reaches(
 /// with, when its group's leader advertised, within ADVERT_TTL, an agent wait longer than `budget` and the edge classes
 /// the caller Agent. `None` sends the write as before. The advert is read first and costs nothing, so only a write the
 /// advert already refuses reads the install's `Authz` (`admission`), and a request that reads none today, a user token
-/// with no App and no session header, still reads none. Each refusal and each fail-open send logs an `edgefull` line.
+/// with no App and no session header, still reads none. `at` is where the write meets it (`At`).
+///
+/// edge-refusal-bound: on a lapsed advert that said full, at most ADVERT_STALE old, an Agent write is held: the
+/// chain's first in each ADVERT_TTL on this isolate goes as the probe (`graftyard_lookup::take_probe`), and a push that
+/// went as one stays one at its later checks; every other is refused on that advert's retry hint. Past ADVERT_STALE
+/// it is sent. Each refusal, hold, probe and stale send logs an `edgefull` line.
 pub(crate) async fn advert_refusal(
     c: &Ctx<'_>,
     repo: &Repo,
     who: &Principal,
     push: bool,
+    at: At,
     budget: std::time::Duration,
 ) -> Option<u32> {
-    let heard = graftyard_lookup::advert(ChainId::Repo(repo.id), graftyard_lookup::now_ms());
+    let chain = ChainId::Repo(repo.id);
+    let now = graftyard_lookup::now_ms();
+    let heard = graftyard_lookup::advert(chain, now);
     #[cfg(feature = "test-faults")]
     let heard = c.advert_force.map_or(heard, |wait_ms| {
         graftyard_lookup::Heard::Fresh(graftyard_lookup::Advert { wait_ms, retry_after_s: 1 })
@@ -1172,33 +1202,56 @@ pub(crate) async fn advert_refusal(
     }
     let reaches = token_reaches(who, c.token_fields.borrow().as_ref(), repo.id, repo.owner);
     let class = if reaches { admission(c, who, &[], push, 0).await.map(|a| a.class) } else { None };
+    let line = edgefull::Line { repo: repo.id, push, at, budget };
     match advert_verdict(says, class, reaches) {
         AdvertSays::Send => None,
         AdvertSays::Refuse(a) => {
             // B0-32's split of `full` by shape: an advert refusal is `advert` in `server-timing`, apart from `bound`.
             c.timing.put("advert", a.wait_ms as f64);
-            worker::console_log!("{}", edgefull::refused(repo.id, push, a.wait_ms, budget));
+            worker::console_log!("{}", line.log(edgefull::What::Refused, a.wait_ms, 0));
             Some(a.retry_after_s.max(1))
         }
-        AdvertSays::FailOpen => {
-            worker::console_log!("{}", edgefull::failed_open(repo.id, push, budget));
+        AdvertSays::Hold(a, age) if probe_goes(c.probe.get(), chain, now) => {
+            if !c.probe.replace(true) {
+                worker::console_log!("{}", line.log(edgefull::What::Probe, a.wait_ms, age));
+            }
+            None
+        }
+        AdvertSays::Hold(a, age) => {
+            c.timing.put("advert", a.wait_ms as f64);
+            worker::console_log!("{}", line.log(edgefull::What::Held, a.wait_ms, age));
+            Some(a.retry_after_s.max(1))
+        }
+        AdvertSays::Stale(age) => {
+            worker::console_log!("{}", line.log(edgefull::What::Stale, 0, age));
             None
         }
     }
 }
 
-/// The `edgefull` log line (`decisions/DECISIONS.md`, "`edge-refusal`", its flips): one per write the advert refused
-/// and one per Agent write sent on a lapsed advert that said full, with this isolate's running counts of both, so a
-/// row tells an isolate that fails open each ADVERT_TTL from adverts that never reach the edge.
+/// The `edgefull` log line (`decisions/DECISIONS.md`, "`edge-refusal`" and "`edge-refusal-bound`", their flips): one
+/// per write the advert refused (`refused` on a fresh advert, `held` on a lapsed one), per probe, and per Agent write
+/// sent on a full advert past ADVERT_STALE (`stale`), with where it met the advert (`at`), the advert's age, and this
+/// isolate's running counts of each. `failOpen` is probes plus stale sends, the writes a lapsed full advert let through.
 mod edgefull {
     use std::cell::Cell;
 
     use graftyard_types::RepoId;
 
+    use super::At;
+
+    #[derive(Clone, Copy)]
+    pub(crate) enum What {
+        Refused,
+        Held,
+        Probe,
+        Stale,
+    }
+
     thread_local! {
         static ISOLATE: Cell<u64> = const { Cell::new(0) };
-        /// (refused, sent on a lapsed full advert)
-        static COUNTS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+        /// Running counts, in `What` order.
+        static COUNTS: Cell<[u64; 4]> = const { Cell::new([0; 4]) };
     }
 
     fn isolate() -> u64 {
@@ -1211,22 +1264,35 @@ mod edgefull {
         })
     }
 
-    fn line(repo: RepoId, push: bool, what: &str, wait_ms: Option<u64>, budget: std::time::Duration) -> String {
-        let (refused, open) = COUNTS.with(Cell::get);
-        serde_json::json!({ "edgefull": what, "class": "agent", "push": push, "repo": repo.0.0, "waitMs": wait_ms,
-            "budgetMs": budget.as_millis() as u64, "isolate": format!("{:016x}", isolate()), "refused": refused,
-            "failOpen": open })
-        .to_string()
+    pub(crate) struct Line {
+        pub(crate) repo: RepoId,
+        pub(crate) push: bool,
+        pub(crate) at: At,
+        pub(crate) budget: std::time::Duration,
     }
 
-    pub(crate) fn refused(repo: RepoId, push: bool, wait_ms: u64, budget: std::time::Duration) -> String {
-        COUNTS.with(|c| c.set((c.get().0 + 1, c.get().1)));
-        line(repo, push, "refused", Some(wait_ms), budget)
-    }
-
-    pub(crate) fn failed_open(repo: RepoId, push: bool, budget: std::time::Duration) -> String {
-        COUNTS.with(|c| c.set((c.get().0, c.get().1 + 1)));
-        line(repo, push, "failOpen", None, budget)
+    impl Line {
+        /// Counts `what` and renders its line: `wait_ms` is the advert's wait (0 for a stale send, written null),
+        /// `age_ms` its age (0 for a fresh one).
+        pub(crate) fn log(&self, what: What, wait_ms: u64, age_ms: u64) -> String {
+            let n = COUNTS.with(|c| {
+                let mut n = c.get();
+                n[what as usize] += 1;
+                c.set(n);
+                n
+            });
+            let at = match self.at {
+                At::Check => "check",
+                At::Send => "send",
+                At::Stage => "stage",
+            };
+            let name = ["refused", "held", "probe", "stale"][what as usize];
+            serde_json::json!({ "edgefull": name, "class": "agent",
+                "push": self.push, "at": at, "repo": self.repo.0.0, "waitMs": (wait_ms > 0).then_some(wait_ms),
+                "ageMs": age_ms, "budgetMs": self.budget.as_millis() as u64, "isolate": format!("{:016x}", isolate()),
+                "refused": n[0], "held": n[1], "probe": n[2], "stale": n[3], "failOpen": n[2] + n[3] })
+            .to_string()
+        }
     }
 }
 
@@ -1975,6 +2041,9 @@ struct Ctx<'a> {
     /// A push the edge may class Agent (`bounded`): when AGENT_PUSH_BOUND from its arrival ends, in ms since the epoch.
     /// Its shed reads are retried only until then, and an Agent push past it before its commit is sent answers `ng`.
     bound: std::cell::Cell<Option<f64>>,
+    /// edge-refusal-bound: this request went as its chain's probe on a lapsed full advert (`advert_refusal`), so its
+    /// later checks, a push's at its sends, let it through as the same probe.
+    probe: std::cell::Cell<bool>,
     /// A push's repository rows from the read gate's one read: the access rows, and the agent rows when the member
     /// answered them too (`api::push_rows`), which `agents::push_context` reuses instead of reading them again.
     push_rows: std::cell::RefCell<Option<(graftyard_fold::MemStore, bool)>>,
@@ -2046,6 +2115,7 @@ impl<'a> Ctx<'a> {
             leader_reads: std::cell::Cell::new(false),
             timing: api::Timing::default(),
             bound: std::cell::Cell::new(None),
+            probe: std::cell::Cell::new(false),
             push_rows: std::cell::RefCell::new(None),
             install: std::cell::RefCell::new(None),
             ssh_front,
@@ -2161,7 +2231,7 @@ async fn receive_pack(
     // edge-refusal: a bounded push whose leader advertised a wait past what is left of its bound is refused here, before
     // context, staging (`first`), validate, or commit; nothing reaches the group.
     if let Some(left) = budget_left(c)
-        && let Some(s) = advert_refusal(c, repo, &actor, true, left).await
+        && let Some(s) = advert_refusal(c, repo, &actor, true, At::Check, left).await
     {
         return after_body(c, &mut tail, path, refuse(Refusal::agent_full(s))).await;
     }
@@ -2344,6 +2414,14 @@ async fn receive_pack(
             }
         }
     }
+    // edge-refusal-bound's send check: the advert again, against what is left of the bound now, after push context
+    // and validate spent it (erBA: p50 2.1 s between `receive_pack`'s check and the deciding send).
+    if let Some(ms) = admit.as_ref().and_then(|a| a.budget_ms)
+        && let Some(s) =
+            advert_refusal(c, repo, &push.actor, true, At::Send, std::time::Duration::from_millis(ms)).await
+    {
+        return refuse(Refusal::agent_full(s));
+    }
     if let Some(a) = admit {
         body["admit"] = serde_json::to_value(a)?;
     }
@@ -2396,6 +2474,13 @@ async fn receive_pack(
         a.inline = 0;
         if a.budget_ms.is_some() {
             a.budget_ms = budget_left(c).map(|l| l.as_millis() as u64);
+        }
+        // edge-refusal-bound: the Stage round spent the bound too; the re-send meets the advert again first.
+        if let Some(ms) = a.budget_ms
+            && let Some(s) =
+                advert_refusal(c, repo, &push.actor, true, At::Stage, std::time::Duration::from_millis(ms)).await
+        {
+            return refuse(Refusal::agent_full(s));
         }
         body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push.clone() })?;
         body["admit"] = serde_json::to_value(a)?;
@@ -4068,6 +4153,7 @@ async fn serve(
         leader_reads: std::cell::Cell::new(false),
         timing: api::Timing::default(),
         bound: std::cell::Cell::new(None),
+        probe: std::cell::Cell::new(false),
         decided: std::cell::Cell::new(false),
         push_rows: std::cell::RefCell::new(None),
         install: std::cell::RefCell::new(None),
@@ -4603,8 +4689,9 @@ mod tests {
     }
 
     /// edge-refusal: only a fresh advert whose wait passes the budget refuses, and only an Agent-classed caller whose
-    /// token reaches the repository; a lapsed advert that said full sends (fail-open) and is counted; Human, Bot, and
-    /// MergeQueue send whatever the advert says.
+    /// token reaches the repository; Human, Bot, and MergeQueue send whatever the advert says. edge-refusal-bound: a
+    /// lapsed advert that said full holds an Agent write up to ADVERT_STALE (10 s) old and not a millisecond past it,
+    /// and never holds any other class (flip R1a).
     #[test]
     fn the_edge_refuses_only_an_agent_write_whose_fresh_advert_passes_its_budget() {
         use std::time::Duration;
@@ -4618,21 +4705,57 @@ mod tests {
         assert_eq!(advert_says(Heard::Fresh(a(5_001)), budget), AdvertSays::Refuse(a(5_001)));
         assert_eq!(advert_says(Heard::Fresh(a(5_000)), budget), AdvertSays::Send, "a wait at the budget fits it");
         assert_eq!(advert_says(Heard::Fresh(a(100)), Duration::ZERO), AdvertSays::Refuse(a(100)));
-        assert_eq!(advert_says(Heard::Lapsed(a(9_000), 2_001), budget), AdvertSays::FailOpen);
-        assert_eq!(advert_says(Heard::Lapsed(a(10), 2_001), budget), AdvertSays::Send);
+        assert_eq!(advert_says(Heard::Lapsed(a(9_000), 2_001), budget), AdvertSays::Hold(a(9_000), 2_001));
+        assert_eq!(advert_says(Heard::Lapsed(a(9_000), 10_000), budget), AdvertSays::Hold(a(9_000), 10_000));
+        assert_eq!(advert_says(Heard::Lapsed(a(9_000), 10_001), budget), AdvertSays::Stale(10_001), "ADVERT_STALE");
+        assert_eq!(advert_says(Heard::Lapsed(a(10), 2_001), budget), AdvertSays::Send, "a lapsed advert under budget");
         assert_eq!(advert_says(Heard::Never, budget), AdvertSays::Send);
         let refuse = AdvertSays::Refuse(a(9_000));
-        assert_eq!(advert_verdict(refuse, Some(ClassWire::Agent), true), refuse);
-        assert_eq!(advert_verdict(AdvertSays::FailOpen, Some(ClassWire::Agent), true), AdvertSays::FailOpen);
-        for class in [None, Some(ClassWire::Human), Some(ClassWire::Bot), Some(ClassWire::MergeQueue)] {
-            assert_eq!(advert_verdict(refuse, class, true), AdvertSays::Send, "{class:?} is never refused");
-            assert_eq!(advert_verdict(AdvertSays::FailOpen, class, true), AdvertSays::Send, "{class:?} is not counted");
+        let hold = AdvertSays::Hold(a(9_000), 3_000);
+        for s in [refuse, hold, AdvertSays::Stale(11_000)] {
+            assert_eq!(advert_verdict(s, Some(ClassWire::Agent), true), s);
+            for class in [None, Some(ClassWire::Human), Some(ClassWire::Bot), Some(ClassWire::MergeQueue)] {
+                assert_eq!(advert_verdict(s, class, true), AdvertSays::Send, "{class:?} is never refused or held");
+            }
+            assert_eq!(
+                advert_verdict(s, Some(ClassWire::Agent), false),
+                AdvertSays::Send,
+                "a token that cannot reach it"
+            );
         }
-        assert_eq!(
-            advert_verdict(refuse, Some(ClassWire::Agent), false),
-            AdvertSays::Send,
-            "a token that cannot reach it"
-        );
+    }
+
+    /// edge-refusal-bound's probe: on a lapsed full advert one Agent write a chain an isolate per ADVERT_TTL goes, and a
+    /// push that went as the probe at `receive_pack` still goes at its send checks, though the chain's slot is taken.
+    #[test]
+    fn a_probe_push_is_not_held_by_its_own_probe_at_its_send() {
+        use super::{ChainId, probe_goes};
+        let chain = ChainId::Repo(RepoId(DbId(9_402)));
+        assert!(probe_goes(false, chain, 50_000), "the chain's first in ADVERT_TTL is the probe");
+        assert!(!probe_goes(false, chain, 50_100), "another write within ADVERT_TTL is held");
+        assert!(probe_goes(true, chain, 50_100), "the probe itself, at its send");
+    }
+
+    /// edge-refusal-bound's send check sits where the push's budget is spent: in `receive_pack`, after
+    /// `bound_at_send` sets what is left at the first commit send, on that `budget_ms`; and in the Stage re-send, after
+    /// `budget_ms` is set again from the clock. Neither runs natively (`receive_pack` needs workerd and members), so this
+    /// reads the source, as `graftyard_lookup`'s isolate-state test does; plant 99 mutants 4 and 5 fail it.
+    #[test]
+    fn the_send_check_reads_the_advert_at_each_commit_send_on_the_budget_left_there() {
+        let src = include_str!("lib.rs");
+        let start = src.find("\nasync fn receive_pack(").expect("receive_pack");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("its end")];
+        let at = |pat: &str| body.find(pat).unwrap_or_else(|| panic!("receive_pack has no `{pat}`"));
+        let send = at("At::Send,");
+        assert!(at("bound_at_send(") < send, "the send check follows the first send's budget");
+        let before_send = &body[body[..send].rfind("if let").expect("its if")..send];
+        assert!(before_send.contains("a.budget_ms)"), "on the first send's budget_ms: {before_send}");
+        assert!(body[send..send + 80].contains("from_millis(ms)"), "the budget there, not another");
+        let stage = at("At::Stage,");
+        assert!(at("place_teed(stage, async") < stage, "after the Stage round");
+        let reset = at("a.budget_ms = budget_left(c)");
+        assert!(reset < stage && body[reset..stage].contains("if let Some(ms) = a.budget_ms"), "on the budget reset");
+        assert!(body[stage..stage + 80].contains("from_millis(ms)"));
     }
 
     /// edge-refusal's disclosure rule: an installation token selected for other repositories, or a user token scoped
