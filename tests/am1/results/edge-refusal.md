@@ -205,9 +205,16 @@ The lines are tabled against both bands, and the lead chose neither.
    read with the window before each, as registered. Read on each window alone, it is 13 of 30.
 3. **Not met.** No refusing window had an empty agent lane. Agent commands cut a second while refusing: p50 78.7.
 4. **Met, on the fail-open path.** The edge refused 11,553 writes, so not few. But 6,032 Agent writes went out on a
-   lapsed advert that said full, up to 164 from one isolate, more than half the refusals. Those are the writes the
-   leader then refused (6,433). An isolate that refuses everything hears no advert, and when its advert lapses every
-   Agent write in flight fails open at once, not one per ADVERT_TTL. That is the next design.
+   lapsed advert that said full, up to 164 from one isolate, more than half the refusals. An isolate that refuses
+   everything hears no advert, and when its advert lapses every Agent write in flight fails open at once, not one per
+   ADVERT_TTL.
+   - **Correction: fail-opens explain at most a quarter of the leader's refusals** [measured]. Only 1,481 of the 6,032
+     fail-opens were pushes, and the leader's 6,433 refusals are all pushes (`pushfull.py`). Per 10 s window,
+     push fail-opens and leader push refusals correlate at r 0.11.
+   - Each leader-refused push was replayed against the advert its leader's cuts gave about 1 s before it was sent
+     (queue over the trailing 10 s drain, shifted 1.5 s for the leader's clock). For 4,644 of the 6,433, that advert
+     was within the push's own budget, so the edge would have sent them under any fail-open rule
+     [inference: the leader's own advert is rebuilt from the cuts, not read from the edge].
 5. **Not met against the upper band** (human p99 down 50 to 57%). Against blC2, 4,739 is 112% of its 4,244.
 
 Raws in `tests/fanout/raw/`:

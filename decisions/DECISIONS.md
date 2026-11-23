@@ -8756,6 +8756,9 @@ tool-overhead p50 run on the second hosted day.
   to 1.
 - **Flip 4 is met.** On erBA, 6,032 Agent writes were sent on a lapsed advert, and the leader still refused 6,433, 76% of
   pfA's count. So the fail-open path needs a bound, designed before code.
+- Only 1,481 of those fail-opens were pushes. On the leader's own rebuilt advert, 4,644 of the 6,433 refused pushes
+  were sent within their budget, so a fail-open bound alone cannot meet the 50% line
+  (`tests/am1/results/edge-refusal.md`, flip 4).
 
 **Decision.**
 - The leader measures its agent drain: the agent commands its cuts take while its agent lane stays non-empty, over
