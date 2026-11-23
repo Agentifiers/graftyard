@@ -9,7 +9,8 @@
 //! `HostedDir`, so it reads exactly the rows the member read, and the reply is the bytes a whole-tier read renders.
 //!
 //! A route that reads the directory to choose rows (`by_login`, for a GraphQL `filterBy` or a search qualifier) or a
-//! mutation is answered `{"whole": true}`: the edge reads the whole tiers for it as before.
+//! mutation is answered `{"whole": true}`: the edge reads the whole tiers for it as before. `Overlaps` and `Provenance`
+//! read tables whole tiers leave out (`hosted::UNSERVED`), so the edge answers them 503 instead.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -41,6 +42,11 @@ pub enum Route {
     Rest { tail: Vec<String>, query: String, path: String, agent: bool },
     /// A GraphQL query document, its variables, and its operation name.
     Graphql { query: String, variables: Option<Map<String, Value>>, op: Option<String> },
+    /// `GET /api/graftyard/v1/repos/{o}/{r}/overlaps` (`crate::overlaps`). Its rows are never in a whole-tier read
+    /// (`crate::hosted::UNSERVED`), so a member that answers it `whole` or `error` cannot serve it.
+    Overlaps(crate::overlaps::OverlapQuery),
+    /// `GET /api/graftyard/v1/repos/{o}/{r}/provenance` for the commit blame named, as 40 hex digits.
+    Provenance { commit: String },
 }
 
 /// Whether `rest_get` serves `GET` of this tail.
@@ -257,6 +263,14 @@ pub fn answer(
                 return json!({ "whole": true });
             }
             crate::graphql::query(&req, Some(&r));
+        }
+        Route::Overlaps(q) => {
+            // No owner `Authz` here: every overlapping lease's rows, which the edge then judges held or not.
+            crate::overlaps::overlaps_json(&r, None, graftyard_types::Timestamp(0), q);
+        }
+        Route::Provenance { commit } => {
+            let Some(c) = ObjectId::parse_hex(commit.as_bytes()) else { return json!({ "error": "not a commit" }) };
+            crate::overlaps::provenance_json(&r, c, None);
         }
     }
     if dir.whole.get() {

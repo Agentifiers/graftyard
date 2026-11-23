@@ -182,6 +182,12 @@ fn edge(b: &Bed) -> Seen {
                 body: json!({ "lease": { "id": "L1" }, "overlaps": [] }).to_string().into_bytes(),
             }),
             ("GET", "/api/graftyard/v1/repos/acme/mono/activity") => ok(json!({ "cursor": "c2", "events": [] })),
+            ("GET", "/api/graftyard/v1/repos/acme/mono/overlaps") => ok(
+                json!({ "overlaps": [{ "ref": "refs/heads/claude/x", "verdict": null }], "leases": [], "truncated": false }),
+            ),
+            ("GET", "/api/graftyard/v1/repos/acme/mono/provenance") => {
+                ok(json!({ "commit": "ab", "pr": { "number": 2 }, "sessions": [], "sources": [] }))
+            }
             _ => Some(Answer { status: 404, headers: Vec::new(), body: b"{\"message\":\"Not Found\"}".to_vec() }),
         }
     }));
@@ -507,4 +513,42 @@ fn a_lease_names_its_session_and_the_feed_wait_is_capped() {
     assert_eq!(body["paths"], json!(["src/**"]));
     let (_, p, _, _) = s.iter().find(|(_, p, _, _)| p.contains("/activity")).unwrap();
     assert!(p.contains("wait=25") && p.contains("paths%5B%5D=src%2F**"), "{p}");
+}
+
+/// AM2-WP2b: `coordination.overlaps` and `provenance.why` are one GET each, with a branch that holds a slash in the
+/// query, not the path; `provenance.why` is in the `provenance` toolset, which the default toolsets leave out.
+#[test]
+fn overlaps_and_provenance_are_one_get_each_with_the_ref_in_the_query() {
+    let b = Bed::new();
+    let seen = edge(&b);
+    let tok = token(WriteScope::Read, &[Toolset::Coordination, Toolset::Provenance]);
+    let args = json!({ "owner": "acme", "repo": "mono", "ref": "claude/x", "pr": 4, "paths": ["pkg/auth/**"] });
+    let (_, v) = call(&b, &tok, "coordination.overlaps", args);
+    assert_eq!(v["overlaps"][0]["verdict"], Value::Null);
+    let args =
+        json!({ "owner": "acme", "repo": "mono", "ref": "feature/a b", "path": "pkg/auth/session.go", "line": 7 });
+    let (_, v) = call(&b, &tok, "provenance.why", args);
+    assert_eq!(v["pr"]["number"], 2);
+    let s = seen.borrow();
+    assert_eq!(s.len(), 2, "one edge call per tool call: {s:?}");
+    assert_eq!(s[0].1, "/api/graftyard/v1/repos/acme/mono/overlaps?ref=claude%2Fx&pr=4&paths%5B%5D=pkg%2Fauth%2F**");
+    assert_eq!(
+        s[1].1,
+        "/api/graftyard/v1/repos/acme/mono/provenance?ref=feature%2Fa+b&path=pkg%2Fauth%2Fsession.go&line=7"
+    );
+    assert!(s.iter().all(|(m, _, _, _)| m == "GET"));
+    drop(s);
+    // Outside the grant: 404 with no edge call.
+    let (res, e) =
+        call(&b, &tok, "provenance.why", json!({ "owner": "acme", "repo": "x", "ref": "m", "path": "a", "line": 1 }));
+    assert_eq!((res["isError"].as_bool(), e["status"].as_u64()), (Some(true), Some(404)));
+    assert_eq!(seen.borrow().len(), 2);
+    // The default toolsets leave out `provenance`.
+    let names = |tok: &str| -> Vec<String> {
+        let r = body(&modern(&b, tok, "tools/list", json!({})));
+        r["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_owned()).collect()
+    };
+    let defaults: Vec<Toolset> = Toolset::ALL.into_iter().filter(|t| ToolsetMask::DEFAULT.has(*t)).collect();
+    let got = names(&token(WriteScope::Read, &defaults));
+    assert!(!got.contains(&"provenance.why".into()), "{got:?}");
 }

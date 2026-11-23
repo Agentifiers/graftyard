@@ -660,7 +660,7 @@ Costs grow linearly with tasks, at about $0.018 per task at 2,000 developers, an
 | GitHub Apps, manifests, narrowed installation tokens, revoke | `/settings/apps/new`, `/app-manifests/{code}/conversions`, `/app/installations/{id}/access_tokens`, `DELETE /installation/token` (revokes a stateless token by `jti`) | wire-compatible |
 | Task claim on token requests | Optional `graftyard_task` field on `POST /app/installations/{id}/access_tokens`, absent for every other client | additive |
 | Grant fields on scoped tokens | Optional `graftyard_grant` and `graftyard_write` on `POST /applications/{client_id}/token/scoped`, accepted only from the install's `Graftyard MCP` and required from it | additive |
-| Agent settings, MCP grants, workspace forks, insight verdicts, `Release` reads | The `/api/graftyard/v1` paths in "API reference" below | additive; GHES serves no `/api/graftyard/` path [inference] |
+| Agent settings, MCP grants, workspace forks, insight verdicts, coordination reads (`overlaps`, `provenance`, served only from a member's narrow read), `Release` reads | The `/api/graftyard/v1` paths in "API reference" below | additive; GHES serves no `/api/graftyard/` path [inference] |
 | Leases | `POST`, `GET /api/graftyard/v1/repos/{owner}/{repo}/leases`, `POST .../leases/{id}/renew`, `DELETE .../leases/{id}`; 409 only when an Exclusive acquire overlaps another holder's Exclusive lease; under `AgentsExclusive`, agent pushes get the push-rejection shape with a text naming the lease | additive; GHES serves no `/api/graftyard/` path [inference], and `Advisory` refuses nothing |
 | Activity feed | `GET /api/graftyard/v1/repos/{owner}/{repo}/activity?cursor=&wait=&paths=`, long-polled, authenticated, `contents: read`, 410 for a cursor older than the ring or inside an `InstallSnapshot` hole; no WebSocket and no new webhook event | additive |
 | Task API | `POST`, `GET .../tasks`, `GET`, `PATCH .../tasks/{id}`, `POST .../tasks/{id}/cancel`, `GET .../tasks/{id}/log` under `/api/graftyard/v1/repos/{owner}/{repo}/`, with GitHub's agent task state names; a human credential with `contents: write` to create a Graftyard-run task, 422 while the org's `agents_enabled` is off; fine-grained `issues: write` plus `contents: read` for external create and cancel; `metadata: read` to list, `contents: read` for prompts and logs | additive; never under `/api/v3/agents/*` (R24) |
@@ -735,6 +735,8 @@ grant: {id, client, redirect_hosts: [host], generation, created_at}
   # event: {type: lease, change: acquired | released | expired, lease} | {type: task, task_id, state}
   #   | {type: agent_push, ref, head_sha, paths} | {type: verdict, ref, verdict: clean | path_overlap | conflict | stale, files?}
   #   | {type: agent_pr, number, action: opened | readied | closed | merged, title: trust_view}
+/repos/{owner}/{repo}/overlaps: {get: {query: [ref?, pr?, paths? (repeated, <= 32); at least one], 200: {overlaps: [{ref, pr, draft, app, session, requester, last_push: head sha, shared_paths, truncated, verdict: null until AM4-WP2's InsightVerdict, never "no conflict"}] (<= 100), leases: [lease], truncated}, 422: [no subject, bad ref, pr, or glob]}}   # contents: read; 503 before 32.14
+/repos/{owner}/{repo}/provenance: {get: {query: [ref, path, line], 200: {commit, lines: {start, end}, pr: {number, state, merged, draft} | null, sessions: [{id, app, requester, issue, snapshot}], sources: [{kind: session, id, linked: true} | {kind: claimed, key, value: trust_view (<= 200 chars), linked: false} | {kind: ai_note, note}]}, 422: [blame refused, line past the end, missing field]}}   # contents: read; 503 before 32.8
 /repos/{owner}/{repo}/workspace:   # a graftyard-workspace token on the org's workspace org; idempotent
   post: {201: {full_name, created: true}, 200: {full_name, created: false}, 422: [workspace in_repo, agents_enabled off]}
 /repos/{owner}/{repo}/insights:   # a graftyard-insights installation token only; commits an InsightVerdict
@@ -743,16 +745,14 @@ grant: {id, client, redirect_hosts: [host], generation, created_at}
 /orgs/{org}/agents:   # org admin; GET also takes the Graftyard MCP client credentials, which graft-mcp uses for code_mode
   {get: {200: org_agents}, patch: {body: org_agents, 200: org_agents, 422: workspace org missing}}
 /agents/apps: {get: {200: [{app_id, slug, kind: graftyard_run | third_party | mcp, confine: pattern | null}]}}   # site admin
-/agents/apps/{app_id}: {put: {body: {kind, confine?}, 200: row, 422: graftyard_run or mcp for an App the install does not
-  own}, delete: {204: removed}}
+/agents/apps/{app_id}: {put: {body: {kind, confine?}, 200: row, 422: graftyard_run or mcp for an App the install does not own}, delete: {204: removed}}
 /mcp/grants:   # Basic client_id:client_secret of the install's Graftyard MCP, and X-Graftyard-User-Token: ghu_ (POST, GET and DELETE; /{id}/generation takes the client credentials alone, so the check runs before the upstream refresh rotates the ghr_). 401 for wrong credentials or a user token that is not a live ghu_ of Graftyard MCP
   post: {body: {client, redirect_hosts, write?: read | write | write_approve_merge}, 201: grant}
   get: {200: [grant]}   # grant: {id: "<account>.<n>", client, redirect_hosts, write, generation, created_at}; live grants only
 /mcp/grants/{id}/generation: {post: {body: {generation}, 200: grant (generation + 1), 409: {message, revoked: true}}}   # any other generation revokes the grant and its tokens
 /mcp/grants/{id}: {delete: {204: revoked}}   # revokes every scoped ghu_ minted under it and the last unscoped ghu_, whose ghr_ goes with it
 /release/entries:   # an App JWT of the install's graftyard-agent
-  get: {query: [after, per_page], 200: [{index, entry: base64 of the signed bytes}]}   # Genesis, Keys, ControllerPointer,
-    # ControllerRoll and agents-account Rotate with their ReleaseUploaded, IntentStep, and IntentDone, Halt, Resume, Abort
+  get: {query: [after, per_page], 200: [{index, entry: base64 of the signed bytes}]}   # Genesis, Keys, ControllerPointer, ControllerRoll and agents-account Rotate with their ReleaseUploaded, IntentStep, and IntentDone, Halt, Resume, Abort
 ```
 
 The `graftyard_task` delivery goes only to the install's `graftyard-agent` webhook URL. It carries `X-GitHub-Event: graftyard_task`, an `X-GitHub-Delivery` GUID derived as for webhooks (`design/SHARED.md`, "Event fan-out"), and `X-Hub-Signature-256`, an HMAC-SHA256 of the body under the `graftyard-agent` App's webhook secret. The payload is `{action: created | cancelled, task, repository: {id, full_name}, installation: {id}, sender}`.

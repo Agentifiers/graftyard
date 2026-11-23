@@ -20,6 +20,7 @@ pub mod leases;
 pub mod lfs;
 pub mod mcp;
 pub mod narrow;
+pub mod overlaps;
 pub mod protection;
 pub mod release;
 pub mod repos;

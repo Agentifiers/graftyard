@@ -27,6 +27,10 @@ pub enum Route<'p> {
     Tasks(crate::tasks::Route<'p>),
     /// `/repos/{owner}/{repo}/leases...` and `/activity` (AM1-WP4, `crate::leases`).
     Leases(crate::leases::Route<'p>),
+    /// `/repos/{owner}/{repo}/overlaps` (AM2-WP2b, `crate::overlaps`).
+    Overlaps { owner: &'p str, repo: &'p str },
+    /// `/repos/{owner}/{repo}/provenance` (AM2-WP2b, `crate::overlaps`).
+    Provenance { owner: &'p str, repo: &'p str },
 }
 
 pub fn route(rest: &str) -> Option<Route<'_>> {
@@ -36,6 +40,8 @@ pub fn route(rest: &str) -> Option<Route<'_>> {
         ["agents", "apps", id] => id.parse::<i64>().ok().filter(|i| *i > 0).map(|i| Route::App(AppId(DbId(i)))),
         ["orgs", org, "agents"] => Some(Route::Org(org)),
         ["repos", owner, repo, "agents", "policy"] => Some(Route::Policy { owner, repo }),
+        ["repos", owner, repo, "overlaps"] => Some(Route::Overlaps { owner, repo }),
+        ["repos", owner, repo, "provenance"] => Some(Route::Provenance { owner, repo }),
         _ => crate::tasks::route(rest).map(Route::Tasks).or_else(|| crate::leases::route(rest).map(Route::Leases)),
     }
 }

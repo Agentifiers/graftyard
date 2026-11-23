@@ -287,7 +287,7 @@ pub fn plan_upload(u: Upload, blob: DurableBlob) -> IssueOp {
 }
 
 /// `%XX` and `+` in a query value.
-fn decode(v: &str) -> String {
+pub(crate) fn decode(v: &str) -> String {
     let b = v.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

@@ -8881,6 +8881,48 @@ cw2's marks with `tests/coldwrite/hosted/price.py` (a model over the measured st
   dropped: read the record again before going further. If any read through a kept install guess answers for a
   `Placement` whose members differ, lever 1 is wrong: back it out.
 
+### `am2-wp2b`: overlaps and provenance are narrow member reads only, and an old member answers 503, 2026-11-23
+
+**Status.** Built on branch `am2-wp2b`, code only (`tests/am2/results/am2-wp2b.md`). The lead approved the design on
+2026-11-23. The hosted day needs a site day for the member half and the lead's clearance after the merge.
+
+**Decision.**
+- **Two read-only routes** under `/api/graftyard/v1/repos/{owner}/{repo}`: `GET /overlaps?ref=&pr=&paths=` and
+  `GET /provenance?ref=&path=&line=`, behind `contents: read`, 32.14 and 32.8. `graft-mcp`'s `coordination.overlaps`
+  and `provenance.why` are one GET each, with the ref in the query, so a branch with a slash works.
+- **Narrow reads only.** `narrow::Route` gains `Overlaps` and `Provenance`. The member runs the same renderer
+  (`graftyard_api::overlaps`) over its whole fold and records only the rows it reads; the selections over `path_set`,
+  `lease` and the pull request lookup are `Directory::pick`s. `UNSERVED` and `TierRows::dump` are unchanged.
+- **No whole-tier fallback for these routes.** A member that answers `whole` or `error` gets 503 "the repository's
+  members do not serve this read yet (site release)", as does a render that asks a pick the member did not make.
+- **`/provenance` reads twice:** the commit's rows for `rest::resolve`, then the shard's `/ui/blame`, then the
+  provenance read for the commit blame named.
+- **The routes are read-class** and start the token read beside the name resolve, as `rest_repo` does (B0-34's ask).
+- **`verdict` is null** until AM4-WP2's `InsightVerdict`, documented as "not judged", and **`last_push` is the head
+  SHA** (`decisions/OPEN-QUESTIONS.md`, A46). `graftyard_provenance` on `GET /commits/{sha}` stays out (A47).
+
+**Why.**
+- Whole tiers leave out both tables on purpose: at 500 agents `path_set` was 1.12 MB of a 1.6 MB tier read
+  (`crates/api/src/hosted.rs`, `UNSERVED`). A narrow read grows with the answer, not the table.
+- A whole-tier fallback would answer an empty list that reads as true: "no overlaps" and "no provenance".
+
+**Beat.**
+- `/_t/ui/.../blame` plus `GET /commits/{sha}` from graft-mcp: the web app's private route, two whole-tier reads per
+  call, and still no pull request or session.
+- Taking `path_set` out of `UNSERVED`: up to 1.12 MB more on every REST, GraphQL, task and lease read.
+- Computing overlaps on the edge from a whole-table read.
+
+**Evidence.**
+- `crates/api/tests/coordination.rs`, 5 tests over real members, each reply also rendered from the narrow answer.
+- `workers/mcp/tests/wp2a.rs`, `overlaps_and_provenance_are_one_get_each_with_the_ref_in_the_query`.
+- `tests/m0carried/plant96.py`: 20 of 20 caught.
+
+**Flip.**
+- **Fallback.** If every member of every install serves the two routes (a site day after this release), the 503
+  stays only as the answer to a member that does not.
+- **Size.** If a narrow `/overlaps` answer at 500 agents is over 100 KB, the selection must cut rows by path prefix
+  before it reads them, not after.
+
 ### `am2-wp2a`: `graft-mcp`'s door is stateless JSON in both lanes, and its writes are the edge's GraphQL mutations, 2026-11-23
 
 **Status.** Built on branch `am2-wp2a`, code only (`tests/am2/results/am2-wp2a.md`). L0-08's 30-call cell and the

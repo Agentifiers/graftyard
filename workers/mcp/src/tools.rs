@@ -294,6 +294,33 @@ pub const TOOLS: &[Tool] = &[
         ),
         required: &["owner", "repo"],
     },
+    Tool {
+        name: "coordination.overlaps",
+        set: Toolset::Coordination,
+        needs: WriteScope::Read,
+        description: "Other agents' refs and live leases whose paths overlap a ref's, a pull request's, or the given \
+            path globs. Each overlap's verdict is null until conflict prediction ships: null means not yet judged, \
+            never no conflict",
+        props: props!(
+            ("ref", "string", "A branch whose pushed and planned paths are the subject"),
+            ("pr", "integer", "A pull request whose head branch is the subject"),
+            ("paths", "array", "Path globs to check"),
+        ),
+        required: &["owner", "repo"],
+    },
+    Tool {
+        name: "provenance.why",
+        set: Toolset::Provenance,
+        needs: WriteScope::Read,
+        description: "Why a line exists: the commit blame names for it, its pull request, the agent sessions behind it, \
+            and its trailers, of which only sessions are linked",
+        props: props!(
+            ("ref", "string", "The branch, tag, or commit to blame at"),
+            ("path", "string", "The file"),
+            ("line", "integer", "The line, from 1"),
+        ),
+        required: &["owner", "repo", "ref", "path", "line"],
+    },
 ];
 
 /// Whether `tok` may see `t`.
@@ -476,6 +503,27 @@ pub async fn call<E: Edge>(name: &str, args: &Value, tok: &McpToken, edge: &E) -
                 q.push(("paths[]", p));
             }
             c.agents("GET", &format!("{}/activity", c.agents_repo(args)?), &q, None, None).await
+        }
+        "coordination.overlaps" => {
+            let mut q = Vec::new();
+            if let Some(r) = s("ref") {
+                q.push(("ref", r.to_owned()));
+            }
+            if let Some(n) = n("pr") {
+                q.push(("pr", n.to_string()));
+            }
+            for p in strs(args, "paths") {
+                q.push(("paths[]", p));
+            }
+            c.agents("GET", &format!("{}/overlaps", c.agents_repo(args)?), &q, None, None).await
+        }
+        "provenance.why" => {
+            let q = [
+                ("ref", s("ref").unwrap_or_default().to_owned()),
+                ("path", s("path").unwrap_or_default().to_owned()),
+                ("line", num(args, "line")?.to_string()),
+            ];
+            c.agents("GET", &format!("{}/provenance", c.agents_repo(args)?), &q, None, None).await
         }
         _ => unreachable!("every listed tool is matched"),
     }
