@@ -225,6 +225,111 @@ Where B0-32 stands on main `b8e555df`, line by line, and which open question own
 - G34 owns the shard catch-up stall: 1 merge push, 2 `merge:only` answers and 65 `full` pushes.
 - The cold-isolate merge push in warm-up has no owner; it fell before the burst.
 
+## B0-32 after m3fhs1: what LM-1's apply cut would recover, and what is left ($0, 2026-11-23)
+
+Asked by the orchestrator before B0-32's next fix. It reads m3fhs1's committed `server-timing` marks
+(`tests/fanout/b032share.py`, new) and the leader's and site b's Workers Logs for the burst. Those were fetched again
+with `wlobj.py` while they were still retained, and are committed as `tests/fanout/raw/wl-m3/`. They are joined by
+`heavyturns.py` (tag `m3fhs1-b0-32`). Nothing ran hosted.
+
+**Short answer** [inference, from the counterfactuals below]:
+- **The miss is all in the late `ok` pushes' commit stage.** The line is 364 of 500 and needs 450. All 136 late `ok`
+  pushes waited on commits: the last commit had p50 2,950 ms, and 88 of them also paid a refused first commit plus a
+  place. The read gate is not on that path. Capping the gate at 300 ms moves the line to 368.
+- **LM-1's cut recovers the whole miss if it takes about 29% off the burst's commit stage.** Every commit × 0.71 gives
+  454, and × 0.75 gives 439. Every commit capped at 1.9 s gives 458. Whether a cut that halves the leader's burst CPU
+  does that is what the next row measures, not something this trace can show.
+- **What B0-32 needs beyond the cut is only A36: stage first by size.** With it, LM-1's cut needs only × 0.9 (459) or a
+  2.25 s cap (477). Without the cut, stage first alone gives 437.
+- **The gate and the members' side need nothing of their own.** The gate's slow mode and the members' slow round trips
+  are the same saturated leader, seen from the members. Members held nothing (their own confirm pending at send p50
+  0 ms), and the calls waited on the leader's input side ("m3fhs1's two biggest losses, split", above).
+
+### The leader's burst CPU, by what fills its turns [measured]
+
+`heavyturns.py m3fhs1-b0-32`, burst seconds 03:56:09 to :15Z, gives 608 leader `/raft` slices joined exactly. Slices
+of 20 ms or more carry 57% of the CPU.
+
+| Slice holds | m3fhs1 (IAD), share of CPU, mean ms | B0-33 pgA / blB, for comparison |
+|---|---|---|
+| Applying committed entries | 37%, 52.1 (52 events an entry, 1.00 ms an event) | 50% / 44% |
+| Deferred transaction | 25%, 31.6 | 25% / 27% |
+| No traced work (the requests' own handling) | 28%, 0.6 | 17% / 16% |
+| Cuts or sends | 8%, 1.9 | 5% / 3% |
+| Storage confirm | 2%, 2.4 | 4% / 10% |
+
+- **Apply plus the transaction is 62% of B0-32's burst CPU, against 70 to 75% on B0-33.** The requests' own share is
+  larger here, from the 256 KiB inline `/commit` bodies (the local profile's base64 decode, above) and learner `/raft`.
+- **All routes:** 3,310 ms of logged leader CPU for 838 events applied in 03:56:07 to :16Z, so 3.95 ms an event. That
+  is inside LM-1's EWR/MIA band (3.8 to 4.0) although this leader was in IAD.
+- **The follower:** site b's voter logged 428 ms in 03:56:08 to :14Z, against the leader's 3,021 ms, so 14% of it.
+- **LM-1's scenario:** the leader at follower cost plus its per-command commit and reply work. That removes most of the
+  62%, about half the leader's burst CPU. On docpusec's figures that takes 0.79 to 1.05 CPU-s a second to about 0.4 to
+  0.55 [inference]. B0-32's loss 1 is the leader isolate near one vCPU with its inputs waiting, so that is the lever.
+  m3fe2 met the line at 90% with an unsaturated leader: commit p50 332 ms, p99 856 ms.
+
+### Counterfactuals on the late `ok` pushes [inference, `b032share.py`]
+
+Each one holds arrivals fixed, so it cannot show m3fgt1's bunching. Stage first removes a two-commit push's refused
+commit and place, and adds 170 ms to validate (on m3fhs1, validate p50 was 527 ms staged first and 361 ms inline).
+
+| m3fhs1: every commit stage | Alone | With stage first (A36) |
+|---|---|---|
+| unchanged | 364 | 437 |
+| × 0.9 | 375 | 459 |
+| × 0.75 | 439 | 477 |
+| × 0.7 | 465 | 483 |
+| capped at 2,500 ms | 386 | 468 |
+| capped at 2,250 ms | 402 | 477 |
+| capped at 2,000 ms | 443 | 483 |
+| capped at 1,500 ms | 488 | 500 |
+
+The same reading on the earlier rows (line as run; commits capped at 2 s alone and with stage first; stage first
+alone; gate capped at 300 ms):
+
+| Row | As run | Cap 2 s | Cap 2 s + stage first | Stage first alone | Gate ≤ 300 ms |
+|---|---|---|---|---|---|
+| m3fhs1 | 364 | 443 | 483 | 437 | 368 |
+| m3fgb1 | 422 | 466 | 499 | 423 | 422 |
+| m3fst1 | 332 | 355 | 450 | 413 | 344 |
+| m3fpc1 | 251 | 337 | 455 | 332 | 288 |
+| m3fac1 | 311 | 498 | 500 | 311 | 311 |
+
+- **The commit stage is the lever on every row.** The gate moves at most 37 pushes (m3fpc1), and none on the three
+  latest rows. On m3fgb1 the gate sent 308 pushes to `full` at the bound, and those already count as met.
+- **Stage first matters on the rows where many pushes committed twice** (m3fhs1, m3fst1, m3fpc1), and not where few did.
+- **Merge line, on the edge clock** (B0-32's clock since m3fb32): 1 of 33 merge pushes over 2 s, at 3,836 ms, and its
+  time was validate (2,957 ms, the git shard, G34's class). The other two of the row's three, 2,598 and 2,133 ms on the
+  client, were 1,860 and 1,708 ms on the edge [measured, `merge-pushes-b0-32-mwpvfxxn.jsonl`].
+- **The one `suspect`** was burst push 7: its last commit took 4,061 ms after a missed receipt, inside the saturation.
+
+### Considered and not proposed
+
+- **Refusing at `Stage` when the budget left cannot cover the place and a second commit** (left under 500 ms + 2 × the
+  first commit). It is safe, because `Stage` queues nothing. It moves 23 late pushes to `full` on m3fhs1 and 33 to 84
+  on the others, and costs 0 to 2 in-time pushes. But it commits nothing more: it only turns late successes into
+  refusals. So it is left to the orchestrator, not proposed.
+- **A gate change** (A35 and A37 stay closed). The gate is not on the late path, and its slow mode is the same leader.
+
+### Proposed next fix: `agent-stage-first` again, under `AGENT_CMDS_ENTRY` (design only, for review)
+
+- **Change.** An Agent-class push whose inline pack is over `AGENT_INLINE_ENTRY` places its pack before its first
+  commit on any group. This is `23a97240`'s rule, reverted on m3fgt1. It lives in `workers/edge/src/lib.rs`: `hot::stage_first`
+  and the `first` lines in `receive_pack`. The leader, `crates/raft` and the site are unchanged, and so is the read gate.
+- **Why now.** m3fgt1's flip was bunching: 307 small `Stored` commands reached the leader's queue at once, before
+  `AGENT_CMDS_ENTRY` existed, and they made entries of 191 and 160 commands. With the cap, m3fac1 drained a queue of
+  195 in 1.2 s in entries of 64. A36 names "stage first by size with `AGENT_CMDS_ENTRY` in force" as untested. It also
+  takes the 256 KiB inline bodies, and their base64 decode, off the leader's `/commit` handling.
+- **Expected.** Alone, at most 437 (an upper bound: arrivals held fixed). With LM-1's cut, 459 at × 0.9 of the commit
+  stage. So it does not pass the line without the cut.
+- **Flip.** Revert if staged-first `ok` pushes' commit stage runs p50 over 3 s (A36's watch line; m3fhs1's was
+  2,372 ms), or if any burst entry passes 64 Agent commands.
+- **Tests.** Restore `an_agent_pack_past_the_entry_budget_stages_first_on_a_cool_group` and `tests/m0carried/plant61.py`
+  from `23a97240`. Edit the `DESIGN.md` journey 1 sentence as that commit did, add a `decisions/DECISIONS.md` entry, and
+  update A36. Run edgeboot (both modes), fmt, clippy and the edge tests.
+- **Row.** One B0-32 row on graft-m3f, after both users hand it back and the fix is cleared and merged: about $1, with
+  a stop at $8. Better still, it runs after LM-1's cut merges, so one row reads both.
+
 ## Row m3fhs1: B0-32 on main `771e07e9`, shard image `6ee7a5ab` (A37's instrument row) (2026-11-21, graft-m3f, `ROWS="b0-32"`)
 
 **Slot.** One site day and edge day from main `771e07e9` with `--ssh` and test-faults, then `retire-unjoined`'s sweep, then one B0-32 row, stop $8 on graft-m3f from the site day's start (03:29:51Z). It is A37's instrument row: it splits a slow leader confirm into the leader's input stop and its output hold. It is also the first B0-32 row on shard image `6ee7a5ab`, so `garbled-body`'s container side (G35) runs.
