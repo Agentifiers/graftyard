@@ -52,6 +52,16 @@ pub fn call(env: &Env, target: u8, ok: bool) {
     flush_due(env);
 }
 
+/// This isolate's script version (the `VERSION` binding), read once.
+pub fn version(env: &Env) -> Option<String> {
+    PENDING.with(|p| {
+        p.borrow_mut()
+            .version
+            .get_or_insert_with(|| env.get_binding::<WorkerVersionMetadata>("VERSION").ok().map(|v| v.id()))
+            .clone()
+    })
+}
+
 fn flush_due(env: &Env) {
     let now = crate::now_ms();
     let taken = PENDING.with(|p| {
@@ -60,13 +70,10 @@ fn flush_due(env: &Env) {
             return None;
         }
         p.flushed = now;
-        let version = p
-            .version
-            .get_or_insert_with(|| env.get_binding::<WorkerVersionMetadata>("VERSION").ok().map(|v| v.id()))
-            .clone();
-        Some((version, std::mem::take(&mut p.gate), std::mem::take(&mut p.health)))
+        Some((std::mem::take(&mut p.gate), std::mem::take(&mut p.health)))
     });
-    let Some((version, gate, health)) = taken else { return };
+    let version = version(env);
+    let Some((gate, health)) = taken else { return };
     let env = env.clone();
     worker::wasm_bindgen_futures::spawn_local(async move {
         let Ok(site) = crate::SiteEnv::read(&env) else { return };

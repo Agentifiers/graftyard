@@ -87,12 +87,19 @@ pub fn judge_site(n1: &Side, n: &Side) -> Gate {
     if n1.step_downs > 0 {
         return Gate::Breach(format!("GATE_STEP_DOWN: {} on N+1 leaders", n1.step_downs).into());
     }
-    // An N that applied nothing is no baseline (a site's first release): only the backstop applies. At 100% and on
-    // the first day no member runs N, so the host passes N's counters from the whole intent, when N last ran beside
-    // N+1 (`ops::Exec::gate`).
     let has_n = n.entries > 0;
+    if has_n && n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {
+        return Gate::Breach(format!("GATE_ACK_RATE: N+1 {} bp, N {} bp", n1.ack_bp, n.ack_bp).into());
+    }
+    // `GATE_APPLY_LAG`'s shares are judged only on `STEP_MIN_ENTRIES` or more: under it one slow entry is over 2%
+    // (1 of 20 is 5%), so a healthy step would breach on chance. An N under it is no baseline either, since its p99
+    // bucket is not yet its own (a site's first release: only the backstop). At 100% and on the first day no member
+    // runs N, so the host passes N's counters from the whole intent, when N last ran beside N+1 (`ops::Exec::gate`).
+    if n1.entries < STEP_MIN_ENTRIES {
+        return Gate::Starved(n1.entries);
+    }
     let tail = n1.share_over_bp(n.apply_lag_p99_ms);
-    if has_n && tail > GATE_APPLY_LAG_SHARE_BP {
+    if n.entries >= STEP_MIN_ENTRIES && tail > GATE_APPLY_LAG_SHARE_BP {
         return Gate::Breach(
             format!("GATE_APPLY_LAG: {tail} bp of N+1 entries over N's p99 {} ms", n.apply_lag_p99_ms).into(),
         );
@@ -102,12 +109,6 @@ pub fn judge_site(n1: &Side, n: &Side) -> Gate {
         return Gate::Breach(
             format!("GATE_APPLY_LAG: {stalled} bp of N+1 entries over {GATE_APPLY_LAG_CAP_MS} ms").into(),
         );
-    }
-    if has_n && n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {
-        return Gate::Breach(format!("GATE_ACK_RATE: N+1 {} bp, N {} bp", n1.ack_bp, n.ack_bp).into());
-    }
-    if n1.entries < STEP_MIN_ENTRIES {
-        return Gate::Starved(n1.entries);
     }
     Gate::Pass
 }
