@@ -8115,9 +8115,10 @@ The test is `TestMaintenanceYieldsToMovedLoad` (`containers/git/server/maint_tes
 
 ### `exact-prefix`: a fold read by key prefix reads only that prefix's rows, 2026-11-22
 
-**Status.** Built on branch `r33-pullhead`, not yet on a hosted row. The fold crates are linked into the site and
-the edge, so the site half ships on a site day and the edge half on an edge day. The lead ruled it the first CPU cut
-after `tests/am1/results/b033-profile.md`.
+**Status.** On main since `ddb2de6f` and hosted on graft-m2b from the site day at `a25edb28`. The fold crates are
+linked into the site and the edge, so the site half ships on a site day and the edge half on an edge day. The lead
+ruled it the first CPU cut after `tests/am1/results/b033-profile.md`. The first flip is not met on pgA, the first hosted
+row with enough open pull requests to test it (below, Evidence).
 
 **Decision.**
 - `graftyard_fold::Store` has `prefix(table, prefix)`: every row whose key starts with `prefix`, in key order, and no
@@ -8166,6 +8167,18 @@ after `tests/am1/results/b033-profile.md`.
   or taking writes past the prefix, `MemStore` stopping early, and the lease read stopping after one batch.
 - The leaderprof bed before and after, at 91 and 991 open pull requests: `tests/am1/results/b033-profile.md`,
   "After `exact-prefix`".
+- **Hosted, pgA (2026-11-23, `tests/am1/results/b033-pga.md`): the first flip is not met** [measured].
+  - The row: full-load B0-33 on site `a25edb28`, with a1's `--seed-prs 1000`.
+  - Open draft PRs (a1's `openPrsAt`) went from 1,000 at load start to 1,193 at 120 s and 1,310 at 300 s. That is four
+    to five times the 256 at which the old batched read filled.
+  - The leader's `/commit` CPU a call, by 30 s bucket: 1.47, 1.48, 1.36, 1.36, 2.05, 3.17, 2.86, 1.98, 1.66, 1.45,
+    1.78 ms (`tests/leaderprof/hosted.py pgA`).
+  - The rise at 120 to 210 s is the leader's stall before its drop at 02:24:09Z (site 0 lost term 2 and took it back
+    by 02:24:14), not the PR count. Its inputs fell from about 300 a second to 25 to 57 at 150 to 195 s
+    (`tests/fanout/b033probes/host/curve.py pgA`), so the same apply turns were billed over fewer `/commit` calls
+    (workerd bills a turn to the newest request, `tests/am1/results/b033-pfa.md`) [inference]. At 240 to 300 s, with
+    1,263 to 1,310 open, it was back to 1.45 to 1.78 ms.
+  - pfA (`tests/am1/results/b033-pfa.md`) is no evidence either way: its open count stayed at 39.
 
 **Flip.**
 - A hosted B0-33 row on this build whose `/commit` CPU per call still rises through the run as it did (1.1 to 2.3
