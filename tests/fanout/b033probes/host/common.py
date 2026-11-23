@@ -15,7 +15,9 @@ RUNS = {  # tag: (load start ISO, leader site, seconds of site-0 leadership to u
     'm3fsf2-b0-32': ('2026-11-23T09:42:41Z', 96),
     'qlA': ('2026-11-22T16:24:36Z', 300), 'qlB': ('2026-11-22T17:09:28Z', 300), 'qlC': ('2026-11-22T17:52:14Z', 300),
     'pfA': ('2026-11-23T01:04:05Z', 296),
-    'pgA': ('2026-11-23T02:20:20Z', 229)}
+    'pgA': ('2026-11-23T02:20:20Z', 229),
+    # B0-33 row B (edge refusal), for tests/fanout/advertcf.py.
+    'erBA': ('2026-11-23T11:20:56Z', 300)}
 COLO = {'sabA': 'EWR', 'blB': 'EWR', 'blA': 'IAD', 'blC2': 'IAD', 'chA': 'IAD', 'm64r33': 'IAD', 'crA': 'ORD', 'ncA': 'ATL', 'qlA': 'MIA', 'qlB': 'MIA', 'qlC': 'EWR', 'pfA': 'ATL', 'pgA': 'ORD'}
 def ms(s): return int(datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp() * 1000)
 def pc(xs, q):
