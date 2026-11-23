@@ -255,6 +255,11 @@ pub const DRAIN_MIN: Duration = Duration::from_secs(1);
 /// How old an advertised wait the edge acts on (`design/DESIGN.md`, Shape, the agent block). Past it the edge sends
 /// the command and the leader decides [guess].
 pub const ADVERT_TTL: Duration = Duration::from_secs(2);
+/// How long a lapsed advert that said full holds Agent writes at the edge (one probe a chain an isolate per ADVERT_TTL
+/// goes through, the rest are refused); past it with no advert heard, every write is sent and the leader decides.
+/// [guess]: on B0-33 erBA a push the leader refused had its answer p99 6.5 s and at most 8.7 s after the edge's check
+/// (`tests/am1/results/edge-refusal.md`, "Rule 1"), so 10 s of probes with no answer means the advert path is down.
+pub const ADVERT_STALE: Duration = Duration::from_secs(10);
 
 /// The agent commands the leader cut a second while agent commands stayed queued: what it drains, measured, not the
 /// AGENT_SHARE bucket it is configured for. B0-33's slow hosts drained 27.7 to 108.8 a second while the bucket read

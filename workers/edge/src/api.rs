@@ -453,7 +453,7 @@ pub(crate) async fn read_repo(
         && let Some(who) = viewer
     {
         let budget = graftyard_raft::admit::AGENT_PUSH_BOUND;
-        if let Some(s) = crate::advert_refusal(c, &repo, who, false, budget).await {
+        if let Some(s) = crate::advert_refusal(c, &repo, who, false, crate::At::Check, budget).await {
             return Ok(Err(Reply::secondary_rate_limit(s)));
         }
     }
