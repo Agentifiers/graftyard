@@ -1,0 +1,19 @@
+edge: graft-m2b-edge serves 34cfafb9 at 100% (rev 7f80acb41), as tests/am1/raw/runs/fanout-mr-edge.log deployed
+2026-11-23T13:08:14Z meter (account, run) 45.17 0 before b033, expected +$2.5, stop $170 account, $10 run
+2026-11-23T13:09:16Z meter (account, run) 45.17 0.0
+2026-11-23T13:10:19Z meter (account, run) 45.18 0.0
+2026-11-23T13:11:21Z meter (account, run) 45.19 0.01
+2026-11-23T13:12:23Z meter (account, run) 45.23 0.05
+2026-11-23T13:13:25Z meter (account, run) 45.26 0.08
+2026-11-23T13:15:49Z meter (account, run) 45.55 0.37
+2026-11-23T13:16:52Z meter (account, run) 45.77 0.58
+2026-11-23T13:17:54Z meter (account, run) 46.36 1.17
+2026-11-23T13:18:57Z meter (account, run) 46.82 1.62
+2026-11-23T13:19:59Z meter (account, run) 47.28 2.09
+2026-11-23T13:21:02Z meter (account, run) 47.7 2.5
+2026-11-23T13:22:06Z meter (account, run) 48.01 2.81
+2026-11-23T13:23:08Z meter (account, run) 48.08 2.88
+2026-11-23T13:24:12Z meter (account, run) 48.11 2.91
+2026-11-23T13:25:14Z meter (account, run) 48.12 2.92
+2026-11-23T13:26:16Z meter (account, run) 48.12 2.92
+2026-11-23T13:27:20Z meter (account, run) 48.13 2.92
