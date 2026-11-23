@@ -59,6 +59,10 @@ fn main() {
         "current": current,
         "drained": f.drained.keys().collect::<Vec<_>>(),
         "slots": slots,
+        "site_release": f.site_release.iter().map(|(s, r)| (s.to_string(), json!(r.0.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>()))).collect::<serde_json::Map<_, _>>(),
+        "rolled": f.rolled.iter().map(|(s, r)| (format!("{s:?}"), json!(r.0.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>()))).collect::<serde_json::Map<_, _>>(),
+        "uploads": f.uploads.keys().map(|r| r.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>()).collect::<Vec<_>>(),
+        "enabled": f.enabled.len(),
         "entries": shown,
     });
     println!("{out}");
