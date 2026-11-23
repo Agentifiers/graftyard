@@ -1,0 +1,54 @@
+2026-11-23T15:43:28Z start 48ab75e14 ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T15:43:44Z start sweep ok
+2026-11-23T15:43:44Z cost account 54.57 since 2026-11-23T00:00:00Z, run 0.0 since 2026-11-23T15:43:14Z, at b0-33
+2026-11-23T15:44:11.338Z m3org/fmtC-b033 = 131400
+2026-11-23T15:44:15.501Z repo:131400 leader 0: config 5 learners [{"addr":192,"doName":"repo:131400#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131400#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131400#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131400#2#l3","join":200,"site":0,"slot":3}]
+2026-11-23T15:44:16.027Z repo:131400 site 0: arrival mem (asked mem, status 200)
+2026-11-23T15:44:16.207Z repo:131400 site 1: arrival mem (asked mem, status 200)
+2026-11-23T15:44:16.392Z repo:131400 site 2: arrival mem (asked mem, status 200)
+2026-11-23T15:44:17.979Z repo:131400 leader 0: set k 4: {"grants":[[0,[0,1,4]],[1,[0,1,4]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":226},"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T15:44:28.264Z repo:131400 leader 0: set k 4: {"grants":[[0,[0,1,4]],[1,[0,1,4]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":226},"configIndex":5,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T15:44:38.702Z repo:131400 leader 0: set k 4: {"grants":[[0,[0,1,4]],[1,[0,1,4]]],"k":4,"meta":{"admit":{"retryAfterS":1,"waitMs":226},"configIndex":5,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-23T15:44:38.822Z repo:131400 leader 0: k 4 at 8
+2026-11-23T15:44:43Z b0-33 shard gate site 0: warm site 0 after 1.1 s
+2026-11-23T15:44:43Z b0-33 shard gate site 1: warm site 1 after 2.6 s
+2026-11-23T15:44:43Z b0-33 shard gate site 2: warm site 2 after 1.7 s
+2026-11-23T15:44:43Z b0-33 fmtC-b033 131400 start
+2026-11-23T15:51:08.682Z repo:131400 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":178},"configIndex":5,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-23T15:51:08.801Z repo:131400 leader 0: k 1 at 954
+2026-11-23T15:51:10Z b0-33 fmtC-b033 131400 done exit 4
+2026-11-23T15:51:16Z torn down 131400
+site fault off: 200
+git#0#pool:2 200
+git#0#pool:5 200
+git#0#pool:1 200
+git#0#net:131400 200
+{"torn_down": 4, "codes": {"200": 4}}
+sweep: no shard container running
+2026-11-23T15:51:35Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+  colo LAX 3 {'leader': 1, 'promised': 2}
+placement baseline:
+leader site 0: no load window (learner /read never above 30/s)
+shared isolates:
+tsave-mtC.jsonl: 7 members, 7 isolates; no shared isolate
+outages: no load window in tests/am1/raw/runs/a1-b0-33-fmtC-b033.log
+5xx by reason (2026-11-23T15:47:09Z to 2026-11-23T15:51:03Z):
+{"logged": 0, "edge5xx": 0, "byStatus": {}}
+by reason:
+push refusals by stage:
+{"agentPushes": {"ok": 1000}, "fullBy": {}, "fullMarks": {}}
+budget left at the first send | ok / full
+  under 1 s  | 10 / 0
+  1 to 2 s   | 1 / 0
+  2 to 3 s   | 42 / 0
+  3 to 5 s   | 947 / 0
+0 edgefull lines from 2026-11-23T15:47:09Z to 2026-11-23T15:51:03Z
+edge refusals (edgefull):
+no edgefull lines: the edge refused nothing and sent nothing on a lapsed full advert
+reask-read top-ups (Trace::TopUp rows on the leader): 22
+B033DONE

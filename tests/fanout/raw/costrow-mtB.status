@@ -1,0 +1,19 @@
+edge: graft-m2b-edge serves 34cfafb9 at 100% (rev 7f80acb41), as tests/am1/raw/runs/fanout-mr-edge.log deployed
+2026-11-23T15:29:29Z meter (account, run) 54.01 0 before b033, expected +$2.5, stop $170 account, $10 run
+2026-11-23T15:30:32Z meter (account, run) 54.02 0.0
+2026-11-23T15:31:35Z meter (account, run) 54.06 0.01
+2026-11-23T15:32:39Z meter (account, run) 54.08 0.02
+2026-11-23T15:36:05Z meter (account, run) 54.2 0.15
+2026-11-23T15:37:07Z meter (account, run) 54.31 0.26
+2026-11-23T15:38:10Z meter (account, run) 54.41 0.35
+2026-11-23T15:39:13Z meter (account, run) 54.51 0.45
+2026-11-23T15:40:16Z meter (account, run) 54.54 0.49
+2026-11-23T15:41:19Z meter (account, run) 54.55 0.49
+2026-11-23T15:42:22Z meter (account, run) 54.56 0.49
+2026-11-23T15:42:49Z b033 ended: reask-read top-ups (Trace::TopUp rows on the leader): 38
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T15:43:09Z sweep exit 0 (kept: none)
+2026-11-23T15:43:11Z meter (account, run) 54.56 0.49 after b033 and the sweep
+DONE

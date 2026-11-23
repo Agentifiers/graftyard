@@ -1,0 +1,37 @@
+edge: graft-m2b-edge serves 34cfafb9 at 100% (rev 7f80acb41), as tests/am1/raw/runs/fanout-mr-edge.log deployed
+2026-11-23T14:12:18Z meter (account, run) 48.66 0.01 before b033, expected +$2.5, stop $170 account, $10 run
+2026-11-23T14:13:21Z meter (account, run) 48.68 0.01
+2026-11-23T14:14:23Z meter (account, run) 48.7 0.02
+2026-11-23T14:15:25Z meter (account, run) 48.75 0.03
+2026-11-23T14:16:28Z meter (account, run) 48.77 0.04
+2026-11-23T14:17:31Z meter (account, run) 48.84 0.07
+2026-11-23T14:18:33Z meter (account, run) 48.99 0.17
+2026-11-23T14:19:35Z meter (account, run) 49.12 0.29
+2026-11-23T14:20:38Z meter (account, run) 49.23 0.39
+2026-11-23T14:21:40Z meter (account, run) 49.46 0.58
+2026-11-23T14:22:43Z meter (account, run) 49.86 0.96
+2026-11-23T14:23:45Z meter (account, run) 50.44 1.57
+2026-11-23T14:24:47Z meter (account, run) 50.96 2.1
+2026-11-23T14:25:49Z meter (account, run) 51.47 2.47
+2026-11-23T14:26:51Z meter (account, run) 51.68 2.68
+2026-11-23T14:27:55Z meter (account, run) 51.8 2.76
+2026-11-23T14:28:57Z meter (account, run) 51.88 2.8
+2026-11-23T14:29:58Z meter (account, run) 51.89 2.81
+2026-11-23T14:31:01Z meter (account, run) 51.95 2.82
+2026-11-23T14:32:03Z meter (account, run) 52.0 2.82
+2026-11-23T14:33:06Z meter (account, run) 52.02 2.83
+2026-11-23T14:34:08Z meter (account, run) 52.04 2.83
+2026-11-23T14:35:10Z meter (account, run) 52.07 2.83
+2026-11-23T14:36:13Z meter (account, run) 52.1 2.83
+2026-11-23T14:37:16Z meter (account, run) 52.12 2.83
+2026-11-23T14:38:18Z meter (account, run) 52.16 2.83
+2026-11-23T14:39:20Z meter (account, run) 52.19 2.83
+2026-11-23T14:40:23Z meter (account, run) 52.2 2.83
+2026-11-23T14:41:26Z meter (account, run) 52.24 2.83
+2026-11-23T14:41:28Z b033 ended: reask-read top-ups (Trace::TopUp rows on the leader): 312
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T14:41:46Z sweep exit 0 (kept: none)
+2026-11-23T14:41:49Z meter (account, run) 52.24 2.83 after b033 and the sweep
+DONE

@@ -1,0 +1,69 @@
+2026-11-23T15:13:33Z start 48ab75e14 ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T15:13:51Z start sweep ok
+2026-11-23T15:13:52Z cost account 53.17 since 2026-11-23T00:00:00Z, run 0.01 since 2026-11-23T14:41:51Z, at b0-33
+2026-11-23T15:14:31.434Z m3org/fmtA-b033 = 131398
+2026-11-23T15:14:31.868Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:14:35.092Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:14:38.293Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:14:41.485Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:14:44.672Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:14:47.880Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:14:51.081Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:14:54.272Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:14:57.480Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:15:00.666Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:15:03.848Z repo:131398 leader 0 placing since 1795446867670: waiting
+2026-11-23T15:15:11.611Z repo:131398 leader 0: config 9 learners [{"addr":192,"doName":"repo:131398#6#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131398#6#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131398#6#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131398#6#l3","join":200,"site":0,"slot":3}]
+2026-11-23T15:15:12.248Z repo:131398 site 0: arrival mem (asked mem, status 200)
+2026-11-23T15:15:12.422Z repo:131398 site 1: arrival mem (asked mem, status 200)
+2026-11-23T15:15:12.584Z repo:131398 site 2: arrival mem (asked mem, status 200)
+2026-11-23T15:15:17.563Z repo:131398 leader 0: set k 4: {"grants":[[0,[6,4,2]],[2,[6,4,2]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":228},"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T15:15:27.925Z repo:131398 leader 0: set k 4: {"grants":[[0,[6,4,2]],[2,[6,4,2]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":228},"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T15:15:38.383Z repo:131398 leader 0: set k 4: {"grants":[[0,[6,4,2]],[2,[6,4,2]]],"k":4,"meta":{"admit":{"retryAfterS":1,"waitMs":228},"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-23T15:15:38.484Z repo:131398 leader 0: k 4 at 12
+2026-11-23T15:15:42Z b0-33 shard gate site 0: warm site 0 after 0.8 s
+2026-11-23T15:15:42Z b0-33 shard gate site 1: warm site 1 after 2.8 s
+2026-11-23T15:15:42Z b0-33 shard gate site 2: warm site 2 after 1.3 s
+2026-11-23T15:15:42Z b0-33 fmtA-b033 131398 start
+2026-11-23T15:22:32.089Z repo:131398 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":155},"configIndex":9,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-23T15:22:32.201Z repo:131398 leader 0: k 1 at 983
+2026-11-23T15:22:33Z b0-33 fmtA-b033 131398 done exit 4
+2026-11-23T15:22:40Z torn down 131398
+site fault off: 200
+git#2#pool:5 200
+git#2#pool:3 200
+git#2#pool:7 200
+git#0#pool:7 200
+git#0#pool:3 200
+git#0#pool:5 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+2026-11-23T15:23:00Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+placement baseline:
+leader site 0: no load window (learner /read never above 30/s)
+shared isolates:
+tsave-mtA.jsonl: 7 members, 8 isolates; no shared isolate
+outages: no load window in tests/am1/raw/runs/a1-b0-33-fmtA-b033.log
+5xx by reason (2026-11-23T15:18:30Z to 2026-11-23T15:22:25Z):
+{"logged": 1, "edge5xx": 1, "byStatus": {"503": 1}}
+      1 503 graphql
+by reason:
+      1 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+push refusals by stage:
+{"agentPushes": {"ok": 1000}, "fullBy": {}, "fullMarks": {}}
+budget left at the first send | ok / full
+  under 1 s  | 1 / 0
+  1 to 2 s   | 0 / 0
+  2 to 3 s   | 14 / 0
+  3 to 5 s   | 985 / 0
+retry 0 <urlopen error _ssl.c:1064: The handshake operation timed out>
+0 edgefull lines from 2026-11-23T15:18:30Z to 2026-11-23T15:22:25Z
+edge refusals (edgefull):
+no edgefull lines: the edge refused nothing and sent nothing on a lapsed full advert
+reask-read top-ups (Trace::TopUp rows on the leader): 25
+B033DONE

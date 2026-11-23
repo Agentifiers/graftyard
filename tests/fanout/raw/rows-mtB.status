@@ -1,0 +1,65 @@
+2026-11-23T15:29:29Z start 48ab75e14 ~/workspace/repo
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T15:29:46Z start sweep ok
+2026-11-23T15:29:46Z cost account 54.01 since 2026-11-23T00:00:00Z, run 0.0 since 2026-11-23T15:29:23Z, at b0-33
+2026-11-23T15:30:24.794Z m3org/fmtB-b033 = 131399
+2026-11-23T15:30:25.239Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:30:28.469Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:30:31.713Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:30:34.948Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:30:38.158Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:30:41.373Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:30:44.618Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:30:47.923Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:30:51.136Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:30:54.342Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:30:57.561Z repo:131399 leader 0 placing since 1795447822677: waiting
+2026-11-23T15:31:05.653Z repo:131399 leader 0: config 9 learners [{"addr":192,"doName":"repo:131399#6#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131399#6#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131399#6#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131399#6#l3","join":200,"site":0,"slot":3}]
+2026-11-23T15:31:06.491Z repo:131399 site 0: arrival mem (asked mem, status 200)
+2026-11-23T15:31:06.703Z repo:131399 site 1: arrival mem (asked mem, status 200)
+2026-11-23T15:31:06.955Z repo:131399 site 2: arrival mem (asked mem, status 200)
+2026-11-23T15:31:11.878Z repo:131399 leader 0: set k 4: {"grants":[[0,[4,0,5]],[1,[4,0,5]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":231},"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T15:31:22.195Z repo:131399 leader 0: set k 4: {"grants":[[0,[4,0,5]],[1,[4,0,5]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":231},"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T15:31:32.661Z repo:131399 leader 0: set k 4: {"grants":[[0,[4,0,5]],[1,[4,0,5]]],"k":4,"meta":{"admit":{"retryAfterS":1,"waitMs":231},"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-23T15:31:32.764Z repo:131399 leader 0: k 4 at 12
+2026-11-23T15:31:37Z b0-33 shard gate site 0: warm site 0 after 1.6 s
+2026-11-23T15:31:37Z b0-33 shard gate site 1: warm site 1 after 3.6 s
+2026-11-23T15:31:37Z b0-33 shard gate site 2: warm site 2 after 2.4 s
+2026-11-23T15:31:37Z b0-33 fmtB-b033 131399 start
+2026-11-23T15:38:18.718Z repo:131399 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":172},"configIndex":9,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-23T15:38:18.832Z repo:131399 leader 0: k 1 at 951
+2026-11-23T15:38:20Z b0-33 fmtB-b033 131399 done exit 4
+2026-11-23T15:38:26Z torn down 131399
+site fault off: 200
+git#1#pool:5 200
+git#1#pool:6 200
+git#1#pool:1 200
+{"torn_down": 3, "codes": {"200": 3}}
+sweep: no shard container running
+2026-11-23T15:38:44Z sweep ok
+ALLDONE
+colos (voters' Reported rows, whole trace):
+placement baseline:
+leader site 0: no load window (learner /read never above 30/s)
+shared isolates:
+tsave-mtB.jsonl: 7 members, 8 isolates; no shared isolate
+outages: no load window in tests/am1/raw/runs/a1-b0-33-fmtB-b033.log
+5xx by reason (2026-11-23T15:34:14Z to 2026-11-23T15:38:11Z):
+{"logged": 5, "edge5xx": 5, "byStatus": {"503": 5}}
+      5 503 graphql
+by reason:
+      5 503 graphql          the repository's tier rows did not answer; retry (repo:N: every member asked shed the read: overloaded)
+push refusals by stage:
+{"agentPushes": {"ok": 1000}, "fullBy": {}, "fullMarks": {}}
+budget left at the first send | ok / full
+  under 1 s  | 0 / 0
+  1 to 2 s   | 6 / 0
+  2 to 3 s   | 5 / 0
+  3 to 5 s   | 989 / 0
+0 edgefull lines from 2026-11-23T15:34:14Z to 2026-11-23T15:38:11Z
+edge refusals (edgefull):
+no edgefull lines: the edge refused nothing and sent nothing on a lapsed full advert
+reask-read top-ups (Trace::TopUp rows on the leader): 38
+B033DONE

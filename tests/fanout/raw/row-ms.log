@@ -1,0 +1,11 @@
+start 2026-11-23T13:40:47Z 7f80acb41 guard wants a fast host
+edge: graft-m2b-edge serves 34cfafb9 at 100% (rev 7f80acb41), as tests/am1/raw/runs/fanout-mr-edge.log deployed
+2026-11-23T14:12:10Z run A row starts (graft-m2b $8.42 today)
+2026-11-23T14:13:30Z run A guard error (exit 1), asking again
+2026-11-23T14:13:50Z run A guard error (exit 1), asking again
+2026-11-23T14:14:11Z run A guard error (exit 1), asking again
+2026-11-23T14:14:32Z run A guard error (exit 1), asking again
+2026-11-23T14:14:52Z run A guard error (exit 1), asking again
+2026-11-23T14:16:21Z run A repo 131397 hostguard repo:131397#1#f0: keep, 22.3 ms of leader CPU a setup commit (49 commits, 1093 ms, line 28.4); fast host wanted, load released
+2026-11-23T14:41:51Z run A done: 2026-11-23T14:41:46Z sweep exit 0 (kept: none) 2026-11-23T14:41:49Z meter (account, run) 52.24 2.83 after b033 and the sweep DONE 
+ROWmsDONE
