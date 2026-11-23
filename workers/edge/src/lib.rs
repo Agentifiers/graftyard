@@ -1554,6 +1554,15 @@ fn shard_unavailable(rid: RequestId, why: &str) -> Result<Response> {
         .with_headers(h))
 }
 
+/// A fetch whose shard did not answer 200, `warming` most often: 503 with `Retry-After: 2`, as `shard_unavailable`
+/// answers a push, so a client knows when to ask again. B0-33 erDA answered 215 of these with no `Retry-After`
+/// (`tests/am1/results/edge-refusal.md`, "Row B2").
+fn shard_read_failed(rid: RequestId, status: u16, why: &str) -> Result<Response> {
+    let r = text(rid, 503, &format!("git cache: {status} {why}\n"))?;
+    r.headers().set("retry-after", "2")?;
+    Ok(r)
+}
+
 /// A composed answer whose chain checks did not end within `CHAIN_CHECK_WITHIN`: 503 with `Retry-After: 1`, before
 /// any byte of a git result, so the client fails fast and tries again instead of waiting for bytes that may never come
 /// (`decisions/DECISIONS.md`, "`chain-hold`").
@@ -3271,7 +3280,7 @@ async fn upload_pack(c: &Ctx<'_>, repo: &Repo, front: UploadFront) -> Result<Res
     if r.status_code() != 200 {
         let why = r.text().await.unwrap_or_default();
         worker::console_log!("{}", shard_fail_line(repo.id.0.0, r.status_code(), &why, is_ls));
-        return text(c.rid, 503, &format!("git cache: {} {why}\n", r.status_code()));
+        return shard_read_failed(c.rid, r.status_code(), &why);
     }
     for k in ["x-graft-cursor", "x-graft-compose"] {
         if let Some(v) = r.headers().get(k)? {

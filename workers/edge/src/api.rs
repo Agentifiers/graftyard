@@ -505,7 +505,7 @@ pub(crate) async fn read_repo(
     let (v, mut authz) = futures_util::future::join(timed(c, "tier", read_rows), read_authz).await;
     let v = match v? {
         Ok(v) => v,
-        Err(r) => return Ok(Err(r)),
+        Err(r) => return Ok(Err(shed_reply(c, viewer, r).await)),
     };
     // A member built before the `rows` read answered `ranges`: its tiers cannot be served.
     let Ok(rows) = TierRows::from_value(&v["value"]) else {
@@ -712,6 +712,33 @@ pub(crate) fn read_failed(why: &str, e: &str) -> Reply {
     }
     let retry = if e.contains(graftyard_lookup::OVERLOADED) { "1" } else { "5" };
     Reply::error(503, &format!("{why} ({e})"), "rest").with("retry-after", retry)
+}
+
+/// edge-shed-429: a write's row read every member shed (`read_failed`'s 503 with `Retry-After: 1`, whose reason names
+/// `graftyard_lookup::OVERLOADED`) is, for a writer the edge classes Agent (`crate::admission`), GitHub's secondary
+/// rate limit, 429 `retry-after: 1`, as the advert's refusal and the leader's `full` answer it (`design/DESIGN.md`,
+/// Shape, the agent block). Any other reply, a read, and every Human, Bot, or MergeQueue writer keep it as it is. B0-33
+/// erDA answered 4,669 Agent writes this 503 (`tests/am1/results/edge-refusal.md`, "Row B2"). It runs in `read_repo`,
+/// which every REST, GraphQL, task, and lease write's rows pass through, `command_tier_rows` included. `task_claim`'s
+/// own `command_tier_rows` is an App's token request under its JWT, not an agent's write, and keeps its 503.
+fn shed_for(r: Reply, write: bool, class: Option<graftyard_git::group::ClassWire>) -> Reply {
+    let shed =
+        r.status == 503 && r.value()["message"].as_str().is_some_and(|m| m.contains(graftyard_lookup::OVERLOADED));
+    if write && shed && class == Some(graftyard_git::group::ClassWire::Agent) {
+        return Reply::secondary_rate_limit(1);
+    }
+    r
+}
+
+/// `shed_for` with the writer's class read only when it can change the answer: a shed reply on a write. A plain user
+/// token's write is Human without a read (`crate::admission`), so its 503 stays byte for byte.
+async fn shed_reply(c: &Ctx<'_>, who: Option<&Principal>, r: Reply) -> Reply {
+    if !c.write.get() || r.status != 503 {
+        return r;
+    }
+    let Some(who) = who else { return r };
+    let class = crate::admission(c, who, &[], false, 0).await.map(|a| a.class);
+    shed_for(r, true, class)
 }
 
 /// `read_failed`'s log line for a `tier-off-leader` shed, `None` for any other failed read.
@@ -2693,6 +2720,31 @@ mod tests {
         assert_eq!(super::tier_off_line("rows", &shed), None, "a members' shed is not tierOff");
         let r = super::read_failed("rows", "repo:9: repo:9#1#f0: no answer");
         assert_eq!((r.status, r.header("retry-after")), (503, Some("5")));
+    }
+
+    /// edge-shed-429: an Agent-classed write whose row read every member shed answers GitHub's secondary rate limit,
+    /// 429 `retry-after: 1`. A plain PAT's write (Human, `admission` gives no class), a Bot's or a MergeQueue's keeps
+    /// `read_failed`'s 503 byte for byte, as does an Agent's read and an Agent write whose read failed some other way.
+    #[test]
+    fn an_agent_write_whose_rows_were_shed_is_429_and_a_plain_pat_write_stays_503() {
+        use graftyard_git::group::ClassWire;
+        let shed = || {
+            super::read_failed(
+                "the repository's tier rows did not answer; retry",
+                &format!("repo:9: every member asked shed the read: {}", graftyard_lookup::OVERLOADED),
+            )
+        };
+        let r = super::shed_for(shed(), true, Some(ClassWire::Agent));
+        assert_eq!((r.status, r.header("retry-after")), (429, Some("1")));
+        assert!(r.value()["message"].as_str().unwrap().contains("secondary rate limit"), "{:?}", r.body);
+        for class in [None, Some(ClassWire::Human), Some(ClassWire::Bot), Some(ClassWire::MergeQueue)] {
+            assert_eq!(super::shed_for(shed(), true, class), shed(), "{class:?} write keeps the 503");
+        }
+        assert_eq!(super::shed_for(shed(), false, Some(ClassWire::Agent)), shed(), "an Agent read keeps the 503");
+        let late = || super::read_failed("rows", "repo:9: repo:9#1#f0: no answer");
+        assert_eq!(super::shed_for(late(), true, Some(ClassWire::Agent)), late(), "not a shed: 503, Retry-After 5");
+        let other = || super::unavailable("the repository's metadata tier is loading; retry");
+        assert_eq!(super::shed_for(other(), true, Some(ClassWire::Agent)), other());
     }
 
     /// A leader's `full` for an issue or merge command is GitHub's secondary rate limit, 429 with the leader's own

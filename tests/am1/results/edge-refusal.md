@@ -652,6 +652,33 @@ keeps its shape for every other caller.
 - a Human or Bot write answered 429 by it, which is an invariant, as flip 1 is;
 - a shed error whose write committed anyway. It cannot: the shed comes before the command.
 
+### Built: the Agent 429 and the fetch's `Retry-After` (2026-11-23, after the lead's ruling)
+
+The lead's ruling (`FRAME.md`, "Operator decision, 2026-11-23, B0-33's merge-queue and refusal-shape lines") cleared
+both. `decisions/DECISIONS.md`, "`edge-shed-429`", has the rule and its flips.
+- **Edge** (`workers/edge/src/api.rs`): `read_repo`'s error arm passes its reply through `shed_reply`, which reads the
+  writer's class (`crate::admission`) only for a 503 on a write. `shed_for` turns a 503 whose reason names
+  `OVERLOADED` into `Reply::secondary_rate_limit(1)` for an Agent class and leaves every other reply as it is.
+- **Fetch** (`workers/edge/src/lib.rs`): `shard_read_failed` answers the shard-read failure 503 with
+  `Retry-After: 2`.
+- **Test:** `an_agent_write_whose_rows_were_shed_is_429_and_a_plain_pat_write_stays_503`. Plant 105 caught 5 of 5.
+- **Byte diff** (`tests/plaindiff/run.sh fetch=2`, local workerd, origin/main ff111741 against this branch):
+
+| Request (plain PAT) | Base | Head | Verdict |
+|---|---|---|---|
+| info/refs, upload-pack | 200 | 200 | identical |
+| ls-refs | 200 | 200 | identical |
+| fetch (no shard) | 503, no `retry-after` | 503, `retry-after: 2` | differs only by that header |
+| info/refs, receive-pack | 200 | 200 | identical |
+| REST repository | 200 | 200 | identical |
+| REST label write | 201 | 201 | identical |
+| GraphQL repository | 200 | 200 | identical |
+
+- **What it would have done on erDA** [inference, from the table in "(b)"]: 4,669 Agent writes answer 429
+  `retry-after: 1`, and the 215 fetch `warming` 503s carry `Retry-After: 2`. Every remaining Human 503 carries
+  `Retry-After`, so the refusal-shape line as ruled would pass on erDA's mix.
+- Not built: a hosted byte diff, and GHES 3.22's own headers on that 503 [unverified].
+
 ## Open
 
 - **The ruled B0-33 lines are not met.** "Any merge-queue command waiting over 2 s" read Human-class pushes, because no
