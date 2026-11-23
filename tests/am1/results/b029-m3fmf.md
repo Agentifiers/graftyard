@@ -55,6 +55,61 @@ runs, under b9m4a3's 0.16.
 Commit p99 **756** on the median of runs 2 to 4 (756, 797, 651), against the 800 ms line and the 1 s fail
 line. It passes: all three valid runs are under 800, on hosts at 31.1 to 32.9 ms a setup commit, all over hostguard's 28.4 line. Against b9m4a3's median 744, the commit line holds with `merge-front` on main; `merge-front` does not touch the commit path, and none of these runs drew a host as slow as b9m4a3 run 2 (94.4 ms), so the slow-host case stays open, as ruled.
 
+## The merge's commit stage on the leader (2026-11-23, $0, for the record)
+
+After `merge-front` the commit stage leads the merge tail (1,059 of run 4's 1,664 ms). `tests/fanout/mergecommit.py`
+splits each merge's edge `commit` stage on the leader's trace the way `tests/fanout/b033probes/humansplit.py` splits a
+Human push: freeze wait (the edge's send to the cut that took it), held (frozen behind the entry in flight), own round
+(first AppendQueued to the first ok voter), apply, the storage confirm after it, and the rest (the outcome's return and
+the clock offset's error). A merge's send instant is estimated from a1's start, the client time and half the client
+leg, so a single merge's split carries tens of ms of error [inference]; every merge joined (87, 82 and 83).
+
+| Slowest tenth of merges | n | Client | Commit stage | Freeze wait | Held | Own round | Apply | Confirm | Rest |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Run 2, b9m3f2 | 9 | 1,134 | 703 | 156 (22%) | 105 (15%) | 226 (32%) | 0 | 65 (9%) | 150 (21%) |
+| Run 3, b9m3f3 | 8 | 1,312 | 833 | 160 (19%) | 182 (22%) | 198 (24%) | 0 | 69 (8%) | 225 (27%) |
+| Run 4, b9m3f4 | 8 | 1,046 | 668 | 129 (19%) | 127 (19%) | 187 (28%) | 0 | 47 (7%) | 178 (27%) |
+| All 25 | 25 | 1,163 | 734 | 148 (20%) | 137 (19%) | 205 (28%) | 0 | 61 (8%) | 183 (25%) |
+
+Means in ms [measured, the leader's trace and a1's `server-timing`]. Over all merges the queue (freeze wait and held)
+is 37 to 40% too, and `rest` is smaller (14 to 20%). Run 4's slowest merge, 1,664: commit 1,059 = freeze wait 430 + held 113 + own round 178 + confirm 75 + rest 264.
+
+- **Apply reads 0.** Applied is traced right after the ack's turn, and a busy isolate's clock reads its last I/O, so
+  apply's CPU (p50 6, p90 13 ms an entry on run 4, `tests/fanout/b029join.py`) lands in the confirm and rest columns [inference].
+  The leader ran at 0.13 to 0.15 vCPU with 0 ticker lags; apply and the deferred transaction were 5.9 to 13.4 ms of
+  CPU in a near round of 139 to 325 ms.
+- **The own round is the wire.** Near rounds p50 / p90 / p99 164 / 212 / 304 ms on run 4; the merges' own rounds sit
+  inside that.
+- **The queue is 39%.** Freeze wait and held together are 285 ms of the slowest tenth's 734: a merge waits for the next
+  cut and then for the entry in flight, as `reask-read` left it.
+
+**What-ifs** on the same merges (`mergecommit.py`), merge:only p99 as the run's slowest merge:
+
+| Change | Run 2 | Run 3 | Run 4 | Median of run p99s |
+| --- | --- | --- | --- | --- |
+| Now | 1,254 | 1,663 | 1,664 | 1,663 |
+| No held (the bound on any freeze-rule change) | 1,222 | 1,527 | 1,551 | 1,527 |
+| No held and no freeze wait | 1,072 | 1,378 | 1,122 | 1,122 |
+| Own round × 0.9 (a generous leader CPU lever) | 1,228 | 1,638 | 1,646 | 1,638 |
+
+**What already merged or priced moves it:**
+
+- **G39 (`catchup-lag`, merged):** no. It is the git shard's catch-up; every merge here read `catchup` 0 in the shard's
+  timing, and the shard's work sits in `merge_plan`, outside the commit stage.
+- **F113 (`removed-read`, merged):** no. It answers a read-index read at a removed voter; a merge's commit is a
+  `/commit` to the leader, and these groups ran their first-generation voters with 0 leader changes.
+- **LM-1's levers:** `read-memo` already ran in every one of these runs (main `327ac2bb` and `53d4b6d7` contain it).
+  `encode-once` (3 to 11% of leader CPU an entry), `seal-batch` (2 to 3%) and `learner-relay` (2 to 12%) are priced
+  and not built; on these hosts the leader's whole joined CPU in a slow round is 24 to 28.5 ms of 252 to 325, so even
+  the generous ×0.9 on the own round moves the median 25 ms [inference]. They are slow-host levers (A41), not this tail.
+- **What would move it** is the queue: only a freeze-rule change reaches held (at most 1,663 → 1,527), and nothing
+  merged or priced removes the freeze wait. The last attempt at that window, `human-join`, stays reverted
+  (`decisions/DECISIONS.md`, "`human-join`"). B0-29 passes without it, so this is recorded, not proposed.
+
+```
+python3 tests/fanout/mergecommit.py b9m3f4 2026-11-23T21:59:44Z
+```
+
 ## Run 1, ruled invalid: the cron refold
 
 - **The fault.** An orb service reran the site and edge day script when it exited. Its second pass (from 19:32:05Z)
@@ -125,7 +180,7 @@ minute at journey 9's rate and is summed in one statement inside the alarm, so a
 ## Raw data
 
 `tests/fanout/raw/`: `{rows,edge500guard}-b9m3f{1,2,3,4}.status`, `{terms,arrivals,authzreads}-b9m3f*.jsonl`,
-`shardgate-b9m3f*-b0-29-{0,1,2}.jsonl`, `tsave-b9m3f*.jsonl.xz`, a1's summary line as `a1-b9m3f*.jsonl`, and the
+`shardgate-b9m3f*-b0-29-{0,1,2}.jsonl`, `tsave-b9m3f*.jsonl.xz`, `mergestarts-b9m3f{2,3,4}.jsonl`, a1's summary line as `a1-b9m3f*.jsonl`, and the
 leaders' Workers Logs in `wl-29/b9m3f*-f0.json.xz`.
 
 ```
