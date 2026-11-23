@@ -1,0 +1,29 @@
+06:03:04 check row start, main bb64b0ff; cost so far today: 
+06:03:05 token graft-m4a-ops-deploy-3 minted (7f82092e) and patched into graft-m4a-ops-deploy-token
+06:03:23 baseline: graft-m4a $6.41 for 2026-11-23 to 06:03Z; row stop $5 from 06:03Z
+06:03:23 site day 70 (test-faults, setup) start from bb64b0ff
+06:04:43 site day 70 done, EXIT 0; site crons removed: [] [] [] 
+06:04:53 bundles: r5 5d0ba4e9, r6 761a720d (r5 + site/marker.js), build of bb64b0ff test-faults
+06:06:20 bundle r7 44f1ddfe (r5 + marker ck-r7); r5, r6, r7 in graft-m4a-releases
+06:12:50 reretire OK
+06:13:45 graft-m4a-ops c69a786b: exec-ck-pass.json (GATE=pass, setup only), step_min_entries 50, no OPS_KILL, 60 s dwells, cron * * * * *
+06:13:45 loggers started (gate.txt, health.txt); bench: 160 c-homed chains from observers 0 and 1 (2 x 6 x 5 puts/s), 120 a/b-homed chains (4 x 4)
+06:16:57 bench restarted: c-homed 160 chains (repo:7390000-059, 7390400-499) from observers 0 and 1, 2 x 6 workers x 5 puts/s; a/b-homed 40 chains from observer 0, 3 x 4
+06:16:58 SETUP (unjudged): posting SiteDay{c, R5} with GATE=pass; it moves c to a VERSION build so R5 is a real N for the judged day
+06:17:01 intent-setup-c-R5 -> {"message":"release 5d0ba4e94464d614a5c7f043c49fa60cb5803ccb056b5c75a777e2ebfde9f6e9 has no ReleaseUploaded","refusal":"NoUpload","status":422}
+06:19:21 ops cron re-PUT (the deploy's trigger did not fire, as in BF-39)
+06:20:27 ops cron removed and re-added (new created_on)
+06:32:30 graft-ops: first cron run 06:22Z (schedule propagation, as BF-39); ReleaseUploaded R5/R6/R7 at entries 136-138
+06:32:30 SETUP (unjudged, GATE=pass): posting SiteDay{c, R5}
+06:32:32 intent-setup-c-R5 -> {"digest":"56d9b999623c20caf58bbd2b4bbaf6e11a7b0457d4cee5b7caac63e1461b3d33","index":834,"status":201}
+06:40:54 SETUP done: SiteDay{c, R5} entries 139-150 (06:32:52Z to 06:40:20Z group time), c on R5 1704e715 at 100%, site_release c = R5. Cost so far $3.17
+06:41:21 graft-m4a-ops 180afaf7: exec-ck-real.json, GATE unset (the real gate), step_min_entries 50 (turns only Starved into Pass), 60 s dwells
+06:41:21 JUDGED: posting SiteDay{c, R6}, GATE unset, undo Rollback{c, R5}; N = R5 1704e715
+06:41:23 intent-judged-c-R6 -> {"digest":"b604df97dadfb37ff94d576165b7ec6ba0a94dcb1e50ed5400bd478a8a2613df","index":847,"status":201}
+06:47:56 JUDGED day breached at 10% on GATE_ACK_RATE: N+1 c7687c36 9944 bp of about 180 AppendEntries (100 entries), N 1704e715 10000 bp; Rollback{c, R5} committed and ran; IntentDone 06:47Z. Ops cron removed at 06:47:56 to hold before the drain leg
+06:48:33 STOP: row at $4.20 of $5 by acctcost from 06:03Z; bench stopping, drain leg and slow-apply leg not run
+06:56:11 ops schedule still fired Idle runs to 06:56Z after its 06:47:56 removal; reset (yearly cron, then []) at 06:56:11
+06:59:13 idle: no graft-ops run from 06:56:14Z to 06:59:02Z
+06:59:33 token graft-m4a-ops-deploy-3 (7f82092e) revoked; file shredded
+06:59:35 scratch Worker graft-m4a-ck-edge deleted; ck.token shredded
+07:00:33 end state: count 161, last SiteMode Normal c at 158, so drained []; c 1704e715 (R5) 100%, a 31436419, b ef13b1dc (day 70); edge f4e193b9 100% / dd713c1c 0%, /api/v3/meta 200; ops 8e90328d GATE=pending, schedules []; c leads 6 of 6 sampled home chains at 07:00Z
