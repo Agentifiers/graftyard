@@ -1,0 +1,87 @@
+diff --git a/crates/lookup/src/lib.rs b/crates/lookup/src/lib.rs
+index 690484981..bb16ce349 100644
+--- a/crates/lookup/src/lib.rs
++++ b/crates/lookup/src/lib.rs
+@@ -1285,7 +1285,12 @@ async fn spread_once(
+         if usable {
+             let v = answers.pop().flatten().map(|(_, v)| v).unwrap_or_default();
+             learn_leader_from_follower(chain, &v);
+-            refresh_config(b, chain, &t, &v).await;
++            {
++                let (env, sites, t, v) = (b.env.clone(), b.sites.clone(), t.clone(), v.clone());
++                worker::wasm_bindgen_futures::spawn_local(async move {
++                    refresh_config(&Bindings { env: &env, sites: &sites }, chain, &t, &v).await;
++                });
++            }
+             note(&tries, "use");
+             return Ok(Ok(Some((v, Step::Cached, t))));
+         }
+diff --git a/workers/edge/src/lib.rs b/workers/edge/src/lib.rs
+index ece5f31a0..7222eb64b 100644
+--- a/workers/edge/src/lib.rs
++++ b/workers/edge/src/lib.rs
+@@ -410,7 +410,7 @@ async fn read_gate(
+         });
+     };
+     // Only a read-class request shares (`colo-gate`); a write reads members as before, its leader binding the answer.
+-    let share = c.read_class.get() && !colo_off(c);
++    let share = (c.read_class.get() || c.decided.get()) && !colo_off(c);
+     let url = colo::gate_url(repo.id, k.1, &repo.record);
+     let io = GateIo { c, repo, who, key: k, url, beside: std::cell::RefCell::new(beside) };
+     // Boxed for the same reason: with `beside` the gate holds both its fresh read and the rows read beside the front.
+@@ -988,10 +988,17 @@ pub(crate) async fn install_authz(c: &Ctx<'_>) -> Option<graftyard_identity::Aut
+     }
+     let read = async {
+         let account = graftyard_identity::install_account();
+-        let record = placement(c, account).await.ok()??;
+-        authz_fold(c, account, &record).await
++        let guess = match rcache::last(&rcache::PLACEMENTS, &account) {
++            Some(r) => Some(r),
++            None => c.system_record(ChainId::Names(account_shard(account))).await.ok(),
++        };
++        let read = |r: PlacementRecord| async move { authz_read(c, account, &r).await };
++        let started = guess.map(|r| (r.clone(), read(r)));
++        link(started, placement(c, account), read).await.ok()?.map(|(_, f)| f)
+     };
+-    let got = read.await;
++    // Boxed: the link holds two `Authz` reads, and inline in `fetch`'s future it took the edge past wasm's 1 MiB
++    // stack on every request, as `beside` did (`tests/edgeboot/run.sh`).
++    let got = Box::pin(read).await;
+     c.install.replace(Some(got.clone()));
+     got
+ }
+@@ -3938,6 +3945,16 @@ async fn serve(
+         if dumb {
+             return Ok(None);
+         }
++        // Under 32.8 every push reads the install's `Authz` whoever sent it (`needs_install`), so it starts beside
++        // the token's read rather than after it.
++        if rpc_push && c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT) {
++            let (who, _) = Box::pin(futures_util::future::join(
++                api::timed(&c, "auth", authenticate(&c, &req)),
++                api::timed(&c, "install", install_authz(&c)),
++            ))
++            .await;
++            return Ok::<_, Error>(who?);
++        }
+         let who = api::timed(&c, "auth", authenticate(&c, &req)).await?;
+         if rpc_push && who.as_ref().is_some_and(|w| needs_install(&c, w)) {
+             api::timed(&c, "install", install_authz(&c)).await;
+@@ -3948,7 +3965,7 @@ async fn serve(
+     // data center's link entry, and starts the read gate's access rows on it beside the front, unless a shared gate
+     // entry will answer the gate; the gate keeps those rows only if the resolve names the same repository.
+     let own = held_guess(&owner).is_some();
+-    let link = (read_class && !dumb && !own && !colo_off(&c))
++    let link = ((read_class || c.decided.get()) && !dumb && !own && !colo_off(&c))
+         .then(|| Some(colo::link_url(&Login::parse(&owner).ok()?.key(), &RepoName::parse(&name).ok()?.key())))
+         .flatten();
+     let linked = match &link {
+@@ -3975,7 +3992,7 @@ async fn serve(
+         },
+     );
+     let mut side = match &linked {
+-        Some(g) if !gate_shared(&c, &req, g).await? => Some(beside_start(&c, g.clone())),
++        Some(g) if read_class && !gate_shared(&c, &req, g).await? => Some(beside_start(&c, g.clone())),
+         _ => None,
+     };
+     let both =

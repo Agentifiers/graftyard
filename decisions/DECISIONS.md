@@ -8358,3 +8358,101 @@ AM2-WP3's.
   revokes the grant. A code would then need its own once-row on a `Tokens` shard instead of the generation.
 - **Bind order.** Move `McpScoped` before the store if the extra `Tokens` revoke on refusal shows in a hosted row as a
   cost.
+
+### `cold-write`: a push's install read starts beside the token, learner refreshes stop holding reads, and receive-pack shares the colo link and gate entries, 2026-11-23
+
+**Status.** Proposed, design only (branch `f112-cold-write`), for F112. Nothing is built. Every lever was
+prototyped and measured on `tests/coldwrite/` and then reverted; the prototype of A, B, C and E is `tests/coldwrite/proto.diff`. The
+change is edge and `crates/lookup` only (the site links `crates/lookup`, but B changes only when a spread read
+answers), so it ships on an edge day. If B's change to the site's own `read_spread` callers is wanted on the sites
+too, it waits for a site day and changes nothing until then. Both edgeboot builds gate it: the prototype's new
+futures, unboxed, overflowed wasm's stack on every request (`RuntimeError: unreachable`) until boxed, as `beside` did.
+
+**Decision.** There are four changes. Each keeps every answer one the request's own fresh reads would give, or one
+that `colo-gate`'s stamp rule already bounds.
+- **A. The install read starts beside the token.** Under 32.8, every push reads the install's `Authz`
+  (`needs_install`), so a receive-pack POST starts it together with `authenticate` and `resolve`, not after
+  `authenticate`. Its `Placement` read and its fold read are chained (`link`) on the isolate's last `Placement` answer
+  for the install account, or on the genesis `Names` record that `after_genesis` wrote it with. A fold read on a
+  guessed record is kept only if the `Placement` read names that record, so the answer is never the guess. Below 32.8,
+  the install read starts after the token, as now.
+- **B. A learner refresh no longer holds the read that found it.** When a spread read's answer names a config index
+  past the one the isolate holds, `refresh_config` reads that member's `/status` to learn the group's learners. It
+  now runs after the read answers: the lookup records the refresh as pending, and the edge runs pending refreshes in
+  `waitUntil` after its reply (the prototype spawned it, which a request's I/O rules forbid, `lookup-poll`). The read's answer is the one it got. Learners only route later reads, so nothing a
+  read sees changes.
+- **C. Receive-pack shares the data center's gate entry.** The advertisement and the POST both put a fresh `Allow`
+  under `colo-gate`'s key and stamp rule. The POST also serves its gate from that entry or the isolate's, while the
+  stamp is under `READ_CACHE` less `COLO_SKEW`. The advertisement still decides on a fresh read, since nothing after
+  it would refuse a revoked token (`git_decided`). The POST does not re-read ahead (`COLO_AHEAD`). Its rows read
+  beside the front stays off, since a push's gate reads the agent rows too (`push_rows`).
+- **E. Receive-pack takes the data center's link guess for `resolve`.** As a fetch does under `beside`, the guess
+  only addresses `resolve`'s chained reads, and a later read is kept only if the reads before it answered the same
+  account and record. It reads no rows beside the front.
+
+**Why.**
+- **Where the time went.** On the bed's base build, a cold isolate's first POST read members in this order: token
+  and login; then owner and install `Placement`; then the owner's name read and the install's fold read; then a
+  `/status` for each `Authz` group; then the repository's rows and the owner's `Authz`; then a `/status` on the
+  repository. That is five serial round trips before validate. The first read of each group paid a second round
+  trip for `/status`, three times per cold push (`tests/coldwrite/README.md`, "Where a cold POST's front and gate
+  go"). Wasm start is not the cost: `auth` took 67 to 75 ms against one 62 ms round trip, and the edge reports an
+  8 ms startup time.
+- **The measured cut.** On the bed, six cold first POSTs per arm, median (range), in ms:
+  - front + gate: base 602 (583 to 651); A 478; A+B 393; A+B+C 268 (201 to 302); A+B+C+E 163 (104 to 168);
+  - front: 452 on base, 160 with all four;
+  - gate: 148 on base, 2 with C.
+  Warm POSTs stayed at front 160 to 171 ms in every arm [measured, `tests/coldwrite/raw/`].
+- **Hosted, an inference.** B0-34 mt18's straddlers paid `install` 684 to 800 ms after `auth` 71 to 86. That fits
+  three serial reads, with spread reads on far learners: `Placement`, the fold, and `/status`. A and B leave one fold
+  read. Front would then be set by the longer of `resolve` and that read, and E makes `resolve` one round. A cold
+  push's POST usually lands on another isolate than its advertisement: mt18's POSTs paid `auth`, which a same-isolate
+  advertisement would have filled. Under C, that advertisement's put answers the POST's gate. Projected front plus
+  gate: about 0.3 to 0.5 s, against 1.0 to 1.15 s [inference].
+- **Safety of C.**
+  - The POST's `decide` re-reads the credential and the owner's `Authz` and binds (`may_write`, `check_credential`).
+  - `write-identity` already lets a POST place and validate a pack under a token revoked within `READ_CACHE`, before
+    that refusal. C extends the same bound, under the same stamp, to a grant removed within `READ_CACHE`. The sweeper
+    deletes the placed pack.
+  - No byte of the repository reaches the client before `decide`: the POST's answer is the leader's report-status.
+  - The advertisement, which does send refs, keeps its fresh gate.
+- **Safety of A and E.** They are `chained`'s rule: guesses address reads, never answer them.
+
+**What it beat.**
+- **D: a write takes an install `Authz` and `Placement` up to `READ_CACHE` old.** It is safe, since only an App's
+  push uses the edge's install fold for anything `decide` does not re-read. But on the bed it changed only a warm
+  POST's `install` (to 0), not its front, which `resolve` sets (`raw/abcd.txt`).
+- **Prefetch on an isolate's first request.** The request that pays is the first one. On mt18 the cost fell on
+  first pushes from new clients, whose POST did not share an isolate with the advertisement before it.
+- **Sharing the gate's owner `Authz` read with `resolve`'s name read.** They are one group, but `resolve` reads
+  `{"repo": name}`, not the fold. C removes the gate's read altogether on the common path.
+- **A write sharing the colo entry with no fresh put from the advertisement.** On a cold colo the POST would find
+  nothing. The advertisement's put is what makes C serve a new client's first push.
+
+**Evidence.**
+- `tests/coldwrite/` (`run.sh`, `seed.mjs`, `push.mjs`, `site.mjs`, `driver.mjs`, `README.md`, `raw/`).
+- `tests/am1/raw/a1-pushes-b0-34-mws7hr33.jsonl` on branch `b034-mt18`.
+
+**Plan once approved.**
+- A, B, C and E in `workers/edge/src/lib.rs` (`install_authz`, the git `auth` future, the `resolve` link guess,
+  `read_gate`'s `share`, split into match and put) and `crates/lookup` (`refresh_config` pending, drained by the
+  edge).
+- Tests: `colo::gate` with match and put split (an advertisement puts and never matches; a POST matches only under
+  the stamp rule and never re-reads ahead), and `install_authz`'s chained read keeping a guessed fold only when the
+  `Placement` read names its record.
+- A plant number from the lead.
+- Both edgeboot builds, then the bed rerun on the built head.
+
+**Flip.**
+- **C.**
+  - Any POST gate served from an entry whose stamp was past `READ_CACHE` at the time: turn C off, as for
+    `colo-gate`.
+  - More than 0.1% of a row's pushes allowed at a shared gate and then refused `Forbidden` or `Unauthorized` at
+    `decide` [guess]: the placed and swept packs are then a cost.
+- **B.** A row whose spread reads go to voters more than before (learners not learned): await the refresh again
+  for the first read of a group.
+- **A.** Install `Authz` reads per push above 1.0 on a row with refused-at-auth pushes: start it after the token
+  again below a token answer.
+- **The whole change.** A hosted row whose cold-isolate first POSTs show front plus gate p50 no better than 0.6 s
+  (the base being 1.0 to 1.15 s on mt18): the bed's model is wrong. Find what the hosted path pays that the bed does
+  not before changing anything further.
