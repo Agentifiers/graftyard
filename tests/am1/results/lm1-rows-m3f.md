@@ -377,6 +377,100 @@ Batching every table instead stays under 4% of leader CPU on either row. The pro
 
 **The measured candidates on these hosts are the entry's `log`-row bytes and apply cost per KB.** They are LM-1's to design, as input to its own work.
 
+## Row m3fmA: B0-32 met at 90%, 495 of 500 on a kept 28.5 ms MIA host (2026-11-23, graft-m3f, main `5bed46af`)
+
+**Outcome: B0-32 is met at 90% on m3fmA** (orchestrator's ruling, 2026-11-23). One valid kept-host run decides it. The merge line reads as a count, as the 5 s line does: 23 of 24 `merge:only` within 2 s is 95.8%, against 90%, and no invariant is involved. No further B0-32 sets run.
+
+**What ran.**
+- **Site day and edge day m3fm** from main `5bed46af`, 22:50:08 to 23:04:44Z, `site exit 0`, `edge exit 0`. That head merges F113's `removed-read` and G39's catch-up levers.
+  - Flags as m3fa4's: test-faults, `--anchor`, `--ssh` on both days (R35), `--edge graft-m3f-edge`, `--export-bucket graft-m3f-export`, standard-4, and FORMATS through 32.26 plus 20.4 and 17.4.
+  - A new shard image, `graft-m3f-gitshard@sha256:77f1b965…` (tag m3fm), was built from `5bed46af`'s `containers/git`, because G39 changed it. sshfront `fc6eda91…` was reused.
+  - Version ids: sites a `9122106d`, b `884e864a`, c `56b7bf42`; edge `81eb863f`.
+  - The site crons were removed and reset until all five scripts read `[]`, as in B0-29's day script after its run 1.
+- **Set m3fm:** `tests/fanout/guardrow-m3f.sh` from `5bed46af` with `GUARD_LINE_MS=40`, `LEARNERS=enam:1000,weur:2000,apac:2000` (5 learners, placed weur, apac, enam, weur, apac), `RUN_STOP_USD=10`. Log: `tests/fanout/raw/guardrow-m3fm.log`.
+- **Spend:** graft-m3f $0.59 from 22:50:08Z, against the $10 run stop; $15.93 for the UTC day, against $40. Repository 65629 was retired and purged (3,187 objects, second pass 0). `SWEEP2 OK`, and a later sweep found no shard running. graft-m3f went back to B0-29 at 23:29Z.
+- **Committed raw files:**
+  - `tests/fanout/raw/{rows,admit,terms,vmem,retirenets,shardgate}-m3fmA*`, `arrivals-m3fmA.jsonl` and `tsave-m3fmA-b0-32.jsonl.xz`;
+  - `guardrow-m3fm.log`, `reretire-graft-m3f-m3fm.log` and `purge-m3fm.log`;
+  - the leader's Workers Logs (`wl-m3/m3fmA-b0-32-f0.json.xz`) and site 1's removed voter's (`wl-m3/m3fmA-b0-32-site1-1f1.json.xz`: timestamp, wall, CPU, path and outcome only);
+  - the home and pool shards' catch-up lines (`culag-m3fmA.json.xz`);
+  - `lm1-rows-m3f-data/m3fmA-raw/`: the client's summary and its 24 `merge:only` steps (`merge-steps-b0-32-mwtvuboq.jsonl`).
+
+| Set | Placement | Repository | hostguard (ms a setup commit) | Leader colo (f0) | Line | Verdict |
+|---|---|---|---|---|---|---|
+| m3fm | A | 65629 | **28.5** | **MIA** | 40 | **keep**; loaded |
+
+**m3fmA** (run `mwtvuboq`): 5 learners, k 4, leader site 0 term 2. Load from 23:16:57Z for 180 s, burst from 23:17:58Z, done line 23:20:40Z exit 0. Harness outage 2 s (1.1%), valid. Site 1's voter was replaced in setup (`#1#f1` → `#2#f1`), as on m3fk2B.
+
+| Line | m3fmA | m3fk2B |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `full` | **495 of 500** (494 `ok` within 5 s, 1 `full`); 450 needed. 500 of 500 at 6 s | 447 (430 `ok`, 17 `full`) |
+| No other refusal shape | pass: `full` only | pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | pass: peak 138,091 B | pass: 135,031 B |
+| Merges, none over 2 s | **23 of 24 `merge:only` within 2 s (95.8%), met at 90%**; the one over took 2,703 ms | 3 of 22 over (15.3, 14.4, 10.1 s) |
+| Zero leader changes | pass | pass |
+| Zero `suspect` | pass: 0 (0 asks, 0 missed); leader peers 0 failed calls | pass |
+
+- **The burst's `ok` pushes:** total p50 3,275 ms, p90 4,486, p99 5,025, max 5,358 (m3fk2B: p50 4,031, p99 5,278). Stage p50 / p90:
+  - install 440 / 664, `rcwait` 400 / 1,320, front 460 / 680;
+  - gate 338 / 754, of which `gate_rows` 105 / 718;
+  - context 0 / 964, validate 710 / 1,167, last commit 1,458 / 1,816.
+- **The 5 late pushes** were over 5 s by 25 to 358 ms. Each began its repository read with `L2:ov`, a learner on site 2 that shed at about 1.15 s, and was then served by L1 or L2. None began on F1.
+- **The one slow merge** (23:18:23Z, 2,703 ms on edge time): `merge_plan` 2,063 ms; the shard's split is `merge` 1,960, `waited` 1,309, `catchup` 475; commit 555. The home shard `git#0#net:65629` was in a run of capped catch-up pieces from 23:18:17.6 to 23:18:24.1Z: six pieces of 57 to 62 stored packs each, one log index per piece, at 1,081 to 1,513 ms of ingest a piece. The merge's head was in that run. Every other merge took at most 1,253 ms (p50 882). It is G39's long tail (`decisions/OPEN-QUESTIONS.md`, G39), not built for here.
+
+### F113's flip, read on this row: held [measured]
+
+`removed-read` (`decisions/DECISIONS.md`) ships on this site day. Site 1's first-generation voter `repo:65629#1#f1` was replaced by `#2#f1` in setup.
+
+| Read | m3fk2B (before) | m3fmA (after) |
+|---|---|---|
+| F1's answers on repository spread passes | `ov` 158 at about 1.18 s, `ok` 0 | **`nl` 89 at p50 169 ms (max 308), `ov` 0** |
+| Passes that asked F1 twice | — | 0 |
+| Late pushes whose pass began on F1 | 49 of 53 | **0 of 5** |
+| Leader `IndexTaken` from the removed member's boot | 457 (42 in the burst's first 10 s) | **10, all in setup (23:12:15 to 23:13:43Z); 0 in load** |
+| The removed member's `/read`s in the burst (Workers Logs) | 169, wall p50 1,013 ms, no `/raft` | 98 in 23:17:50 to 23:18:30Z, wall p50 0 ms, max 129 |
+
+- The `IndexTaken` count is from the leader's tsave rows of kind 5, grouped by `(peer, batch >> 32)`. The boot is site 1's, and site 1's own trace (`#2#f1`) never sent it, as on m3fk2B.
+- Neither back-out condition holds. No pass asked the removed name again after its `notLeader`, `suspect` stayed at 0, and the leader's `ReadIndex` count from the removed member fell to 0 in load.
+
+### The leader's burst CPU and its learner bill ($0) [measured]
+
+- **`heavyturns.py m3fmA-b0-32`** (552 `/raft` slices, 1.06 ms CPU a slice):
+  - apply 44% at 0.63 ms an event: 45 events, 64 KB and 90 statements queued an entry, 28.4 ms an entry;
+  - deferred transaction 13% at 0.12 ms a statement (67 a transaction, 8.2 ms);
+  - storage confirm mean 3.5 ms; cuts and sends 12%.
+  - Against m3fk2B: 0.47 ms an event, 0.14 ms a statement, confirm 5.3 ms. Apply per KB queued is r 0.90 here.
+- **`learnercost.py m3fmA-b0-32`** (21 entries in 6 s, 0.36 ms a call): all learners **12.0 ms an entry**, against **16.9 ms** on m3fk2B with 8 learners. By region:
+  - weur (2 learners): 4.8 (read-index 3.0);
+  - apac (2): 4.6 (held entries 1.7);
+  - enam (1): 2.6, against 8.8 for m3fk2B's four.
+  - By kind: read-index 6.4 (8.1 before), append replies 2.0 (3.0), held entries 3.1 (4.8), other 0.5 (0.9).
+  - With one enam learner, enam's read-index asks moved to weur, as expected [inference]. That is inside the 9 to 13 ms estimated before the row.
+- **The learner-backed lines still ran:**
+  - the learner gate held 5 of 5 learners within one entry;
+  - 226 of the 500 burst pushes' repository passes were served by a learner (first tries L0 69, L1 75, L2 82), and 274 by a follower;
+  - L2's 13 `ov` answers at about 1.15 s were the late learner that ROUTE_LATE scores out;
+  - the feed's polls were held on all 5 learners (holds 2,430 to 4,057 each) and on no voter: 12,720 events, p50 1,106 ms, p99 2,870.
+
+### G39 on the home shard ($0) [measured, `tests/fanout/culag.py`, `culag-m3fmA.json.xz`]
+
+| Shard | Pieces with stored packs | Packs a piece | KB a pack | ms a piece: wall / room / read / ingest | ms a pack: wall / ingest / index | Packs a second |
+|---|---|---|---|---|---|---|
+| `git#0#net:65629` (home) | 94 | 6.7 | 274 | 372 / 9 / 114 / 243 | 55.4 / 36.1 / 11.4 | **18.0** |
+| `git#0#pool:3` | 72 | 8.8 | 274 | 429 / 8 / 124 / 291 | 48.9 / 33.2 / 11.6 | 20.4 |
+| `git#0#pool:4` | 75 | 8.4 | 274 | 571 / 10 / 149 / 403 | 67.9 / 47.8 / 14.8 | 14.7 |
+| `git#0#pool:6` | 74 | 8.5 | 274 | 434 / 11 / 137 / 275 | 50.9 / 32.3 / 12.7 | 19.6 |
+
+- Over all its catch-up lines the home logged:
+  - 410 pieces and 631 stored packs;
+  - **`room_calls` 401**: at most 1 a piece, never more than one in a piece;
+  - **`batches` 143**: calls that ingested more than one stored pack;
+  - **`adopted` 195**.
+- The pools logged 130 to 156 `room_calls`, 142 to 158 batches and 144 to 146 adopted, each for 631 packs.
+- `make_room` is now 9 ms a piece on the home (erDA: 16 ms a pack, growing).
+- **The home stayed level with the first pool shard:** p50 −0.2 to 0.0 s behind at every 30 s step of the load, and max 0.2 to 0.5 s. The exception is the last bin (+180 s, n 18), whose max was 14.1 s after load end. erDA ended 150 s behind.
+- At 18.0 packs a second the home sits inside the pools' 14.7 to 20.4, against erDA's 11.8. B0-32's offered rate is lower than B0-33's 18 a second, so this row does not settle G39's target of over 19.2 packs a second [inference].
+
 ## Rows m3fk and m3fk2: B0-32's gate set, 447 of 500 on a kept 33.9 ms MIA host (2026-11-23, graft-m3f)
 
 **Outcome: m3fk2B is a valid fail on two lines** (orchestrator's ruling): within 5 s, at 447 of 500 against 450, and merges, with 3 of 22 `merge:only` over 2 s. B0-32 is not met, and no more sets run. m3fk kept no host, which is not a fail.

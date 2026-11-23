@@ -1,0 +1,6 @@
+2026-11-23T23:04:58Z start 5bed46af, run stop $10 on graft-m3f from 2026-11-23T22:50:08Z, guard line 40 ms
+2026-11-23T23:11:13Z placement A (m3fmA) starts
+2026-11-23T23:16:12Z placement A repo 65629 hostguard repo:65629#1#f0: keep, 28.5 ms of leader CPU a setup commit (41 commits, 1167 ms, line 40.0); load released
+2026-11-23T23:22:57Z placement A done: 2026-11-23T23:20:47Z b0-32 fm3fmA-b032 65629 done exit 0
+2026-11-23T23:25:22Z placement A retire and purge of 65629 exit 0: 2026-11-23T23:25:22.470Z purge: {"dry": false, "purged": 1, "objects": 3187, "refused": [], "second": 0}
+GUARDm3fmDONE
