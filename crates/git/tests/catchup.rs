@@ -1508,13 +1508,15 @@ fn warm_to_10(b: &Bed) {
 }
 
 /// G39 (`decisions/DECISIONS.md`, "`catchup-lag`"): a run's pieces share one `Run`, so the run asks `make_room` once per
-/// `ROOM_EVERY`, as one call to the head would. Before, every piece walked the disk: B0-33 erDA's home shard spent
-/// 16 ms a pack there, and took 11.8 packs a second against 18 offered (`tests/am1/results/catchup-lag-design.md`).
+/// `ROOM_EVERY` and reads each log page once, as one call to the head would. Before, every piece walked the disk and
+/// read its page again from the cursor: B0-33 erDA's home shard spent 16 and 17 to 21 ms a pack there, and took 11.8
+/// packs a second against 18 offered (`tests/am1/results/catchup-lag-design.md`).
 #[test]
-fn a_runs_pieces_walk_the_disk_once() {
+fn a_runs_pieces_walk_the_disk_once_and_read_each_page_once() {
     let b = bed(100, 0, 1);
     warm_to_10(&b);
-    let (rooms, ingests) = (b.disk.rooms.get(), b.disk.ingests.get());
+    let (rooms, reads, served, ingests) =
+        (b.disk.rooms.get(), b.log.calls.get(), b.log.served.get(), b.disk.ingests.get());
     let mut run = Run::default();
     let mut pieces = Vec::new();
     loop {
@@ -1527,6 +1529,8 @@ fn a_runs_pieces_walk_the_disk_once() {
     // 90 stored packs, one an entry, all in one 600 KB page (a stored pack counts 100 bytes there): 32, 32, 26.
     assert_eq!(pieces, vec![(32, 1), (32, 0), (26, 0)], "one disk walk for the run, in its first piece");
     assert_eq!(b.disk.rooms.get() - rooms, 1);
+    assert_eq!(b.log.calls.get() - reads, 1, "the page is read once, not once a piece");
+    assert_eq!(b.log.served.get() - served, 90, "no entry is read twice");
     assert_eq!(b.disk.ingests.get() - ingests, 90, "no pack is ingested twice");
     assert!(run.until.is_none(), "the run's last piece leaves nothing to carry");
     b.assert_serves_head();
@@ -1538,4 +1542,34 @@ fn a_runs_pieces_walk_the_disk_once() {
     b.log.entries.borrow_mut().push(more.log.entries.borrow()[100].clone());
     let r = block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], PIECE, &mut run, &|| 0)).unwrap();
     assert_eq!((r.packs, r.room_calls, r.behind), (1, 1, false));
+}
+
+/// A carried tail is used only while it starts just past the cursor: a cursor that moved between two pieces (here
+/// another run's) reads its page again rather than applying entries the disk already holds or skipping some.
+#[test]
+fn a_carried_tail_past_the_cursor_is_read_again() {
+    let b = bed(100, 0, 1);
+    warm_to_10(&b);
+    let mut run = Run::default();
+    let first = block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], PIECE, &mut run, &|| 0)).unwrap();
+    assert!(first.behind);
+    // Another run takes the cursor to 60 between the pieces; this run's tail starts at 43.
+    let mut other = Run::default();
+    let cap = Piece { packs: 18, bytes: u64::MAX };
+    let r = block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], cap, &mut other, &|| 0)).unwrap();
+    assert_eq!(r.cursor.at(CHAIN), Index(60));
+    let (reads, ingests) = (b.log.calls.get(), b.disk.ingests.get());
+    let mut pieces = 0;
+    loop {
+        pieces += 1;
+        let r = block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], PIECE, &mut run, &|| 0))
+            .unwrap_or_else(|e| panic!("{}", e.0));
+        if !r.behind {
+            break;
+        }
+    }
+    assert_eq!(pieces, 2, "61..=100 in two pieces");
+    assert!(b.log.calls.get() > reads, "the page from 61 is read, not the tail from 43");
+    assert_eq!(b.disk.ingests.get() - ingests, 40, "61..=100 once each");
+    b.assert_serves_head();
 }

@@ -502,7 +502,8 @@ impl Jobs {
     /// `warming` key while it runs so the shard's alarm can restart it after a reset. It runs in pieces of at most
     /// `graftyard_git::catchup::PIECE`, each toward the head the first read, and wakes every waiter after each piece,
     /// so a held validate or a merge that misses a commit tries again on the disk between pieces (`catchup-pieces`).
-    /// The pieces share one `Run`, which carries the room budget (`catchup-lag`).
+    /// The pieces share one `Run`, which carries the room budget and the entries read and not yet applied
+    /// (`catchup-lag`).
     fn start(&self) {
         let started = RUNS.with(|r| {
             let mut r = r.borrow_mut();

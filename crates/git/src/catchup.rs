@@ -17,7 +17,8 @@
 //! - **A run goes in pieces.** One call applies at most a `Piece` of whole entries and saves its cursor; the shard
 //!   wakes whoever waits and calls again toward the same head (`Run`), so a validate or merge waiting on the disk
 //!   gets a turn between pieces instead of waiting out a burst's whole catch-up. The `Run` also carries the room
-//!   budget, so a run of many pieces pays one disk walk per `ROOM_EVERY`, as one call to the head does.
+//!   budget and the entries a piece read and did not apply, so a run of many pieces pays one disk walk per
+//!   `ROOM_EVERY` and reads each page once, as one call to the head does.
 //! - **Every page is saved before the next is applied.** Catch-up saves its cursor after each page. Rehydrate saves its
 //!   tail cursor after each page and skips the stored packs the container already holds (`ShardIo::have`), so a run
 //!   cut off at any point, by a caller's deadline or an isolate reset, resumes on the same disk where it stopped.
@@ -94,14 +95,17 @@ pub const WHOLE: Piece = Piece { packs: usize::MAX, bytes: u64::MAX };
 
 /// What a catch-up run carries from one `catch_up` call, a piece, to the next (`decisions/DECISIONS.md`,
 /// "`catchup-lag`"): the head its first piece read, the `make_room` budget left, so the disk walk runs once per
-/// `ROOM_EVERY` of the run and not once a piece. Since `catchup-pieces` each piece walked the disk, about 16 ms a pack
-/// on B0-33 erDA's home shard (`tests/am1/results/catchup-lag-design.md`). `Run::default()` before a
+/// `ROOM_EVERY` of the run and not once a piece, and the entries a piece read and did not apply, so the next piece
+/// starts from them instead of reading their page again. Since `catchup-pieces` each piece paid both, about 16 and 17
+/// to 21 ms a pack on B0-33 erDA's home shard (`tests/am1/results/catchup-lag-design.md`). `Run::default()` before a
 /// run's first piece; a call that ends the run, or goes to a rehydrate, leaves it at the default again.
 #[derive(Debug, Default)]
 pub struct Run {
     /// The head the run's first piece read; `None` before it. The run's later pieces read no heads and go no further.
     pub until: Option<IngestCursor>,
     room: u64,
+    /// A chain's entries from just past the cursor, read and not applied; used only while they start there.
+    tail: Option<(ChainId, Vec<LogPacks>)>,
 }
 
 /// The container's answer to one ingest.
@@ -632,7 +636,9 @@ impl From<StoreError> for Stop {
 }
 
 /// Applies `chain`'s entries `from..=to` a page at a time, reading the next page while it applies one, until `cap`:
-/// `Ok(true)` when it stopped there, at an entry boundary with the cursor saved, before `to`.
+/// `Ok(true)` when it stopped there, at an entry boundary with the cursor saved, before `to`. `carry` holds entries
+/// read and not applied: on the way in, a previous piece's, used as the first page only when they start at `from`;
+/// on the way out, this call's, the rest of the page it stopped in (`Run`).
 #[allow(clippy::too_many_arguments)]
 async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
     io: &I,
@@ -645,12 +651,15 @@ async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
     cap: Piece,
     mode: &mut Mode<'_>,
     t: &mut Tally,
+    carry: &mut Option<Vec<LogPacks>>,
     now: &dyn Fn() -> u64,
 ) -> Result<bool, Stop> {
-    let mut ahead: Option<Result<Vec<LogPacks>, StoreError>> = None;
+    let mut ahead: Option<Result<Vec<LogPacks>, StoreError>> =
+        carry.take().filter(|c| c.first().is_some_and(|e| e.index == from)).map(Ok);
     while from <= to {
         // A later chain of a call whose piece an earlier chain filled.
         if t.took != (0, 0) && (t.took.0 >= cap.packs || t.took.1 >= cap.bytes) {
+            *carry = ahead.and_then(Result::ok);
             return Ok(true);
         }
         let mut page = match ahead.take() {
@@ -660,10 +669,11 @@ async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
         page_end(chain, from, to, &page)?;
         let k = fits(&page, t.took, cap);
         if k == 0 {
+            *carry = Some(page);
             return Ok(true);
         }
         let capped = k < page.len();
-        page.truncate(k);
+        let rest = page.split_off(k);
         let last = page_end(chain, from, to, &page)?;
         for e in &page {
             let (n, b) = weight(e);
@@ -671,7 +681,7 @@ async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
         }
         let full = capped || t.took.0 >= cap.packs || t.took.1 >= cap.bytes;
         let next = Index(last.0 + 1);
-        let held = inline_bytes(&page);
+        let held = inline_bytes(&page) + inline_bytes(&rest);
         let mut most = held;
         let apply = apply_page(io, saved, disk, chain, from, last, page, mode, t, now);
         // The next page is read beside this one only when this piece goes on to it.
@@ -688,6 +698,9 @@ async fn follow<I: ShardIo, S: Saved, L: ChainLog>(
         t.held_max = t.held_max.max(most);
         from = next;
         if full && from <= to {
+            if capped {
+                *carry = Some(rest);
+            }
             return Ok(true);
         }
     }
@@ -795,7 +808,7 @@ async fn apply_page<I: ShardIo, S: Saved>(
 /// time, at most `piece` of them (`Report::behind` when it stopped there). A run's first piece reads the heads into
 /// `run`; its later ones pass the same `run` and go no further, so the run ends at the head it started from however
 /// fast the log moves, which is what a caller waiting for a run that started after it needs. `run` also carries the
-/// room budget from piece to piece (`Run`). No cursor for the
+/// room budget and the unapplied entries from piece to piece (`Run`). No cursor for the
 /// container's disk, a cursor below a chain's first log index, or an entry from a member release that sends no ref
 /// changes, means a rehydrate. Packs whose bases the disk lacks mean the disk skipped an
 /// entry below its cursor: the cursor is dropped, so the next call rehydrates instead of failing on the same pack.
@@ -842,6 +855,7 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     // disk is a container that is gone, and goes too.
     let finishing = saved.rehydrating().await?.is_some();
     let mut t = Tally { room: carried.room, ..Tally::default() };
+    let mut carry = carried.tail;
     let mut seen = BTreeSet::new();
     // The network's own chain, first, names its default branch (G26).
     let head_ref = ends.first().and_then(|(_, b)| b.clone());
@@ -855,8 +869,27 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
             continue;
         }
         let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen };
-        match follow(io, saved, log, &disk, *chain, *range.start(), *range.end(), piece, &mut mode, &mut t, now).await {
-            Ok(capped) => behind = capped,
+        let mut tail = carry.take().filter(|(c, _)| c == chain).map(|(_, es)| es);
+        match follow(
+            io,
+            saved,
+            log,
+            &disk,
+            *chain,
+            *range.start(),
+            *range.end(),
+            piece,
+            &mut mode,
+            &mut t,
+            &mut tail,
+            now,
+        )
+        .await
+        {
+            Ok(capped) => {
+                behind = capped;
+                carry = tail.map(|es| (*chain, es));
+            }
             Err(Stop::Err(e)) => return Err(e),
             // Either way the next rehydrate starts from nothing, so a place left by an earlier one goes too.
             Err(Stop::NoRefs) => {
@@ -886,7 +919,7 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
         saved.drop_rehydrating().await?;
     }
     if behind {
-        *run = Run { until: Some(to.clone()), room: t.room };
+        *run = Run { until: Some(to.clone()), room: t.room, tail: carry };
     }
     Ok(Report {
         room_calls: t.room_calls,
@@ -1107,7 +1140,8 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         }
         let from = Index(tail_start(last.as_ref()).0.max(state.tail.at(*chain).0 + 1));
         let mut mode = Mode::Tail { state: &mut state, seen: &mut seen, consumed: &consumed };
-        match follow(io, saved, log, &disk, *chain, from, head.applied, WHOLE, &mut mode, &mut t, now).await {
+        match follow(io, saved, log, &disk, *chain, from, head.applied, WHOLE, &mut mode, &mut t, &mut None, now).await
+        {
             Ok(_) => {}
             Err(Stop::Err(e) | Stop::Unresolved(e)) => return Err(e),
             Err(Stop::NoRefs) => unreachable!("a tail applies no ref changes"),
@@ -1155,7 +1189,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         }
         let from = Index(cursor.at(*chain).0 + 1);
         let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen };
-        match follow(io, saved, log, &disk, *chain, from, end, WHOLE, &mut mode, &mut c, now).await {
+        match follow(io, saved, log, &disk, *chain, from, end, WHOLE, &mut mode, &mut c, &mut None, now).await {
             Ok(_) => {}
             Err(Stop::Err(e) | Stop::Unresolved(e)) => return Err(e),
             Err(Stop::NoRefs) => {
