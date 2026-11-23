@@ -1,0 +1,10 @@
+2026-11-23T11:49:32Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T11:49:54Z waiting 305 s for sweep runs started before the first pass (until 2026-11-23T11:55:00.000009+00:00)
+2026-11-23T11:55:20Z 65616 purged: a 7 -> 0, b 9 -> 0, c 4 -> 0
+2026-11-23T11:55:20Z 65616 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T11:55:20Z {"dry": false, "purged": 1, "objects": 20, "refused": [], "second": 0}
+2026-11-23T12:01:31Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T12:01:53Z waiting 486 s for sweep runs started before the first pass (until 2026-11-23T12:10:00.000006+00:00)
+2026-11-23T12:10:20Z 65617 purged: a 7 -> 0, b 6 -> 0, c 6 -> 0
+2026-11-23T12:10:20Z 65617 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T12:10:20Z {"dry": false, "purged": 1, "objects": 19, "refused": [], "second": 0}

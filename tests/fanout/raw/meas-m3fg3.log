@@ -1,0 +1,9 @@
+2026-11-23T12:11:38Z start 7c9a67f3
+2026-11-23T12:13:19Z guard exit 1, asking again
+2026-11-23T12:13:39Z guard exit 1, asking again
+2026-11-23T12:14:00Z guard exit 1, asking again
+2026-11-23T12:14:21Z guard exit 2, asking again
+2026-11-23T12:14:42Z guard exit 2, asking again
+2026-11-23T12:15:07Z repo 65618 hostguard repo:65618#1#f0: re-place, 55.8 ms of leader CPU a setup commit (42 commits, 2342 ms, line 28.4); colo repo:65618#1#f0 {'IAD': 4.1}; load released (measurement, any host)
+2026-11-23T12:21:52Z done: 2026-11-23T12:19:35Z b0-32 fm3fg3-b032 65618 done exit 0
+MEASDONE

@@ -1,0 +1,9 @@
+2026-11-23T11:04:10Z start ad8fd52f, run stop $3 on graft-m3f from 2026-11-23T10:49:38Z
+2026-11-23T11:09:29Z placement A (m3fgA) starts
+2026-11-23T11:11:10Z placement A guard error (exit 1), asking again
+2026-11-23T11:11:30Z placement A guard error (exit 1), asking again
+2026-11-23T11:11:50Z placement A guard error (exit 1), asking again
+2026-11-23T11:12:55Z placement A repo 65615 hostguard repo:65615#1#f0: re-place, 45.7 ms of leader CPU a setup commit (42 commits, 1920 ms, line 28.4); GUARD: a1 ends before load
+2026-11-23T11:15:40Z placement A done: 2026-11-23T11:13:37Z b0-32 fm3fgA-b032 65615 done exit 4
+2026-11-23T11:25:20Z placement A retire and purge of 65615 exit 0: 2026-11-23T11:25:20.423Z purge: {"dry": false, "purged": 1, "objects": 19, "refused": [], "second": 0}
+2026-11-23T11:25:20Z placement B (m3fgB) starts

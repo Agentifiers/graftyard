@@ -330,6 +330,96 @@ alone; gate capped at 300 ms):
 - **Row.** One B0-32 row on graft-m3f, after both users hand it back and the fix is cleared and merged: about $1, with
   a stop at $8. Better still, it runs after LM-1's cut merges, so one row reads both.
 
+## Row m3fg3: B0-32 measurement on whatever leader it got, 262 of 500 on a 55.8 ms IAD host (2026-11-23, graft-m3f)
+
+**A measurement, not a gate row** (orchestrator's ruling (b) after m3fg): one placement, loaded whatever hostguard read, to find where B0-32's own line sits. It does not count toward the gate or the two-fails rule.
+
+**Slot.**
+- Sites and edge from m3fg's site day on main `ad8fd52f`, with no read-memo. Harness from main `7c9a67f3`, through a local launcher, not committed: rows-m3f.sh with a1's `--hold-file`, released with `go` after hostguard and the colo were read, whatever the verdict. Its log is `tests/fanout/raw/meas-m3fg3.log`.
+- **Committed raw files:** `tests/fanout/raw/rows-m3fg3.status`, `{admit,terms,vmem}-m3fg3-b0-32.jsonl`, `tsave-m3fg3-b0-32.jsonl.xz`, `arrivals-m3fg3.jsonl`, `shardgate-m3fg3-b0-32-*.jsonl`, `retirenets-m3fg3.log`, `meas-m3fg3.log`, the leader's Workers Logs (`wl-m3/m3fg3-b0-32-f0.json.xz`), and `lm1-rows-m3f-data/m3fg3-raw/` (the client's summary and its 35 merge pushes). m3fg's placements: `guardrow-m3fg{,2}.log`, `rows-m3fg{A,2B,2C}.status`, their `admit`, `terms`, `vmem` and `shardgate` traces, `retirenets-m3fg*.log`, `reretire-graft-m3f-m3fg{,2}.log` and `purge-m3fg2.log`.
+- Repo 65618 (run `mwt88cn0`), 8 learners, k 4, leader site 0 term 2. Burst at the client 12:16:50Z; on the leader its first busy second was 12:16:58Z. Done line 12:19:35Z (exit 0). Harness outage 5 s (2.8%), valid.
+- Spend: graft-m3f $1.01 for the whole m3fg set (three placements and this row) from 10:49:38Z, against the $3 stop. Retired (11 names, all not joined) and purged (2,722 objects, second pass 0). The sweep at 12:28Z found no shard running, and graft-m3f went back to m3f.
+
+**The host, before load:** hostguard **55.8 ms** a setup commit (42 commits, 2,342 ms; re-place at 28.4), leader f0 in **IAD** [measured]. It is the slowest B0-32 leader on record, so the 30 to 40 ms case this row was for did not come up.
+
+| Line | m3fg3 | m3fsf2 |
+|---|---|---|
+| Every burst push acknowledged within 5 s or `full` | **262 of 500** (33 `ok` within 5 s, 229 `full`); 450 needed | 284 |
+| No other refusal shape | `full` only: 225 after a commit, 4 `bound` | pass |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | peak 221,902 B; `pressure` never true | pass |
+| Merges, none over 2 s (edge clock) | 6 of 35 over 2 s | 1 of 26 |
+| Zero leader changes | term 2, site 0 throughout | pass |
+| Zero `suspect` | **649**, from 1,103 asks | 65 |
+
+| Stage, p50 ms | m3fg3 `ok` (271) | m3fg3 late `ok` (238) | m3fsf2 `ok` | m3fsf1 `ok` |
+|---|---|---|---|---|
+| install | 527 | 534 | 560 | 1,580 |
+| `rcwait` | 720 | 760 | 760 | 1,820 |
+| gate | 0 | 0 | 419 | 544 |
+| validate | 652 | 685 | 563 | 644 |
+| last commit | **13,939** (p90 16,044) | 14,316 (p90 16,072) | 3,757 (p90 4,886) | 1,237 (p90 1,678) |
+
+- 502 pushes staged first, and 0 `ok` committed twice.
+- 6 cuts ended `AgentCmds`, each at 64 Agent commands plus 3 to 6 Human ones. The cap held.
+- `b032share.py`: a 2 s commit cap gives 499, while commit ×0.5 still gives 262. The front and gate counterfactuals move nothing. The whole loss is the commit stage.
+- **Leader burst CPU** (`heavyturns.py m3fg3-b0-32`, 591 slices; Workers Logs `wl-m3/m3fg3-b0-32-f0.json.xz`, 12:16:50 to 12:17:30Z):
+  - apply 51% at **3.97 ms an event** (22 events, 146 KB, 47 statements an entry);
+  - no traced work 25%;
+  - cuts or sends 10%;
+  - deferred transaction 9% at 0.84 ms a statement.
+  - The leader's Workers Logs show near-empty seconds between lumps, at 12:17:05, :09 and :11 [measured]. That fits a stalled isolate (A41) [inference].
+
+**A44, read with every B0-32 leader on graft-m3f** [measured, except where marked]:
+
+| Row | Colo | hostguard | Line | `ok` commit p50 | Leader ms an event applied |
+|---|---|---|---|---|---|
+| m3fsf1 | EWR | 27.3 | 323, with the front broken; about 496 with it fixed [inference] | 1,237 | 0.60 |
+| m3fhs1 | IAD | 33.6 | 364, before stage-first | 2,710 | 1.00 |
+| m3fsf2 | ORD | 52.5 | 284 | 3,757 | 1.11 |
+| m3fg3 | IAD | 55.8 | 262 | 13,939 | 3.97 |
+
+- **On graft-m3f the host is what blocks B0-32** [inference from the table]. With stage-first and the front fixed, the commit stage follows the leader's apply cost per event. That cost follows the hostguard reading. No front or gate lever moves a row at 52.5 or above.
+- So for those hosts, LM-1's statement cut is the lever. LM-1's bed split: 180 of a push entry's 187 statements are one row per push in `request`, `c_ref` and `m_provenance`. Batched, that is about 10 [measured, bed]. Its hosted effect depends on how much of a statement's cost is per call, which is unknown.
+- **Whether 28.4 is too strict for B0-32 is still unmeasured.** No stage-first B0-32 row has loaded between 27.3 and 52.5. In m3fg the guard re-placed 30.7 (IAD) and 37.9 (ORD).
+- This row does not count as the gate.
+
+## Row m3fg: B0-32's first guarded gate row, three placements re-placed, no load (2026-11-23, graft-m3f)
+
+**Outcome: the set stopped without load, by design. Not a fail and not a gate result.** All three placements' leaders read over hostguard's 28.4 ms line, so the guard re-placed each before load, and the wrapper stops after two re-places (orchestrator's clearance). No burst ran, so the line is unmeasured. A pass on this row would have read a kept host only (`decisions/OPEN-QUESTIONS.md`, A44).
+
+**What ran.**
+- **Site day and edge day** m3fg: sites and edge from main `ad8fd52f`, 10:49:38Z to 11:03:20Z, both exit 0, one try. Version ids: sites a `6541237f`, b `6933d625`, c `4e64f186`; edge `fb17a6b2`. m3fa3's launcher and flags, with the shard image `91a19f9f…` and sshfront `fc6eda91…` reused (`containers/` unchanged). read-memo (`1d1bc221`) is not on these sites, so this row stays matched to the m3fsf rows.
+- **Harness:** `tests/fanout/guardrow-m3f.sh`.
+  - Placement A ran as set `m3fg` on main `ad8fd52f`'s harness. Its purge wrote purge.py's tracked default log, so `rows.sh` refused placement B for a dirty tree. I stopped the set at 11:33Z, before B made a repository.
+  - The fix (`b032-guard2`) sends the purge log to an untracked file and adds `FROM=`. The set resumed as `m3fg2` with `FROM=B` on the harness from main `66a9a257`, against the same site day.
+  - Each set ran RERETIRE OK first.
+- **Spend:** $0.35 on graft-m3f from the site day's start (10:49:38Z) to 12:01Z, against the $3 stop.
+- **Teardown:** each placement's repository was retired and purged. The sweep found no shard running.
+
+| Placement | Repository | hostguard: ms of leader CPU a setup commit | Commits, CPU | Leader colo (f0) | Verdict | a1 |
+|---|---|---|---|---|---|---|
+| A (`m3fgA`) | 65615 | **45.7** | 42, 1,920 ms | ORD | re-place | exit 4 before load |
+| B (`m3fg2B`) | 65616 | **37.9** | 42, 1,591 ms | ORD | re-place | exit 4 before load |
+| C (`m3fg2C`) | 65617 | **30.7** | 44, 1,352 ms | IAD | re-place | exit 4 before load |
+
+- The colo is the leader object's `coloCode` in `durableObjectsPeriodicGroups` over its setup window [measured]. The reading is `hostguard.py` live, as the wrapper logged it.
+- Each placement's first guard asks ended exit 1: 3 on A, 5 on B and 2 on C. Workers Logs did not yet know the new object's id, and `wlobj.object_id` raised on an empty result. The wrapper logged a guard error and asked again, and each placement was judged within 105 s of its first ask. That cost nothing: a1 held throughout, under its 300 s limit.
+
+**The line's evidence so far, B0-32 on graft-m3f** [measured, the same `hostguard.py` and colo query, replayed for the earlier rows]:
+
+| Row | Leader colo | hostguard (ms) | Verdict at 28.4 | Burst commit p50, if loaded |
+|---|---|---|---|---|
+| m3fsf1 | EWR | 27.3 | keep | 1,237 ms |
+| m3fg C | IAD | 30.7 | re-place | not loaded |
+| m3fhs1 | IAD | 33.6 | re-place | 2,710 ms (148 of 293 committed twice) |
+| m3fg B | ORD | 37.9 | re-place | not loaded |
+| m3fg A | ORD | 45.7 | re-place | not loaded |
+| m3fsf2 | ORD | 52.5 | re-place | 3,757 ms |
+
+- Every graft-m3f leader on record is in EWR, IAD or ORD, and only the EWR one is under the line. This is the B0-33 pattern on graft-m2b (`tests/am1/results/b033-pga.md`, "The host guard").
+- B0-29's set on graft-m4a passed its commit p99 on leaders that read 42.2 and 45.1 (`tests/am1/results/b029-m4a.md`). So 28.4 may refuse hosts on which B0-32 passes. B0-32's burst is harder than B0-29's load, though: m3fhs1 at 33.6 committed at p50 2,710 ms, and m3fsf2 at 52.5 at 3,757.
+- No B0-32 row has loaded between 27.3 and 52.5 with stage-first on, so where B0-32's own line sits is unmeasured [inference]. That decides whether another guarded set on graft-m3f can be expected to load at all.
+
 ## Row m3fsf2: B0-32 on main `7a1d74c9`, the stage-first rerun after `cw-link-drop` (2026-11-23, graft-m3f, `ROWS="b0-32"`)
 
 **A measurement, not a gate attempt**, cleared by the orchestrator to confirm F112's `cw-link-drop` (`abbc9a0b`) on the burst's front. It does not count toward the two-fails rule. The only product change from m3fsf1 is `cw-link-drop` (`git diff e942cd53 7a1d74c9` touches `workers/edge/src/lib.rs` alone).
