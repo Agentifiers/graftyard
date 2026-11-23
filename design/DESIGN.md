@@ -1757,7 +1757,7 @@ The lifeboat runs on the same `localDisk` storage and `localDocker` engine, and 
   | `STEP_DWELL` | 2 h at each of 1%, 10%, and 50% | Least time before a step's gate is judged |
   | `STEP_MIN_ENTRIES` | 1,000 entries applied by N+1 members in the step | Below it the step dwells up to 2 x `STEP_DWELL`, then halts and pages |
   | `FIRST_DAY` | 24 h, with the site leading 1% of its home groups | The day gate |
-  | `GATE_APPLY_LAG` | N+1 p99 apply lag at most 2 x N's and at most 500 ms | Breach |
+  | `GATE_APPLY_LAG` | N+1 p99 apply lag at most 2 x N's and at most 500 ms; the 500 ms cap is a [guess] BF-39 hosted refuted: every version on graft-m4a read a p99 in the 1,000 to 1,500 ms bucket under load, from R29's 1 s commit heartbeat on quiet chains (OPEN-QUESTIONS R40) | Breach |
   | `GATE_EXCEPTIONS` | 0 apply or verify exceptions on N+1 | Breach |
   | `GATE_ACK_RATE` | N+1 ack rate at most 0.1 points below N's | Breach |
   | `GATE_STEP_DOWN` | 0 `STEP_DOWN` trips on N+1 leaders | Breach |
@@ -1765,7 +1765,7 @@ The lifeboat runs on the same `localDisk` storage and `localDocker` engine, and 
   | `IDENTITY_RATIO` | 3 identity reads per edge request | An edge isolate above it submits the `EdgePointer` undo |
   | `MINT_ERROR_RATIO` | 1% of installation-token mints | An edge isolate above it submits the `OpsPointer` undo |
   | `STUCK_DAY` | 1 h | A site day that cannot advance undrains under the 1% lead limit |
-  | `DRAIN_BURN` | SLO burn at 10 x the allowed rate for 5 min, from both other sites | Automatic drain by the drain key (journey 5) |
+  | `DRAIN_BURN` | SLO burn at 10 x the allowed rate for 5 min, from both other sites, each report at least `MIN_CALLS` (100) calls; both a [guess] BF-39 hosted refuted: steady load read 3 to 20 x with no fault (OPEN-QUESTIONS R41) | Automatic drain by the drain key (journey 5) |
   | `UNDRAIN_BURN`, `UNDRAIN_AFTER` | Burn under 1 x for 30 min, from both other sites | Automatic undrain by the drain key |
   | `ZERO_ACKS` | 24 h drained with zero acks in both other sites' `SiteHealth` | An executor-signed `ReplaceMember` |
 - **Site loss.** `ReplaceMember { lost, spare }` is signed only by the executor key. `decide` accepts it in two cases. Either a customer-signed `SiteLost { site: lost }` has committed, or `lost` has been drained for `ZERO_ACKS` by an entry at least that old, and `graft-ops` read zero acks from it in both other sites' `SiteHealth` over bindings before it signed. `graft-ops` then starts one Workflow instance per group, enumerated from the surviving sites' `MemberRegistry` rows that name `lost` (Shape, "Release group"). Each instance moves its group onto `spare` through a `Joint` config (journey 5). A site has recovered when both other sites' `SiteHealth` show it under `UNDRAIN_BURN` for 24 h and its canary group reports a release that reads every enabled format. The drain key then undrains it. `RestorePlacement { site }`, signed by the vendor or customer intent key and refused while `site` is drained, starts the instances that move groups whose `home` is `site` back.

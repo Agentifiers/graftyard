@@ -1,0 +1,699 @@
+00:25:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+00:25:34 * * * * * * * * * *
+00:25:34 * * * * * graft-ops Error("view: OPS_KILL")
+00:25:34 * * * * * graft-ops OPS_KILL: killed before view
+00:25:34 * * * * * graft-ops Uploaded(Edge)
+00:26:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:26:31 * * * * * * * * * *
+00:26:31 * * * * * graft-ops Committed("ReleaseUploaded")
+00:26:31 * * * * * graft-ops Error("view: OPS_KILL")
+00:26:31 * * * * * graft-ops OPS_KILL: killed before view
+00:27:28 * * * * * * * * * *
+00:27:28 * * * * * graft-ops Error("view: OPS_KILL")
+00:27:28 * * * * * graft-ops OPS_KILL: killed before view
+00:27:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:28:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:29:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:29:41 * * * * * * * * * *
+00:29:41 * * * * * graft-ops Error("view: OPS_KILL")
+00:29:41 * * * * * graft-ops OPS_KILL: killed before view
+00:29:41 * * * * * graft-ops Uploaded(Site(SiteId(0)))
+00:29:41 * * * * * graft-ops Uploaded(Site(SiteId(1)))
+00:30:18 * * * * * * * * * *
+00:30:18 * * * * * graft-ops Error("view: OPS_KILL")
+00:30:18 * * * * * graft-ops OPS_KILL: killed before view
+00:30:18 * * * * * graft-ops Uploaded(Site(SiteId(1)))
+00:30:18 * * * * * graft-ops Uploaded(Site(SiteId(2)))
+00:30:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+00:30:32 * * * * * graft-ops OPS_KILL: killed before commit
+00:30:34 * * * * * * * * * *
+00:30:34 * * * * * graft-ops Error("ReleaseUploaded: OPS_KILL")
+00:30:34 * * * * * graft-ops Idle
+00:31:29 * * * * * * * * * *
+00:31:29 * * * * * graft-ops Error("view: OPS_KILL")
+00:31:29 * * * * * graft-ops OPS_KILL: killed before view
+00:31:29 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:32:27 * * * * * * * * * *
+00:32:27 * * * * * graft-ops Error("view: OPS_KILL")
+00:32:27 * * * * * graft-ops OPS_KILL: killed before view
+00:32:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:33:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:33:32 * * * * * * * * * *
+00:33:32 * * * * * graft-ops Committed("ReleaseUploaded")
+00:33:32 * * * * * graft-ops Error("view: OPS_KILL")
+00:33:32 * * * * * graft-ops OPS_KILL: killed before view
+00:34:27 * * * * * * * * * *
+00:34:27 * * * * * graft-ops Error("view: OPS_KILL")
+00:34:27 * * * * * graft-ops OPS_KILL: killed before view
+00:34:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:35:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:35:30 * * * * * * * * * *
+00:35:30 * * * * * graft-ops Committed("SiteMode")
+00:35:30 * * * * * graft-ops Error("view: OPS_KILL")
+00:35:30 * * * * * graft-ops OPS_KILL: killed before view
+00:36:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+00:36:31 * * * * * * * * * *
+00:36:31 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+00:36:31 * * * * * graft-ops OPS_KILL: killed before commit
+00:37:27 * * * * * * * * * *
+00:37:27 * * * * * graft-ops Error("view: OPS_KILL")
+00:37:27 * * * * * graft-ops OPS_KILL: killed before view
+00:37:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:38:27 * * * * * * * * * *
+00:38:27 * * * * * graft-ops Error("view: OPS_KILL")
+00:38:27 * * * * * graft-ops OPS_KILL: killed before view
+00:38:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:39:27 * * * * * * * * * *
+00:39:27 * * * * * graft-ops Error("view: OPS_KILL")
+00:39:27 * * * * * graft-ops OPS_KILL: killed before view
+00:39:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:40:30 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+00:40:32 * * * * * * * * * *
+00:40:32 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+00:40:32 * * * * * graft-ops OPS_KILL: killed before commit
+00:41:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+00:41:33 * * * * * * * * * *
+00:41:33 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+00:41:33 * * * * * graft-ops OPS_KILL: killed before commit
+00:42:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+00:42:29 * * * * * * * * * *
+00:42:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+00:42:29 * * * * * graft-ops OPS_KILL: killed before commit
+00:43:27 * * * * * * * * * *
+00:43:27 * * * * * graft-ops Error("view: OPS_KILL")
+00:43:27 * * * * * graft-ops OPS_KILL: killed before view
+00:43:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:44:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:44:29 * * * * * * * * * *
+00:44:29 * * * * * graft-ops Committed("IntentStep")
+00:44:29 * * * * * graft-ops Error("view: OPS_KILL")
+00:44:29 * * * * * graft-ops OPS_KILL: killed before view
+00:45:27 * * * * * * * * * *
+00:45:27 * * * * * graft-ops Error("view: OPS_KILL")
+00:45:27 * * * * * graft-ops OPS_KILL: killed before view
+00:45:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:46:29 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:46:32 * * * * * * * * * *
+00:46:32 * * * * * graft-ops Deployed(Site(SiteId(2)), [(VersionId(8e86f2c4-2d4f-4a87-a1e2-12cff6b25a46), 1), (VersionId(39439670-1a7c-4ae5-a685-e6fe6d15abff), 99)])
+00:46:32 * * * * * graft-ops Error("view: OPS_KILL")
+00:46:32 * * * * * graft-ops OPS_KILL: killed before view
+00:47:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:47:32 * * * * * * * * * *
+00:47:32 * * * * * graft-ops Committed("IntentStep")
+00:47:32 * * * * * graft-ops Error("view: OPS_KILL")
+00:47:32 * * * * * graft-ops OPS_KILL: killed before view
+00:48:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+00:48:29 * * * * * * * * * *
+00:48:29 * * * * * graft-ops Error("deploy Site(SiteId(2)): OPS_KILL")
+00:48:29 * * * * * graft-ops OPS_KILL: killed before deploy
+00:49:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:49:31 * * * * * * * * * *
+00:49:31 * * * * * graft-ops Deployed(Site(SiteId(2)), [(VersionId(8e86f2c4-2d4f-4a87-a1e2-12cff6b25a46), 10), (VersionId(39439670-1a7c-4ae5-a685-e6fe6d15abff), 90)])
+00:49:31 * * * * * graft-ops Error("view: OPS_KILL")
+00:49:31 * * * * * graft-ops OPS_KILL: killed before view
+00:50:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:50:32 * * * * * * * * * *
+00:50:32 * * * * * graft-ops Committed("IntentStep")
+00:50:32 * * * * * graft-ops Error("view: OPS_KILL")
+00:50:32 * * * * * graft-ops OPS_KILL: killed before view
+00:51:27 * * * * * * * * * *
+00:51:27 * * * * * graft-ops Error("view: OPS_KILL")
+00:51:27 * * * * * graft-ops OPS_KILL: killed before view
+00:51:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:52:29 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:52:32 * * * * * * * * * *
+00:52:32 * * * * * graft-ops Deployed(Site(SiteId(2)), [(VersionId(8e86f2c4-2d4f-4a87-a1e2-12cff6b25a46), 50), (VersionId(39439670-1a7c-4ae5-a685-e6fe6d15abff), 50)])
+00:52:32 * * * * * graft-ops Error("view: OPS_KILL")
+00:52:32 * * * * * graft-ops OPS_KILL: killed before view
+00:53:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+00:53:31 * * * * * * * * * *
+00:53:31 * * * * * graft-ops Wait { until: Some(Timestamp(1795395212150)), why: "STEP_DWELL" }
+00:54:28 * * * * * * * * * *
+00:54:28 * * * * * graft-ops Error("view: OPS_KILL")
+00:54:28 * * * * * graft-ops OPS_KILL: killed before view
+00:54:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:55:29 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:55:32 * * * * * * * * * *
+00:55:32 * * * * * graft-ops Committed("IntentStep")
+00:55:32 * * * * * graft-ops Error("view: OPS_KILL")
+00:55:32 * * * * * graft-ops OPS_KILL: killed before view
+00:56:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+00:56:31 * * * * * * * * * *
+00:56:31 * * * * * graft-ops Deployed(Site(SiteId(2)), [(VersionId(8e86f2c4-2d4f-4a87-a1e2-12cff6b25a46), 100)])
+00:56:31 * * * * * graft-ops Error("view: OPS_KILL")
+00:56:31 * * * * * graft-ops OPS_KILL: killed before view
+00:57:27 * * * * * * * * * *
+00:57:27 * * * * * graft-ops Error("view: OPS_KILL")
+00:57:27 * * * * * graft-ops OPS_KILL: killed before view
+00:57:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:58:28 * * * * * * * * * *
+00:58:28 * * * * * graft-ops Error("view: OPS_KILL")
+00:58:28 * * * * * graft-ops OPS_KILL: killed before view
+00:58:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+00:59:28 * * * * * * * * * *
+00:59:28 * * * * * graft-ops Error("view: OPS_KILL")
+00:59:28 * * * * * graft-ops OPS_KILL: killed before view
+00:59:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:00:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:00:32 * * * * * * * * * *
+01:00:32 * * * * * graft-ops Error("SiteRelease: OPS_KILL")
+01:00:32 * * * * * graft-ops OPS_KILL: killed before commit
+01:01:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:01:32 * * * * * * * * * *
+01:01:32 * * * * * graft-ops Error("SiteRelease: OPS_KILL")
+01:01:32 * * * * * graft-ops OPS_KILL: killed before commit
+01:02:28 * * * * * * * * * *
+01:02:28 * * * * * graft-ops Error("view: OPS_KILL")
+01:02:28 * * * * * graft-ops OPS_KILL: killed before view
+01:02:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:03:28 * * * * * * * * * *
+01:03:28 * * * * * graft-ops Error("view: OPS_KILL")
+01:03:28 * * * * * graft-ops OPS_KILL: killed before view
+01:03:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:04:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:04:30 * * * * * * * * * *
+01:04:30 * * * * * graft-ops Committed("SiteRelease")
+01:04:30 * * * * * graft-ops Error("view: OPS_KILL")
+01:04:30 * * * * * graft-ops OPS_KILL: killed before view
+01:05:28 * * * * * * * * * *
+01:05:28 * * * * * graft-ops Error("view: OPS_KILL")
+01:05:28 * * * * * graft-ops OPS_KILL: killed before view
+01:05:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:06:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:06:31 * * * * * * * * * *
+01:06:31 * * * * * graft-ops Committed("IntentStep")
+01:06:31 * * * * * graft-ops Error("view: OPS_KILL")
+01:06:31 * * * * * graft-ops OPS_KILL: killed before view
+01:07:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:07:32 * * * * * * * * * *
+01:07:32 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:07:32 * * * * * graft-ops OPS_KILL: killed before commit
+01:08:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:08:29 * * * * * * * * * *
+01:08:29 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:08:29 * * * * * graft-ops OPS_KILL: killed before commit
+01:09:28 * * * * * * * * * *
+01:09:28 * * * * * graft-ops Error("view: OPS_KILL")
+01:09:28 * * * * * graft-ops OPS_KILL: killed before view
+01:09:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:10:28 * * * * * * * * * *
+01:10:28 * * * * * graft-ops Error("view: OPS_KILL")
+01:10:28 * * * * * graft-ops OPS_KILL: killed before view
+01:10:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:11:28 * * * * * * * * * *
+01:11:28 * * * * * graft-ops Error("view: OPS_KILL")
+01:11:28 * * * * * graft-ops OPS_KILL: killed before view
+01:11:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:12:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:12:33 * * * * * * * * * *
+01:12:33 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:12:33 * * * * * graft-ops OPS_KILL: killed before commit
+01:13:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:13:30 * * * * * * * * * *
+01:13:30 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:13:30 * * * * * graft-ops OPS_KILL: killed before commit
+01:14:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:14:30 * * * * * * * * * *
+01:14:30 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:14:30 * * * * * graft-ops OPS_KILL: killed before commit
+01:15:27 * * * * * * * * * *
+01:15:27 * * * * * graft-ops Error("view: OPS_KILL")
+01:15:27 * * * * * graft-ops OPS_KILL: killed before view
+01:15:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:16:28 * * * * * * * * * *
+01:16:28 * * * * * graft-ops Error("view: OPS_KILL")
+01:16:28 * * * * * graft-ops OPS_KILL: killed before view
+01:16:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:17:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:17:30 * * * * * * * * * *
+01:17:30 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:17:30 * * * * * graft-ops OPS_KILL: killed before commit
+01:18:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:18:33 * * * * * * * * * *
+01:18:33 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:18:33 * * * * * graft-ops OPS_KILL: killed before commit
+01:19:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:19:29 * * * * * * * * * *
+01:19:29 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:19:29 * * * * * graft-ops OPS_KILL: killed before commit
+01:20:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:20:32 * * * * * * * * * *
+01:20:32 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:20:32 * * * * * graft-ops OPS_KILL: killed before commit
+01:21:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:21:31 * * * * * * * * * *
+01:21:31 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:21:31 * * * * * graft-ops OPS_KILL: killed before commit
+01:22:27 * * * * * * * * * *
+01:22:27 * * * * * graft-ops Error("view: OPS_KILL")
+01:22:27 * * * * * graft-ops OPS_KILL: killed before view
+01:22:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:23:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:23:30 * * * * * * * * * *
+01:23:30 * * * * * graft-ops Committed("SiteMode")
+01:23:30 * * * * * graft-ops Error("view: OPS_KILL")
+01:23:30 * * * * * graft-ops OPS_KILL: killed before view
+01:24:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:24:32 * * * * * * * * * *
+01:24:32 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+01:24:32 * * * * * graft-ops OPS_KILL: killed before commit
+01:25:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:25:29 * * * * * * * * * *
+01:25:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+01:25:29 * * * * * graft-ops OPS_KILL: killed before commit
+01:26:29 * * * * * * * * * *
+01:26:29 * * * * * graft-ops Error("view: OPS_KILL")
+01:26:29 * * * * * graft-ops OPS_KILL: killed before view
+01:26:29 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:27:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:27:32 * * * * * * * * * *
+01:27:32 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+01:27:32 * * * * * graft-ops OPS_KILL: killed before commit
+01:28:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:28:29 * * * * * * * * * *
+01:28:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+01:28:29 * * * * * graft-ops OPS_KILL: killed before commit
+01:29:27 * * * * * * * * * *
+01:29:27 * * * * * graft-ops Error("view: OPS_KILL")
+01:29:27 * * * * * graft-ops OPS_KILL: killed before view
+01:29:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:30:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:30:29 * * * * * * * * * *
+01:30:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+01:30:29 * * * * * graft-ops OPS_KILL: killed before commit
+01:31:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:31:29 * * * * * * * * * *
+01:31:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+01:31:29 * * * * * graft-ops OPS_KILL: killed before commit
+01:32:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:32:32 * * * * * * * * * *
+01:32:32 * * * * * graft-ops Committed("IntentStep")
+01:32:32 * * * * * graft-ops Error("view: OPS_KILL")
+01:32:32 * * * * * graft-ops OPS_KILL: killed before view
+01:33:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:33:30 * * * * * * * * * *
+01:33:30 * * * * * graft-ops Wait { until: Some(Timestamp(1795397612121)), why: "first day" }
+01:34:28 * * * * * * * * * *
+01:34:28 * * * * * graft-ops Error("view: OPS_KILL")
+01:34:28 * * * * * graft-ops OPS_KILL: killed before view
+01:34:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:35:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:35:30 * * * * * * * * * *
+01:35:30 * * * * * graft-ops Committed("IntentStep")
+01:35:30 * * * * * graft-ops Error("view: OPS_KILL")
+01:35:30 * * * * * graft-ops OPS_KILL: killed before view
+01:36:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:36:33 * * * * * * * * * *
+01:36:33 * * * * * graft-ops Committed("IntentDone")
+01:36:33 * * * * * graft-ops Error("view: OPS_KILL")
+01:36:33 * * * * * graft-ops OPS_KILL: killed before view
+01:37:27 * * * * * * * * * *
+01:37:27 * * * * * graft-ops Error("view: OPS_KILL")
+01:37:27 * * * * * graft-ops OPS_KILL: killed before view
+01:37:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:38:29 * * * * * * * * * *
+01:38:29 * * * * * graft-ops Error("view: OPS_KILL")
+01:38:29 * * * * * graft-ops OPS_KILL: killed before view
+01:38:29 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:39:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:39:34 * * * * * * * * * *
+01:39:34 * * * * * graft-ops Deployed(Edge, [(VersionId(f4e193b9-9e8a-4f2b-a761-786ad041966f), 1), (VersionId(dd713c1c-e49b-46ea-af7f-6133e336086c), 99)])
+01:39:34 * * * * * graft-ops Error("view: OPS_KILL")
+01:39:34 * * * * * graft-ops OPS_KILL: killed before view
+01:40:27 * * * * * * * * * *
+01:40:27 * * * * * graft-ops Error("view: OPS_KILL")
+01:40:27 * * * * * graft-ops OPS_KILL: killed before view
+01:40:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:41:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:41:31 * * * * * * * * * *
+01:41:31 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+01:41:31 * * * * * graft-ops OPS_KILL: killed before commit
+01:42:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:42:30 * * * * * * * * * *
+01:42:30 * * * * * graft-ops Committed("IntentStep")
+01:42:30 * * * * * graft-ops Error("view: OPS_KILL")
+01:42:30 * * * * * graft-ops OPS_KILL: killed before view
+01:43:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:43:30 * * * * * * * * * *
+01:43:30 * * * * * graft-ops Error("deploy Edge: OPS_KILL")
+01:43:30 * * * * * graft-ops OPS_KILL: killed before deploy
+01:44:38 * * * * * * * * * *
+01:44:38 * * * * * graft-ops Error("view: OPS_KILL")
+01:44:38 * * * * * graft-ops OPS_KILL: killed before view
+01:44:38 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:45:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:45:31 * * * * * * * * * *
+01:45:31 * * * * * graft-ops Deployed(Edge, [(VersionId(f4e193b9-9e8a-4f2b-a761-786ad041966f), 10), (VersionId(dd713c1c-e49b-46ea-af7f-6133e336086c), 90)])
+01:45:31 * * * * * graft-ops Error("view: OPS_KILL")
+01:45:31 * * * * * graft-ops OPS_KILL: killed before view
+01:46:29 * * * * * * * * * *
+01:46:29 * * * * * graft-ops Error("view: OPS_KILL")
+01:46:29 * * * * * graft-ops OPS_KILL: killed before view
+01:46:29 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:47:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:47:29 * * * * * * * * * *
+01:47:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+01:47:29 * * * * * graft-ops OPS_KILL: killed before commit
+01:48:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:48:32 * * * * * * * * * *
+01:48:32 * * * * * graft-ops Committed("IntentStep")
+01:48:32 * * * * * graft-ops Error("view: OPS_KILL")
+01:48:32 * * * * * graft-ops OPS_KILL: killed before view
+01:49:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:49:31 * * * * * * * * * *
+01:49:31 * * * * * graft-ops Error("SiteMode: OPS_KILL")
+01:49:31 * * * * * graft-ops OPS_KILL: killed before commit
+01:49:31 * * * * * graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 2870, missed: 14 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 2859, missed: 64 }, SiteHealth { observer: SiteId(1), target: SiteId(0), calls: 2975, missed: 3 }, SiteH
+01:50:27 * * * * * * * * * *
+01:50:27 * * * * * graft-ops Error("view: OPS_KILL")
+01:50:27 * * * * * graft-ops OPS_KILL: killed before view
+01:50:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:51:29 * * * * * * * * * *
+01:51:29 * * * * * graft-ops Error("view: OPS_KILL")
+01:51:29 * * * * * graft-ops OPS_KILL: killed before view
+01:51:29 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:52:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:52:31 * * * * * graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 2802, missed: 21 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 2970, missed: 655 }, SiteHealth { observer: SiteId(1), target: SiteId(0), calls: 2929, missed: 0 }, Site
+01:52:32 * * * * * * * * * *
+01:52:32 * * * * * graft-ops Committed("SiteMode")
+01:52:32 * * * * * graft-ops Error("view: OPS_KILL")
+01:52:32 * * * * * graft-ops OPS_KILL: killed before view
+01:53:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:53:29 * * * * * graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 2892, missed: 13 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 3139, missed: 851 }, SiteHealth { observer: SiteId(1), target: SiteId(0), calls: 3065, missed: 0 }, Site
+01:53:30 * * * * * * * * * *
+01:53:30 * * * * * graft-ops Deployed(Edge, [(VersionId(f4e193b9-9e8a-4f2b-a761-786ad041966f), 50), (VersionId(dd713c1c-e49b-46ea-af7f-6133e336086c), 50)])
+01:53:30 * * * * * graft-ops Error("view: OPS_KILL")
+01:53:30 * * * * * graft-ops OPS_KILL: killed before view
+01:54:29 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:54:33 * * * * * * * * * *
+01:54:33 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+01:54:33 * * * * * graft-ops OPS_KILL: killed before commit
+01:54:33 * * * * * graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 2872, missed: 20 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 3151, missed: 979 }, SiteHealth { observer: SiteId(1), target: SiteId(0), calls: 2954, missed: 0 }, Site
+01:55:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:55:29 * * * * * graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 2878, missed: 13 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 3143, missed: 907 }, SiteHealth { observer: SiteId(1), target: SiteId(0), calls: 3021, missed: 1 }, Site
+01:55:30 * * * * * * * * * *
+01:55:30 * * * * * graft-ops Committed("IntentStep")
+01:55:30 * * * * * graft-ops Error("view: OPS_KILL")
+01:55:30 * * * * * graft-ops OPS_KILL: killed before view
+01:56:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+01:56:31 * * * * * * * * * *
+01:56:31 * * * * * graft-ops Error("deploy Edge: OPS_KILL")
+01:56:31 * * * * * graft-ops OPS_KILL: killed before deploy
+01:56:31 * * * * * graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 2743, missed: 14 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 2953, missed: 664 }, SiteHealth { observer: SiteId(1), target: SiteId(0), calls: 3023, missed: 8 }, Site
+01:57:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+01:57:31 * * * * * graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 2765, missed: 14 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 2902, missed: 469 }, SiteHealth { observer: SiteId(1), target: SiteId(0), calls: 2983, missed: 8 }, Site
+01:57:32 * * * * * * * * * *
+01:57:32 * * * * * graft-ops Deployed(Edge, [(VersionId(f4e193b9-9e8a-4f2b-a761-786ad041966f), 100), (VersionId(dd713c1c-e49b-46ea-af7f-6133e336086c), 0)])
+01:57:32 * * * * * graft-ops Error("view: OPS_KILL")
+01:57:32 * * * * * graft-ops OPS_KILL: killed before view
+01:58:28 * * * * * * * * * *
+01:58:28 * * * * * graft-ops Error("view: OPS_KILL")
+01:58:28 * * * * * graft-ops OPS_KILL: killed before view
+01:58:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+01:59:27 * * * * * * * * * *
+01:59:27 * * * * * graft-ops Error("view: OPS_KILL")
+01:59:27 * * * * * graft-ops OPS_KILL: killed before view
+01:59:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:00:27 * * * * * * * * * *
+02:00:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:00:27 * * * * * graft-ops OPS_KILL: killed before view
+02:00:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:01:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:01:39 * * * * * * * * * *
+02:01:39 * * * * * graft-ops Error("view: OPS_KILL")
+02:01:39 * * * * * graft-ops OPS_KILL: killed before view
+02:01:39 * * * * * graft-ops Uploaded(Site(SiteId(0)))
+02:02:28 * * * * * * * * * *
+02:02:28 * * * * * graft-ops Error("view: OPS_KILL")
+02:02:28 * * * * * graft-ops OPS_KILL: killed before view
+02:02:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:03:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:04:17 * * * * * * * * * *
+02:04:17 * * * * * graft-ops Error("view: OPS_KILL")
+02:04:17 * * * * * graft-ops OPS_KILL: killed before view
+02:04:17 * * * * * graft-ops Uploaded(Site(SiteId(1)))
+02:04:17 * * * * * graft-ops Uploaded(Site(SiteId(2)))
+02:04:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:04:35 * * * * * * * * * *
+02:04:35 * * * * * graft-ops Committed("ReleaseUploaded")
+02:04:35 * * * * * graft-ops Error("view: OPS_KILL")
+02:04:35 * * * * * graft-ops OPS_KILL: killed before view
+02:05:28 * * * * * * * * * *
+02:05:28 * * * * * graft-ops Error("view: OPS_KILL")
+02:05:28 * * * * * graft-ops OPS_KILL: killed before view
+02:05:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:06:27 * * * * * * * * * *
+02:06:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:06:27 * * * * * graft-ops OPS_KILL: killed before view
+02:06:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:07:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:07:29 * * * * * * * * * *
+02:07:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:07:29 * * * * * graft-ops OPS_KILL: killed before commit
+02:08:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:08:31 * * * * * * * * * *
+02:08:31 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:08:31 * * * * * graft-ops OPS_KILL: killed before commit
+02:09:28 * * * * * * * * * *
+02:09:28 * * * * * graft-ops Error("view: OPS_KILL")
+02:09:28 * * * * * graft-ops OPS_KILL: killed before view
+02:09:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:10:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:10:31 * * * * * * * * * *
+02:10:31 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:10:31 * * * * * graft-ops OPS_KILL: killed before commit
+02:11:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:11:32 * * * * * * * * * *
+02:11:32 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:11:32 * * * * * graft-ops OPS_KILL: killed before commit
+02:12:27 * * * * * * * * * *
+02:12:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:12:27 * * * * * graft-ops OPS_KILL: killed before view
+02:12:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:13:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:13:32 * * * * * * * * * *
+02:13:32 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:13:32 * * * * * graft-ops OPS_KILL: killed before commit
+02:14:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:14:29 * * * * * * * * * *
+02:14:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:14:29 * * * * * graft-ops OPS_KILL: killed before commit
+02:15:29 * * * * * * * * * *
+02:15:29 * * * * * graft-ops Error("view: OPS_KILL")
+02:15:29 * * * * * graft-ops OPS_KILL: killed before view
+02:15:29 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:16:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:16:29 * * * * * * * * * *
+02:16:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:16:29 * * * * * graft-ops OPS_KILL: killed before commit
+02:17:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:17:32 * * * * * * * * * *
+02:17:32 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:17:32 * * * * * graft-ops OPS_KILL: killed before commit
+02:18:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:18:31 * * * * * * * * * *
+02:18:31 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:18:31 * * * * * graft-ops OPS_KILL: killed before commit
+02:19:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:19:30 * * * * * * * * * *
+02:19:30 * * * * * graft-ops Committed("IntentStep")
+02:19:30 * * * * * graft-ops Error("view: OPS_KILL")
+02:19:30 * * * * * graft-ops OPS_KILL: killed before view
+02:20:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:20:32 * * * * * * * * * *
+02:20:32 * * * * * graft-ops Committed("IntentDone")
+02:20:32 * * * * * graft-ops Error("view: OPS_KILL")
+02:20:32 * * * * * graft-ops OPS_KILL: killed before view
+02:21:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:21:29 * * * * * * * * * *
+02:21:29 * * * * * graft-ops Idle
+02:22:28 * * * * * * * * * *
+02:22:28 * * * * * graft-ops Error("view: OPS_KILL")
+02:22:28 * * * * * graft-ops OPS_KILL: killed before view
+02:22:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:23:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:23:31 * * * * * * * * * *
+02:23:31 * * * * * graft-ops Idle
+02:24:27 * * * * * * * * * *
+02:24:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:24:27 * * * * * graft-ops OPS_KILL: killed before view
+02:24:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:25:27 * * * * * * * * * *
+02:25:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:25:27 * * * * * graft-ops OPS_KILL: killed before view
+02:25:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:26:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:26:30 * * * * * * * * * *
+02:26:30 * * * * * graft-ops Idle
+02:27:27 * * * * * * * * * *
+02:27:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:27:27 * * * * * graft-ops OPS_KILL: killed before view
+02:27:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:28:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:28:31 * * * * * graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, ack_bp: 10000, step_downs: 0, entries: 0 } N Side { apply_lag_p99_ms: 1500, exceptions: 0, ack_bp: 10000, step_downs: 0, entries: 360 } -> Starved(0)
+02:28:32 * * * * * * * * * *
+02:28:32 * * * * * graft-ops Committed("IntentStep")
+02:28:32 * * * * * graft-ops Error("view: OPS_KILL")
+02:28:32 * * * * * graft-ops OPS_KILL: killed before view
+02:29:27 * * * * * * * * * *
+02:29:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:29:27 * * * * * graft-ops OPS_KILL: killed before view
+02:29:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:30:27 * * * * * * * * * *
+02:30:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:30:27 * * * * * graft-ops OPS_KILL: killed before view
+02:30:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:31:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:31:30 * * * * * * * * * *
+02:31:30 * * * * * graft-ops Error("deploy Site(SiteId(2)): OPS_KILL")
+02:31:30 * * * * * graft-ops OPS_KILL: killed before deploy
+02:31:30 * * * * * graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, ack_bp: 10000, step_downs: 0, entries: 0 } N Side { apply_lag_p99_ms: 1500, exceptions: 0, ack_bp: 10000, step_downs: 0, entries: 2395 } -> Starved(0)
+02:32:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:32:29 * * * * * graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, ack_bp: 10000, step_downs: 0, entries: 0 } N Side { apply_lag_p99_ms: 1500, exceptions: 0, ack_bp: 9998, step_downs: 0, entries: 3051 } -> Starved(0)
+02:32:30 * * * * * * * * * *
+02:32:30 * * * * * graft-ops Deployed(Site(SiteId(2)), [(VersionId(e2b04384-da58-4088-a1d1-37b2b9d98145), 1), (VersionId(8e86f2c4-2d4f-4a87-a1e2-12cff6b25a46), 99)])
+02:32:30 * * * * * graft-ops Error("view: OPS_KILL")
+02:32:30 * * * * * graft-ops OPS_KILL: killed before view
+02:33:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:33:31 * * * * * graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, ack_bp: 10000, step_downs: 0, entries: 0 } N Side { apply_lag_p99_ms: 1500, exceptions: 0, ack_bp: 9998, step_downs: 0, entries: 3781 } -> Starved(0)
+02:33:32 * * * * * * * * * *
+02:33:32 * * * * * graft-ops Wait { until: Some(Timestamp(1795401270272)), why: "STEP_MIN_ENTRIES" }
+02:34:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:34:31 * * * * * graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, ack_bp: 10000, step_downs: 0, entries: 0 } N Side { apply_lag_p99_ms: 1500, exceptions: 0, ack_bp: 9998, step_downs: 0, entries: 4467 } -> Starved(0)
+02:34:32 * * * * * * * * * *
+02:34:32 * * * * * PAGE graft-ops: intent 01M833PC2W257FYN5174BDY0SK: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic
+02:34:32 * * * * * graft-ops Paged("intent 01M833PC2W257FYN5174BDY0SK: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic")
+02:35:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:35:33 * * * * * * * * * *
+02:35:33 * * * * * PAGE graft-ops: intent 01M833PC2W257FYN5174BDY0SK: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic
+02:35:33 * * * * * graft-ops Paged("intent 01M833PC2W257FYN5174BDY0SK: Site(SiteId(2))'s 1% step applied 0 entries in 2 x its dwell, under STEP_MIN_ENTRIES; it needs a Halt, an Abort, or traffic")
+02:35:33 * * * * * graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, ack_bp: 10000, step_downs: 0, entries: 0 } N Side { apply_lag_p99_ms: 1500, exceptions: 0, ack_bp: 9997, step_downs: 0, entries: 5131 } -> Starved(0)
+02:36:30 * * * * * * * * * *
+02:36:30 * * * * * graft-ops Error("view: OPS_KILL")
+02:36:30 * * * * * graft-ops OPS_KILL: killed before view
+02:36:30 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:37:27 * * * * * * * * * *
+02:37:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:37:27 * * * * * graft-ops OPS_KILL: killed before view
+02:37:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:38:27 * * * * * * * * * *
+02:38:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:38:27 * * * * * graft-ops OPS_KILL: killed before view
+02:38:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:39:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:39:31 * * * * * graft-ops gate site 2: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, ack_bp: 10000, step_downs: 0, entries: 20 } N Side { apply_lag_p99_ms: 1500, exceptions: 0, ack_bp: 9993, step_downs: 0, entries: 9320 } -> Breach("GATE_APPLY_LAG: N+1 p99 1500 ms, N 1500 ms")
+02:39:32 * * * * * * * * * *
+02:39:32 * * * * * graft-ops Committed("Rollback")
+02:39:32 * * * * * graft-ops Error("view: OPS_KILL")
+02:39:32 * * * * * graft-ops OPS_KILL: killed before view
+02:40:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:40:29 * * * * * * * * * *
+02:40:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:40:29 * * * * * graft-ops OPS_KILL: killed before commit
+02:41:27 * * * * * * * * * *
+02:41:27 * * * * * graft-ops Error("view: OPS_KILL")
+02:41:27 * * * * * graft-ops OPS_KILL: killed before view
+02:41:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:42:29 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:42:31 * * * * * * * * * *
+02:42:31 * * * * * graft-ops Committed("IntentStep")
+02:42:31 * * * * * graft-ops Error("view: OPS_KILL")
+02:42:31 * * * * * graft-ops OPS_KILL: killed before view
+02:43:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:43:30 * * * * * * * * * *
+02:43:30 * * * * * graft-ops Error("deploy Site(SiteId(2)): OPS_KILL")
+02:43:30 * * * * * graft-ops OPS_KILL: killed before deploy
+02:44:28 * * * * * * * * * *
+02:44:28 * * * * * graft-ops Error("view: OPS_KILL")
+02:44:28 * * * * * graft-ops OPS_KILL: killed before view
+02:44:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:45:28 * * * * * * * * * *
+02:45:28 * * * * * graft-ops Error("view: OPS_KILL")
+02:45:28 * * * * * graft-ops OPS_KILL: killed before view
+02:45:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:46:29 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:46:33 * * * * * * * * * *
+02:46:33 * * * * * graft-ops Error("deploy Site(SiteId(2)): OPS_KILL")
+02:46:33 * * * * * graft-ops OPS_KILL: killed before deploy
+02:47:28 * * * * * * * * * *
+02:47:28 * * * * * graft-ops Error("view: OPS_KILL")
+02:47:28 * * * * * graft-ops OPS_KILL: killed before view
+02:47:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:48:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:48:32 * * * * * * * * * *
+02:48:32 * * * * * graft-ops Error("deploy Site(SiteId(2)): OPS_KILL")
+02:48:32 * * * * * graft-ops OPS_KILL: killed before deploy
+02:49:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:49:30 * * * * * * * * * *
+02:49:30 * * * * * graft-ops Error("deploy Site(SiteId(2)): OPS_KILL")
+02:49:30 * * * * * graft-ops OPS_KILL: killed before deploy
+02:50:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:50:31 * * * * * * * * * *
+02:50:31 * * * * * graft-ops Deployed(Site(SiteId(2)), [(VersionId(39439670-1a7c-4ae5-a685-e6fe6d15abff), 100)])
+02:50:31 * * * * * graft-ops Error("view: OPS_KILL")
+02:50:31 * * * * * graft-ops OPS_KILL: killed before view
+02:51:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:51:30 * * * * * * * * * *
+02:51:30 * * * * * graft-ops Error("SiteRelease: OPS_KILL")
+02:51:30 * * * * * graft-ops OPS_KILL: killed before commit
+02:52:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:52:30 * * * * * * * * * *
+02:52:30 * * * * * graft-ops Committed("SiteRelease")
+02:52:30 * * * * * graft-ops Error("view: OPS_KILL")
+02:52:30 * * * * * graft-ops OPS_KILL: killed before view
+02:53:28 * * * * * * * * * *
+02:53:28 * * * * * graft-ops Error("view: OPS_KILL")
+02:53:28 * * * * * graft-ops OPS_KILL: killed before view
+02:53:28 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+02:54:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:54:31 * * * * * * * * * *
+02:54:31 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:54:31 * * * * * graft-ops OPS_KILL: killed before commit
+02:55:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:55:30 * * * * * * * * * *
+02:55:30 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:55:30 * * * * * graft-ops OPS_KILL: killed before commit
+02:56:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:56:30 * * * * * * * * * *
+02:56:30 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:56:30 * * * * * graft-ops OPS_KILL: killed before commit
+02:57:28 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+02:57:29 * * * * * * * * * *
+02:57:29 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+02:57:29 * * * * * graft-ops OPS_KILL: killed before commit
+02:58:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:58:31 * * * * * * * * * *
+02:58:31 * * * * * graft-ops Committed("IntentStep")
+02:58:31 * * * * * graft-ops Error("view: OPS_KILL")
+02:58:31 * * * * * graft-ops OPS_KILL: killed before view
+02:59:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+02:59:33 * * * * * * * * * *
+02:59:33 * * * * * graft-ops Committed("SiteMode")
+02:59:33 * * * * * graft-ops Error("view: OPS_KILL")
+02:59:33 * * * * * graft-ops OPS_KILL: killed before view
+03:00:27 * * * * * * * * * *
+03:00:27 * * * * * graft-ops Error("view: OPS_KILL")
+03:00:27 * * * * * graft-ops OPS_KILL: killed before view
+03:00:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+03:01:27 * * * * * * * * * *
+03:01:27 * * * * * graft-ops Error("view: OPS_KILL")
+03:01:27 * * * * * graft-ops OPS_KILL: killed before view
+03:01:27 * * * * * graft-ops OPS_KILL: this run dies after 0 calls
+03:02:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+03:02:31 * * * * * * * * * *
+03:02:31 * * * * * graft-ops Error("IntentStep: OPS_KILL")
+03:02:31 * * * * * graft-ops OPS_KILL: killed before commit
+03:03:27 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+03:03:30 * * * * * * * * * *
+03:03:30 * * * * * graft-ops Committed("IntentStep")
+03:03:30 * * * * * graft-ops Error("view: OPS_KILL")
+03:03:30 * * * * * graft-ops OPS_KILL: killed before view
+03:04:27 * * * * * graft-ops OPS_KILL: this run dies after 1 calls
+03:04:31 * * * * * * * * * *
+03:04:31 * * * * * graft-ops Error("IntentDone: OPS_KILL")
+03:04:31 * * * * * graft-ops OPS_KILL: killed before commit
+03:05:28 * * * * * graft-ops OPS_KILL: this run dies after 2 calls
+03:05:30 * * * * * * * * * *
+03:05:30 * * * * * graft-ops Committed("IntentDone")
+03:05:30 * * * * * graft-ops Error("view: OPS_KILL")
+03:05:30 * * * * * graft-ops OPS_KILL: killed before view
