@@ -607,10 +607,11 @@ async fn depth_hop(env: &Env, me: &MemberRef, k: u64) -> Value {
     }
 }
 
-fn meta<C: graftyard_raft::Command>(m: &raft::Member<C>, me: &str) -> Value {
+/// `superseded`: this member learned from its replacement that the group removed it (`superseded_by`).
+fn meta<C: graftyard_raft::Command>(m: &raft::Member<C>, me: &str, superseded: bool) -> Value {
     let r = m.meta();
     let mut v = json!({ "term": r.term.0, "leader": r.leader.map(|s| s.0), "configIndex": r.config_index.0 });
-    if removed(m.committed_config().map(|c| &c.1), me) {
+    if superseded || removed(m.committed_config().map(|c| &c.1), me) {
         v["removed"] = json!(true);
     }
     if let Some(a) = m.admission() {
@@ -644,6 +645,87 @@ fn removed(config: Option<&raft::GroupConfig>, me: &str) -> bool {
         }
         raft::GroupConfig::Joint { old, new } => !names(old) && !names(new),
     }
+}
+
+/// F113: how often a member asks its site's registry row whether it was replaced, at most [guess]. It asks on its
+/// first read-index read in a boot and after a read-index read that waited out FOLLOWER_WAIT, so a live follower that
+/// keeps up never asks again.
+const SUPERSEDED_CHECK_MS: u64 = 5_000;
+
+/// F113: the committed config that removed `me`, from its site's registry row and the `/status` of the member that
+/// row names. A replaced voter never commits the config that drops it: the leader stops sending it entries at
+/// `Degraded { lost }`, so its own committed config still names it and `removed` is false (B0-32 m3fk2B's
+/// `repo:65624#1#f1`, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fk and m3fk2"). It counts only when that member's
+/// committed config names that member and not `me`: each try of a re-placement writes its row before any config names
+/// it, a try that never goes in is named by no config, and a `Joint` config mid-change names both.
+fn superseded_by(
+    chain: ChainId,
+    me: &MemberRef,
+    row: &RegistryRow,
+    status: &Value,
+) -> Option<(raft::Index, raft::GroupConfig)> {
+    if row.chain != chain {
+        return None;
+    }
+    let c = status.get("config")?;
+    let index = raft::Index(c.get("index")?.as_u64()?);
+    let cfg: raft::GroupConfig = serde_json::from_value(c.get("config")?.clone()).ok()?;
+    (removed(Some(&cfg), &me.do_name) && !removed(Some(&cfg), &row.do_name)).then_some((index, cfg))
+}
+
+/// F113: a read-index read on a member the group removed is answered at once, `notLeader` with the config that removed
+/// it, never queued: it gets no entries, so it never applies the leader's read index, and each such read waited
+/// FOLLOWER_WAIT and answered `overloaded` with no config, which the edge asked again on its next pass. The caller
+/// learns the config from the answer (`graftyard_lookup::learn_config`) and asks the member that replaced it. A plain
+/// read, and any read on a member not removed, is unchanged.
+fn removed_answer(
+    index: bool,
+    nl: &raft::NotLeader,
+    superseded: Option<&(raft::Index, raft::GroupConfig)>,
+) -> Option<Value> {
+    let s = superseded.filter(|_| index)?;
+    let nl = raft::NotLeader { config: Some(s.clone()), ..nl.clone() };
+    Some(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }))
+}
+
+/// F113: asks this site's registry row whether a later generation replaced this member, at most once per
+/// SUPERSEDED_CHECK_MS, and if so keeps the committed config the replacement holds (`superseded_by`). It runs beside
+/// the read that started it, never in it, so a live follower's reads wait for nothing. Best effort: a registry or
+/// replacement that does not answer leaves the member as it was.
+fn check_superseded<F: Family>(h: &Rc<Host<F>>) {
+    let now = now_ms();
+    if h.superseded.borrow().is_some() || now < h.superseded_checked.get().saturating_add(SUPERSEDED_CHECK_MS) {
+        return;
+    }
+    h.superseded_checked.set(now);
+    let Some((chain, me)) = h.core.borrow().as_ref().map(|c| (c.join.chain, c.join.me.clone())) else { return };
+    if me.kind == graftyard_types::MemberKind::Learner {
+        return;
+    }
+    let h = h.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let found = async {
+            let site = SiteEnv::read(&h.env).ok()?;
+            let reg = MemberRegistry::for_chain(site.id, chain);
+            let url = format!("https://registry/row?chain={chain}");
+            let mut got = site.registry(&h.env, site.id, &reg.do_name()).ok()?.fetch_with_str(&url).await.ok()?;
+            if got.status_code() != 200 {
+                return None;
+            }
+            let row: RegistryRow = got.json().await.ok()?;
+            // A live voter's row names itself: no second call.
+            if *row.do_name == *me.do_name {
+                return None;
+            }
+            let mut st =
+                site.member(&h.env, site.id, &row.do_name).ok()?.fetch_with_str("https://member/status").await.ok()?;
+            let status: Value = st.json().await.ok()?;
+            superseded_by(chain, &me, &row, &status)
+        };
+        if let Some(s) = within(graftyard_lookup::CALL, found).await.flatten() {
+            *h.superseded.borrow_mut() = Some(s);
+        }
+    });
 }
 
 /// The site id at `k` in a request body, refused when it is missing or past `u8`, so `{"site": 258}` never names
@@ -1555,7 +1637,8 @@ impl<F: Family> Routes<F> {
     }
 
     fn meta(&self) -> Value {
-        self.host.core.borrow().as_ref().map_or(Value::Null, |c| meta(&c.m, &c.join.me.do_name))
+        let superseded = self.host.superseded.borrow().is_some();
+        self.host.core.borrow().as_ref().map_or(Value::Null, |c| meta(&c.m, &c.join.me.do_name, superseded))
     }
 
     #[cfg(feature = "test-faults")]
@@ -2065,6 +2148,15 @@ impl<F: Family> Routes<F> {
             ),
             None => (false, SiteId(0), false, None, true),
         };
+        // F113: a member the group removed answers a read-index read at once with the config that removed it.
+        if let Some(v) = nl.as_ref().and_then(|nl| removed_answer(index, nl, self.host.superseded.borrow().as_ref())) {
+            self.host.stats.borrow_mut().removed_reads += 1;
+            return self.reply(v);
+        }
+        // Its first read-index read in a boot asks once; after that only a read that waited out FOLLOWER_WAIT asks.
+        if index && !leading && self.host.superseded_checked.get() == 0 {
+            check_superseded(&self.host);
+        }
         let off_leader = !alone && graftyard_lookup::leader_never_serves(&q);
         let learner = graftyard_types::learner_slot(me).is_some();
         // LM-1 round 17: which reads reach this member, plain or read-index, and whether a follower could serve them.
@@ -2190,6 +2282,10 @@ impl<F: Family> Routes<F> {
                         s.follower_late += 1;
                         s.shed_by[4] += 1;
                     }
+                    // F113: a read that waited out FOLLOWER_WAIT may be on a removed member; the next one learns it.
+                    if index && !leading {
+                        check_superseded(&self.host);
+                    }
                     self.reply(late)
                 }
             };
@@ -2270,7 +2366,7 @@ impl<F: Family> Routes<F> {
             "stalledSince": s.stalled_since.map(|t| t.0),
             "boots": [s.boots[0].0, s.boots[1].0],
             "boot": c.m.boot().to_string(),
-            "meta": meta(&c.m, &c.join.me.do_name),
+            "meta": meta(&c.m, &c.join.me.do_name, self.host.superseded.borrow().is_some()),
             "config": c.m.committed_config().map(|(i, cfg)| json!({ "index": i.0, "config": cfg })),
             "boot1": c.m.digest_of(raft::Index(1)).map(|d| d.hex()),
             "family": format!("{:?}", Kind::of(&c.join)),
@@ -2437,6 +2533,7 @@ impl<F: Family> Routes<F> {
             }
             v["busyPages"] = json!(s.busy_pages);
             v["readsBy"] = json!(s.reads_by);
+            v["removedReads"] = json!(s.removed_reads);
             #[cfg(feature = "test-faults")]
             {
                 v["leaseClock"] = lease_clock_pcts(&s.lease_clock);
@@ -2504,6 +2601,7 @@ impl<F: Family> Routes<F> {
             "hops": s.hops,
         });
         v["shedBy"] = shed_by_json(&s.shed_by);
+        v["removedReads"] = json!(s.removed_reads);
         // B0-35's instruments: the network's test-merge budget as its shard last reported it, and this leader's
         // head-push merges asked and shed since the last reset (`crate::prsync`).
         // Round 5's commit split: each entry's dep reads, by chain kind, and each command's wait to its entry's append.
@@ -3648,6 +3746,62 @@ mod tests {
         assert!(!removed(Some(&degraded), &m(2, 1)));
         assert!(!removed(Some(&joint), &m(1, 1)) && !removed(Some(&joint), &m(1, 2)), "both halves of a Joint");
         assert!(!removed(None, &m(1, 1)), "no config yet");
+    }
+
+    /// F113's warm case (B0-32 m3fk2B): a voter a re-placement replaced never commits the config that drops it, so
+    /// it learns it from its site's registry row and the replacement's `/status`, and then answers a read-index read
+    /// at once with `notLeader`, `meta.removed` and that config, never a read it would wait FOLLOWER_WAIT for. A
+    /// re-placement try that no committed config names yet, an older row, its own row, and a config that drops the
+    /// row's member too change nothing; a live follower's read-index read and a removed member's plain read are
+    /// untouched.
+    #[test]
+    fn a_replaced_voter_answers_a_read_index_read_at_once_with_the_config_that_removed_it() {
+        use graftyard_raft::{GroupConfig, Index, NotLeader, Term};
+        use graftyard_types::{ChainId, DbId, Member, MemberKind, RegistryRow, RepoId};
+        let chain = ChainId::Repo(RepoId(DbId(65624)));
+        let m = |s: u8, g: u32| Member::new(chain, SiteId(s), MemberKind::Full, s, g);
+        let p = |v1: u32| -> Box<graftyard_types::Placement> {
+            serde_json::from_value(
+                json!({ "voters": [m(0, 1), m(1, v1), m(2, 1)], "learners": [], "home": 0, "generation": 1 }),
+            )
+            .unwrap()
+        };
+        let (old, new) = (m(1, 1), m(1, 3));
+        let row = |g: u32, name: &str| RegistryRow {
+            chain,
+            do_name: name.into(),
+            generation: g,
+            sites: [SiteId(0), SiteId(1), SiteId(2)].into_iter().collect(),
+        };
+        let status = |i: u64, c: &GroupConfig| json!({ "config": { "index": i, "config": c } });
+        let normal = GroupConfig::Normal(p(3));
+        let replaced = super::superseded_by(chain, &old, &row(3, &new.do_name), &status(11, &normal));
+        assert_eq!(replaced, Some((Index(11), normal.clone())), "the replacement's committed config removes it");
+        // A try whose row is written but which no committed config names yet: the replacement's own status still
+        // holds the config naming the old member (it joined with it), so nothing changes.
+        let before = GroupConfig::Normal(p(1));
+        assert_eq!(super::superseded_by(chain, &old, &row(3, &new.do_name), &status(9, &before)), None, "a try");
+        let joint = GroupConfig::Joint { old: p(1), new: p(3) };
+        assert_eq!(super::superseded_by(chain, &old, &row(3, &new.do_name), &status(10, &joint)), None, "mid-change");
+        assert_eq!(super::superseded_by(chain, &old, &row(1, &old.do_name), &status(11, &normal)), None, "own row");
+        assert_eq!(super::superseded_by(chain, &new, &row(3, &new.do_name), &status(11, &normal)), None, "the new one");
+        let dropped = GroupConfig::Degraded { placement: p(3), lost: SiteId(1) };
+        assert_eq!(super::superseded_by(chain, &old, &row(3, &new.do_name), &status(10, &dropped)), None, "both out");
+        let other = ChainId::Repo(RepoId(DbId(65625)));
+        let mut r = row(3, &new.do_name);
+        r.chain = other;
+        assert_eq!(super::superseded_by(chain, &old, &r, &status(11, &normal)), None, "another chain's row");
+        assert_eq!(super::superseded_by(chain, &old, &row(3, &new.do_name), &json!({})), None, "no config");
+
+        // The removed member's own view: a leader it still names, and its old committed config.
+        let nl = NotLeader { term: Term(2), leader: Some(SiteId(0)), config: Some((Index(1), before.clone())) };
+        let v = super::removed_answer(true, &nl, replaced.as_ref()).expect("answered at once");
+        let got = v.pointer("/error/notLeader").expect("notLeader");
+        assert_eq!(got["config"], json!({ "index": 11, "config": normal }), "{v}");
+        assert_eq!(got["leader"], json!(0));
+        assert!(v.get("overloaded").is_none() && v.get("busy").is_none(), "never a shed: {v}");
+        assert_eq!(super::removed_answer(true, &nl, None), None, "a live follower's read-index read is unchanged");
+        assert_eq!(super::removed_answer(false, &nl, replaced.as_ref()), None, "a plain read is unchanged");
     }
 
     /// G22's fake leader: records every config change and try, in order, and answers each try from `results` and the

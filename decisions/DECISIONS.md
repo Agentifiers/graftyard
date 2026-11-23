@@ -9130,6 +9130,64 @@ clearance after this merges and runs on graft-m2b after LM-1's read-memo rows.
 - **Under-read left.** Leader refusals over 50% of pfA's count with both rules live. Then the 23% of lane growth in
   flight is what is left, and the lever moves to the leader's own admission.
 
+### `removed-read`: a replaced voter answers a read-index read at once with the config that removed it, 2026-11-23
+
+**Status.** Code built and tested at $0, cleared by the lead on 2026-11-23 for F113's warm case. Site only, so it ships
+on a site day, the same one as F112's G39 catch-up levers. The hosted check is the next B0-32 row on graft-m3f after it
+ships, on a kept host up to 40 ms, judged on 450.
+
+**Decision.**
+- A voter that a re-placement or `ReplaceMember` replaced learns it from its own site's registry row: a row naming
+  another member of its chain, whose `/status` holds a committed config that names that member and not this one
+  (`superseded_by`, `workers/site/src/member.rs`). It keeps that config for the object's life (`Host::superseded`).
+- It then answers every read-index read at once, `notLeader` naming the leader it holds, with that config, and every
+  reply's `meta` says `removed`. It never starts a read it cannot apply (`removed_answer`). The edge's pass already
+  moves on from `notLeader` and learns the config it carries (`graftyard_lookup::learn_config`), so no edge change.
+- It asks the registry beside a read-index read, never in it (`check_superseded`): on its first such read in a boot,
+  then only after one that waited out FOLLOWER_WAIT, at most once per SUPERSEDED_CHECK_MS (5 s [guess]). A follower
+  that keeps up asks once a boot. A learner never asks: it writes no registry row.
+- A plain read, the leader, and any member no committed config has removed are unchanged.
+
+**Why.** A replaced voter never commits the config that drops it: the leader stops sending it entries at `Degraded {
+lost }`, so its own committed config still names it, `removed` is false, and it still names the leader. On B0-32
+m3fk2B, `repo:65624#1#f1`, replaced by `#3#f1` in setup, took 169 read-index reads in the burst's first 12 s, waited
+FOLLOWER_WAIT on each (wall p50 1,013 ms), and answered `overloaded` with no config, so the edge asked it again on its
+next pass. 49 of the 53 late pushes began there; without that try the line is 496 of 500, not 447 [measured; the
+recount is an inference, `tests/am1/results/lm1-rows-m3f.md`, "Rows m3fk and m3fk2"]. The same signature is on every
+B0-32 row whose site-1 voter was replaced: m3fsf2, m3fac1, m3fpc1, m3fgb1. A local scenario on the raft crate's own
+replacement test (`a_member_is_replaced_on_its_own_site_in_two_config_changes`, the old member kept running) confirmed
+it: after `Degraded` committed at index 10, the old member's committed config was still index 1.
+
+**What it beat.**
+- **Checking `removed` on the member's own committed config.** It is never true for a replaced voter, for the reason
+  above, so it would change nothing on m3fk2B.
+- **The leader telling the old member.** It would need a new message kind, and so a format, in `crates/raft`, for a
+  member the leader no longer addresses: `peer_name` names the new member at that address.
+- **The edge skipping a member that shed every read.** It is edge state per isolate, learned again by each cold
+  isolate, and it would also skip a live follower behind for a while.
+- **The edge taking the config from the `MemberRegistry` rows** (F113's second option): a new read on every cold path.
+
+**Evidence.**
+- `member::tests::a_replaced_voter_answers_a_read_index_read_at_once_with_the_config_that_removed_it`, which does not
+  build on main. Plant 106 caught 6 of 6 mutants (`tests/m0carried/plant106.py`), including a try no config names yet
+  counting as a replacement, a plain read refused, and the answer carrying the member's own stale config.
+- `tests/f113bed/run.sh`: the site's own build in local workerd, a group whose site-1 voter `/replace` replaced
+  (config 5, `#2#f1`) and a control group [measured, local, 2026-11-23]. The replaced member's first check ran
+  while its replacement still held `Degraded` (index 4), so its first 5 read-index reads waited FOLLOWER_WAIT (1,003
+  to 1,010 ms) as before. From about 5.4 s on, 4 of 4 answered `notLeader` with config 5, the leader, and
+  `meta.removed`, in 2 to 5 ms, with `removedReads` 4. The replacement served the value in 12 ms. The control's 4
+  reads served in 4 to 11 ms, with `removedReads` 0. No wasm traps. On m3fk2B the replacement went in during
+  setup, minutes before the burst, so its first check would find `Normal` [inference].
+- Not measured: the hosted ReadIndex count and the line.
+
+**Flip.**
+- **Back it out if a removed member's `notLeader` makes cold isolates loop:** a hosted row whose edge `x-graft-spread`
+  traces show a pass asking the removed name again after its `notLeader`, or `suspect` reports or leader lookups rising
+  against the matched row, on a group with a replaced voter.
+- **Back it out if the leader's `ReadIndex` count does not fall on a replaced-voter row:** the leader's `IndexTaken`
+  rows from the removed member's boot (m3fk2B: 457, 42 in the burst's first 10 s) stay at that level, or the removed
+  member's `followerLate` keeps rising after its first check.
+
 ### `edge-shed-429`: an Agent write whose row read the members shed answers 429, and a fetch's shard 503 carries `Retry-After: 2`, 2026-11-23
 
 **Status.** Code built and tested at $0, cleared by the lead on 2026-11-23 (`FRAME.md`, "Operator decision, 2026-11-23,

@@ -440,6 +440,8 @@ pub struct Stats {
     /// Whole-tier and `ls-refs` read-index reads this member refused while it led (`tier-off-leader`).
     pub leader_refused: u32,
     pub follower_late: u32,
+    /// F113: read-index reads this member answered `notLeader` at once because the group removed it.
+    pub removed_reads: u32,
     /// Reads served by `stale()` under a `StaleMode` flag (`crate::member`, `read_stale`).
     pub stale_reads: u32,
     /// Stored entries sent to a follower behind the in-memory window (`Out::catchup`).
@@ -1320,6 +1322,11 @@ pub struct Host<F: Family> {
     requests: RefCell<Option<RequestSql<F::Ev>>>,
     pub restore_error: RefCell<Option<String>>,
     pub dying: Cell<bool>,
+    /// F113: a committed config of this member's group, read from the member that replaced it, that no longer names
+    /// this member (`crate::member`, `check_superseded`). Kept for the object's life: a removed name never returns.
+    pub superseded: RefCell<Option<(raft::Index, raft::GroupConfig)>>,
+    /// When this isolate last asked its site's registry row whether it was replaced, epoch ms.
+    pub superseded_checked: Cell<u64>,
     /// The newest `ReadIndex` batch this member sent as a call (`hedge_due`).
     newest_read: Cell<u64>,
     /// `install-record`: the install account's placement record, kept beside the join after the first dependency read
@@ -2093,6 +2100,8 @@ impl<F: Family> Host<F> {
             requests: RefCell::new(None),
             restore_error: RefCell::new(None),
             dying: Cell::new(false),
+            superseded: RefCell::new(None),
+            superseded_checked: Cell::new(0),
             newest_read: Cell::new(0),
             install_record: RefCell::new(None),
             ticking: Cell::new(false),
