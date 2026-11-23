@@ -9247,3 +9247,49 @@ written as multi-row statements.
   deferred transaction at 30% or more of leader CPU, and probe arms (a) and (b) showing hosted per-call cost at 50% or
   more of a one-row statement.
 - **Never build it:** probe arm (b) costs as much hosted as arm (a), so there is no per-call cost to remove.
+
+### `encode-once`: lever A (each entry digested and encoded once) is priced and not built, 2026-11-23
+
+**Status.** Ruled by the lead on 2026-11-23 from `tests/am1/results/seal-bytes-design.md`, section 8. Not built.
+
+**Decision.** `SqlStore`'s `Write::Append` keeps computing `raft::digest(e)` itself, and `Host::call` and a learner's
+answer keep encoding each AppendEntries envelope whole, once per copy.
+
+**Why.**
+- In the bed, at 128 KB of inline packs and 10 copies, encoding once saves 7.0 ms an entry: one SHA-256 (1.30 ms) and
+  all but one envelope encode (0.63 ms each). At B0-32's measured entries it saves 4.0 ms on m3fsf2 (72 KB, 9.7 copies)
+  and 6.1 on m3fg3 (95 KB, 12 copies), about 8 and 14 ms hosted at 1.3 to 2.3 times the bed [measured,
+  `tests/leaderprof/encodes.sh`, `tests/fanout/flushslice.py`].
+- That is 3 to 11% of a slow leader's CPU an entry: x ≈ 0.89 to 0.97, m3fsf2's B0-32 line about 284 to 290 against
+  the ×0.63 it needs for 450 [inference from `b032share.py`'s marks]. It touches `crates/raft/src`, so it costs the
+  long sweep and Porcupine.
+
+**What it beat.** Building it now, for 3 to 11% that cannot lift B0-32 alone.
+
+**Evidence.** `tests/am1/results/seal-bytes-design.md`, section 8; `tests/fanout/raw/leaderprof-encodes.jsonl`;
+`tests/fanout/raw/flushslice.out`.
+
+**Flip.** B0-32's stage split shows the commit stage is what keeps m3fk2B under 450 (it was 3 short), and lever A's
+3 to 11% of leader CPU an entry closes that gap at the row's measured entry sizes and copies.
+
+### `inline-b64`: `PackRef::Inline` keeps its base64 form in the codec, 2026-11-23
+
+**Status.** Ruled by the lead on 2026-11-23 from `tests/am1/results/seal-bytes-design.md`, section 8. Not built.
+
+**Decision.** `PackRef::Inline` keeps serializing as base64 (`crates/git/src/pack.rs`, `b64`) in the `log` row and in
+every member-to-member envelope.
+
+**Why.**
+- About 90% of a postcard encode of an entry with inline packs is that base64: 0.57 of an envelope's 0.63 ms at 128 KB.
+  The same bytes as postcard bytes encode and decode in 0.03 ms or less [measured, `tests/leaderprof/encodes.sh`].
+- With lever A in, the leader encodes each entry once, so removing base64 saves it only about 1.1 ms an entry. The rest
+  of its value is the receivers' decode (0.73 ms at 128 KB) and a quarter of the bytes held and sent [inference].
+- It is a wire change: the stored `log` row, every envelope, and `CODEC_VERSION` or a new `PackRef` variant
+  (`crates/git/tests/wire_tags.golden` keeps variants append-only), with old rows still readable and a site day.
+
+**What it beat.** Building it beside lever A, for at most 1.1 ms on the leader.
+
+**Evidence.** `tests/am1/results/seal-bytes-design.md`, section 8; `tests/fanout/raw/leaderprof-encodes.jsonl`.
+
+**Flip.** Lever A is built, and a row shows the receivers' decode or the inline bytes (held for learners, sent, or
+stored) binding: a follower's or learner's apply turn, or a member's memory, with inline packs as the largest part.
