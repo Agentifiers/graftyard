@@ -1411,7 +1411,9 @@ const leader = leaderBefore.find((s) => s.role === "leader")?.site
   ?? await (await import("../hosted/lib.mjs")).leaderOf(CHAIN).catch(() => undefined);
 // With `summary=1`: a raw reset serialized every sample array and the trace first, and took a loaded leader's wasm
 // memory from 5.9 to 12.2 MB on B0-31 m67r31 (`decisions/OPEN-QUESTIONS.md`, F111).
-if (leader !== undefined) await member(CHAIN, leader, "/stats?summary=1&reset=1", undefined, 15_000);
+// read-memo: `foldReads` counts from the member's handles opening, `eventsSinceReset` from this reset, so the load
+// window's reads are the end read's counts less this one's (a test install's member; null on a product build).
+const resetStats = leader !== undefined ? (await member(CHAIN, leader, "/stats?summary=1&reset=1", undefined, 15_000)).v ?? null : null;
 // `--first-for`: round 5's concurrent re-sends, on purpose. Every member gets it, so a leader elected mid-run has it too.
 if (opt["first-for"]) for (const s of [0, 1, 2]) {
   const v = (await member(CHAIN, s, "/bench_seed", { prsyncFirstFor: Number(opt["first-for"]) }, 15_000).catch((e) => ({ v: String(e) }))).v;
@@ -1570,7 +1572,16 @@ const v = {
     feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls,
     // read-beat's question: whether the leader's member clock was suspect (lease-clock), and how many reads it sent
     // to a round for it.
-    clock: lstats.clock ?? null },
+    clock: lstats.clock ?? null,
+    // read-memo (B0-33): the window's fold reads SQLite ran and those the memo answered, per event applied. A
+    // negative delta means the member's handles reopened in the window, so only the end counts are given.
+    foldReads: (() => { const a = resetStats?.foldReads, b = lstats.foldReads; if (!b || b.sql == null) return null;
+      const reopened = !a || a.sql == null || b.sql < a.sql || b.memo < a.memo;
+      const sql = reopened ? b.sql : b.sql - a.sql, memo = reopened ? b.memo : b.memo - a.memo, ev = b.eventsSinceReset;
+      return { sql, memo, events: ev, reopened, sqlPerEvent: ev ? +(sql / ev).toFixed(2) : null,
+        memoPerEvent: ev ? +(memo / ev).toFixed(2) : null, memoShare: sql + memo ? +(memo / (sql + memo)).toFixed(3) : null }; })(),
+    memoFold: lstats.memSplit?.fold ? { memoRows: lstats.memSplit.fold.memoRows, memoBytes: lstats.memSplit.fold.memoBytes,
+      memoIsolateBytes: lstats.memSplit.fold.memoIsolateBytes } : null },
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
   ...(b034 ? { b034: { misses: missRows, missSummary: { n: missRows.length,
       compose: missRows.reduce((m, x) => ((m[x.compose ?? "none"] = (m[x.compose ?? "none"] ?? 0) + 1), m), {}),
