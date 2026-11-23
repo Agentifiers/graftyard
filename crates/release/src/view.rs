@@ -48,8 +48,61 @@ pub fn version_override(script: &str, v: VersionId) -> String {
     format!("{script}=\"{v}\"")
 }
 
-/// Whether `graft-front` alarms on an answer: the edge is pinned to `pin` and reported another version, or none. An
-/// unpinned call follows the deployment split, so any version it reports is one the deployment serves.
+/// The one `Cloudflare-Workers-Version-Overrides` value `graft-front` sends for the scripts behind it: a dictionary
+/// member per pinned script, by script name, and nothing for a `None` pointer, so the deployment's split applies to it
+/// (`design/AGENT-LAYER.md`, Shape, "graft-mcp", release control). `None` when no script is pinned. One header carries
+/// both pointers because `graft-mcp` forwards the header it got on each edge call, so a pinned edge stays pinned
+/// behind it.
+pub fn overrides(pins: &[(&str, Option<VersionId>)]) -> Option<String> {
+    let members: Vec<String> = pins.iter().filter_map(|(s, p)| p.map(|v| version_override(s, v))).collect();
+    (!members.is_empty()).then(|| members.join(", "))
+}
+
+/// The script `graft-front` sends a request to by its `Host`: `graft-mcp` for `mcp_host` (`mcp.<host>`), compared as
+/// DNS names are, without case or port, and the edge for every other host, so an install with no `mcp_host` routes
+/// everything to the edge as before.
+pub fn front_route(host: &str, mcp_host: Option<&str>) -> Script {
+    let name = |h: &str| h.split(':').next().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase();
+    match mcp_host {
+        Some(m) if !m.is_empty() && name(host) == name(m) => Script::Mcp,
+        _ => Script::Edge,
+    }
+}
+
+/// What `graft-front` does with one request (`forward`): the script it goes to, the pin its version report is checked
+/// against (`mismatch`), and the override header it carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Forward {
+    pub to: Script,
+    pub pin: Option<VersionId>,
+    pub overrides: Option<String>,
+}
+
+/// `graft-front`'s plan for a request to `host`, from its view's pointers (`pin`). `mcp` is `graft-mcp`'s host and
+/// script name when the deployment puts it behind this front, else `None`, and then `Pointers.mcp` is not read. The
+/// header names every pinned script whichever one the request goes to, because `graft-mcp` forwards it to the edge.
+pub fn forward(
+    host: &str,
+    edge_script: &str,
+    mcp: Option<(&str, &str)>,
+    pin: impl Fn(Script) -> Option<VersionId>,
+) -> Forward {
+    let to = front_route(host, mcp.map(|(h, _)| h));
+    let edge = pin(Script::Edge);
+    let (mcp_script, mcp_pin) = match mcp {
+        Some((_, s)) => (s, pin(Script::Mcp)),
+        None => ("", None),
+    };
+    Forward {
+        to,
+        pin: if to == Script::Mcp { mcp_pin } else { edge },
+        overrides: overrides(&[(edge_script, edge), (mcp_script, mcp_pin)]),
+    }
+}
+
+/// Whether `graft-front` alarms on an answer: the script that answered is pinned to `pin` and reported another
+/// version, or none. An unpinned call follows the deployment split, so any version it reports is one the deployment
+/// serves.
 pub fn mismatch(pin: Option<VersionId>, ran: Option<&str>) -> bool {
     match pin {
         None => false,

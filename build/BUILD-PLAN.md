@@ -1534,6 +1534,18 @@ The hosted half needs:
 
 **Acceptance.** No gate row of its own. It carries LM-2's swap-back.
 
+**Built (code only, branch `am2-wp3`).** `graftyard_release::view::forward` is `graft-front`'s plan for one request:
+`mcp.<host>` (`MCP_HOST`, compared without case, port, or trailing dot) goes to the `MCP` binding and every other host
+to `EDGE`; the answer is checked against that script's own pointer; and one `Cloudflare-Workers-Version-Overrides`
+header (`overrides`) names every pinned script, `graft-mcp`'s too, which it forwards to the edge. A `None` pointer
+adds nothing. `graft-mcp` reports its version (`x-graftyard-mcp-version`, from a `VERSION` binding) to `graft-front`,
+which alarms on a mismatch and takes the header off. `workers/front/deploy.mjs --mcp --mcp-host --domain` and
+`workers/mcp/deploy.mjs --upload-only`. plant102 catches 17 of 17 (`tests/am2/results/am2-wp3.md`). The hosted day,
+on graft-m4a (the lead's ruling, 2026-11-23): a `FrontRoll`, then an `McpRoll` at 1% with the API blocked and the
+pre-signed `McpPointer` committed, through two Workers Custom Domains under `graftyard.dev`, and one MCP client
+session through `mcp.<host>` at N and one while the pin holds. LM-2's MCP row counts L0-08's hosted passes (m3fa2
+and m3fa3).
+
 ### AM2-WP4. AM2 gate
 
 **Build.** Nothing new.

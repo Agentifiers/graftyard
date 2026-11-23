@@ -1,8 +1,11 @@
 // Deploys `graft-front` (workers/front) for an install: the `EDGE` `fetch()` service binding to the edge script, the
 // `VERSION` version metadata binding, one MEMBER_<n> and REGISTRY_<n> binding per site (its cached `Release` view),
-// and the install's trust anchor. `FRONT_TOKEN` (the `/_front/status` secret) is written separately with
-// `wrangler secret put`, its value on stdin. Usage:
-//   node workers/front/deploy.mjs <sites.json> <name> --edge <edge script> --anchor <install.toml> [--upload-only]
+// and the install's trust anchor. With `--mcp`, also the `MCP` `fetch()` binding to `graft-mcp` and `MCP_HOST`, the
+// host it routes there (`mcp.<host>`), and each `--domain` as a Workers Custom Domain of this script (`routes` with
+// `custom_domain`; operator setup, outside any request path). `FRONT_TOKEN` (the `/_front/status` secret) is written
+// separately with `wrangler secret put`, its value on stdin. Usage:
+//   node workers/front/deploy.mjs <sites.json> <name> --edge <edge script> --anchor <install.toml>
+//     [--mcp <graft-mcp script> --mcp-host <mcp.host>] [--domain <host>]... [--upload-only]
 // `--upload-only` uploads a version without deploying it (`wrangler versions upload`), for a `FrontRoll`, which the ops
 // path deploys by percentage. Needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID. This is the ops path: no request
 // path runs it.
@@ -16,8 +19,11 @@ const root = resolve(here, "../..");
 const [sitesPath, name, ...flags] = process.argv.slice(2);
 const flag = (f) => { const i = flags.indexOf(f); return i >= 0 ? flags[i + 1] : null; };
 if (!sitesPath || !name || !flag("--edge") || !flag("--anchor")) {
-  throw new Error("usage: deploy.mjs <sites.json> <name> --edge <edge script> --anchor <install.toml> [--upload-only]");
+  throw new Error("usage: deploy.mjs <sites.json> <name> --edge <edge script> --anchor <install.toml> [--mcp <script> --mcp-host <host>] [--domain <host>]... [--upload-only]");
 }
+const [mcp, mcpHost] = [flag("--mcp"), flag("--mcp-host")];
+if (!mcp !== !mcpHost) throw new Error("--mcp and --mcp-host go together");
+const domains = flags.flatMap((f, i) => (f === "--domain" ? [flags[i + 1]] : []));
 const sites = JSON.parse(readFileSync(sitesPath, "utf8"));
 const anchor = Object.fromEntries(readFileSync(flag("--anchor"), "utf8").split("\n")
   .map((l) => l.match(/^(install|customer_key)\s*=\s*"([^"]*)"/)).filter(Boolean).map((m) => [m[1], m[2]]));
@@ -31,7 +37,8 @@ const cfg = {
   compatibility_date: "2026-10-01",
   workers_dev: true,
   preview_urls: false,
-  services: [{ binding: "EDGE", service: flag("--edge") }],
+  services: [{ binding: "EDGE", service: flag("--edge") }, ...(mcp ? [{ binding: "MCP", service: mcp }] : [])],
+  ...(domains.length ? { routes: domains.map((pattern) => ({ pattern, custom_domain: true })) } : {}),
   version_metadata: { binding: "VERSION" },
   durable_objects: {
     bindings: sites.flatMap((s) => [["MEMBER", "Member"], ["REGISTRY", "Registry"]]
@@ -42,6 +49,7 @@ const cfg = {
     GRAFTYARD_INSTALL: anchor.install,
     GRAFTYARD_CUSTOMER_KEY: anchor.customer_key,
     EDGE_SCRIPT: flag("--edge"),
+    ...(mcp ? { MCP_SCRIPT: mcp, MCP_HOST: mcpHost } : {}),
   },
   observability: { enabled: true },
 };
