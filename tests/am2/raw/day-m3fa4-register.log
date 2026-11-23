@@ -1,0 +1,15 @@
+2026-11-23T12:41:37Z
+7a2ccb46
+wrote 7 commands to ~/.graft-m3f/apps/apps-register.request.json: graftyard-mcp is App 327680, graftyard-insights App 4784128
+2026-11-23T12:41:40.349Z PutApp (graftyard-mcp) on authz:1: ok
+2026-11-23T12:41:41.549Z RegisterApp (graftyard-mcp) on names:35: ok
+2026-11-23T12:41:42.371Z RegisterClient (graftyard-mcp) on names:284: ok
+2026-11-23T12:41:42.727Z PutAgentApp (graftyard-mcp) on authz:1: ok
+2026-11-23T12:41:43.233Z PutApp (graftyard-insights) on authz:1: ok
+2026-11-23T12:41:44.300Z RegisterApp (graftyard-insights) on names:520: ok
+2026-11-23T12:41:45.774Z RegisterClient (graftyard-insights) on names:730: ok
+{"app":327680,"slug":"graftyard-mcp","callbacks":["https://graft-m3f-mcp.<sub>.workers.dev/callback"],"client_secrets":1}
+{"app":4784128,"slug":"graftyard-insights","callbacks":[],"client_secrets":0}
+step exit 0
+2026-11-23T12:41:46Z
+DONE

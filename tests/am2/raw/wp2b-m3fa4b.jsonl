@@ -1,0 +1,4 @@
+{"at":"2026-11-23T12:44:32.389Z","step":"old","case":"old overlaps direct","ok":true,"status":503,"msg":"the repository's members do not serve this read yet (site release)"}
+{"at":"2026-11-23T12:44:33.478Z","step":"old","case":"old provenance direct","ok":true,"status":503,"msg":"the repository's members do not serve this read yet (site release)"}
+{"at":"2026-11-23T12:44:42.537Z","step":"old","case":"old overlaps tool","ok":true,"status":200,"value":{"message":"the repository's members do not serve this read yet (site release)","rate":null,"retry_after_s":5,"status":503}}
+{"at":"2026-11-23T12:44:43.593Z","step":"old","case":"old provenance tool","ok":true,"status":200,"value":{"message":"the repository's members do not serve this read yet (site release)","rate":null,"retry_after_s":5,"status":503}}

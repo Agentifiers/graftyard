@@ -7,7 +7,9 @@
 //   node tests/am2/hosted/wp2b.mjs <tag> seed    m3-ci flagged ThirdParty (confine refs/heads/claude/**), an external
 //                                                task, three agent branches (two overlapping, one apart), a linked and a
 //                                                forged trailer, a lease, a draft PR on one branch, then a squash merge
-//   node tests/am2/hosted/wp2b.mjs <tag> check   the tools' answers against what the seed wrote, each also read direct
+//   node tests/am2/hosted/wp2b.mjs <tag> check   the tools' answers against what the seed wrote, each also read direct,
+//                                                then two human approvals, the squash merge, and the cases after it
+//   node tests/am2/hosted/wp2b.mjs <tag> check3  only the approvals, merge, and later cases (a rerun after a failure)
 // `seed` writes tests/am2/raw/wp2b-<tag>-seed.json, which `check` reads. No token reaches a log line (`scan`).
 import { mkdirSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,7 +17,7 @@ import { api, ghs, Git, HOST, log, scan, sleep, state, tokens } from "../../am1/
 import { REPO, login, mcpCall } from "./mcp.mjs";
 
 const [tag, step] = process.argv.slice(2);
-if (!tag || !["old", "seed", "check"].includes(step)) throw new Error("usage: wp2b.mjs <tag> old|seed|check");
+if (!tag || !["old", "seed", "check", "check3"].includes(step)) throw new Error("usage: wp2b.mjs <tag> old|seed|check|check3");
 mkdirSync("tests/am2/raw", { recursive: true });
 const OUT = `tests/am2/raw/wp2b-${tag}.jsonl`;
 const SEED = `tests/am2/raw/wp2b-${tag}-seed.json`;
@@ -145,7 +147,19 @@ if (step === "check") {
   // 5. Blame refuses a line past the end: 422 through the tool.
   const p3 = await tool(tk, "provenance.why", { ref: "claude/wp2b-x", path: "pkg/auth/tokens.go", line: 99 });
   verdict("a line past the end", p3.isError && p3.value?.status === 422, { value: p3.value });
+}
+
+if (step === "check" || step === "check3") {
+  const s = JSON.parse(readFileSync(SEED, "utf8"));
+  const tk = (await login(scope)).access_token;
   // 6. Squash-merge Y, then Y's line on main maps through Merged to #n and its session, and Y's PathSet row is gone.
+  //    A task without a requester needs two human writers' approvals (graftyard/agent-gate): admin's and member's.
+  for (const [who, t] of [["admin", tokens.admin], ["member", tokens.member]]) {
+    const q = await gql(t, `query { repository(owner: "${owner}", name: "${repo}") { pullRequest(number: ${s.n}) { id } } }`);
+    const pid = q.body?.data?.repository?.pullRequest?.id;
+    const a = await gql(t, "mutation($i: AddPullRequestReviewInput!) { addPullRequestReview(input: $i) { pullRequestReview { id } } }", { i: { pullRequestId: pid, event: "APPROVE" } });
+    row({ case: `approve ${who}`, status: a.status, ok: !!a.body?.data?.addPullRequestReview?.pullRequestReview?.id, errors: a.body?.errors });
+  }
   const m = await api("PUT", `/api/v3/repos/${REPO}/pulls/${s.n}/merge`, tokens.admin, { merge_method: "squash" });
   row({ case: "merge", status: m.status, sha: m.body?.sha, msg: m.body?.message });
   await sleep(5000); // the narrow reads go to learners and followers
