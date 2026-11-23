@@ -35,6 +35,10 @@
 //!   reads them), and `scan_one` and `scan_256` (a one-row and a 256-row fold scan, one batch of
 //!   `graftyard_fold::Read::prefix`).
 //!
+//! - `memo=0` reads SQLite on every fold read, as before `read-memo`; the default is the product's memo
+//!   (`workers/site/src/tier.rs`, "Read memo"). `foldReads` answers each tier's (SQLite reads, memo answers).
+//! - `/memo_scratch` and `/memo`: read-memo's checks (`tests/leaderprof/memo.sh`).
+//!
 //! The member DDL below is copied from `workers/site/src/host.rs` `SCHEMA`; run.sh fails if any line is not there
 //! verbatim.
 use graftyard_git::repo::{RepoCmd, RepoEvent, RepoFold, RepoOut};
@@ -476,6 +480,10 @@ impl L {
         let setup: Vec<RepoEvent> =
             corpus["setup"].as_array().unwrap().iter().cloned().map(decode).collect::<Result<_>>()?;
         let (core, meta) = tier::repo_tiers(&sql);
+        // `memo=0`: the tiers read SQLite every time, as before `read-memo`.
+        let memo = q("memo", 1) == 1;
+        core.set_memo(memo);
+        meta.set_memo(memo);
         let mut fold =
             RepoFold::with_tiers(Some(RepoId(DbId(7))), Some(AccountId(DbId(1))), Box::new(core), Box::new(meta));
         let first = LogEntry {
@@ -873,12 +881,288 @@ impl L {
         Ok(
             json!({ "cmds": n, "entries": entries, "grow": grow, "peers": peers, "openPrs": open_prs, "leases": lease_n, "pushesPerEntry": pushes as f64 / e,
             "entryBytes": entry_bytes as f64 / e, "stmtsPerEntry": stmts_n as f64 / e, "stmtBytesPerEntry": stmt_bytes as f64 / e,
-            "learnerCallsPerEntry": LEARNER_CALLS, "authzBytes": authz_bytes, "replyStatus": statuses, "issueCmds": issue_cmds,
+            "learnerCallsPerEntry": LEARNER_CALLS, "authzBytes": authz_bytes, "memo": memo,
+            "foldReads": [tier::handle(&*fold.core).read_counts(), tier::handle(&*fold.meta).read_counts()], "replyStatus": statuses, "issueCmds": issue_cmds,
             "renderByKind": by_kind.iter().map(|(k, (ms, c))| ((*k).to_owned(), json!({ "n": c, "msPer": ms / (*c).max(1) as f64 })))
                 .collect::<Map<String, Value>>(), "entriesCallsPerEntry": ENTRIES_CALLS,
             "totalMs": t, "perEntryMs": per_entry, "perUnitMs": per_unit, "unit": unit }),
         )
     }
+}
+
+/// A repository member's two tiers over tables under `pre`, with the setup entry applied and flushed, its read memo
+/// on or off (`read-memo`). No FTS5 rows: no route this bed checks reads them.
+fn member(sql: &SqlStorage, storage: &Storage, pre: &'static str, memo: bool, first: &LogEntry<RepoEvent>) -> Result<RepoFold> {
+    for schema in [graftyard_git::tiers::CORE, graftyard_git::tiers::METADATA] {
+        for q in tier::ddl(&schema, pre) {
+            sql.exec(&q, None)?;
+        }
+    }
+    let core = tier::TierSql::new_in(sql.clone(), &graftyard_git::tiers::CORE, None, pre);
+    let meta = tier::TierSql::new_in(sql.clone(), &graftyard_git::tiers::METADATA, None, pre);
+    core.set_memo(memo);
+    meta.set_memo(memo);
+    let mut fold = RepoFold::with_tiers(Some(RepoId(DbId(7))), Some(AccountId(DbId(1))), Box::new(core), Box::new(meta));
+    fold.apply_entry(first);
+    flush(storage, &fold)?;
+    Ok(fold)
+}
+
+/// The fold's buffered writes in one transaction, then `flushed`, as `host::flush` runs them.
+fn flush(storage: &Storage, fold: &RepoFold) -> Result<()> {
+    let mut stmts = Vec::new();
+    tier::handle(&*fold.core).seal(&mut stmts);
+    tier::handle(&*fold.meta).seal(&mut stmts);
+    txn::commit_tx(storage, stmts).map_err(Error::RustError)?;
+    tier::handle(&*fold.core).flushed();
+    tier::handle(&*fold.meta).flushed();
+    Ok(())
+}
+
+fn digests(fold: &RepoFold) -> (String, String) {
+    use graftyard_types::Tier;
+    (graftyard_fold::fold_digest(&*fold.core, Tier::Core).hex(), graftyard_fold::fold_digest(&*fold.meta, Tier::Metadata).hex())
+}
+
+/// Each command's done reply as `Repo::out_json` renders it from the fold after its entry, serialized.
+fn replies(
+    fold: &RepoFold,
+    cmds: &[Cmd],
+    renders: &Renders,
+    owner: &std::rc::Rc<graftyard_identity::AuthzFold>,
+) -> Vec<(&'static str, String)> {
+    let acked0 = ack::ack(());
+    cmds.iter()
+        .map(|c| {
+            let x = acked0.map(|_| leader_out(c, renders, owner));
+            let mut parsed: Option<graftyard_api::hosted::Render> = match &x.out {
+                RepoOut::Issue(o) => serde_json::from_value(o.render.clone()).ok(),
+                _ => None,
+            };
+            let source = match (&mut parsed, &x.out) {
+                (Some(r), RepoOut::Issue(o)) => graftyard_api::hosted::fill_authz(r, o.authz.as_deref()),
+                _ => None,
+            };
+            (c.kind, out_json(fold, &x, parsed.as_ref(), source).to_string())
+        })
+        .collect()
+}
+
+impl L {
+    /// `read-memo`'s check: a leader and a follower with the read memo on and a reference member with it off apply
+    /// the same `entries` entries of B0-33's mix (or `only=K`), each flushing its own transaction. After every entry
+    /// both memo members' fold digests must equal the reference's, and every reply the leader renders must be the
+    /// reference's byte for byte. Answers the counts and the first mismatch, if any.
+    fn memo_check(&self, url: &Url) -> Result<Value> {
+        let q =
+            |k: &str, d: u64| url.query_pairs().find(|(n, _)| n == k).and_then(|(_, v)| v.parse().ok()).unwrap_or(d);
+        let (n, entries) = (q("cmds", 60) as usize, q("entries", 300));
+        let only = url.query_pairs().find(|(k, _)| k == "only").map(|(_, v)| v.into_owned());
+        let sql = self.state.storage().sql();
+        let storage = self.state.storage();
+        for s in SCHEMA {
+            sql.exec(s, None)?;
+        }
+        let corpus: Value = serde_json::from_str(CORPUS)?;
+        let setup: Vec<RepoEvent> =
+            corpus["setup"].as_array().unwrap().iter().cloned().map(decode).collect::<Result<_>>()?;
+        let first = LogEntry {
+            term: Term(2),
+            index: Index(1),
+            prev: PREV_ZERO,
+            format: Format { family: 0x20, version: NEWEST },
+            tiers: setup.iter().fold(TierSet::NONE, |t, e| t.union(<RepoFold as Fold>::tiers(e))),
+            at: Timestamp(1_000),
+            requests: Default::default(),
+            extend: None,
+            body: EntryBody::Events(setup),
+        };
+        let mut leader = member(&sql, &storage, "a", true, &first)?;
+        let mut follower = member(&sql, &storage, "f", true, &first)?;
+        let mut reference = member(&sql, &storage, "r", false, &first)?;
+        let fx = Fixtures::new()?;
+        let owner = std::rc::Rc::new(owner_authz());
+        let renders = Renders::new()?;
+        let mut prev = graftyard_raft::digest(&first);
+        let (mut compared, mut by_kind) = (0u64, BTreeMap::<&str, u64>::new());
+        let mut mismatch: Option<Value> = None;
+        for x in 0..entries {
+            let idx = x + 2;
+            let base = 1 + x * 1_000;
+            let (cmds, _) = commands(&fx, n, base, x * n as u64, only.as_deref())?;
+            let e = entry(idx, prev, &cmds, base);
+            for f in [&mut leader, &mut follower, &mut reference] {
+                f.apply_entry(&e);
+            }
+            // Read before the flush and after it, as the leader's consumer scans and the replies do.
+            let mut pairs = Vec::new();
+            pairs.push(("before flush", replies(&leader, &cmds, &renders, &owner), replies(&reference, &cmds, &renders, &owner)));
+            for f in [&leader, &follower, &reference] {
+                flush(&storage, f)?;
+            }
+            pairs.push(("after flush", replies(&leader, &cmds, &renders, &owner), replies(&reference, &cmds, &renders, &owner)));
+            let want = digests(&reference);
+            for (who, f) in [("leader", &leader), ("follower", &follower)] {
+                if mismatch.is_none() && digests(f) != want {
+                    mismatch = Some(json!({ "entry": idx, "member": who, "got": digests(f), "want": want }));
+                }
+            }
+            for (when, got, want) in pairs {
+                for ((kind, a), (_, b)) in got.iter().zip(&want) {
+                    compared += 1;
+                    *by_kind.entry(kind).or_default() += 1;
+                    if mismatch.is_none() && a != b {
+                        mismatch = Some(json!({ "entry": idx, "kind": kind, "when": when, "got": a, "want": b }));
+                    }
+                }
+            }
+            prev = graftyard_raft::digest(&e);
+        }
+        Ok(json!({
+            "entries": entries, "cmds": n, "repliesCompared": compared, "byKind": by_kind, "mismatch": mismatch,
+            "reads": {
+                "leader": [tier::handle(&*leader.core).read_counts(), tier::handle(&*leader.meta).read_counts()],
+                "follower": [tier::handle(&*follower.core).read_counts(), tier::handle(&*follower.meta).read_counts()],
+                "reference": [tier::handle(&*reference.core).read_counts(), tier::handle(&*reference.meta).read_counts()],
+            },
+        }))
+    }
+
+    /// `read-memo`'s edge cases on real SQLite, each answering `true` when it holds:
+    /// - `scratch`: `decide` reads a ref through the leader's scratch view, the scratch writes it, the scratch is
+    ///   dropped, and both the next stored read and the next scratch's read see the stored value.
+    /// - `buffered`: a ref read once, then written by `apply`, reads the new value before its transaction runs.
+    /// - `flushed`: after the transaction runs, a ref written outside the handle's buffers by a later transaction (as
+    ///   an install's table swap does) reads the new stored value.
+    /// - `clear`: an undo table read once, then cleared, reads empty.
+    /// - `refused`: a read SQLite refused is not kept: the next read of the row finds it.
+    fn memo_scratch(&self) -> Result<Value> {
+        use graftyard_fold::{Read, Store, Val};
+        use graftyard_git::refs::RefName;
+        use graftyard_raft::Scratch;
+        let sql = self.state.storage().sql();
+        let storage = self.state.storage();
+        for s in SCHEMA {
+            sql.exec(s, None)?;
+        }
+        let corpus: Value = serde_json::from_str(CORPUS)?;
+        let setup: Vec<RepoEvent> =
+            corpus["setup"].as_array().unwrap().iter().cloned().map(decode).collect::<Result<_>>()?;
+        let first = LogEntry {
+            term: Term(2),
+            index: Index(1),
+            prev: PREV_ZERO,
+            format: Format { family: 0x20, version: NEWEST },
+            tiers: setup.iter().fold(TierSet::NONE, |t, e| t.union(<RepoFold as Fold>::tiers(e))),
+            at: Timestamp(1_000),
+            requests: Default::default(),
+            extend: None,
+            body: EntryBody::Events(setup),
+        };
+        let mut fold = member(&sql, &storage, "s", true, &first)?;
+        let main = RefName::parse(b"refs/heads/main").expect("a ref");
+        let key = [graftyard_git::tiers::ref_key(&main)];
+        let stored = |f: &RepoFold| Store::get(&f.core, "ref", &key).map(|r| r.cols);
+        let fx = Fixtures::new()?;
+        let refs_event = |new: u64| -> Result<RepoEvent> {
+            let mut r = fx.get("Refs");
+            r["Refs"]["updates"] = json!([{ "name": "@ref:refs/heads/main", "expect": null, "new": "@oid:00" }]);
+            r["Refs"]["pack"] = Value::Null;
+            let mut r = expand(r);
+            r["Refs"]["updates"][0]["new"] = oid(new);
+            serde_json::from_value(r).map_err(|e| Error::RustError(format!("Refs: {e}")))
+        };
+        let one = |idx: u64, prev, ev: RepoEvent| LogEntry {
+            term: Term(2),
+            index: Index(idx),
+            prev,
+            format: Format { family: 0x20, version: NEWEST },
+            tiers: <RepoFold as Fold>::tiers(&ev),
+            at: Timestamp(1_000 * idx),
+            requests: Default::default(),
+            extend: None,
+            body: EntryBody::Events(vec![ev]),
+        };
+        let mut out = Map::new();
+
+        // scratch
+        let before = stored(&fold);
+        let scratch_ok = {
+            let mut s = Fold::scratch_at(&fold, Timestamp(5_000), TierSet(u8::MAX));
+            let read = s.get(&main);
+            s.apply(&refs_event(9_001)?);
+            let wrote = s.get(&main);
+            read.is_some() && wrote != read
+        };
+        let after = stored(&fold);
+        let next_scratch = Fold::scratch_at(&fold, Timestamp(6_000), TierSet(u8::MAX)).core().get("ref", &key);
+        out.insert("scratch".into(), json!(scratch_ok && before.is_some() && after == before && next_scratch == before));
+
+        // buffered
+        let mut prev = graftyard_raft::digest(&first);
+        let _ = stored(&fold);
+        let e2 = one(2, prev, refs_event(9_002)?);
+        fold.apply_entry(&e2);
+        let buffered = stored(&fold);
+        out.insert("buffered".into(), json!(buffered.is_some() && buffered != before));
+        flush(&storage, &fold)?;
+        prev = graftyard_raft::digest(&e2);
+
+        // flushed: a second handle on the same tables writes the row in its own transaction, as a load's or an
+        // install's statements do, while this handle holds it in its memo.
+        let held = stored(&fold);
+        let mut other = member_handle(&sql, "s")?;
+        let e3 = one(3, prev, refs_event(9_003)?);
+        other.apply_entry(&e3);
+        flush(&storage, &other)?;
+        let now = stored(&fold);
+        let theirs = stored(&other);
+        out.insert("flushed".into(), json!(held.is_some() && now == theirs && now != held));
+
+        // clear
+        let undo = graftyard_fold::undo_table("ref");
+        let mut h = tier::handle(&*fold.core).clone();
+        // Read absent first, so the memo holds the absence when the snapshot writer's own statements (`crate::snap`,
+        // run with `sql.exec`, not `commit_tx`) write the row and `flushed`.
+        let absent = Read::get(&*fold.core, &undo, &[Val::Text("x".into())]).is_none();
+        h.put(&undo, vec![Val::Text("x".into())], graftyard_fold::Stored { written: Index(1), cols: vec![Val::Int(1)] });
+        let mut stmts = Vec::new();
+        h.seal(&mut stmts);
+        for (q, a) in stmts {
+            sql.exec(q, a)?;
+        }
+        h.flushed();
+        let read = Read::get(&*fold.core, &undo, &[Val::Text("x".into())]).is_some();
+        h.clear(&undo);
+        let gone = Read::get(&*fold.core, &undo, &[Val::Text("x".into())]).is_none();
+        out.insert("snapFlushed".into(), json!(absent && read));
+        out.insert("clear".into(), json!(read && gone));
+
+        // prefixKey: two prefixes of one table read in the same transaction answer their own rows (`main` and
+        // `feature`, both refs of the setup entry).
+        let feature = RefName::parse(b"refs/heads/feature").expect("a ref");
+        let pa = Read::prefix(&*fold.core, "ref", &[graftyard_git::tiers::ref_key(&main)]);
+        let pb = Read::prefix(&*fold.core, "ref", &[graftyard_git::tiers::ref_key(&feature)]);
+        out.insert(
+            "prefixKey".into(),
+            json!(pa.len() == 1 && pb.len() == 1 && pa[0].0 == key.to_vec() && pb[0].0 == vec![graftyard_git::tiers::ref_key(&feature)]),
+        );
+
+        // refused: on a fresh member, so the lost read marks nothing the other cases use.
+        let lost = member(&sql, &storage, "t", true, &first)?;
+        tier::handle(&*lost.core).fail_next_read();
+        let failed = stored(&lost);
+        let again = stored(&lost);
+        out.insert("refused".into(), json!(failed.is_none() && again.is_some()));
+        Ok(Value::Object(out))
+    }
+}
+
+/// A second handle on a member's tables under `pre`, already set up, as a load's own handle is (`crate::load`).
+fn member_handle(sql: &SqlStorage, pre: &'static str) -> Result<RepoFold> {
+    let core = tier::TierSql::new_in(sql.clone(), &graftyard_git::tiers::CORE, None, pre);
+    let meta = tier::TierSql::new_in(sql.clone(), &graftyard_git::tiers::METADATA, None, pre);
+    Ok(RepoFold::with_tiers(Some(RepoId(DbId(7))), Some(AccountId(DbId(1))), Box::new(core), Box::new(meta)))
 }
 
 impl DurableObject for L {
@@ -890,6 +1174,8 @@ impl DurableObject for L {
         let url = req.url()?;
         match url.path() {
             "/prof" => Response::from_json(&self.prof(&url).await?),
+            "/memo" => Response::from_json(&self.memo_check(&url)?),
+            "/memo_scratch" => Response::from_json(&self.memo_scratch()?),
             _ => Response::error("not found", 404),
         }
     }

@@ -30,11 +30,22 @@ fn dup_of(q: &str, args: &[SqlStorageValue], written: usize) -> Option<Stmt> {
     (q == REQUEST_INSERT && written == 0).then(|| (DUP_INSERT, args.iter().take(2).cloned().collect()))
 }
 
+thread_local!(static GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) });
+
+/// How many transactions `commit_tx` has started in this isolate. Every fold tier's read memo is dropped once it
+/// moves (`crate::tier`, "Read memo"), so no memo outlives a transaction, even one that ran outside its tier's
+/// buffers: an install's table swap, or a flush whose `flushed` did not reach the fold.
+pub fn generation() -> u64 {
+    GENERATION.with(std::cell::Cell::get)
+}
+
 /// Runs the statements in one `storage.transactionSync`, which workers-rs 0.8.7 does not bind.
 pub fn commit_tx(storage: &worker::Storage, stmts: Vec<Stmt>) -> std::result::Result<(), String> {
     if stmts.is_empty() {
         return Ok(());
     }
+    // Counted before it runs, so a memo never outlives a transaction that failed partway.
+    GENERATION.with(|g| g.set(g.get() + 1));
     let sql = storage.sql();
     let raw: &JsValue = storage.as_raw().as_ref();
     let f = js_sys::Reflect::get(raw, &JsValue::from_str("transactionSync"))

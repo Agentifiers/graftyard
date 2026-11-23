@@ -8448,22 +8448,50 @@ row with enough open pull requests to test it (below, Evidence).
   batched (a `refs/heads/` read on a 500,000-ref repository): page that caller, as `refs_page` does, rather than
   return to batches everywhere.
 
-### `read-memo` (proposed): a tier's stored fold reads are memoized until the next transaction, 2026-11-23
+### `read-memo`: a tier's stored fold reads are memoized until the next transaction, 2026-11-23
 
-**Status.** Proposed to the lead. No code yet. The evidence is `tests/am1/results/b033-applyprice.md`.
+**Status.** Approved by the lead on 2026-11-23, with conditions (scratch transactions, every writer listed, reply and
+follower checks, plant 97). Built on `r33-readmemo`, in `workers/site/src/tier.rs` and `txn.rs` only. It ships on a
+site day. The evidence is `tests/am1/results/b033-applyprice.md`.
 
-**Decision (proposed).**
+**Decision.**
 - `workers/site/src/tier.rs`, `Inner`: a memo of `sql_get` and `sql_prefix` answers, keyed by table and key or prefix.
-  It is shared by every clone of the handle, as the write buffers are.
-- `flushed`, `clear`, and every other path that writes a tier's tables outside the member's transaction drop the memo
-  in the same call. Those paths are a snapshot install, a metadata load, `reshape`, and the scratch swap.
-- A refused read is never memoized, so `lost` keeps its meaning.
-- Buffered writes stay on top of the memo, as they stay on top of SQLite today (`pending`, and `prefix`'s merge).
-  Stored rows change only when a transaction runs, so a memoized stored row is the stored row until `flushed`.
-- The memo is capped in rows and bytes. Past the cap, a read goes to SQLite. `/stats` `memSplit` counts it beside the
-  buffers.
-- No change to `decide`, `apply`, the log, the wire, or any reply byte. The memo is not in `crates/raft`, and not in
-  the functions of `crates/raft/src/member/leader.rs` that B0-29's reask-read touches.
+  It is shared by every clone of the handle, as the write buffers are. `scan` is not memoized.
+- Buffered writes stay on top of the memo, as they stay on top of SQLite (`pending`, and `prefix`'s merge). So a
+  memoized row can differ from the stored row only while that row is in the handle's buffers, which every read
+  merges first.
+- The memo is dropped by `flushed`, by `clear`, by `set_loaded` and `hold_unloaded`, and by any transaction the
+  isolate starts: `crate::txn::commit_tx` counts a generation before it runs, and a memo from an older generation is
+  dropped at its next read. A writer outside the member's transaction therefore needs no call of its own when it uses
+  `commit_tx`.
+- A read is never memoized while the tier is unloaded or after a refused read (`lost`). On a test install it is also
+  skipped while a planted read failure is pending or the memo is switched off (`/bench_seed {"memo": false}`).
+- Caps: 4,096 rows per tier, and 8 MB for every memo of the isolate together, as `buffered` counts bytes. Past the
+  cap, a read goes to SQLite. `/stats` `memSplit.fold` reports `memoRows`, `memoBytes` and `memoIsolateBytes`. A test
+  install's `/stats?summary=1` reports `foldReads` (stored reads SQLite ran, reads the memo answered, events applied
+  since reset).
+- No change to `decide`, `apply`, the log, the wire, or any reply byte. Nothing in `crates/raft`, and none of the
+  functions in `crates/raft/src/member/leader.rs` that B0-29's reask-read touches.
+- **`decide`'s scratch.** There is no SQL scratch transaction. `RepoFold::scratch_at` builds a `RepoScratch` whose
+  tiers are an in-memory `graftyard_fold::Overlay` over the fold, so decide's writes never reach `TierSql`'s buffers
+  or SQLite. A dropped scratch leaves the memo holding only stored rows [verified in code;
+  `tests/leaderprof/memo.sh`'s `scratch` case on real SQLite].
+
+**Every writer of a tier's tables, by grep of `workers/site`** (`commit_tx(`, `sql.exec` of sealed statements, and
+the tier DDL helpers). Add any new writer here, and give it a `memo.sh` case:
+
+| Writer | Statements run by | How the memo is dropped |
+|---|---|---|
+| The member's input transaction (`host::flush`, `Write::Apply` and `Write::Install`, which runs `load::install_stmts`' `swap_in`) | `commit_tx` | generation, then `F::flushed` |
+| `Repo::catch_up` (`family.rs`), the core tier at restore | `commit_tx` | generation, then `core.flushed()` |
+| A load's batches and finish (`load.rs`: the job row, `drop_live` per metadata table, the scratch batches, `finish_stmts`, the `NotNeeded` metadata `swap_in`) | `commit_tx` | generation |
+| `load::reset_scratch` (`drop_scratch`, then `scratch_tiers`' DDL) | `sql.exec` | none needed: scratch tables (`i…`) only, read by the load's own handle, which writes them unmemoized until its `flushed` |
+| A split child's metadata restore (`split.rs`), on its own handle | `commit_tx` | generation, then `store.flushed()` |
+| The snapshot writer (`snap.rs`: `seal` at begin, commit and abort, the slim abort, the metadata load) | `sql.exec` | `flushed` on the same handle, or on a clone of it, right after |
+| `end_snapshot`'s undo-table clear | `TierSql::clear` | `clear` |
+| `live.rs` (L0-16's live check) | `sql.exec` | `flushed` on the same handle, right after |
+| `/bench_seed` seed rows (`snap.rs`, test installs) | `commit_tx` | generation, then `m.flushed()` |
+| `Repo::prepare`'s `reshape` at restore | `sql.exec` | none needed: it runs before any handle opens |
 
 **Why.**
 - Hosted apply cost scales with SQLite calls. A read-only apply slice costs 0.13 to 0.15 ms a read on blB and qlC,
@@ -8483,18 +8511,32 @@ row with enough open pull requests to test it (below, Evidence).
   changes `seal` and the log rows, and it reaches followers. It comes after this cut.
 - **A render cache keyed by command.** It covers only the render's reads, and it needs its own invalidation.
 
-**Expected effect [inference].** About 40% of a leader apply event's SQL calls go away. That is about 0.6 of pgA's
-2.75 ms an event and about 1.3 of pfA's 3.17. B0-32 needs about 29% off its burst commit stage.
+**Expected effect.**
+- **B0-33's mix** [inference from measured]: about 40% of a leader apply event's SQL calls go. That is about 0.6 of
+  pgA's 2.75 ms an event and about 1.3 of pfA's 3.17.
+- **A push-only entry** (B0-32's burst) [measured, bed, N = 60]: reads fell from 370 to 309 an entry (−17%), apply
+  reads stayed at 185 (0%), prsync's scan stayed at 60, and the merge-queue scan fell from 120 to 60. With 187
+  statements, SQL calls go from 557 to 496 (−11%), and none of that is in the apply turn. The memo is not B0-32's
+  cut: B0-32 needs about 29% off its burst commit stage.
+- **Bed, 300 entries at N = 60** (`memo.sh`): the leader's core-tier stored reads fell from 139,899 to 23,366, and the
+  follower's to 19,879.
 
-**Plan once approved.**
-- The memo in `tier.rs`.
-- A `test-faults` counter of stored reads in `/stats`, so a hosted row counts reads per event instead of inferring
-  them.
-- Bed checks: each kind's replies are byte-identical with and without the memo; read counts by stage.
-- Plants: a memo `flushed` does not clear; a memo `clear` does not drop; a memoized refused read; a buffered write that
-  the memo shadows.
-- The site wasm clippy both ways and the bed.
-- Then a site day and one B0-33 row with the guard, if the lead clears it.
+**Checks.**
+- `tests/leaderprof/memo.sh` (the member's own `tier.rs` and `txn.rs` in local workerd, real SQLite):
+  - Edge cases: `scratch` (decide reads a ref, the scratch writes it, the scratch drops, and the next stored and
+    scratch reads see the stored value), `buffered`, `flushed` (another handle's transaction), `snapFlushed` (a
+    snapshot writer's own `sql.exec` statements), `clear`, `prefixKey` (two prefixes of one table in one transaction),
+    `refused`.
+  - A memo-on leader and follower against a memo-off member, over 300 entries at N = 60 and at N = 11, and 100
+    push-only entries. Fold digests are equal after every entry, and every reply the leader renders, before and
+    after each flush, is byte-identical.
+- Plant 97 (`tests/m0carried/plant97.py`), six mutants:
+  - `flushed` keeps the memo;
+  - `clear` keeps it;
+  - a refused read is kept;
+  - the memo is read before the buffered writes;
+  - another handle's transaction keeps it;
+  - prefix reads keyed by table alone.
 
 **Flip.**
 - A hosted row whose leader stored reads per event fall by half or more while CPU per event falls by less than 15%:

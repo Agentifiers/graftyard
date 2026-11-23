@@ -123,3 +123,19 @@ probe reads these as the same repeated rows.
 `rows.sh` runs `teardown.py $rid $rid` whatever a1's exit code, and `rows.sh` and `costrow.sh` both end with
 `teardown.py --sweep`. teardown.py tears down shard containers only. Learner and voter Durable Objects stay joined, as
 they do on every row.
+
+## After `read-memo` (branch `r33-readmemo`) [measured, local]
+
+`tests/leaderprof/memo.sh` runs the member's own `tier.rs` and `txn.rs` with the memo in local workerd.
+- All seven edge cases hold: `scratch`, `buffered`, `flushed`, `snapFlushed`, `clear`, `prefixKey`, `refused`.
+- It compares a memo-on leader and follower against a memo-off member:
+
+  | Mix | Replies byte-identical | Leader core-tier SQLite reads, memo off → on | Follower |
+  |---|---|---|---|
+  | B0-33, N = 60, 300 entries | 36,000 of 36,000 | 139,899 → 23,366 | 19,879 |
+  | B0-33, N = 11, 300 entries | 6,600 of 6,600 | 22,238 → 7,018 | 5,212 |
+  | push only, N = 60, 100 entries | 12,000 of 12,000 | 12,220 → 12,119 | 12,119 |
+
+- Fold digests are equal after every entry, and there were 0 wasm traps.
+- Plant 97 (`tests/m0carried/plant97.py`) catches 6 of 6 mutants. The sixth was missed until the `prefixKey` case
+  was added.
