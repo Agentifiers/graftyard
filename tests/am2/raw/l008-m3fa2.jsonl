@@ -1,0 +1,1 @@
+{"at":"2026-11-23T03:22:02.411Z","case":"meta","resource":"https://graft-m3f-mcp.<sub>.workers.dev/","servers":["https://graft-m3f-mcp.<sub>.workers.dev"],"scopes":["write:read"],"pkce":["S256"],"cimd":true,"iss":true,"door":401,"www":"Bearer resource_metadata=\"https://graft-m3f-mcp.<sub>.workers.dev/.well-known/oauth-protected-resource\""}

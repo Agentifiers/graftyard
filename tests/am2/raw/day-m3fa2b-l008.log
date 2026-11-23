@@ -1,0 +1,16 @@
+2026-11-23T03:26:32Z
+8dc9b691
+file://~/workspace/gy-am2/tests/am2/hosted/mcp.mjs:62
+  if (r4.status !== 302) throw new Error(`callback: ${r4.status} ${(await r4.text()).slice(0, 200)}`);
+                               ^
+
+Error: callback: 400 <!doctype html><meta charset=utf-8><p>the host refused the code: the host&#39;s token answer is not JSON</p>
+    at consent (file://~/workspace/gy-am2/tests/am2/hosted/mcp.mjs:62:32)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async login (file://~/workspace/gy-am2/tests/am2/hosted/mcp.mjs:76:24)
+    at async file://~/workspace/gy-am2/tests/am2/hosted/l008.mjs:46:16
+
+Node.js v26.12.0
+step exit 1
+2026-11-23T03:26:40Z
+DONE

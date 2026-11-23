@@ -1,0 +1,16 @@
+2026-11-23T03:22:01Z
+8dc9b691
+file://~/workspace/gy-am2/tests/am2/hosted/mcp.mjs:48
+  if (r1.status !== 200) throw new Error(`authorize: ${r1.status} ${page.slice(0, 200)}`);
+                               ^
+
+Error: authorize: 400 <!doctype html><meta charset=utf-8><p>invalid_client: client metadata fetch did not answer 200</p>
+    at consent (file://~/workspace/gy-am2/tests/am2/hosted/mcp.mjs:48:32)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async login (file://~/workspace/gy-am2/tests/am2/hosted/mcp.mjs:76:24)
+    at async file://~/workspace/gy-am2/tests/am2/hosted/l008.mjs:46:16
+
+Node.js v26.12.0
+step exit 1
+2026-11-23T03:22:02Z
+DONE

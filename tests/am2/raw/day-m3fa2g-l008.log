@@ -1,0 +1,10 @@
+2026-11-23T04:22:03Z
+8dc9b691
+ tests/am2/hosted/l008.mjs | 24 +++++++++++++++++-------
+ 1 file changed, 17 insertions(+), 7 deletions(-)
+lf6 only, stale rounds five at a time
+2026-11-23T04:32:20.276Z lf6: the record's test secret removed (the record as apps init registered it)
+2026-11-23T04:32:20.279Z l008 m3fa2g {"lf6":{"n":100,"control":200,"controlBody":["app","created_at","expires_at","fingerprint","hashed_token","id","installation","note","note_url","scopes","token","token_last_eight","updated_at","url","user"],"s422":{"noGrant":100,"otherUsersGrant":100,"writeAboveGrant":100},"stale":{"s409":100,"grantGone":100,"scopedRevoked":100,"unscopedRevoked":100,"notes":[]},"wrongCredentials401":300,"wrongCredentialsN":300}}
+step exit 0
+2026-11-23T04:32:20Z
+DONE

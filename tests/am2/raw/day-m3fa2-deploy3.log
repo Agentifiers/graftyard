@@ -1,0 +1,44 @@
+2026-11-23T03:31:04Z
+8dc9b691
+ build/BUILD-PLAN.md       | 10 ++++++++++
+ workers/mcp/deploy.mjs    |  4 ++++
+ workers/mcp/src/worker.rs |  2 ++
+ 3 files changed, 16 insertions(+)
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+   Compiling graftyard-mcp v0.1.0 (~/workspace/gy-am2/workers/mcp)
+    Finished `release` profile [optimized] target(s) in 3.14s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 5.43s
+[INFO]: 📦   Your wasm pkg is ready to publish at ~/workspace/gy-am2/workers/mcp/build/.tmp.
+
+  index.js  24.7kb
+
+⚡ Done in 14ms
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m3f-mcp.jsonc
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.166.0)
+───────────────────────────────────────────────
+Total Upload: 768.68 KiB / gzip: 261.34 KiB
+Worker Startup Time: 6 ms
+Your Worker has access to the following bindings:
+Binding                                                                                     Resource                  
+env.MCP_CLIENT_SECRET (bfaa0c1573de4775b1b92a12fb89acb4/graft-m3f-MCP_CLIENT_SECRET_A)      Secrets Store Secret      
+env.MCP_SEAL_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m3f-MCP_SEAL_KEY_A)                Secrets Store Secret      
+env.EDGE (graft-m3f-edge)                                                                   Worker                    
+env.MCP_CLIENT_ID ("Iv1.0000000000050000")                                                  Environment Variable      
+env.MCP_ORIGIN ("https://graft-m3f-mcp.graftyard-m0-be...")                                 Environment Variable      
+env.HOST_ORIGIN ("https://graft-m3f-edge.graftyard-m0-b...")                                Environment Variable      
+env.DENY_ZONES ("graft-m3f-edge.<sub>.work...")                                 Environment Variable      
+
+Uploaded graft-m3f-mcp (1.99 sec)
+Deployed graft-m3f-mcp triggers (0.51 sec)
+  https://graft-m3f-mcp.<sub>.workers.dev
+Current Version ID: eb673cf8-b11e-4ae8-bfc6-1ecebf5b6671
+step exit 0
+2026-11-23T03:31:15Z
+DONE

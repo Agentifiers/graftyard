@@ -188,9 +188,13 @@ if (want("lf6")) {
       c422.otherUsersGrant.push((await scoped({ access_token: member, graftyard_grant: theirs.id, graftyard_write: "read" })).status);
       c422.writeAboveGrant.push((await scoped({ access_token: member, graftyard_grant: readOnly.id, graftyard_write: i % 2 ? "write" : "write_approve_merge" })).status);
     }
-    // Stale generation: a fresh grant with a scoped token, its generation spent once, then the old one sent again.
-    const stale = { s409: 0, grantGone: 0, scopedRevoked: 0, notes: [] };
-    for (let i = 0; i < N; i++) {
+    // Stale generation: a fresh grant with a scoped token, its generation spent once, then the old one sent again. A
+    // stale generation revokes the user's unscoped `ghu_` with the grant, so each round signs in again (m3fa2c/d died
+    // here on the second round's grant with the first round's revoked `ghu_`).
+    const stale = { s409: 0, grantGone: 0, scopedRevoked: 0, unscopedRevoked: 0, notes: [] };
+    // Five rounds at a time, each with its own grant and sign-in (m3fa2e ran them one by one, about 7 s each).
+    const round = async (i) => {
+      const member = await ghu(tokens.member);
       const g = await newGrant(member, "read");
       const t = await scoped({ access_token: member, graftyard_grant: g.id, graftyard_write: "read" });
       if (t.status === 200) secret(t.body.token);
@@ -198,17 +202,23 @@ if (want("lf6")) {
       const first = await api("POST", gen, null, { generation: g.generation }, { authorization: good });
       const again = await api("POST", gen, null, { generation: g.generation }, { authorization: good });
       if (again.status === 409) stale.s409++; else if (stale.notes.length < 3) stale.notes.push(`${i}: first ${first.status}, again ${again.status}`);
-      const list = await api("GET", "/api/graftyard/v1/mcp/grants", null, undefined, { authorization: good, "x-graftyard-user-token": member });
+      // The list is read with a new sign-in: `member` itself was revoked with the grant.
+      const list = await api("GET", "/api/graftyard/v1/mcp/grants", null, undefined, { authorization: good, "x-graftyard-user-token": await ghu(tokens.member) });
       if (Array.isArray(list.body) && !list.body.some((x) => x.id === g.id)) stale.grantGone++;
       if (t.status === 200 && (await api("GET", "/api/v3/user", t.body.token)).status === 401) stale.scopedRevoked++;
-    }
+      if ((await api("GET", "/api/v3/user", member)).status === 401) stale.unscopedRevoked++;
+    };
+    for (let i = 0; i < N; i += 5) await Promise.all([0, 1, 2, 3, 4].filter((j) => i + j < N).map((j) => round(i + j)));
+    // The stale rounds revoked `member`'s token: the wrong-credential calls carry a live one, so only the credentials
+    // can be what refuses them.
+    const live = await ghu(tokens.member);
     const wrong = [];
     for (let i = 0; i < N; i++) {
       const cred = basic(`wrong-${i}`);
-      wrong.push((await api("GET", "/api/graftyard/v1/mcp/grants", null, undefined, { authorization: cred, "x-graftyard-user-token": member })).status);
+      wrong.push((await api("GET", "/api/graftyard/v1/mcp/grants", null, undefined, { authorization: cred, "x-graftyard-user-token": live })).status);
       wrong.push((await api("POST", `/api/graftyard/v1/mcp/grants/${mine.id}/generation`, null, { generation: 0 }, { authorization: cred })).status);
       wrong.push((await api("POST", `/api/v3/applications/${id}/token/scoped`, null,
-        { access_token: member, target: "m3org", repositories: ["j4"], graftyard_grant: mine.id, graftyard_write: "read" }, { authorization: cred })).status);
+        { access_token: live, target: "m3org", repositories: ["j4"], graftyard_grant: mine.id, graftyard_write: "read" }, { authorization: cred })).status);
     }
     summary.lf6 = { n: N, control: control.status, controlBody: control.status === 200 ? Object.keys(control.body).sort() : control.body,
       s422: Object.fromEntries(Object.entries(c422).map(([k, v]) => [k, count(v, (s) => s === 422)])), stale,

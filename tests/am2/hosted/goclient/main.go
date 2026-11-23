@@ -56,7 +56,9 @@ func (d *dropper) RoundTrip(r *http.Request) (*http.Response, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls = append(d.calls, call{grant, resp.StatusCode})
-	if d.drop && !d.dropped && grant == "authorization_code" {
+	// Only a redemption graft-mcp answered 200: x/oauth2's auth-style probe (Basic first, 400, then the form) is not
+	// the answer A43 drops (m3fa2e dropped that 400 and the retry redeemed normally).
+	if d.drop && !d.dropped && grant == "authorization_code" && resp.StatusCode == http.StatusOK {
 		d.dropped = true
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()

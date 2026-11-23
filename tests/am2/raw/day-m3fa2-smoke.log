@@ -1,0 +1,11 @@
+2026-11-23T03:21:37Z
+8dc9b691
+prm 200
+asm 200
+HTTP/1.1 200 Connection Established
+HTTP/2 401 
+www-authenticate: Bearer resource_metadata="https://graft-m3f-mcp.<sub>.workers.dev/.well-known/oauth-protected-resource"
+cimd 200
+step exit 0
+2026-11-23T03:21:38Z
+DONE
