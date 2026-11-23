@@ -18,7 +18,12 @@ the real ones: each ok Human push's admission is its `end` less its `commit` sta
 Cloudflare's clock, the leader's trace clock to within the orb offset's error. It rides the first cut at or after that
 instant, as the rule above says. A Human whose instant falls past the last cut is dropped.
 
-    python3 humansplit.py TSAVE LOAD_START_ISO [FROM_S TO_S] [--pushes PUSHES]
+    python3 humansplit.py TSAVE LOAD_START_ISO [FROM_S TO_S] [--pushes PUSHES] [--kind merge]
+
+Row B2's addition (2026-11-23): `--kind merge` splits a1's `merge` pushes instead (the admin PAT's pushes to `a1m-`
+refs before each PR merge, Human-class at the edge, `crate::admission`), and with PUSHES each push whose edge `commit`
+stage passed 2 s is printed with its leader-side split; `rest` is the edge stage less the leader's part (the call to
+the leader and the outcome's return, plus the clock offset's error).
 """
 import bisect, collections, json, lzma, re, sys
 from datetime import datetime
@@ -29,7 +34,9 @@ def pc(xs, q):
     return round(xs[min(len(xs) - 1, int(q * len(xs)))]) if xs else None
 
 
-pushes = None
+pushes, kind = None, 'human'
+if '--kind' in sys.argv:
+    i = sys.argv.index('--kind'); kind = sys.argv[i + 1]; del sys.argv[i:i + 2]
 if '--pushes' in sys.argv:
     i = sys.argv.index('--pushes'); pushes = sys.argv[i + 1]; del sys.argv[i:i + 2]
 path = sys.argv[1]
@@ -76,12 +83,13 @@ rounds = [e['ack'] - e['q'] for e in E if lo <= e['q'] < hi]
 print(f'entry rounds {len(rounds)}: p50 {pc(rounds, .5)} p90 {pc(rounds, .9)} p95 {pc(rounds, .95)} p99 {pc(rounds, .99)}')
 H = []
 if pushes:
-    real = []
+    real, stage = [], {}
     for line in open(pushes):
         d = json.loads(line)
-        m = re.search(r'commit;dur=(\d+)', d.get('timing') or '')
-        if d['kind'] == 'human' and d['result'] == 'ok' and m:
+        m = re.search(r'(?:^|, )commit;dur=(\d+)', d.get('timing') or '')
+        if d['kind'] == kind and d['result'] == 'ok' and m:
             real.append(d['end'] - int(m.group(1)))
+            stage[real[-1]] = int(m.group(1))
     cuts = [e['cut'] for e in E]
     for t in sorted(real):
         j = bisect.bisect_left(cuts, t)
@@ -90,7 +98,12 @@ if pushes:
         p, e = E[j - 1], E[j]
         H.append({'t': t, 'p': p, 'e': e, 'now': e['ap'] - t, 'wait': e['cut'] - t, 'held': e['q'] - e['cut'],
                   'round': e['ack'] - e['q'], 'apply': e['ap'] - e['ack']})
-    print(f'real Human arrivals {len(real)} in the push log, {len(H)} in the window')
+    print(f'real {kind} arrivals {len(real)} in the push log, {len(H)} in the window')
+    for h in sorted(H, key=lambda h: h['t']):
+        if stage[h['t']] > 2000:
+            print(f"  over 2 s at +{(h['t'] - a) / 1000:.0f} s: edge commit {stage[h['t']]} = freeze wait {h['wait']:.0f} + "
+                  f"held {h['held']:.0f} + own round {h['round']:.0f} + apply {h['apply']:.0f} (leader {h['now']:.0f}); "
+                  f"rest {stage[h['t']] - h['now']:.0f}")
 for j in range(1, len(E)) if not pushes else ():
     p, e = E[j - 1], E[j]
     if not lo <= e['cut'] < hi:

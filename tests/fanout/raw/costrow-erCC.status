@@ -1,0 +1,23 @@
+edge: graft-m2b-edge serves 32b6bdfb at 100% (rev 01471da2), as tests/am1/raw/runs/fanout-erC-edge.log deployed
+2026-11-23T17:21:35Z meter (account, run) 58.25 0 before b033, expected +$2.5, stop $170 account, $4 run
+2026-11-23T17:22:38Z meter (account, run) 58.26 0.0
+2026-11-23T17:23:41Z meter (account, run) 58.26 0.0
+2026-11-23T17:24:44Z meter (account, run) 58.28 0.02
+2026-11-23T17:25:46Z meter (account, run) 58.3 0.04
+2026-11-23T17:26:48Z meter (account, run) 58.33 0.07
+2026-11-23T17:27:50Z meter (account, run) 58.36 0.09
+2026-11-23T17:28:53Z meter (account, run) 58.37 0.1
+2026-11-23T17:29:55Z meter (account, run) 58.37 0.1
+2026-11-23T17:31:00Z meter (account, run) 58.37 0.1
+2026-11-23T17:32:02Z meter (account, run) 58.38 0.1
+2026-11-23T17:33:05Z meter (account, run) 58.38 0.1
+2026-11-23T17:34:08Z meter (account, run) 58.38 0.1
+2026-11-23T17:35:11Z meter (account, run) 58.38 0.1
+2026-11-23T17:36:14Z meter (account, run) 58.39 0.1
+2026-11-23T17:39:16Z b033 ended: b033.sh exited without its mark after its stale edgefull fetch was stopped (no load: a1 exit 4); mark written by hand
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T17:39:34Z sweep exit 0 (kept: none)
+2026-11-23T17:39:36Z meter (account, run) 58.39 0.1 after b033 and the sweep
+DONE
