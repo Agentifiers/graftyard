@@ -1522,6 +1522,9 @@ The hosted half needs:
 - **WP2b: the tools that need new edge reads.** `coordination.overlaps` and `provenance.why` with their edge reads. The
   edge read's design goes to the lead before any edge change, and is checked with B0-34's work on the edge's
   cold-isolate write path (F112).
+  - **Built (code only, branch `am2-wp2b`).** `GET /overlaps` and `GET /provenance` under `/api/graftyard/v1`, served
+    only from a member's narrow read, and the two tools. plant96 catches 20 of 20 (`tests/am2/results/am2-wp2b.md`).
+    The hosted day needs a site day for the member half.
 
 ### AM2-WP3. `graft-mcp` release wiring
 

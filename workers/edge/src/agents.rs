@@ -41,6 +41,10 @@ fn off(f: graftyard_raft::Format) -> Reply {
 pub async fn serve(c: &Ctx<'_>, req: &mut Request, rest: &str) -> Result<Response> {
     let Some(route) = agents::route(rest) else { return respond(c, Reply::not_found()) };
     let method = req.method();
+    if let Route::Overlaps { owner, repo } | Route::Provenance { owner, repo } = route {
+        let overlaps = matches!(route, Route::Overlaps { .. });
+        return respond(c, coordination(c, req, method, owner, repo, overlaps).await?);
+    }
     // A task, lease, or policy write commits one issue command whose `decide` reads the caller's credential shard and
     // renders its refusal 401 (`tasks::refused`, `leases::refused`, `release::refused`), so its token row may come from
     // `rcache` (`Ctx::decided`, `write-identity`). The `Authz` routes read fresh: their refusal renders as
@@ -174,6 +178,116 @@ async fn authz_route(c: &Ctx<'_>, route: Route<'_>, who: &Principal, method: Met
         (Route::Org(o), _) => Reply::json(200, agents::org_json(o, &f.policy())),
         _ => Reply::empty(204),
     })
+}
+
+/// `GET /overlaps` and `GET /provenance` (AM2-WP2b, `graftyard_api::overlaps`), which `graft-mcp`'s
+/// `coordination.overlaps` and `provenance.why` call: narrow reads only, since whole tiers leave out `path_set` and
+/// `provenance`, so a member that does not serve the read answers 503, never an empty list. Read-class, as a REST
+/// `GET`: the token and the name resolve start together, and the token, login, `Placement`, and owner `Authz` may come
+/// from `rcache` (B0-34's ask). `/overlaps` needs format 32.14, `/provenance` format 8, and both `contents: read`.
+async fn coordination(
+    c: &Ctx<'_>,
+    req: &Request,
+    method: Method,
+    owner: &str,
+    repo: &str,
+    overlaps: bool,
+) -> Result<Reply> {
+    use graftyard_api::narrow::Route as N;
+    use graftyard_api::overlaps as o;
+    if method != Method::Get {
+        return Ok(Reply::error(405, "Method Not Allowed", "graftyard/agents"));
+    }
+    c.read_class.set(true);
+    c.write.set(false);
+    let (format, what) = if overlaps {
+        (graftyard_git::repo::REPO_FORMAT_LEASES, "overlaps need record format 32.14")
+    } else {
+        (graftyard_git::repo::REPO_FORMAT_AGENT, "provenance needs record format 32.8")
+    };
+    if !c.cfg.enabled.contains(&format) {
+        return Ok(unavailable(&format!("{what}, which FormatsEnable has not enabled")));
+    }
+    let query = req.url()?.query().unwrap_or("").to_owned();
+    let parsed = if overlaps {
+        o::parse_overlaps(&query).map(|q| (Some(q), None))
+    } else {
+        o::parse_provenance(&query).map(|q| (None, Some(q)))
+    };
+    let (oq, pq) = match parsed {
+        Ok(q) => q,
+        Err(r) => return Ok(r),
+    };
+    let (who, found) = futures_util::future::join(
+        crate::api::timed(c, "auth", crate::authenticate(c, req)),
+        crate::api::timed(c, "resolve", crate::resolve(c, owner, repo)),
+    )
+    .await;
+    let Some(who) = who? else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
+    let Ok(host) = graftyard_wire::Host::new(&c.cfg.host, false) else {
+        return Ok(unavailable("the install's host is not valid"));
+    };
+    // The first read: the overlaps themselves, or the rows `rest::resolve` reads for the ref blame runs at.
+    let first = match (&oq, &pq) {
+        (Some(q), _) => N::Overlaps(q.clone()),
+        (_, Some(q)) => N::Rest {
+            tail: vec!["commits".into(), q.refname.clone()],
+            query: String::new(),
+            path: format!("/repos/{owner}/{repo}/commits/{}", q.refname),
+            agent: false,
+        },
+        _ => unreachable!("one query parsed"),
+    };
+    let rd = match crate::api::read_found(c, found?, owner, repo, Some(&who), crate::api::Rows::Api(first)).await? {
+        Ok(r) => r,
+        Err(r) => return Ok(r),
+    };
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    if let Some(r) = crate::usertok::reaches(c, &access) {
+        return Ok(r);
+    }
+    let Some(authz) = rd.dir.authz.clone() else {
+        return Ok(unavailable("the owner's Authz chain did not answer; retry"));
+    };
+    let reader = graftyard_api::tasks::Reader::of(Some(&who), &authz, &access);
+    let missed = || unavailable("the repository's members do not serve this read yet (site release)");
+    if let Some(q) = &oq {
+        let reply = o::overlaps(&rd.view(&host), &authz, crate::now(), q, reader.contents);
+        return Ok(if rd.dir.picks.missed() { missed() } else { reply });
+    }
+    let q = pq.expect("one query parsed");
+    if !reader.contents {
+        return Ok(Reply::not_found());
+    }
+    let Some(sha) = graftyard_api::rest::resolve(&rd.view(&host), &q.refname) else {
+        return Ok(graftyard_api::rest::commit_not_found(&q.refname));
+    };
+    let blame = match crate::ui::shard_json(c, &rd, "blame", &[("commit", sha.hex()), ("path", q.path.clone())]).await {
+        Ok(v) => v,
+        Err(r) => return Ok(r),
+    };
+    let (commit, start, end) = match o::blamed(&blame, q.line) {
+        Ok(x) => x,
+        Err(r) => return Ok(r),
+    };
+    let spec = crate::api::Rows::Api(N::Provenance { commit: commit.hex() });
+    let rd = match crate::api::read_repo(
+        c,
+        rd.repo.clone(),
+        owner,
+        repo,
+        Some(&who),
+        Some(authz),
+        spec,
+        crate::api::Gate::Readers,
+    )
+    .await?
+    {
+        Ok(r) => r,
+        Err(r) => return Ok(r),
+    };
+    let body = o::provenance_json(&rd.view(&host), commit, Some((start, end)));
+    Ok(if rd.dir.picks.missed() { missed() } else { Reply::json(200, body) })
 }
 
 /// FEED_POLLS' keys: the token's credential shard and the client IP, each hashed so neither reaches a member.

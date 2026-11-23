@@ -280,7 +280,7 @@ pub(crate) async fn read(
 }
 
 /// `read` with the rows `rows` names: a narrow API read (`Rows::Api`) or both whole tiers.
-async fn read_as(
+pub(crate) async fn read_as(
     c: &Ctx<'_>,
     owner: &str,
     name: &str,
@@ -292,7 +292,7 @@ async fn read_as(
 }
 
 /// `read_as` of a name `resolve` already answered.
-async fn read_found(
+pub(crate) async fn read_found(
     c: &Ctx<'_>,
     found: std::result::Result<Option<Repo>, String>,
     owner: &str,
@@ -478,7 +478,16 @@ pub(crate) async fn read_repo(
                 if let Ok(v) = &v {
                     member_stages(c, v);
                 }
+                let unserved = matches!(
+                    spec.route,
+                    graftyard_api::narrow::Route::Overlaps(_) | graftyard_api::narrow::Route::Provenance { .. }
+                );
                 match v {
+                    // Whole tiers leave out `path_set` and `provenance` (`UNSERVED`): over them these routes would
+                    // answer an empty list that reads as true.
+                    Ok(v) if unserved && (v["value"].get("whole").is_some() || v["value"].get("error").is_some()) => {
+                        Ok(Err(unavailable("the repository's members do not serve this read yet (site release)")))
+                    }
                     // A route the member answers whole, or a member that cannot read the spec: both whole tiers.
                     Ok(v) if v["value"].get("whole").is_some() || v["value"].get("error").is_some() => {
                         tier_rows(c, &repo, None).await
