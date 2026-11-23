@@ -362,6 +362,12 @@ impl<F: Fold> Storage<F::Event> for Stored<F> {
 pub struct AdmissionView {
     /// Commands a second, measured or fixed.
     pub capacity: f32,
+    /// Agent commands a second the leader drains (`Admission::agent_rate`): measured from its cuts while agent
+    /// commands stay queued, else the AGENT_SHARE bucket's rate.
+    pub agent_rate: f32,
+    /// How long an agent command admitted now would wait to enter an entry at `agent_rate`, plus one round: what the
+    /// leader advertises to the edge in each reply's `meta.admit` (`design/DESIGN.md`, Shape, the agent block).
+    pub agent_wait: std::time::Duration,
     pub agent_queued: usize,
     pub agent_bytes: usize,
     /// Every class.
@@ -684,6 +690,9 @@ pub struct Out<C: Command> {
     pub install: Vec<InstallWanted>,
     /// The batches this input cut. Only for test hosts' traces.
     pub cuts: Vec<CutNote>,
+    /// `reask-read`'s top-ups this input made: the commands a re-ask moved into an open batch, and the entry in flight
+    /// that batch rides behind. Only for test hosts' traces.
+    pub topped: Vec<(u32, Index)>,
 }
 
 impl<C: Command> Default for Out<C> {
@@ -700,6 +709,7 @@ impl<C: Command> Default for Out<C> {
             catchup: Vec::new(),
             install: Vec::new(),
             cuts: Vec::new(),
+            topped: Vec::new(),
         }
     }
 }

@@ -10,7 +10,8 @@
 //! GET  /callback     the cookie must match state; the host's code to a ghu_ pair; the grant row; token/scoped
 //! POST /token        authorization_code (PKCE, the grant's generation once) and refresh_token (narrow only)
 //! GET  /settings, POST /settings/revoke          the user's grants, signed in through the host's OAuth
-//! POST /             MCP: the sealed McpToken, audience https://mcp.<host>/, or 401 naming the RFC 9728 metadata
+//! POST /             MCP: the sealed McpToken, audience https://mcp.<host>/, or 401 naming the RFC 9728 metadata;
+//!                    then `rpc` (both protocol lanes) and `tools`. GET and DELETE / answer 405
 //! ```
 //!
 //! - **No state of its own.** "Once" is the host's: the callback spends the host's code, so a replayed callback gets no
@@ -139,14 +140,40 @@ pub trait Env {
     fn cimd_keep(&self, url: &str, doc: &CimdDoc, secs: u64);
     /// GET with no redirect followed, a `CIMD_TIMEOUT_MS` timeout, and at most `CIMD_MAX_BYTES + 1` bytes read.
     async fn fetch(&self, url: &url::Url) -> Result<Fetched, String>;
-    /// A request to the edge over the service binding, at `host_origin`.
+    /// A request to the edge over the service binding, at `host_origin`, with the answer's headers.
+    async fn edge_answer(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        body: Option<Vec<u8>>,
+    ) -> Result<crate::tools::Answer, String>;
+
+    /// `edge_answer`'s status and body.
     async fn edge(
         &self,
         method: &str,
         path: &str,
         headers: &[(&str, String)],
         body: Option<Vec<u8>>,
-    ) -> Result<(u16, Vec<u8>), String>;
+    ) -> Result<(u16, Vec<u8>), String> {
+        self.edge_answer(method, path, headers, body).await.map(|a| (a.status, a.body))
+    }
+}
+
+/// The tools reach the edge the same way the flow does.
+struct Through<'a, E>(&'a E);
+
+impl<E: Env> crate::tools::Edge for Through<'_, E> {
+    async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        body: Option<Vec<u8>>,
+    ) -> Result<crate::tools::Answer, String> {
+        self.0.edge_answer(method, path, headers, body).await
+    }
 }
 
 /// The consent form's hidden field: what `/authorize` checked, until the user answers.
@@ -252,7 +279,7 @@ pub async fn serve<E: Env>(e: &E, req: &Req) -> Resp {
         ("POST", "/token") => token(e, req).await,
         ("GET", "/settings") => settings(e, req).await,
         ("POST", "/settings/revoke") => revoke(e, req).await,
-        (_, "/") => mcp(e, req),
+        (_, "/") => mcp(e, req).await,
         _ => Resp::text(404, "Not Found"),
     }
 }
@@ -655,9 +682,9 @@ async fn token<E: Env>(e: &E, req: &Req) -> Resp {
     }
 }
 
-/// The MCP endpoint's door: a sealed `McpToken` whose audience is this server and which has not lapsed. The tools
-/// behind it are AM2-WP2's; until then a good token is answered 501.
-fn mcp<E: Env>(e: &E, req: &Req) -> Resp {
+/// The MCP endpoint's door: a sealed `McpToken` whose audience is this server and which has not lapsed. Behind it,
+/// `rpc` answers the JSON-RPC and `tools` runs each call through the edge with the token's `upstream`.
+async fn mcp<E: Env>(e: &E, req: &Req) -> Resp {
     let prm = format!("{}/.well-known/oauth-protected-resource", e.origin());
     let unauth = |desc: &str| {
         Resp::json(401, &json!({ "error": "invalid_token", "error_description": desc })).with(
@@ -680,7 +707,20 @@ fn mcp<E: Env>(e: &E, req: &Req) -> Resp {
     if t.exp <= e.now() {
         return unauth("the token expired");
     }
-    Resp::json(501, &json!({ "error": "not_implemented", "error_description": "graft-mcp's tools land in AM2-WP2" }))
+    let o = if req.method == "POST" {
+        let header = |k: &str| req.header(k).map(str::to_owned);
+        crate::rpc::post(&t, req.header("content-type"), header, &req.body, &Through(e)).await
+    } else {
+        crate::rpc::not_post()
+    };
+    let mut r = match &o.body {
+        Some(v) => Resp::json(o.status, v),
+        None => Resp { status: o.status, ..Resp::default() },
+    };
+    for (k, v) in o.headers {
+        r = r.with(k, v);
+    }
+    r
 }
 
 /// The signed-in user's `ghu_`, or the redirect that signs them in through the host's OAuth.

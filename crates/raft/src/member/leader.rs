@@ -8,8 +8,8 @@ use smallvec::SmallVec;
 
 use crate::admit::{
     AGENT_CMDS_ENTRY, AGENT_FLOOR, AGENT_INLINE_ENTRY, AGENT_QUEUE_MAX, AGENT_SHARE, AGENT_WAIT, ActorKey, Admit,
-    AdmitClass, AdmitError, DEMOTE_PER_MIN, DEMOTE_WINDOW, HOT_PUSHES, HOT_WINDOW, INLINE_MAX_HOT, Lane, PRESSURE_AGE,
-    retry_after_s,
+    AdmitClass, AdmitError, DEMOTE_PER_MIN, DEMOTE_WINDOW, Drain, HOT_PUSHES, HOT_WINDOW, INLINE_MAX_HOT, Lane,
+    PRESSURE_AGE, retry_after_s,
 };
 use crate::fold::{Command, Fold, Scratch};
 use crate::outcome::{self, Acked};
@@ -143,6 +143,8 @@ struct Admission<C> {
     /// and without them a demoted actor whose writes are refused falls back under DEMOTE_PER_MIN and is classed Human
     /// again. Memory only, so a new leader counts only what committed [inference].
     refused_by: BTreeMap<ActorKey, VecDeque<Timestamp>>,
+    /// What this leadership's cuts drained of a non-empty agent lane (`admit::Drain`).
+    drain: Drain,
 }
 
 /// The round a fresh leader assumes before it has measured one [guess: B0-01's commit p50 on `Tri`].
@@ -157,11 +159,10 @@ pub const READ_AHEAD: usize = 3;
 /// How many frozen batches the leader holds behind the entry in flight: enough that each batch's read, asked a round
 /// after the one before, lands about when the entry before it commits, so the cycle is a round plus `decide` and not
 /// a read plus `decide`. One while a read fits in a round, which is cutting early as before; at most READ_AHEAD.
-/// How long an agent command admitted now should wait to enter an entry: the agent commands queued ahead of it at the
-/// agent rate (AGENT_SHARE of capacity), plus one round for its own entry to commit.
-fn expected_wait(agent_queued: usize, capacity: f32, round_ms: f32) -> Duration {
-    let rate = (AGENT_SHARE * capacity).max(1.0);
-    Duration::from_millis((agent_queued as f32 / rate * 1000.0 + round_ms.max(ROUND_MIN_MS)) as u64)
+/// How long an agent command admitted now should wait to enter an entry: the agent commands queued ahead of it at
+/// `agent_rate` (`Admission::agent_rate`), plus one round for its own entry to commit.
+fn expected_wait(agent_queued: usize, agent_rate: f32, round_ms: f32) -> Duration {
+    Duration::from_millis((agent_queued as f32 / agent_rate.max(1.0) * 1000.0 + round_ms.max(ROUND_MIN_MS)) as u64)
 }
 
 pub fn read_ahead(round_ms: f32, deps_ms: f32) -> usize {
@@ -188,6 +189,7 @@ impl<C> Admission<C> {
             pending_by: BTreeMap::new(),
             seq_actor: BTreeMap::new(),
             refused_by: BTreeMap::new(),
+            drain: Drain::default(),
         }
     }
 
@@ -206,6 +208,15 @@ impl<C> Admission<C> {
             let per_entry = (soft as f32 / self.cmd_bytes.max(CMD_BYTES_MIN)).max(1.0);
             per_entry * 1000.0 / self.round_ms.max(ROUND_MIN_MS)
         })
+    }
+
+    /// Agent commands a second this leader drains: what its cuts took from a non-empty agent lane over DRAIN_WINDOW
+    /// (`admit::Drain`), never above the AGENT_SHARE bucket's rate, which stands until DRAIN_MIN of it is measured.
+    /// The bucket's rate counts commands an entry by bytes, but AGENT_CMDS_ENTRY and a slow host's rounds bound the
+    /// drain below it: B0-33 pfA drained 54.6 a second at p50 while its bucket read about 1.3 times that.
+    fn agent_rate(&self, now: Timestamp, cap: f32) -> f32 {
+        let bucket = AGENT_SHARE * cap;
+        self.drain.rate(now).map_or(bucket, |r| r.min(bucket)).max(1.0)
     }
 
     fn refill(&mut self, now: Timestamp, cap: f32) {
@@ -274,6 +285,19 @@ struct Deciding<C: Command> {
     asked: Timestamp,
     /// Every `DepsWanted` whose reads `deps` holds, for `DepsUsed`.
     ids: SmallVec<[u64; 2]>,
+    /// `reask-read`: the batch was cut early with nothing left queued (`CutEnd::Empty`), so while the entry before
+    /// it is in flight it takes the commands admitted since, each time a read asked after them answers. A cut that
+    /// left a backlog (`Soft`, `EntryMax`, `AgentTokens`, `AgentCmds`) is never open, and a batch stops being open at
+    /// its caps, when a later batch is cut behind it, at a transfer, and once the entry before it applied.
+    open: bool,
+    /// The entry in flight when the batch was cut: it takes commands only while that entry is still the one in flight.
+    behind: Index,
+    /// Agent commands in the batch, against AGENT_CMDS_ENTRY.
+    agents: u32,
+    /// The re-ask out for an open batch: its id, the last seq admitted when it was asked (every command it may bring
+    /// in was admitted by then), its chains, and when it left. It never holds the batch: once the entry before it
+    /// applies, an unanswered re-ask is dropped and the batch decides on the read it already has.
+    reask: Option<(u64, u64, SmallVec<[ChainId; 3]>, Timestamp)>,
 }
 
 /// A decided command: its seq, the bytes its outcome keeps that no event stores (`Lead::done`), and its result.
@@ -790,14 +814,17 @@ impl<C: Command> Member<C> {
         let lead = self.lead.as_ref()?;
         let ad = &lead.admission;
         let cap = ad.capacity(self.admit_capacity, self.entry_soft);
+        let rate = ad.agent_rate(self.now, cap);
         Some(AdmissionView {
             capacity: cap,
+            agent_rate: rate,
+            agent_wait: expected_wait(ad.agent().len(), rate, ad.round_ms),
             agent_queued: ad.agent().len(),
             agent_bytes: ad.agent_bytes,
             queued: ad.lanes.iter().map(Lane::len).sum(),
             hot: self.hot(),
             pressure: self.pressure(cap),
-            retry_after_s: retry_after_s(ad.agent().len(), cap),
+            retry_after_s: retry_after_s(ad.agent().len(), rate),
             round_ms: ad.round_ms,
             cmd_bytes: ad.cmd_bytes,
             held: lead.deciding.len(),
@@ -847,13 +874,14 @@ impl<C: Command> Member<C> {
         let class = self.demoted(a);
         let agent = class == AdmitClass::Agent;
         let cap = ad.capacity(self.admit_capacity, self.entry_soft);
-        let full = || AdmitError::Full { retry_after_s: retry_after_s(ad.agent().len(), cap) };
+        let rate = ad.agent_rate(self.now, cap);
+        let full = || AdmitError::Full { retry_after_s: retry_after_s(ad.agent().len(), rate) };
         if agent && !a.placement_ok && a.inline > INLINE_MAX_HOT {
             return Err(full());
         }
         // AGENT_PUSH_BOUND: an agent command whose queue ahead, at the agent rate, plus one round is longer than what
         // is left of its bound is refused now, not queued to be refused later.
-        if agent && a.budget.is_some_and(|b| expected_wait(ad.agent().len(), cap, ad.round_ms) > b) {
+        if agent && a.budget.is_some_and(|b| expected_wait(ad.agent().len(), rate, ad.round_ms) > b) {
             return Err(full());
         }
         let hot_stage = a.push && a.placement_ok && a.inline > INLINE_MAX_HOT && self.hot();
@@ -1048,6 +1076,32 @@ impl<C: Command> Member<C> {
             return;
         }
         let Some(deps_ms) = lead.admission.deps_ms else { return };
+        // `reask-read`: the newest batch, cut with nothing left queued, takes what arrives behind it instead of a new
+        // batch being cut, asking a read of every chain it and the queue name, one read out at a time.
+        let one_ahead = read_ahead(lead.admission.round_ms, deps_ms) == 1;
+        if let Some(d) = lead.deciding.back()
+            && d.open
+            && one_ahead
+            && d.behind == index
+        {
+            if d.id.is_none() && d.reask.is_none() && lead.transfer.is_none() && !lead.admission.is_empty() {
+                let fold = &self.fold.fold;
+                let mut chains: SmallVec<[ChainId; 3]> = SmallVec::new();
+                let queued = lead.admission.lanes.iter().flat_map(Lane::iter);
+                for c in d.batch.iter().chain(queued).flat_map(|q| q.cmd.deps(fold)) {
+                    if !chains.contains(&c) {
+                        chains.push(c);
+                    }
+                }
+                self.next_deps = self.next_deps.wrapping_add(1);
+                let (id, now) = (self.next_deps, self.now);
+                let lead = self.lead.as_mut().expect("leading");
+                let upto = lead.seq;
+                lead.deciding.back_mut().expect("a held batch").reask = Some((id, upto, chains.clone(), now));
+                self.out.deps.push(DepsWanted { id, chains });
+            }
+            return;
+        }
         let round_ms = lead.admission.round_ms;
         let held = lead.deciding.len();
         if held >= read_ahead(round_ms, deps_ms) {
@@ -1068,8 +1122,21 @@ impl<C: Command> Member<C> {
         if fresh.is_empty() {
             return;
         }
+        let note = *self.out.cuts.last().expect("cut_fresh noted its cut");
         let chains = self.chains(&fresh);
         self.hold_batch(fresh);
+        let lead = self.lead.as_mut().expect("leading");
+        // Only the newest batch is open; the one cut before it closes.
+        let n = lead.deciding.len();
+        if n >= 2 {
+            lead.deciding[n - 2].open = false;
+            lead.deciding[n - 2].reask = None;
+        }
+        let d = lead.deciding.back_mut().expect("a held batch");
+        // Reads that outlast a round (`read_ahead` over 1) freeze a batch per round instead, as before.
+        d.open = note.end == CutEnd::Empty && note.in_flight && !chains.is_empty() && n == 1 && one_ahead;
+        d.behind = index;
+        d.agents = note.taken[AdmitClass::Agent.lane()];
         if !chains.is_empty() {
             self.ask_deps(chains);
         }
@@ -1127,6 +1194,10 @@ impl<C: Command> Member<C> {
             deps: Vec::new(),
             asked: now,
             ids: SmallVec::new(),
+            open: false,
+            behind: Index(0),
+            agents: 0,
+            reask: None,
         });
     }
 
@@ -1155,6 +1226,10 @@ impl<C: Command> Member<C> {
     fn decide_held(&mut self) -> bool {
         let lead = self.lead.as_mut().expect("leading");
         let d = lead.deciding.front_mut().expect("a held batch");
+        // `reask-read`: the entry before it applied, so the batch takes no more, and an unanswered re-ask is dropped:
+        // the batch decides on the newest read that answered, which every command in it was admitted before.
+        d.open = false;
+        d.reask = None;
         if d.id.is_some() {
             return false;
         }
@@ -1188,6 +1263,8 @@ impl<C: Command> Member<C> {
             d.chains.clear();
             d.deps.clear();
             d.ids.clear();
+            d.open = false;
+            d.reask = None;
         }
     }
 
@@ -1252,6 +1329,7 @@ impl<C: Command> Member<C> {
         }
         if !batch.is_empty() {
             ad.cut_at = now;
+            ad.drain.cut(now, taken[AdmitClass::Agent.lane()], ad.agent().len());
         }
         // A Human, MergeQueue or Bot command left had no lane rule but bytes to stop it; an Agent one, bytes or tokens.
         let past = |q: &Queued<C>| if bytes.0 + q.soft_bytes > soft { CutEnd::Soft } else { CutEnd::EntryMax };
@@ -1284,7 +1362,8 @@ impl<C: Command> Member<C> {
             ad.agent_bytes -= q.bytes;
             ad.agent_inline -= q.agent_inline;
         }
-        let retry_after_s = retry_after_s(ad.agent().len(), ad.capacity(self.admit_capacity, self.entry_soft));
+        let cap = ad.capacity(self.admit_capacity, self.entry_soft);
+        let retry_after_s = retry_after_s(ad.agent().len(), ad.agent_rate(now, cap));
         for q in &old {
             if let Some(a) = ad.seq_actor.get(&q.seq).copied() {
                 ad.refused(Some(a), now);
@@ -1311,8 +1390,79 @@ impl<C: Command> Member<C> {
             let ad = &mut lead.admission;
             ad.deps_ms = Some(ad.deps_ms.map_or(ms, |m| 0.9 * m + 0.1 * ms));
             self.pump();
+        } else if let Some(lead) = self.lead.as_mut()
+            && let Some(at) = lead.deciding.iter().position(|d| d.reask.as_ref().is_some_and(|r| r.0 == id))
+        {
+            // `reask-read`: a re-ask that read every chain it asked replaces the batch's reads, so every command the
+            // entry decides sees this one read, asked after each was admitted; then the commands admitted before it
+            // was asked join the batch. A re-ask missing a chain changes nothing, and the next one is asked.
+            let d = &mut lead.deciding[at];
+            let (_, upto, chains, asked) = d.reask.take().expect("matched");
+            if chains.iter().all(|c| deps.iter().any(|(k, _)| k == c)) {
+                d.deps = deps;
+                d.ids = SmallVec::from_slice(&[id]);
+                d.chains = chains;
+                let ms = now.0.saturating_sub(asked.0) as f32;
+                lead.admission.deps_ms = Some(lead.admission.deps_ms.map_or(ms, |m| 0.9 * m + 0.1 * ms));
+                let behind = lead.deciding[at].behind;
+                if at + 1 == lead.deciding.len() && lead.pending.as_ref().is_some_and(|(i, _)| *i == behind) {
+                    self.top_up(upto);
+                }
+            }
+            self.pump();
         }
         self.finish(())
+    }
+
+    /// `reask-read`: moves the commands admitted at or before seq `upto` and still queued into the newest batch, in
+    /// admission order, within the batch's caps (`entry_soft` and ENTRY_MAX in bytes, AGENT_CMDS_ENTRY and the agent
+    /// bucket for Agent commands). The first that does not fit closes the batch and stays queued with every later one.
+    fn top_up(&mut self, upto: u64) {
+        let (now, soft, fixed) = (self.now, self.entry_soft, self.admit_capacity);
+        let lead = self.lead.as_mut().expect("leading");
+        let d = lead.deciding.back_mut().expect("a held batch");
+        let ad = &mut lead.admission;
+        let cap = ad.capacity(fixed, soft);
+        ad.refill(now, cap);
+        let mut queued: Vec<(u64, AdmitClass, usize, usize)> = AdmitClass::ALL
+            .iter()
+            .flat_map(|c| ad.lanes[c.lane()].iter().map(|q| (q.seq, *c, q.soft_bytes, q.bytes)))
+            .filter(|q| q.0 <= upto)
+            .collect();
+        queued.sort_unstable_by_key(|q| q.0);
+        let (mut s, mut b) = d.batch.iter().fold((0, 0), |(s, b), q| (s + q.soft_bytes, b + q.bytes));
+        let mut take = BTreeSet::new();
+        for (seq, class, qs, qb) in queued {
+            let agent = class == AdmitClass::Agent;
+            if s + qs > soft || b + qb > ENTRY_MAX || agent && (d.agents >= AGENT_CMDS_ENTRY as u32 || ad.tokens < 1.0)
+            {
+                d.open = false;
+                break;
+            }
+            (s, b) = (s + qs, b + qb);
+            if agent {
+                d.agents += 1;
+                ad.tokens -= 1.0;
+            }
+            take.insert(seq);
+        }
+        if take.is_empty() {
+            return;
+        }
+        let mut moved = Vec::with_capacity(take.len());
+        for c in AdmitClass::ALL {
+            let qs = ad.lanes[c.lane()].take_old(|q| take.contains(&q.seq));
+            if c == AdmitClass::Agent {
+                for q in &qs {
+                    ad.agent_bytes -= q.bytes;
+                    ad.agent_inline -= q.agent_inline;
+                }
+            }
+            moved.extend(qs);
+        }
+        moved.sort_unstable_by_key(|q| q.seq);
+        self.out.topped.push((moved.len() as u32, d.behind));
+        d.batch.extend(moved);
     }
 
     /// Each command's `decide` sees the fold at `applied` plus the earlier commands of the same entry. The entry is

@@ -1,0 +1,4 @@
+2026-11-23T04:57:25.311Z created m3org/bf49-mwssn7qz id 65611
+2026-11-23T04:57:33.231Z push small.txt 2000 B: ok
+2026-11-23T04:57:38.211Z push big.bin 3145728 B: ok
+{"repo":"m3org/bf49-mwssn7qz","id":65611,"head":"93b2682d808d836e1fae0af5e12c17724a406e0e","pushes":[{"file":"small.txt","bytes":2000,"ok":true,"ms":4716,"out":""},{"file":"big.bin","bytes":3145728,"ok":true,"ms":4902,"out":""}]}

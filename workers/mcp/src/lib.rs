@@ -11,6 +11,8 @@
 //! (`gymcp_`) has a prefix no `/api/v3` route knows, so the host refuses it with 401.
 
 pub mod flow;
+pub mod rpc;
+pub mod tools;
 #[cfg(target_arch = "wasm32")]
 mod worker;
 

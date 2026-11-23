@@ -1,0 +1,9 @@
+2026-11-23T05:05:56Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T05:06:21Z waiting 218 s for sweep runs started before the first pass (until 2026-11-23T05:10:00.000012+00:00)
+-- the first run above stopped at its 58 s timeout while it waited for the sweep fence; rerun with no timeout:
+2026-11-23T05:07:07Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T05:07:31Z waiting 148 s for sweep runs started before the first pass (until 2026-11-23T05:10:00.000007+00:00)
+2026-11-23T05:10:22Z 65611 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T05:10:22Z 65611 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T05:10:22Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
+-- then a list of every 65611 prefix in the three site buckets: 0 objects each

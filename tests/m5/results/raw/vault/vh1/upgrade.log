@@ -1,0 +1,6 @@
+2026-11-23T05:02:39Z
+vault account: the runner account, standing in for a vault account
+  graft-m3f-vault-standin: release b32c4e31bf86f845220771581736b53046be001c343eb3007fe0575e453c944d already serves 100%
+upgrade exit 0
+graftyard: release ~/.graft-m3f/vault/bad: refused (BadRecord: bad release record: release.json lists no vault/entry.js with SHA-256 e154f9d7c89947fce3d780b47fc6cfe93e430966bfc6b1138da969f19ce0c62e)
+tampered upgrade exit 1

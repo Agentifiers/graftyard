@@ -830,3 +830,73 @@ fn a_burst_of_agent_commands_is_cut_at_agent_cmds_entry_per_entry() {
     let pushes = of(&l.done, Kind::Push);
     assert_eq!(pushes.iter().filter(|d| matches!(d.end, End::Acked { .. })).count(), 308, "every push commits");
 }
+
+/// edge-refusal: a slow leader bound by AGENT_CMDS_ENTRY, not by its bucket. Rounds stretched to a slow host's
+/// (`slow_ms`) leave about 64 agent commands an entry, while the bucket sized from bytes (`capacity`) reads several
+/// times that, as B0-33's pfA and pgA did (bucket about 1.3x the drain, `Trace::Cut`). 200 bounded agent commands a
+/// second are offered for 30 s. Sized from the bucket, the leader admits commands whose real wait passes their 5 s
+/// bound, and they expire in the lane; sized from its measured drain, it refuses them at once instead, so nearly none
+/// expire, and the agents it does admit still get at least the drain. Humans commit throughout.
+#[test]
+fn a_slow_leader_refuses_at_once_what_it_cannot_drain_within_the_bound() {
+    let mut l = Load::new(21, ENAM);
+    l.slow_ms = 300;
+    let t0 = l.now + 100;
+    let s = 30u64;
+    let mut ops = Vec::new();
+    for (i, t) in (t0..t0 + s * 1000).step_by(5).enumerate() {
+        let i = i as u64;
+        let o = op(t, AdmitClass::Agent, Some(1_000 + i % 2_000), Kind::Side, format!("s/{i}"), 0);
+        ops.push(Op { bound: Some(5_000), ..o });
+    }
+    for (i, t) in (t0..t0 + s * 1000).step_by(500).enumerate() {
+        ops.push(op(t + 2, AdmitClass::Human, Some(7), Kind::Side, format!("h/{i}"), 0));
+    }
+    l.offer(ops);
+    l.drain(s * 1000 + 40_000);
+    let agent = |d: &&Done| d.op.class == AdmitClass::Agent;
+    let expired = l.done.iter().filter(agent).filter(|d| matches!(d.end, End::Full { waited: true, .. })).count();
+    let at_once = l.done.iter().filter(agent).filter(|d| matches!(d.end, End::Full { waited: false, .. })).count();
+    let acked = l.done.iter().filter(agent).filter(|d| matches!(d.end, End::Acked { .. })).count();
+    let late = l.done.iter().filter(agent).filter(|d| matches!(d.end, End::Acked { .. }) && d.ms > 5_000).count();
+    let cut: u32 = l.cuts.iter().map(|c| c.taken[3]).sum();
+    let mut h = acked_ms(&l.done, |d| d.op.class == AdmitClass::Human);
+    let v = l.members[l.leader().unwrap().0 as usize].admission().unwrap();
+    println!(
+        "edge-refusal slow leader: {acked} acked ({late} past 5 s), {at_once} refused at once, {expired} expired; \
+         {cut} agent commands cut; capacity {:.0}/s, agent rate {:.0}/s; human p99 {} ms",
+        v.capacity,
+        v.agent_rate,
+        pct(&mut h, 99.0)
+    );
+    let offered = l.done.iter().filter(agent).count();
+    assert_eq!(offered, 6_000);
+    assert!(at_once > 1_000, "the leader refused what it could not drain at once: {at_once}");
+    assert!(expired * 50 < offered, "at most 2% of agent commands expired in the lane, not {expired}");
+    // Not starved: the leader kept draining at its rate through the window.
+    assert!(acked as f64 / s as f64 >= 40.0, "agents still committed {acked} in {s} s");
+    assert!(h.iter().all(|&ms| ms < 5_000), "Human never waits behind the agent lane");
+    assert!(l.done.iter().filter(|d| d.op.class == AdmitClass::Human).all(|d| matches!(d.end, End::Acked { .. })));
+}
+
+/// edge-refusal: the measured drain is never taken above the AGENT_SHARE bucket's rate. At a burst's start the
+/// leader holds a full bucket (one second of tokens), so its cuts take AGENT_CMDS_ENTRY agent commands each round,
+/// faster than the bucket will refill, until the tokens run out; an advert sized from that drain would read a wait
+/// the bucket then breaks.
+#[test]
+fn the_advertised_agent_rate_never_passes_the_bucket() {
+    let mut l = Load::new(22, ENAM);
+    l.set_capacity(Some(600.0));
+    let t0 = l.now + 100;
+    l.offer((0..3_000u64).map(|i| op(t0 + i % 3, AdmitClass::Agent, Some(i % 40), Kind::Side, format!("c/{i}"), 0)));
+    let mut most = 0.0f32;
+    for _ in 0..40 {
+        l.run_for(100);
+        if let Some(v) = l.leader().and_then(|s| l.members[s.0 as usize].admission()) {
+            most = most.max(v.agent_rate);
+        }
+    }
+    println!("edge-refusal burst at capacity 600: highest advertised agent rate {most:.1}/s");
+    assert!(most > 0.0);
+    assert!(most <= 300.0 + 1e-3, "advertised {most} agent commands a second against a bucket of 300");
+}

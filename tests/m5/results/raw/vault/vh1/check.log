@@ -1,0 +1,8 @@
+2026-11-23T04:56:30Z
+vault account: the runner account, standing in for a vault account
+{"objects": 447, "by_prefix": {"feed": 446, "state": 1}}
+{"get": "state/vault", "status": 200, "bytes": 50578}
+saved this state/vault for the rerun
+{"objects": 447, "by_prefix": {"export-state": 1, "export": 446}}
+{"export_objects": 446, "vault_feed": 446, "position": "000029923495/0000000001", "due": 446, "missing": [], "missing_n": 0, "etag_differ": [], "extra_n": 0, "packs": 0, "snapshots": 0, "entries": 0, "stray_prefixes": [], "chains": 3194, "owed": 0, "missed": 6, "undecoded": 0, "gc": 0}
+compare exit 0

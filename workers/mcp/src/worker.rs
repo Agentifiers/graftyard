@@ -124,13 +124,13 @@ impl flow::Env for Live {
         };
         go.await.map_err(|e| e.to_string())
     }
-    async fn edge(
+    async fn edge_answer(
         &self,
         method: &str,
         path: &str,
         headers: &[(&str, String)],
         body: Option<Vec<u8>>,
-    ) -> std::result::Result<(u16, Vec<u8>), String> {
+    ) -> std::result::Result<crate::tools::Answer, String> {
         let go = async {
             // The edge refuses a request with no User-Agent, as GHES does (m3fa2: every edge call answered 403).
             let h = Headers::new();
@@ -148,7 +148,8 @@ impl flow::Env for Live {
             }
             let req = Request::new_with_init(&format!("{}{path}", self.host), &init)?;
             let mut res = self.env.service("EDGE")?.fetch_request(req).await?;
-            Ok::<_, Error>((res.status_code(), res.bytes().await?))
+            let headers = res.headers().entries().collect();
+            Ok::<_, Error>(crate::tools::Answer { status: res.status_code(), headers, body: res.bytes().await? })
         };
         go.await.map_err(|e| e.to_string())
     }

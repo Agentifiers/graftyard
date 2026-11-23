@@ -199,21 +199,30 @@ pub fn upgrade(a: &UpgradeArgs) -> Res<()> {
     upgrade_with(&cf, a)
 }
 
+/// The release the vault script serves at 100%, by its versions' `workers/tag`: `None` when no version does.
+pub(crate) fn serving(cf: &Cf, script: &str) -> Res<Option<String>> {
+    let (versions, _) = cf.deployed(script)?;
+    for (id, pct) in &versions {
+        if *pct >= 100.0 {
+            return cf.version_tag(script, id);
+        }
+    }
+    Ok(None)
+}
+
 /// Verifies first, so a refused release makes no API call; then skips a release the deployment already serves at
 /// 100%, and otherwise uploads it as a version that keeps the deployed bindings (`VAULT`, `GRAFTYARD_URL`, and the
 /// `EXPORT_TOKEN` secret, which no install token could set) and deploys it at 100%.
-fn upgrade_with(cf: &Cf, a: &UpgradeArgs) -> Res<()> {
+pub(crate) fn upgrade_with(cf: &Cf, a: &UpgradeArgs) -> Res<()> {
     let artifact = verified(&a.release)?;
     let release = hex(&artifact.release.0);
     let (versions, _) = cf.deployed(a.script)?;
     if versions.is_empty() {
         return Err(format!("{} has no deployment: run graftyard vault init first", a.script));
     }
-    for (id, pct) in &versions {
-        if *pct >= 100.0 && cf.version_tag(a.script, id)?.as_deref() == Some(release.as_str()) {
-            println!("  {}: release {release} already serves 100%", a.script);
-            return Ok(());
-        }
+    if serving(cf, a.script)?.as_deref() == Some(release.as_str()) {
+        println!("  {}: release {release} already serves 100%", a.script);
+        return Ok(());
     }
     let meta = json!({
         "main_module": "entry.js",

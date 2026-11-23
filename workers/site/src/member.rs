@@ -613,7 +613,18 @@ fn meta<C: graftyard_raft::Command>(m: &raft::Member<C>, me: &str) -> Value {
     if removed(m.committed_config().map(|c| &c.1), me) {
         v["removed"] = json!(true);
     }
+    if let Some(a) = m.admission() {
+        v["admit"] = admit_advert(&a);
+    }
     v
+}
+
+/// What a leader advertises in every reply's `meta` (`design/DESIGN.md`, Shape, the agent block): how long an agent
+/// command admitted now would wait at the agent commands it measures itself draining, and the retry hint a refusal
+/// would carry. The edge refuses an Agent-classed write whose bound this wait passes before it reaches the leader
+/// (`graftyard_lookup::advert`). A follower sends none.
+fn admit_advert(a: &raft::AdmissionView) -> Value {
+    json!({ "waitMs": a.agent_wait.as_millis() as u64, "retryAfterS": a.retry_after_s })
 }
 
 /// Whether `config`, the member's latest committed one, no longer names the member `me` (its `do_name`): a voter a
@@ -1149,6 +1160,12 @@ impl<F: Family> Routes<F> {
                 }
                 #[cfg(not(feature = "test-faults"))]
                 let id = 0;
+                // The gate check's planted slow apply (`faults::SiteFault::slow_ms`).
+                #[cfg(feature = "test-faults")]
+                if let Some(ms) = crate::faults::slow_raft(&self.host.env).await {
+                    crate::faults::count("slow_raft");
+                    Delay::from(Duration::from_millis(ms)).await;
+                }
                 let r = self.raft(&body, id).await;
                 self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);
                 #[cfg(feature = "test-faults")]
@@ -2268,7 +2285,7 @@ impl<F: Family> Routes<F> {
             "admission": c.m.admission().map(|a| json!({
                 "capacity": a.capacity, "roundMs": a.round_ms, "cmdBytes": a.cmd_bytes, "queued": a.queued,
                 "agentQueued": a.agent_queued, "agentBytes": a.agent_bytes, "hot": a.hot, "pressure": a.pressure,
-                "retryAfterS": a.retry_after_s,
+                "retryAfterS": a.retry_after_s, "agentRate": a.agent_rate, "agentWaitMs": a.agent_wait.as_millis() as u64,
             })),
             // L0-12's drain wait (`tests/fanout/drain.mjs`): the reads this member still serves, here as well as in
             // `/stats`, whose full form serialized megabytes on a loaded leader.

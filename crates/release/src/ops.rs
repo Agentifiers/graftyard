@@ -673,8 +673,9 @@ fn files_of(u: &Upload, s: Script) -> Vec<&(Box<str>, [u8; 32])> {
 
 /// The first intent of the roll order (\"Install operations\", Release roll) that R has not finished: each member
 /// site's `SiteDay`, then each spare's, then `SiteDay { Workflows }`, then `EdgeRoll`, `OpsRoll`, `FrontRoll`, and
-/// `McpRoll`, then a `ContainerDay` for each site whose images changed. It skips an intent whose script, or whose
-/// images, R leaves as the release running them has them. Each carries its undo: a `Rollback` to N for a day target, a
+/// `McpRoll` (`release roll` runs the vault step here, outside the group: `vault_due`), then a `ContainerDay` for each
+/// site whose images changed. It skips an intent whose script, or whose images, R leaves as the release running them
+/// has them. Each carries its undo: a `Rollback` to N for a day target, a
 /// pointer to N for a pinned script, none for `FrontRoll` and for a script with no N yet.
 pub fn next_roll(fold: &ReleaseFold, r: ReleaseId) -> Roll {
     let Some(up) = fold.uploads.get(&r.0) else {
@@ -683,6 +684,41 @@ pub fn next_roll(fold: &ReleaseFold, r: ReleaseId) -> Roll {
     if let Some(c) = &fold.current {
         return Roll::Wait(format!("intent {} ({}) is current", c.intent.id.0, c.intent.intent.kind()).into());
     }
+    if let Some((intent, undo)) = next_code(fold, up, r) {
+        return Roll::Next { intent, undo };
+    }
+    let g = fold.genesis.as_ref().expect("installed");
+    for s in &g.sites {
+        if fold.containers.get(&s.id.0) == Some(&r) || up.images.is_empty() {
+            continue;
+        }
+        let n = fold.containers.get(&s.id.0).copied().or_else(|| running(fold, Script::Site(s.id)));
+        if let Some(nu) = n.and_then(|n| fold.uploads.get(&n.0))
+            && nu.images == up.images
+        {
+            continue;
+        }
+        let undo = n
+            .map(|n| vec![ReleaseEntry::Rollback { target: DayTarget::Containers(s.id), release: n }])
+            .unwrap_or_default();
+        return Roll::Next { intent: Intent::ContainerDay { site: s.id, release: r }, undo };
+    }
+    Roll::Done
+}
+
+/// Whether `release roll R`'s vault step is due ("Install operations", Release roll, step 4): R lists a `vault/`
+/// module, and every code intent of the order through `McpRoll` is done or skipped for R. A `ContainerDay` does not
+/// hold it back. It is no group intent, because graft-ops cannot reach the vault account (`decisions/DECISIONS.md`,
+/// "`vault-roll`"): `release roll` runs `vault upgrade` on the operator's machine under the vault account's token.
+pub fn vault_due(fold: &ReleaseFold, r: ReleaseId) -> bool {
+    fold.uploads
+        .get(&r.0)
+        .is_some_and(|up| up.files.iter().any(|(n, _)| n.starts_with(VAULT_FOLDER)) && next_code(fold, up, r).is_none())
+}
+
+/// The first code intent of the roll order that R has not finished, with its undos: each member site's `SiteDay`,
+/// each spare's, `SiteDay { Workflows }`, then `EdgeRoll`, `OpsRoll`, `FrontRoll`, and `McpRoll`.
+fn next_code(fold: &ReleaseFold, up: &Upload, r: ReleaseId) -> Option<(Intent, Vec<ReleaseEntry>)> {
     let g = fold.genesis.as_ref().expect("installed");
     let sites = g.sites.iter().filter(|s| !s.spare).chain(g.sites.iter().filter(|s| s.spare));
     let mut order: Vec<Intent> = sites.map(|s| Intent::SiteDay { target: DayTarget::Site(s.id), release: r }).collect();
@@ -716,24 +752,9 @@ pub fn next_roll(fold: &ReleaseFold, r: ReleaseId) -> Roll {
             (Some(n), Intent::SiteDay { target, .. }) => vec![ReleaseEntry::Rollback { target: *target, release: n }],
             (Some(n), _) => vec![pointer(s, n)],
         };
-        return Roll::Next { intent: i, undo };
+        return Some((i, undo));
     }
-    for s in &g.sites {
-        if fold.containers.get(&s.id.0) == Some(&r) || up.images.is_empty() {
-            continue;
-        }
-        let n = fold.containers.get(&s.id.0).copied().or_else(|| running(fold, Script::Site(s.id)));
-        if let Some(nu) = n.and_then(|n| fold.uploads.get(&n.0))
-            && nu.images == up.images
-        {
-            continue;
-        }
-        let undo = n
-            .map(|n| vec![ReleaseEntry::Rollback { target: DayTarget::Containers(s.id), release: n }])
-            .unwrap_or_default();
-        return Roll::Next { intent: Intent::ContainerDay { site: s.id, release: r }, undo };
-    }
-    Roll::Done
+    None
 }
 
 fn pointer(s: Script, pin: ReleaseId) -> ReleaseEntry {

@@ -840,6 +840,7 @@ where
                 continue;
             }
             learn_leader(chain, &v);
+            note_advert(chain, &v, now());
             let t = Target { site: s, do_name: name };
             KNOWN.with(|k| {
                 if let Some(e) = k.borrow_mut().get_mut(&chain).filter(|e| e.leader == Some(s)) {
@@ -1353,9 +1354,66 @@ fn learn_config(chain: ChainId, v: &Value) {
 
 /// A value's `meta.configIndex` past the config this isolate holds means it has not seen the group's learners, or
 /// learners were added since: the answering member's `/status` names them. Marked before the call, so one isolate
-/// asks once per config, and unmarked if the call fails.
+/// asks once per config, and unmarked if the call fails. Where the caller defers refreshes (`defer_refreshes`, the
+/// edge), the call is queued for `run_refreshes` after the reply instead of holding the read that found it: on a cold
+/// edge isolate it was a second round trip in the first read of each group, three per push before validate
+/// (`decisions/DECISIONS.md`, "`cold-write`", B). Learners only route later reads, so no answer changes.
 async fn refresh_config(b: &Bindings<'_>, chain: ChainId, from: &Target, v: &Value) {
-    let Some(index) = v.pointer("/meta/configIndex").and_then(Value::as_u64) else { return };
+    let Some(due) = refresh_due(chain, from, v) else { return };
+    if DEFER_REFRESH.with(|d| d.get()) {
+        PENDING_REFRESH.with(|p| {
+            let mut p = p.borrow_mut();
+            if p.len() < PENDING_REFRESH_MAX {
+                p.push(due);
+            } else {
+                due.undo();
+            }
+        });
+        return;
+    }
+    due.run(b).await;
+}
+
+/// A learner refresh that is due: the chain, the member to ask, the config index it was marked at, and the index it
+/// replaced, restored if the call fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Refresh {
+    chain: ChainId,
+    from: Target,
+    index: u64,
+    had: u64,
+}
+
+impl Refresh {
+    async fn run(self, b: &Bindings<'_>) {
+        let status = async {
+            let mut r = b
+                .member(self.from.site, &self.from.do_name)
+                .ok()?
+                .fetch_with_str("https://member/status")
+                .await
+                .ok()?;
+            r.json::<Value>().await.ok()
+        };
+        match within(CALL, status).await.flatten().and_then(|st| st.get("config").cloned()).filter(|c| !c.is_null()) {
+            Some(config) => learn(self.chain, &json!({ "config": config })),
+            None => self.undo(),
+        }
+    }
+
+    /// Unmarks the index, so a later read asks again.
+    fn undo(&self) {
+        KNOWN.with(|k| {
+            if let Some(e) = k.borrow_mut().get_mut(&self.chain).filter(|e| e.config_index == self.index) {
+                e.config_index = self.had;
+            }
+        });
+    }
+}
+
+/// Whether `v` names a config index past the one held for `chain`, marking it if so: the refresh to run.
+fn refresh_due(chain: ChainId, from: &Target, v: &Value) -> Option<Refresh> {
+    let index = v.pointer("/meta/configIndex").and_then(Value::as_u64)?;
     let had = KNOWN.with(|k| {
         let mut k = k.borrow_mut();
         let e = k.entry(chain).or_default();
@@ -1365,21 +1423,32 @@ async fn refresh_config(b: &Bindings<'_>, chain: ChainId, from: &Target, v: &Val
         }
         had
     });
-    if index <= had {
-        return;
-    }
-    let status = async {
-        let mut r = b.member(from.site, &from.do_name).ok()?.fetch_with_str("https://member/status").await.ok()?;
-        r.json::<Value>().await.ok()
-    };
-    match within(CALL, status).await.flatten().and_then(|st| st.get("config").cloned()).filter(|c| !c.is_null()) {
-        Some(config) => learn(chain, &json!({ "config": config })),
-        None => KNOWN.with(|k| {
-            if let Some(e) = k.borrow_mut().get_mut(&chain).filter(|e| e.config_index == index) {
-                e.config_index = had;
-            }
-        }),
-    }
+    (index > had).then(|| Refresh { chain, from: from.clone(), index, had })
+}
+
+/// The most learner refreshes one isolate queues; past it a due refresh is unmarked, and a later read asks again.
+const PENDING_REFRESH_MAX: usize = 64;
+
+thread_local! {
+    static DEFER_REFRESH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PENDING_REFRESH: RefCell<Vec<Refresh>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Queues this isolate's learner refreshes for `run_refreshes` instead of running them inside the read that found
+/// them. The edge sets it per request, as `set_client`, and runs the queue after its reply; a site script never does.
+pub fn defer_refreshes() {
+    DEFER_REFRESH.with(|d| d.set(true));
+}
+
+/// Whether any learner refresh is queued.
+pub fn refreshes_pending() -> bool {
+    PENDING_REFRESH.with(|p| !p.borrow().is_empty())
+}
+
+/// Runs every queued learner refresh, at once: the edge's `waitUntil` after its reply.
+pub async fn run_refreshes(b: &Bindings<'_>) {
+    let due = PENDING_REFRESH.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    futures_util::future::join_all(due.into_iter().map(|r| r.run(b))).await;
 }
 
 /// The word in `call_opt`'s error when the leader kept shedding the read (`overloaded_reply`): the caller answers 503
@@ -1921,8 +1990,63 @@ thread_local! {
     static HEARD: RefCell<HashMap<(ChainId, SiteId), (u64, u64)>> = RefCell::new(HashMap::new());
 }
 
+thread_local! {
+    /// Per isolate: each chain's last agent admission advert from its leader (`note_advert`), when this isolate heard it.
+    static ADVERTS: RefCell<HashMap<ChainId, (Advert, u64)>> = RefCell::new(HashMap::new());
+}
+
+/// What a group's leader advertises in each reply's `meta.admit` (`design/DESIGN.md`, Shape, the agent block): how
+/// long an agent command it admitted now would wait, at the agent commands it measures itself draining, and the retry
+/// hint its own refusal would carry. The edge refuses an Agent-classed write whose bound this wait passes, before the
+/// write reaches the leader, and never needs a read of its own to learn it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Advert {
+    pub wait_ms: u64,
+    pub retry_after_s: u32,
+}
+
+/// An advert as the edge holds it at a moment: heard within ADVERT_TTL (`Fresh`), heard longer ago (`Lapsed`, with its
+/// age in ms), or never.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Heard {
+    Fresh(Advert),
+    Lapsed(Advert, u64),
+    Never,
+}
+
+/// Keeps the advert in a leader's reply `v` on `chain`, heard at `now` on this isolate's clock. A reply with none (a
+/// follower's, or a member built before it) leaves the last one, and so does one from a term below the highest this
+/// isolate saw from the group: a deposed leader's queue says nothing about the group now.
+pub fn note_advert(chain: ChainId, v: &Value, now: u64) {
+    let Some(a) = v.pointer("/meta/admit") else { return };
+    let (Some(wait_ms), Some(retry)) = (a["waitMs"].as_u64(), a["retryAfterS"].as_u64()) else { return };
+    let term = v.pointer("/meta/term").and_then(Value::as_u64).unwrap_or(0);
+    if term < known_term(chain) {
+        return;
+    }
+    let advert = Advert { wait_ms, retry_after_s: u32::try_from(retry).unwrap_or(u32::MAX) };
+    ADVERTS.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() > 4_096 {
+            m.clear();
+        }
+        m.insert(chain, (advert, now));
+    });
+}
+
+/// `chain`'s advert at `now`: `Fresh` within ADVERT_TTL of when it was heard, and never from the future.
+pub fn advert(chain: ChainId, now: u64) -> Heard {
+    let ttl = graftyard_raft::admit::ADVERT_TTL.as_millis() as u64;
+    match ADVERTS.with(|m| m.borrow().get(&chain).copied()) {
+        None => Heard::Never,
+        Some((a, at)) if now.saturating_sub(at) <= ttl => Heard::Fresh(a),
+        Some((a, at)) => Heard::Lapsed(a, now - at),
+    }
+}
+
 /// Records a member's 200 answer `v` on `chain`'s commit path at `now`, with the term its `meta` names.
 fn heard(chain: ChainId, site: SiteId, v: &Value, now: u64) {
+    note_advert(chain, v, now);
     let Some(term) = v.pointer("/meta/term").and_then(Value::as_u64) else { return };
     HEARD.with(|h| {
         let mut h = h.borrow_mut();
@@ -2566,6 +2690,46 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// `cold-write` B: a learner refresh is due once per config index, queued when the caller defers refreshes (the
+    /// edge) rather than run inside the read, and unmarked when it cannot be queued or fails, so a later read asks
+    /// again. A value naming no newer index, or none, is due nothing.
+    #[test]
+    fn a_learner_refresh_is_due_once_per_index_and_queued_not_awaited_when_deferred() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(65601)));
+        let from = Target { site: SiteId(1), do_name: "repo:65601#1#f1".into() };
+        let at = |i: u64| json!({ "meta": { "configIndex": i } });
+        KNOWN.with(|k| k.borrow_mut().insert(chain, Known { config_index: 3, ..Default::default() }));
+        assert_eq!(refresh_due(chain, &from, &at(3)), None, "the held index");
+        assert_eq!(refresh_due(chain, &from, &json!({ "meta": {} })), None, "no index");
+        let due = refresh_due(chain, &from, &at(5)).expect("a newer index");
+        assert_eq!((due.index, due.had), (5, 3));
+        assert_eq!(refresh_due(chain, &from, &at(5)), None, "marked: one refresh per index per isolate");
+        due.undo();
+        assert_eq!(refresh_due(chain, &from, &at(5)).map(|d| d.had), Some(3), "a failed refresh is asked again");
+        // Deferred: the read's own refresh call returns at once, queued, with no member call (no bindings here).
+        KNOWN.with(|k| k.borrow_mut().insert(chain, Known { config_index: 3, ..Default::default() }));
+        defer_refreshes();
+        let env: Env = wasm_bindgen::JsCast::unchecked_into(wasm_bindgen::JsValue::NULL);
+        let sites = SiteTable(Vec::new());
+        let b = Bindings { env: &env, sites: &sites };
+        use futures_util::FutureExt;
+        refresh_config(&b, chain, &from, &at(6)).now_or_never().expect("a deferred refresh never waits");
+        assert!(refreshes_pending());
+        assert_eq!(
+            PENDING_REFRESH.with(|p| p.borrow().clone()),
+            vec![Refresh { chain, from: from.clone(), index: 6, had: 3 }]
+        );
+        // A full queue queues nothing more and unmarks the index, so the next read asks again.
+        PENDING_REFRESH.with(|p| {
+            p.borrow_mut().resize(PENDING_REFRESH_MAX, Refresh { chain, from: from.clone(), index: 0, had: 0 })
+        });
+        refresh_config(&b, chain, &from, &at(7)).now_or_never().expect("a deferred refresh never waits");
+        assert_eq!(PENDING_REFRESH.with(|p| p.borrow().len()), PENDING_REFRESH_MAX);
+        assert_eq!(refresh_due(chain, &from, &at(7)).map(|d| d.had), Some(6), "an unqueued refresh is asked again");
+        PENDING_REFRESH.with(|p| p.borrow_mut().clear());
+        DEFER_REFRESH.with(|d| d.set(false));
+    }
+
     /// `export-host`: an export source read never goes to the leader, whose sync() it would load; learners first.
     #[test]
     fn export_sources_skip_the_leader() {
@@ -3057,6 +3221,28 @@ mod tests {
         KNOWN.with(|k| k.borrow_mut().entry(chain).or_default().term = 4);
         heard(chain, SiteId(0), &json!({ "meta": { "term": 3 } }), 40_000);
         assert!(!busy(chain, SiteId(0), 0, 40_000), "older than the highest term this isolate saw from the group");
+    }
+
+    /// edge-refusal: the leader's advert in a reply's `meta.admit` is held for ADVERT_TTL (2 s) and not a millisecond
+    /// past it, when it lapses with its age; a reply without one keeps it, and a reply from an older term than the
+    /// group's highest is ignored. `heard`, the commit path's record of every 200, feeds it.
+    #[test]
+    fn a_leader_advert_is_fresh_for_advert_ttl_and_only_from_the_current_term() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(9_301)));
+        assert_eq!(advert(chain, 1_000), Heard::Never);
+        let reply = |term: u64, wait: u64| json!({ "done": {}, "meta": { "term": term, "admit": { "waitMs": wait, "retryAfterS": 9 } } });
+        heard(chain, SiteId(0), &reply(2, 7_500), 10_000);
+        let a = Advert { wait_ms: 7_500, retry_after_s: 9 };
+        assert_eq!(advert(chain, 10_000), Heard::Fresh(a));
+        assert_eq!(advert(chain, 12_000), Heard::Fresh(a), "at ADVERT_TTL");
+        assert_eq!(advert(chain, 12_001), Heard::Lapsed(a, 2_001), "past ADVERT_TTL it lapses");
+        note_advert(chain, &json!({ "meta": { "term": 2 } }), 12_500);
+        assert_eq!(advert(chain, 12_500), Heard::Lapsed(a, 2_500), "a reply with no advert keeps the last");
+        KNOWN.with(|k| k.borrow_mut().entry(chain).or_default().term = 3);
+        note_advert(chain, &reply(2, 100), 13_000);
+        assert_eq!(advert(chain, 13_000), Heard::Lapsed(a, 3_000), "a deposed leader's advert is ignored");
+        note_advert(chain, &reply(3, 100), 13_000);
+        assert_eq!(advert(chain, 13_000), Heard::Fresh(Advert { wait_ms: 100, retry_after_s: 9 }));
     }
 
     /// A capped read's answer is the leader saying "busy, retry": never a missed member, which `call_opt` reports

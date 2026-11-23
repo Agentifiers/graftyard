@@ -132,8 +132,10 @@ fn sealer() -> Sealer {
     Sealer::new(vec![[0x5a; 32]]).unwrap()
 }
 
+/// A legacy-lane `ping` with `bearer`: 200 once past the door.
 fn mcp_call(b: &Bed, bearer: &str) -> Resp {
-    let mut r = post("/", &[], &[]);
+    let mut r = post("/", &[], &[("content-type", "application/json")]);
+    r.body = br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#.to_vec();
     r.headers.push(("authorization".into(), format!("Bearer {bearer}")));
     b.serve(r)
 }
@@ -213,8 +215,8 @@ fn a7_end_to_end_issues_a_narrowed_token_and_a_grant_row() {
     let g = fold.grants().values().next().unwrap();
     assert_eq!((g.grant.client.0.as_ref(), g.grant.write, g.grant.generation), (CIMD, WriteScope::Write, 1));
     assert_eq!(g.grant.redirect_hosts.as_slice(), &["127.0.0.1".into()]);
-    // The door takes it; the tools behind it are AM2-WP2's.
-    assert_eq!(mcp_call(&b, at).status, 501);
+    // The door takes it.
+    assert_eq!(mcp_call(&b, at).status, 200);
     // A code redeems once: the second is a stale generation, so the grant is revoked with its tokens.
     let again = redeem(&b, &code);
     assert_eq!((again.status, json(&again)["error"].as_str()), (400, Some("invalid_grant")));
@@ -250,7 +252,7 @@ fn l008_wrong_audience_tokens_are_refused_100_of_100() {
         assert_eq!(mcp_call(&b, &sealer().seal(Sealed::Access, &old, [i; 12])).status, 401);
     }
     assert_eq!(refused, 100);
-    assert_eq!(mcp_call(&b, &sealer().seal(Sealed::Access, &good, [0; 12])).status, 501, "the control passes the door");
+    assert_eq!(mcp_call(&b, &sealer().seal(Sealed::Access, &good, [0; 12])).status, 200, "the control passes the door");
 }
 
 #[test]

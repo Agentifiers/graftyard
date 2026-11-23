@@ -1,0 +1,18 @@
+{"t": "01:04:00", "c": {}}
+{"t": "01:04:20", "c": {"task:shed": 82, "rest-repo-write:shed": 70, "graphql:shed": 90, "lease:shed": 15, "renew:shed": 46}}
+{"t": "01:04:40", "c": {"task:shed": 61, "rest-repo-write:shed": 42, "graphql:shed": 61, "lease:shed": 13, "renew:shed": 33}}
+{"t": "01:05:00", "c": {"renew:full": 56, "rest-repo-write:full": 48, "task:shed": 186, "rest-repo-write:shed": 85, "graphql:full": 72, "lease:full": 18, "task:full": 99, "receive-pack:shed": 2, "graphql:shed": 92, "lease:shed": 31, "renew:shed": 95}}
+{"t": "01:05:20", "c": {"lease:full": 58, "task:full": 194, "graphql:full": 124, "renew:full": 130, "rest-repo-write:full": 51, "task:shed": 194, "rest-repo-write:shed": 91, "graphql:shed": 107, "lease:shed": 47, "renew:shed": 91}}
+{"t": "01:05:40", "c": {"graphql:full": 117, "task:full": 276, "renew:full": 133, "lease:full": 51, "rest-repo-write:full": 98, "task:shed": 11, "rest-repo-write:shed": 8, "graphql:shed": 6, "lease:shed": 6, "renew:shed": 4}}
+{"t": "01:06:00", "c": {"rest-repo-write:full": 44, "graphql:full": 75, "lease:full": 16, "task:full": 86, "task:shed": 321, "rest-repo-write:shed": 124, "renew:full": 45, "graphql:shed": 153, "lease:shed": 61, "renew:shed": 152}}
+{"t": "01:06:20", "c": {"info-refs:shed": 1, "task:shed": 39, "rest-repo-write:shed": 25, "rest-repo-write:full": 20, "graphql:full": 45, "renew:full": 27, "lease:full": 6, "task:full": 44, "graphql:shed": 27, "lease:shed": 8, "renew:shed": 23}}
+{"t": "01:06:40", "c": {"task:shed": 1, "rest-repo-write:shed": 1}}
+{"t": "01:07:00", "c": {"renew:full": 87, "lease:full": 31, "graphql:full": 57, "task:full": 164, "rest-repo-write:full": 36, "task:shed": 3, "rest-repo-write:shed": 13, "graphql:shed": 10, "lease:shed": 2, "renew:shed": 3}}
+{"t": "01:07:20", "c": {"renew:full": 35, "lease:full": 10, "task:full": 73, "info-refs:shed": 1, "task:shed": 309, "rest-repo-write:shed": 119, "upload-pack:shed": 1, "graphql:full": 64, "rest-repo-write:full": 50, "graphql:shed": 176, "lease:shed": 60, "renew:shed": 168}}
+{"t": "01:07:40", "c": {"rest-repo-write:full": 35, "info-refs:shed": 1, "graphql:full": 66, "renew:full": 34, "lease:full": 16, "task:shed": 197, "rest-repo-write:shed": 77, "task:full": 63, "receive-pack:shed": 1, "graphql:shed": 114, "lease:shed": 37, "renew:shed": 91}}
+{"t": "01:08:00", "c": {"info-refs:shed": 3, "task:shed": 23, "rest-repo-write:shed": 11, "graphql:shed": 20, "lease:shed": 10, "renew:shed": 13}}
+{"t": "01:08:20", "c": {}}
+{"t": "01:08:40", "c": {}}
+{"t": "01:09:00", "c": {}}
+{"t": "01:09:20", "c": {"info-refs:shed": 1, "task:shed": 7, "rest-repo-write:shed": 4, "receive-pack:shed": 2, "graphql:shed": 10, "lease:shed": 3, "renew:shed": 4}}
+{"t": "01:09:40", "c": {}}

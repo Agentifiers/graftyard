@@ -396,23 +396,27 @@ async fn read_gate(
     repo: &Repo,
     who: Option<&Principal>,
     beside: Option<Beside<'_>>,
+    share: colo::Share,
 ) -> Result<std::result::Result<graftyard_identity::Decision, String>> {
-    let key = gate::key(repo.id, who);
+    let key = gate::key(repo.id, who, c.write.get());
     // The test arm with the share off (`x-graft-colo: off` with the bed token) keeps the isolate cache alone, under its
     // own keys, so it never takes an entry the shared arm copied (`colo-gate`'s flip compares the two in one row).
     #[cfg(feature = "test-faults")]
     let key = if c.colo_off { key.map(gate::off_key) } else { key };
     let Some(k) = key else {
-        return Ok(match fresh_gate(c, repo, who).await {
+        return Ok(match fresh_gate(c, repo, who, None).await {
             Ok((d, _)) => Ok(d),
             Err(GateFail::Read(e)) => Err(e),
             Err(GateFail::Edge(e)) => return Err(e),
         });
     };
-    // Only a read-class request shares (`colo-gate`); a write reads members as before, its leader binding the answer.
-    let share = c.read_class.get() && !colo_off(c);
+    // Every write keys and keeps its entries as a push's, whatever its share, so no write holds a read-only `Allow`
+    // where a POST could take it.
+    let share = colo::Share { push: c.write.get(), ..share };
+    let share = if colo_off(c) { colo::Share { matches: false, puts: false, ..share } } else { share };
     let url = colo::gate_url(repo.id, k.1, &repo.record);
-    let io = GateIo { c, repo, who, key: k, url, beside: std::cell::RefCell::new(beside) };
+    let io =
+        GateIo { c, repo, who, key: k, url, beside: std::cell::RefCell::new(beside), writable: Default::default() };
     // Boxed for the same reason: with `beside` the gate holds both its fresh read and the rows read beside the front.
     let g = Box::pin(colo::gate(&io, share)).await;
     match g.served {
@@ -457,6 +461,8 @@ struct GateIo<'a, 'c, 'b> {
     key: gate::Key,
     url: String,
     beside: std::cell::RefCell<Option<Beside<'b>>>,
+    /// Whether the last fresh read found the caller may also push here (`fresh_gate_on`, `colo::Share::push`).
+    writable: std::cell::Cell<bool>,
 }
 
 impl colo::GateFx for GateIo<'_, '_, '_> {
@@ -478,7 +484,10 @@ impl colo::GateFx for GateIo<'_, '_, '_> {
         self.c.ctx.wait_until(colo::put_gate(url, at));
     }
     async fn read(&self) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
-        fresh_gate(self.c, self.repo, self.who).await
+        fresh_gate(self.c, self.repo, self.who, Some(&self.writable)).await
+    }
+    fn writable(&self) -> bool {
+        self.writable.get()
     }
     async fn beside(
         &self,
@@ -510,7 +519,7 @@ impl colo::GateFx for GateIo<'_, '_, '_> {
         if kept && mismatch {
             c.timing.put("beside_bad", 1.0);
         }
-        Some((start, fresh_gate_on(c, self.repo, self.who, std::future::ready(Ok(Ok(store)))).await))
+        Some((start, fresh_gate_on(c, self.repo, self.who, std::future::ready(Ok(Ok(store))), None).await))
     }
 }
 
@@ -533,7 +542,15 @@ fn reread_ahead(c: &Ctx<'_>, repo: &Repo, who: Option<&Principal>, k: gate::Key)
         let ctx = Context::new(js);
         let bg = Ctx::background(&env, &ctx, &cfg, &sites, anchor, colo, fields, ssh_front);
         let url = colo::gate_url(repo.id, k.1, &repo.record);
-        let io = GateIo { c: &bg, repo: &repo, who: who.as_ref(), key: k, url, beside: Default::default() };
+        let io = GateIo {
+            c: &bg,
+            repo: &repo,
+            who: who.as_ref(),
+            key: k,
+            url,
+            beside: Default::default(),
+            writable: Default::default(),
+        };
         colo::reread(&io).await;
         colo::end(&k);
     });
@@ -546,6 +563,7 @@ async fn fresh_gate(
     c: &Ctx<'_>,
     repo: &Repo,
     who: Option<&Principal>,
+    writable: Option<&std::cell::Cell<bool>>,
 ) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
     // A push that reads the access rows reads its agent rows in the same read, which the push keeps
     // (`Ctx::push_rows`); with the decision cached it reads no rows here, and `agents::push_context` reads its own.
@@ -559,15 +577,17 @@ async fn fresh_gate(
             core
         }))
     };
-    fresh_gate_on(c, repo, who, rows).await
+    fresh_gate_on(c, repo, who, rows, writable).await
 }
 
-/// `fresh_gate` on the access rows `rows` answers: its own read, or the rows read beside the front (`beside`).
+/// `fresh_gate` on the access rows `rows` answers: its own read, or the rows read beside the front (`beside`). With
+/// `writable`, also whether the caller may push here on the same rows and folds (`may_push`), set on each decision.
 async fn fresh_gate_on(
     c: &Ctx<'_>,
     repo: &Repo,
     who: Option<&Principal>,
     rows: impl std::future::Future<Output = RowsRead>,
+    writable: Option<&std::cell::Cell<bool>>,
 ) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
     // A read-class request may decide on the owner's `Authz` from `rcache`, and the decision is then cached from that
     // fold's read, not from now, so a revocation still binds within one `READ_CACHE` (`reopened`).
@@ -594,7 +614,11 @@ async fn fresh_gate_on(
     let decide = |owner| {
         let owner = gate_owner(owner)?;
         let folds: [&dyn graftyard_identity::AuthzRead; 1] = [&owner];
-        Ok(graftyard_identity::authorize_read(who, c.token_fields.borrow().as_ref(), &folds, &access))
+        let fields = c.token_fields.borrow();
+        if let Some(w) = writable {
+            w.set(who.is_some_and(|p| may_push(p, fields.as_ref(), &folds, &access, &core)));
+        }
+        Ok(graftyard_identity::authorize_read(who, fields.as_ref(), &folds, &access))
     };
     let (d, stamp) = reopened(held.map(|(t, _)| t), at, decide(owner), fresh, decide).await.map_err(GateFail::Read)?;
     Ok((d, Some(stamp)))
@@ -616,6 +640,23 @@ async fn reopened<V, E, F: std::future::Future<Output = V>>(
         (Some(_), Ok(d)) if d != graftyard_identity::Decision::Allow => Ok((decide(fresh().await)?, at)),
         (held, first) => Ok((first?, held.unwrap_or(at))),
     }
+}
+
+/// Whether `p` may push to the repository on the gate's rows and folds: `Push::decide`'s `may_write` (a `Write`
+/// permission through the owner's `Authz` or a collaborator row, the token's own reach with `contents: write`, and a
+/// repository not deleted). An advertisement puts its `Allow` for a POST only when this holds (`cold-write`, C); the
+/// POST's leader decides it again on its own read either way.
+fn may_push(
+    p: &Principal,
+    fields: Option<&graftyard_identity::TokenFields>,
+    folds: &[&dyn graftyard_identity::AuthzRead],
+    access: &graftyard_git::issue_ops::Access<'_>,
+    core: &dyn graftyard_fold::Read,
+) -> bool {
+    use graftyard_identity::{Access, Decision::Allow, WriteAction};
+    graftyard_git::tiers::deleted(core).is_none()
+        && graftyard_identity::authorize_write(p, WriteAction::Push, folds, access) == Allow
+        && graftyard_identity::token_allows(fields, &[("contents", Access::Write)], access) == Allow
 }
 
 /// The owner's `Authz` for the read gate, or why it failed. A read its members shed keeps its OVERLOADED reason, so
@@ -659,15 +700,31 @@ mod gate {
         hash.finalize().into()
     }
 
-    pub(crate) fn key(repo: RepoId, who: Option<&Principal>) -> Option<Key> {
-        match who {
-            None => Some((repo, None)),
-            Some(Principal { actor: Actor::User(_), credential: Credential::Stored(h), .. }) => Some((repo, Some(*h))),
-            Some(Principal { credential: Credential::Stateless(claims), .. }) => {
-                Some((repo, Some(stateless_key(claims))))
+    /// A write's key (`push`) is another hash of the same credential, so its entries, in the isolate and in the data
+    /// center (`colo::gate_url` hashes this credential), never serve a fetch and a fetch's never serve a push
+    /// (`cold-write`, C).
+    pub(crate) fn key(repo: RepoId, who: Option<&Principal>, push: bool) -> Option<Key> {
+        let k = match who {
+            None => (repo, None),
+            Some(Principal { actor: Actor::User(_), credential: Credential::Stored(h), .. }) => (repo, Some(*h)),
+            Some(Principal { credential: Credential::Stateless(claims), .. }) => (repo, Some(stateless_key(claims))),
+            Some(_) => return None,
+        };
+        Some(if push { push_key(k) } else { k })
+    }
+
+    /// Anonymous stays distinct from every credential.
+    fn push_key(k: Key) -> Key {
+        let mut hash = Sha256::new();
+        hash.update(b"graftyard-read-gate-push\0");
+        match k.1 {
+            Some(c) => {
+                hash.update([1]);
+                hash.update(c);
             }
-            Some(_) => None,
+            None => hash.update([0]),
         }
+        (k.0, Some(hash.finalize().into()))
     }
 
     /// The decision held for `k` at any age, the time of the oldest fold read it was made on, and whether it was
@@ -756,12 +813,14 @@ mod push_log {
 /// 1): for HOT_WINDOW after it, a push that would send an inline pack over INLINE_MAX_HOT stages it first, as the
 /// leader would ask, instead of a commit the leader refuses and a second one. A group with no `Stage` here in the last
 /// HOT_WINDOW is cool and its pushes commit inline as before, so a cool group's push never pays the bucket place; the
-/// entry lapses on its own, and the first push after it learns again from the leader.
+/// entry lapses on its own, and the first push after it learns again from the leader. An Agent-class push with an
+/// inline pack over AGENT_INLINE_ENTRY stages first on any group, because the leader's per-entry budget answers such a
+/// pack `Stage` whatever its group (`decisions/DECISIONS.md`, "`agent-stage-first`").
 mod hot {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
-    use graftyard_raft::admit::{HOT_WINDOW, INLINE_MAX_HOT};
+    use graftyard_raft::admit::{AGENT_INLINE_ENTRY, HOT_WINDOW, INLINE_MAX_HOT};
     use graftyard_types::{RepoId, Timestamp};
 
     /// The most groups one isolate remembers; past it the map starts empty again.
@@ -782,18 +841,20 @@ mod hot {
         });
     }
 
-    /// Whether a push to `repo` at `now` with `inline` pack bytes stages its pack before its first commit. Only a push
-    /// sent with an admission class can get `Stage`, which the caller checks.
-    pub(crate) fn stage_first(repo: RepoId, now: Timestamp, inline: usize) -> bool {
+    /// Whether a push to `repo` at `now` with `inline` pack bytes stages its pack before its first commit; `agent` is
+    /// whether the edge classes it Agent. Only a push sent with an admission class can get `Stage`, which the caller
+    /// checks.
+    pub(crate) fn stage_first(repo: RepoId, now: Timestamp, inline: usize, agent: bool) -> bool {
         let w = HOT_WINDOW.as_millis() as u64;
-        inline > INLINE_MAX_HOT
-            && STAGED.with(|m| m.borrow().get(&repo).is_some_and(|at| now.0.saturating_sub(at.0) <= w))
+        (agent && inline > AGENT_INLINE_ENTRY)
+            || inline > INLINE_MAX_HOT
+                && STAGED.with(|m| m.borrow().get(&repo).is_some_and(|at| now.0.saturating_sub(at.0) <= w))
     }
 }
 
 #[cfg(test)]
 mod hot_tests {
-    use graftyard_raft::admit::INLINE_MAX_HOT;
+    use graftyard_raft::admit::{AGENT_INLINE_ENTRY, INLINE_MAX_HOT};
     use graftyard_types::{DbId, RepoId, Timestamp};
 
     use super::hot::{stage_first, staged};
@@ -805,14 +866,30 @@ mod hot_tests {
         let (cool, hot) = (RepoId(DbId(301)), RepoId(DbId(302)));
         let big = INLINE_MAX_HOT + 1;
         for size in [1, INLINE_MAX_HOT, big, 1 << 20] {
-            assert!(!stage_first(cool, Timestamp(10_000), size), "a cool group never stages first ({size} B)");
+            assert!(!stage_first(cool, Timestamp(10_000), size, false), "a cool group never stages first ({size} B)");
         }
         staged(hot, Timestamp(10_000));
-        assert!(stage_first(hot, Timestamp(10_000), big));
-        assert!(stage_first(hot, Timestamp(15_000), big), "at HOT_WINDOW");
-        assert!(!stage_first(hot, Timestamp(15_001), big), "past HOT_WINDOW the group is cool again");
-        assert!(!stage_first(hot, Timestamp(12_000), INLINE_MAX_HOT), "a pack the leader keeps inline");
-        assert!(!stage_first(cool, Timestamp(12_000), big), "another group is not hot by this one");
+        assert!(stage_first(hot, Timestamp(10_000), big, false));
+        assert!(stage_first(hot, Timestamp(15_000), big, false), "at HOT_WINDOW");
+        assert!(!stage_first(hot, Timestamp(15_001), big, false), "past HOT_WINDOW the group is cool again");
+        assert!(!stage_first(hot, Timestamp(12_000), INLINE_MAX_HOT, false), "a pack the leader keeps inline");
+        assert!(!stage_first(cool, Timestamp(12_000), big, false), "another group is not hot by this one");
+    }
+
+    /// The leader answers `Stage` to every Agent inline pack over AGENT_INLINE_ENTRY, hot group or not (B0-32 m3fwi3:
+    /// 206 of 489 pushes committed twice), so such a push stages first on a cool group; a pack at the budget, and a
+    /// Human or Bot push of any size, keeps its inline pack there.
+    #[test]
+    fn an_agent_pack_past_the_entry_budget_stages_first_on_a_cool_group() {
+        let cool = RepoId(DbId(303));
+        let now = Timestamp(50_000);
+        assert!(stage_first(cool, now, 256 << 10, true), "B0-32's 256 KiB agent push");
+        assert!(stage_first(cool, now, AGENT_INLINE_ENTRY + 1, true));
+        assert!(!stage_first(cool, now, AGENT_INLINE_ENTRY, true), "at AGENT_INLINE_ENTRY the leader keeps it inline");
+        assert!(!stage_first(cool, now, INLINE_MAX_HOT + 1, true), "past INLINE_MAX_HOT alone is the hot rule's");
+        for size in [AGENT_INLINE_ENTRY + 1, 256 << 10, 1 << 20] {
+            assert!(!stage_first(cool, now, size, false), "a push not classed Agent ({size} B)");
+        }
     }
 }
 
@@ -862,8 +939,8 @@ mod gate_tests {
         let repo = RepoId(DbId(1));
         let first = stateless(10);
         let second = stateless(11);
-        assert_eq!(gate::key(repo, Some(&first)), gate::key(repo, Some(&first)));
-        assert_ne!(gate::key(repo, Some(&first)), gate::key(repo, Some(&second)));
+        assert_eq!(gate::key(repo, Some(&first), false), gate::key(repo, Some(&first), false));
+        assert_ne!(gate::key(repo, Some(&first), false), gate::key(repo, Some(&second), false));
     }
 
     #[test]
@@ -874,16 +951,53 @@ mod gate_tests {
         let unseparated: [u8; 32] = Sha256::digest(jti.to_be_bytes()).into();
         for hash in [[0; 32], unseparated] {
             let stored = principal(Credential::Stored(hash));
-            assert_ne!(gate::key(repo, Some(&stateless)), gate::key(repo, Some(&stored)));
+            assert_ne!(gate::key(repo, Some(&stateless), false), gate::key(repo, Some(&stored), false));
         }
+    }
+
+    /// `cold-write` C's key: a receive-pack's entry, in the isolate and in the data center, binds the credential
+    /// and the repository and is never a fetch's. A fetch's `Allow` for the same token and repository, another token's
+    /// push entry, another repository's, and anonymous all key apart, so none serves a POST.
+    #[test]
+    fn a_push_gate_key_misses_a_fetchs_allow_and_another_tokens() {
+        let (repo, other_repo) = (RepoId(DbId(1)), RepoId(DbId(2)));
+        let record = graftyard_types::PlacementRecord {
+            name: graftyard_types::PlacementName::Tri,
+            sites: [graftyard_types::SiteId(0), graftyard_types::SiteId(1), graftyard_types::SiteId(2)]
+                .into_iter()
+                .collect(),
+            home: graftyard_types::SiteId(0),
+            generation: 1,
+            moving_from: None,
+            at: Timestamp(1),
+        };
+        let (a, b) = (principal(Credential::Stored([7; 32])), principal(Credential::Stored([8; 32])));
+        let url = |k: gate::Key| super::colo::gate_url(k.0, k.1, &record);
+        let push = |r, p: Option<&Principal>| gate::key(r, p, true).unwrap();
+        let post = push(repo, Some(&a));
+        assert_eq!(post, push(repo, Some(&a)), "an advertisement and its POST share the entry");
+        for (what, k) in [
+            ("a fetch's Allow, same token and repository", gate::key(repo, Some(&a), false).unwrap()),
+            ("another token's push entry", push(repo, Some(&b))),
+            ("another token's fetch", gate::key(repo, Some(&b), false).unwrap()),
+            ("another repository's push entry", push(other_repo, Some(&a))),
+            ("an anonymous push entry", push(repo, None)),
+            ("an anonymous fetch", gate::key(repo, None, false).unwrap()),
+        ] {
+            assert_ne!(post, k, "isolate key: {what}");
+            assert_ne!(url(post), url(k), "data-center key: {what}");
+        }
+        let (s1, s2) = (stateless(10), stateless(11));
+        assert_ne!(push(repo, Some(&s1)), push(repo, Some(&s2)), "a ghs_ push entry follows its jti");
+        assert_ne!(push(repo, Some(&s1)), gate::key(repo, Some(&s1), false).unwrap());
     }
 
     #[test]
     fn sessions_stay_uncached_and_anonymous_stays_repository_scoped() {
         let repo = RepoId(DbId(1));
         let session = principal(Credential::Session(WebSessionId(Ulid(1))));
-        assert_eq!(gate::key(repo, Some(&session)), None);
-        assert_eq!(gate::key(repo, None), Some((repo, None)));
+        assert_eq!(gate::key(repo, Some(&session), false), None);
+        assert_eq!(gate::key(repo, None, false), Some((repo, None)));
     }
 }
 
@@ -979,6 +1093,136 @@ fn bound_at_send(agent: bool, left: Option<std::time::Duration>) -> std::result:
     }
 }
 
+/// What the leader's last advert (`graftyard_lookup::advert`) says of a write with `budget` left: send it, refuse it
+/// at the edge (the advert is fresh and its wait passes the budget), or send it although the last advert said full,
+/// because that advert lapsed. An isolate that refuses everything hears no new advert, so it sends again each
+/// ADVERT_TTL; `edgefull` counts those sends per isolate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdvertSays {
+    Send,
+    Refuse(graftyard_lookup::Advert),
+    FailOpen,
+}
+
+fn advert_says(h: graftyard_lookup::Heard, budget: std::time::Duration) -> AdvertSays {
+    use graftyard_lookup::Heard;
+    let past = |a: &graftyard_lookup::Advert| u128::from(a.wait_ms) > budget.as_millis();
+    match h {
+        Heard::Fresh(a) if past(&a) => AdvertSays::Refuse(a),
+        Heard::Lapsed(a, _) if past(&a) => AdvertSays::FailOpen,
+        _ => AdvertSays::Send,
+    }
+}
+
+/// `advert_says` for a caller of `class` (`admission`, `None` for Human): only an Agent-classed caller whose token
+/// reaches the repository (`token_reaches`) is refused or counted; Human, Bot, and MergeQueue always send.
+fn advert_verdict(says: AdvertSays, class: Option<graftyard_git::group::ClassWire>, reaches: bool) -> AdvertSays {
+    match (says, class) {
+        (s, Some(graftyard_git::group::ClassWire::Agent)) if reaches => s,
+        _ => AdvertSays::Send,
+    }
+}
+
+/// Whether the caller's token can reach repository `repo` of `owner` at all, from what `authenticate` already holds:
+/// an installation token's repository list, or a scoped user token's owner and repository list. A token that cannot
+/// is never refused by the advert before the read gate, so a 429 never stands where the gate would answer 404
+/// (`decisions/DECISIONS.md`, "`edge-refusal`", disclosure).
+fn token_reaches(
+    who: &Principal,
+    fields: Option<&graftyard_identity::TokenFields>,
+    repo: RepoId,
+    owner: AccountId,
+) -> bool {
+    use graftyard_identity::RepoScope;
+    let listed = |s: &RepoScope| match s {
+        RepoScope::All => true,
+        RepoScope::Selected(r) => r.contains(&repo),
+    };
+    let claims = match &who.credential {
+        Credential::Stateless(claims) => listed(&claims.repos),
+        _ => true,
+    };
+    let scoped =
+        fields.is_none_or(|f| f.resource_owner.is_none_or(|o| o == owner) && f.repos.as_ref().is_none_or(listed));
+    claims && scoped
+}
+
+/// edge-refusal (`design/DESIGN.md`, Shape, the agent block): the retry hint to refuse a write by `who` to `repo`
+/// with, when its group's leader advertised, within ADVERT_TTL, an agent wait longer than `budget` and the edge classes
+/// the caller Agent. `None` sends the write as before. The advert is read first and costs nothing, so only a write the
+/// advert already refuses reads the install's `Authz` (`admission`), and a request that reads none today, a user token
+/// with no App and no session header, still reads none. Each refusal and each fail-open send logs an `edgefull` line.
+pub(crate) async fn advert_refusal(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    who: &Principal,
+    push: bool,
+    budget: std::time::Duration,
+) -> Option<u32> {
+    let says = advert_says(graftyard_lookup::advert(ChainId::Repo(repo.id), graftyard_lookup::now_ms()), budget);
+    if says == AdvertSays::Send {
+        return None;
+    }
+    let reaches = token_reaches(who, c.token_fields.borrow().as_ref(), repo.id, repo.owner);
+    let class = if reaches { admission(c, who, &[], push, 0).await.map(|a| a.class) } else { None };
+    match advert_verdict(says, class, reaches) {
+        AdvertSays::Send => None,
+        AdvertSays::Refuse(a) => {
+            // B0-32's split of `full` by shape: an advert refusal is `advert` in `server-timing`, apart from `bound`.
+            c.timing.put("advert", a.wait_ms as f64);
+            worker::console_log!("{}", edgefull::refused(repo.id, push, a.wait_ms, budget));
+            Some(a.retry_after_s.max(1))
+        }
+        AdvertSays::FailOpen => {
+            worker::console_log!("{}", edgefull::failed_open(repo.id, push, budget));
+            None
+        }
+    }
+}
+
+/// The `edgefull` log line (`decisions/DECISIONS.md`, "`edge-refusal`", its flips): one per write the advert refused
+/// and one per Agent write sent on a lapsed advert that said full, with this isolate's running counts of both, so a
+/// row tells an isolate that fails open each ADVERT_TTL from adverts that never reach the edge.
+mod edgefull {
+    use std::cell::Cell;
+
+    use graftyard_types::RepoId;
+
+    thread_local! {
+        static ISOLATE: Cell<u64> = const { Cell::new(0) };
+        /// (refused, sent on a lapsed full advert)
+        static COUNTS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    }
+
+    fn isolate() -> u64 {
+        ISOLATE.with(|i| {
+            if i.get() == 0 {
+                let r = super::rand10();
+                i.set(u64::from_le_bytes(r[..8].try_into().expect("8 bytes")) | 1);
+            }
+            i.get()
+        })
+    }
+
+    fn line(repo: RepoId, push: bool, what: &str, wait_ms: Option<u64>, budget: std::time::Duration) -> String {
+        let (refused, open) = COUNTS.with(Cell::get);
+        serde_json::json!({ "edgefull": what, "class": "agent", "push": push, "repo": repo.0.0, "waitMs": wait_ms,
+            "budgetMs": budget.as_millis() as u64, "isolate": format!("{:016x}", isolate()), "refused": refused,
+            "failOpen": open })
+        .to_string()
+    }
+
+    pub(crate) fn refused(repo: RepoId, push: bool, wait_ms: u64, budget: std::time::Duration) -> String {
+        COUNTS.with(|c| c.set((c.get().0 + 1, c.get().1)));
+        line(repo, push, "refused", Some(wait_ms), budget)
+    }
+
+    pub(crate) fn failed_open(repo: RepoId, push: bool, budget: std::time::Duration) -> String {
+        COUNTS.with(|c| c.set((c.get().0, c.get().1 + 1)));
+        line(repo, push, "failOpen", None, budget)
+    }
+}
+
 /// The install's `Authz(Genesis.account)` fold, read as a `dep` through `fresh`: its `AgentApp` rows. `None` when it
 /// cannot be read, which classes no App as an agent; the leader's `decide` reads the chain itself either way.
 /// Read once per request: a later call answers the first one's result.
@@ -988,10 +1232,17 @@ pub(crate) async fn install_authz(c: &Ctx<'_>) -> Option<graftyard_identity::Aut
     }
     let read = async {
         let account = graftyard_identity::install_account();
-        let record = placement(c, account).await.ok()??;
-        authz_fold(c, account, &record).await
+        let guess = match rcache::last(&rcache::PLACEMENTS, &account) {
+            Some(r) => Some(r),
+            None => c.system_record(ChainId::Names(account_shard(account))).await.ok(),
+        };
+        let read = |r: PlacementRecord| async move { authz_read(c, account, &r).await };
+        let started = guess.map(|r| (r.clone(), read(r)));
+        link(started, placement(c, account), read).await.ok()?.map(|(_, f)| f)
     };
-    let got = read.await;
+    // Boxed: the link holds two `Authz` reads, and inline in `fetch`'s future it took the edge past wasm's 1 MiB
+    // stack on every request, as `beside` did (`tests/edgeboot/run.sh`).
+    let got = Box::pin(read).await;
     c.install.replace(Some(got.clone()));
     got
 }
@@ -1850,6 +2101,13 @@ async fn receive_pack(
     if let Some(r) = early {
         return after_body(c, &mut tail, path, refuse(r)).await;
     }
+    // edge-refusal: a bounded push whose leader advertised a wait past what is left of its bound is refused here, before
+    // context, staging (`first`), validate, or commit; nothing reaches the group.
+    if let Some(left) = budget_left(c)
+        && let Some(s) = advert_refusal(c, repo, &actor, true, left).await
+    {
+        return after_body(c, &mut tail, path, refuse(Refusal::agent_full(s))).await;
+    }
     if atomicity == Atomicity::AllOrNothing && rp.updates.len() > ATOMIC_REFS_MAX {
         return after_body(c, &mut tail, path, refuse(Refusal::too_many_atomic(rp.updates.len()))).await;
     }
@@ -1904,12 +2162,14 @@ async fn receive_pack(
         // Inline only when the pack fits INLINE_MAX and the push with it stays under COMMAND_MAX. A pack that streams
         // has more than INLINE_MAX.
         let inline = tail.is_none() && pack.len() <= INLINE_MAX && alone + pack.len() + 16 < COMMAND_MAX;
-        // A group whose leader asked this isolate to stage within HOT_WINDOW: stage now rather than after a refused
-        // commit (`hot`). A cool group's push keeps its inline pack.
+        // A group whose leader asked this isolate to stage within HOT_WINDOW, or an Agent pack past
+        // AGENT_INLINE_ENTRY: stage now rather than after a refused commit (`hot`). Any other push keeps its inline
+        // pack. A Human push classes without a read, and `admission` reads the install's `Authz` once per request.
         let first = inline
-            && hot::stage_first(repo.id, now(), pack.len())
             && !placement_failing(c)
-            && admission(c, &push.actor, &[], true, 0).await.is_some();
+            && admission(c, &push.actor, &[], true, 0).await.is_some_and(|a| {
+                hot::stage_first(repo.id, now(), pack.len(), a.class == graftyard_git::group::ClassWire::Agent)
+            });
         let inline = inline && !first;
         if first {
             // B0-32's count of pushes that staged before their first commit (`stagefirst` in `server-timing`).
@@ -3617,12 +3877,20 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     graftyard_lookup::set_colo(colo_id(&req));
     graftyard_lookup::set_client();
+    // A spread read's learner refresh runs after the reply, not inside the read (`cold-write`, B).
+    graftyard_lookup::defer_refreshes();
     // The version this request ran, from the version metadata binding, for `graft-front`'s mismatch check. Only a
     // request that asks for it (`graft-front` sends `FRONT_HEADER`) gets the header, and `graft-front` takes it off
     // the client's response, so no client response changes.
     let report = req.headers().has(FRONT_HEADER)?;
     let method = req.method();
     let r = serve(req, &env, &ctx, rid, &cfg, url, path.clone(), &sites, anchor).await;
+    if graftyard_lookup::refreshes_pending() {
+        let (env, sites) = (env.clone(), sites.clone());
+        ctx.wait_until(async move {
+            graftyard_lookup::run_refreshes(&graftyard_lookup::Bindings { env: &env, sites: &sites }).await;
+        });
+    }
     // why-logs: one line per 5xx, whatever route answered it, with the reply's message, so a row counts its 5xx by
     // reason (`tests/fanout/fivexxwhy.py`). The body is read from a clone after the reply is sent.
     let r = match r {
@@ -3938,6 +4206,16 @@ async fn serve(
         if dumb {
             return Ok(None);
         }
+        // Under 32.8 every push reads the install's `Authz` whoever sent it (`needs_install`), so it starts beside
+        // the token's read rather than after it.
+        if rpc_push && c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT) {
+            let (who, _) = Box::pin(futures_util::future::join(
+                api::timed(&c, "auth", authenticate(&c, &req)),
+                api::timed(&c, "install", install_authz(&c)),
+            ))
+            .await;
+            return who;
+        }
         let who = api::timed(&c, "auth", authenticate(&c, &req)).await?;
         if rpc_push && who.as_ref().is_some_and(|w| needs_install(&c, w)) {
             api::timed(&c, "install", install_authz(&c)).await;
@@ -3948,7 +4226,8 @@ async fn serve(
     // data center's link entry, and starts the read gate's access rows on it beside the front, unless a shared gate
     // entry will answer the gate; the gate keeps those rows only if the resolve names the same repository.
     let own = held_guess(&owner).is_some();
-    let link = (read_class && !dumb && !own && !colo_off(&c))
+    // A receive-pack takes the guess too, for its `resolve` alone: it reads no rows beside (`cold-write`, E).
+    let link = ((read_class || write) && !dumb && !own && !colo_off(&c))
         .then(|| Some(colo::link_url(&Login::parse(&owner).ok()?.key(), &RepoName::parse(&name).ok()?.key())))
         .flatten();
     let linked = match &link {
@@ -3975,7 +4254,7 @@ async fn serve(
         },
     );
     let mut side = match &linked {
-        Some(g) if !gate_shared(&c, &req, g).await? => Some(beside_start(&c, g.clone())),
+        Some(g) if read_class && !gate_shared(&c, &req, g).await? => Some(beside_start(&c, g.clone())),
         _ => None,
     };
     let both =
@@ -4020,7 +4299,13 @@ async fn serve(
         );
         // An upload-pack's body, key and clone-cache lookup run beside the gate, and are kept only if it allows
         // (`hit-gate`): no byte of the repository leaves before the gate decides.
-        let gate = api::timed(&c, "gate", read_gate(&c, repo, who.as_ref(), side.take()));
+        let share = match route {
+            _ if read_class => colo::READ,
+            Route::InfoRefs { service: Some(Service::ReceivePack), .. } => colo::ADVERT,
+            Route::Rpc { service: Service::ReceivePack, .. } => colo::POST,
+            _ => colo::OFF,
+        };
+        let gate = api::timed(&c, "gate", read_gate(&c, repo, who.as_ref(), side.take(), share));
         let gate = if upload {
             let allows = |g: &Result<_>| matches!(g, Ok(Ok(graftyard_identity::Decision::Allow)));
             let (g, f) = graftyard_git::compose::beside_gate(gate, upload_front(&c, &mut req, repo), allows).await;
@@ -4246,6 +4531,90 @@ mod tests {
         assert_eq!(super::shed_retry_for(true, Some(Duration::from_secs(60))), w);
         assert_eq!(super::shed_retry_for(true, Some(Duration::from_millis(900))), Duration::from_millis(900));
         assert_eq!(super::shed_retry_for(false, None), Duration::ZERO);
+    }
+
+    /// edge-refusal: only a fresh advert whose wait passes the budget refuses, and only an Agent-classed caller whose
+    /// token reaches the repository; a lapsed advert that said full sends (fail-open) and is counted; Human, Bot, and
+    /// MergeQueue send whatever the advert says.
+    #[test]
+    fn the_edge_refuses_only_an_agent_write_whose_fresh_advert_passes_its_budget() {
+        use std::time::Duration;
+
+        use graftyard_git::group::ClassWire;
+        use graftyard_lookup::{Advert, Heard};
+
+        use super::{AdvertSays, advert_says, advert_verdict};
+        let budget = Duration::from_millis(5_000);
+        let a = |wait_ms| Advert { wait_ms, retry_after_s: 9 };
+        assert_eq!(advert_says(Heard::Fresh(a(5_001)), budget), AdvertSays::Refuse(a(5_001)));
+        assert_eq!(advert_says(Heard::Fresh(a(5_000)), budget), AdvertSays::Send, "a wait at the budget fits it");
+        assert_eq!(advert_says(Heard::Fresh(a(100)), Duration::ZERO), AdvertSays::Refuse(a(100)));
+        assert_eq!(advert_says(Heard::Lapsed(a(9_000), 2_001), budget), AdvertSays::FailOpen);
+        assert_eq!(advert_says(Heard::Lapsed(a(10), 2_001), budget), AdvertSays::Send);
+        assert_eq!(advert_says(Heard::Never, budget), AdvertSays::Send);
+        let refuse = AdvertSays::Refuse(a(9_000));
+        assert_eq!(advert_verdict(refuse, Some(ClassWire::Agent), true), refuse);
+        assert_eq!(advert_verdict(AdvertSays::FailOpen, Some(ClassWire::Agent), true), AdvertSays::FailOpen);
+        for class in [None, Some(ClassWire::Human), Some(ClassWire::Bot), Some(ClassWire::MergeQueue)] {
+            assert_eq!(advert_verdict(refuse, class, true), AdvertSays::Send, "{class:?} is never refused");
+            assert_eq!(advert_verdict(AdvertSays::FailOpen, class, true), AdvertSays::Send, "{class:?} is not counted");
+        }
+        assert_eq!(
+            advert_verdict(refuse, Some(ClassWire::Agent), false),
+            AdvertSays::Send,
+            "a token that cannot reach it"
+        );
+    }
+
+    /// edge-refusal's disclosure rule: an installation token selected for other repositories, or a user token scoped
+    /// to another owner or other repositories, does not reach this one, so the advert never answers it before the read
+    /// gate does; an unscoped token, or one that lists it, does.
+    #[test]
+    fn a_token_that_cannot_reach_the_repository_is_never_refused_by_the_advert() {
+        use graftyard_identity::stateless::InstallationClaims;
+        use graftyard_identity::{
+            AppId, Credential, InstallationId, Jti, Kid, PermissionSet, Principal, RepoScope, ScopeSet, TokenFields,
+            UserId,
+        };
+        use graftyard_types::Ulid;
+
+        use super::token_reaches;
+        let (repo, other, owner) = (RepoId(DbId(5)), RepoId(DbId(6)), AccountId(DbId(9)));
+        let app = |repos| Principal {
+            actor: graftyard_identity::Actor::App { app: AppId(DbId(1)), installation: InstallationId(DbId(2)) },
+            scopes: ScopeSet(0),
+            credential: Credential::Stateless(Box::new(InstallationClaims {
+                app: AppId(DbId(1)),
+                installation: InstallationId(DbId(2)),
+                repos,
+                permissions: PermissionSet(Default::default()),
+                jti: Jti(Ulid(1)),
+                iat: Timestamp(0),
+                exp: Timestamp(1),
+                kid: Kid(0),
+                task: None,
+            })),
+            sso_orgs: Default::default(),
+        };
+        assert!(token_reaches(&app(RepoScope::All), None, repo, owner));
+        assert!(token_reaches(&app(RepoScope::Selected([repo].into_iter().collect())), None, repo, owner));
+        assert!(!token_reaches(&app(RepoScope::Selected([other].into_iter().collect())), None, repo, owner));
+        let user = Principal {
+            actor: graftyard_identity::Actor::User(UserId(AccountId(DbId(3)))),
+            scopes: ScopeSet(1),
+            credential: Credential::Stored([0; 32]),
+            sso_orgs: Default::default(),
+        };
+        let scoped = |o, r| TokenFields { resource_owner: o, repos: r, ..TokenFields::default() };
+        assert!(token_reaches(&user, None, repo, owner));
+        assert!(token_reaches(&user, Some(&scoped(Some(owner), None)), repo, owner));
+        assert!(!token_reaches(&user, Some(&scoped(Some(AccountId(DbId(10))), None)), repo, owner));
+        assert!(!token_reaches(
+            &user,
+            Some(&scoped(None, Some(RepoScope::Selected([other].into_iter().collect())))),
+            repo,
+            owner
+        ));
     }
 
     /// `b032-shed` B: an Agent push past its AGENT_PUSH_BOUND at the commit send is refused in B0-32's `ng` shape and
@@ -4779,6 +5148,54 @@ mod tests {
         assert_eq!(run(None, Ok(Hidden), true), (Ok((Hidden, at)), 0));
         assert_eq!(run(None, Ok(Allow), true), (Ok((Allow, at)), 0));
         assert_eq!(run(Some(Timestamp(12_000)), Err("down".into()), true), (Err("down".into()), 0));
+    }
+
+    /// `cold-write` C: an advertisement puts its `Allow` for a POST only when the caller may push, on the same terms
+    /// as `Push::decide`'s `may_write`: a `Write` grant passes; a `Read` grant, a token whose own reach is
+    /// `contents: read` or another owner, and anyone on a deleted repository do not.
+    #[test]
+    fn only_a_caller_who_may_push_has_an_allow_a_post_can_take() {
+        use graftyard_identity::{
+            AccountKind, Actor, AuthzEvent, AuthzFold, AuthzRead, Credential, PermissionSet, Principal, RepoPermission,
+            ScopeSet, TokenFields, UserId,
+        };
+        use graftyard_raft::Fold;
+        let (owner, repo) = (AccountId(DbId(70)), RepoId(DbId(9)));
+        let user = |id: i64| Principal {
+            actor: Actor::User(UserId(AccountId(DbId(id)))),
+            scopes: ScopeSet(1),
+            credential: Credential::Stored([id as u8; 32]),
+            sso_orgs: smallvec::SmallVec::new(),
+        };
+        let mut fold = AuthzFold::new(owner);
+        fold.apply(&AuthzEvent::Opened { kind: AccountKind::User, enterprise: None });
+        for (who, p) in [(71, RepoPermission::Write), (72, RepoPermission::Read)] {
+            fold.apply(&AuthzEvent::Grant { repo, grantee: UserId(AccountId(DbId(who))), permission: Some(p) });
+        }
+        let folds: [&dyn AuthzRead; 1] = [&fold];
+        let core = graftyard_fold::MemStore::default();
+        let access = graftyard_git::issue_ops::Access { repo, owner, core: &core };
+        let fields = |level, resource_owner| TokenFields {
+            permissions: Some(PermissionSet([(Box::from("contents"), level)].into_iter().collect())),
+            resource_owner,
+            ..TokenFields::default()
+        };
+        let may = |p: &Principal, f: Option<&TokenFields>| super::may_push(p, f, &folds, &access, &core);
+        assert!(may(&user(71), None), "a Write grant may push");
+        assert!(may(&user(70), None), "the owner may push");
+        assert!(!may(&user(72), None), "a Read grant's Allow is a fetch's, never a push's");
+        assert!(!may(&user(73), None), "no grant");
+        let w = graftyard_identity::Access::Write;
+        assert!(may(&user(71), Some(&fields(w, None))));
+        assert!(!may(&user(71), Some(&fields(graftyard_identity::Access::Read, None))), "a contents: read token");
+        assert!(!may(&user(71), Some(&fields(w, Some(AccountId(DbId(99)))))), "a token for another owner");
+        let mut gone = graftyard_fold::MemStore::default();
+        let tomb = postcard::to_allocvec(&(Timestamp(5), None::<AccountId>)).expect("encodes");
+        let row =
+            graftyard_fold::Stored { written: Default::default(), cols: vec![graftyard_fold::Val::Blob(tomb.into())] };
+        graftyard_fold::Store::put(&mut gone, "deleted", Vec::new(), row);
+        let access = graftyard_git::issue_ops::Access { repo, owner, core: &gone };
+        assert!(!super::may_push(&user(71), None, &folds, &access, &gone), "a deleted repository");
     }
 
     /// An owner's `Authz` read its members shed keeps the shed reason through the read gate, so the git and LFS gates

@@ -1,0 +1,10 @@
+2026-11-23T05:03:00Z
+vault account: the runner account, standing in for a vault account
+  graft-m3f-vault-standin: release 9d7b46d5f8f88960ac5ec88e1aa2a8a6dc24689871a193d28448cfe41c90c936 uploaded as 7d6c7685-afba-4dd1-afa5-b5c654736021 and deployed at 100%
+upgrade exit 0
+graftyard: release ~/.graft-m3f/vault/bad: refused (BadRecord: bad release record: release.json lists no vault/entry.js with SHA-256 e154f9d7c89947fce3d780b47fc6cfe93e430966bfc6b1138da969f19ce0c62e)
+tampered upgrade exit 1
+{"deployment":[{"version_id":"7d6c7685-afba-4dd1-afa5-b5c654736021","percentage":100}]}
+{"secrets":["EXPORT_TOKEN secret_text"]}
+{"bindings":["EXPORT_TOKEN secret_text","GRAFTYARD_URL plain_text","VAULT r2_bucket"]}
+{"schedules":["* * * * *"]}

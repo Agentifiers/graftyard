@@ -212,6 +212,13 @@ pub struct SiteFault {
     /// calls from Workers (`/read`, `/commit`, `/view`, `/pending`). BF-48's groups that cannot commit.
     #[serde(default)]
     pub group_only: bool,
+    /// The gate check's planted slow apply: with `slow_ms` set nothing fails, and instead each member on `site` whose
+    /// script version is `version` (every version when unset) holds every inbound `/raft` for `slow_ms` before it
+    /// steps it, so it applies each entry that much later (`slow_raft`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// A `SiteFault.site` naming every site at once.
@@ -228,6 +235,31 @@ struct Cached {
 
 thread_local! {
     static SITE_FAULT: RefCell<Option<Cached>> = const { RefCell::new(None) };
+}
+
+/// This isolate's cached plan, read first if it has none and refreshed in the background once stale.
+async fn current_plan(env: &Env) -> SiteFault {
+    let now = crate::now_ms();
+    let state = SITE_FAULT
+        .with(|c| c.borrow().as_ref().map(|c| (c.plan.clone(), now >= c.fetched + SITE_FAULT_TTL_MS && !c.refreshing)));
+    match state {
+        None => {
+            keep(read_site_fault(env).await);
+            SITE_FAULT.with(|c| c.borrow().as_ref().map(|c| c.plan.clone()).unwrap_or_default())
+        }
+        Some((plan, stale)) => {
+            if stale {
+                SITE_FAULT.with(|c| {
+                    if let Some(c) = c.borrow_mut().as_mut() {
+                        c.refreshing = true;
+                    }
+                });
+                let env = env.clone();
+                worker::wasm_bindgen_futures::spawn_local(async move { keep(read_site_fault(&env).await) });
+            }
+            plan
+        }
+    }
 }
 
 async fn read_site_fault(env: &Env) -> Option<SiteFault> {
@@ -252,34 +284,27 @@ fn keep(plan: Option<SiteFault>) {
 pub async fn site_fault(env: &Env, chain: Option<graftyard_types::ChainId>, consensus: bool) -> Option<u64> {
     let Ok(me) = crate::SiteEnv::read(env).map(|s| s.id.0) else { return None };
     let now = crate::now_ms();
-    let state = SITE_FAULT
-        .with(|c| c.borrow().as_ref().map(|c| (c.plan.clone(), now >= c.fetched + SITE_FAULT_TTL_MS && !c.refreshing)));
-    let plan = match state {
-        None => {
-            keep(read_site_fault(env).await);
-            SITE_FAULT.with(|c| c.borrow().as_ref().map(|c| c.plan.clone()).unwrap_or_default())
-        }
-        Some((plan, stale)) => {
-            if stale {
-                SITE_FAULT.with(|c| {
-                    if let Some(c) = c.borrow_mut().as_mut() {
-                        c.refreshing = true;
-                    }
-                });
-                let env = env.clone();
-                worker::wasm_bindgen_futures::spawn_local(async move { keep(read_site_fault(&env).await) });
-            }
-            plan
-        }
-    };
+    let plan = current_plan(env).await;
     // Site 255 is every site: L0-12's stall, every member running with every member call blackholed.
-    let hit = (plan.site == Some(me) || plan.site == Some(ALL_SITES))
+    let hit = plan.slow_ms.is_none()
+        && (plan.site == Some(me) || plan.site == Some(ALL_SITES))
         && plan.from <= now
         && now < plan.until
         && (plan.chains.is_empty() || chain.is_some_and(|x| plan.chains.contains(&x.to_string())))
         && (consensus || !plan.group_only)
         && plan.rate.is_none_or(roll);
     hit.then_some(plan.hang_ms.unwrap_or(0))
+}
+
+/// How long this member holds an inbound `/raft` before stepping it: the plan's `slow_ms` while it names this site
+/// and, if it names one, this script's version (`SiteFault::slow_ms`).
+pub async fn slow_raft(env: &Env) -> Option<u64> {
+    let me = crate::SiteEnv::read(env).ok()?.id.0;
+    let now = crate::now_ms();
+    let plan = current_plan(env).await;
+    let ms = plan.slow_ms?;
+    let mine = plan.version.as_ref().is_none_or(|v| crate::gatecount::version(env).as_deref() == Some(v.as_str()));
+    (plan.site == Some(me) && plan.from <= now && now < plan.until && mine).then_some(ms)
 }
 
 /// B0-07's stand-in for the `Release` group's site modes (`design/DESIGN.md`, Shape, `SiteMode`), which the hosted

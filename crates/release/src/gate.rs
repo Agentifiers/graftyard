@@ -32,8 +32,12 @@ pub const GATE_APPLY_LAG_SHARE_BP: u64 = 200;
 /// this [measured, BF-39 hosted: a healthy N+1 put at most 0.27% over 5 s, a 10 s stall on 1.5% of entries 1.5%].
 pub const GATE_APPLY_LAG_CAP_MS: u64 = 5_000;
 pub const GATE_APPLY_LAG_CAP_BP: u64 = 100;
-/// N+1's ack rate may be at most this many basis points below N's (`GATE_ACK_RATE`, 0.1 points) [guess].
-pub const GATE_ACK_RATE_BP: u32 = 10;
+/// `GATE_ACK_RATE`: N+1's refused share of AppendEntries answers may exceed N's by this much, 0.1 points [guess],
+/// and breaches only when the excess is past it by `GATE_ACK_RATE_Z` standard errors of the two shares, a one-sided
+/// test at about 1 in 1,000 per read. The gate check row read a healthy N+1 of 100 entries 0.56 points under N
+/// (OPEN-QUESTIONS R43).
+pub const GATE_ACK_RATE_MARGIN: f64 = 0.001;
+pub const GATE_ACK_RATE_Z: f64 = 3.09;
 /// N+1's 5xx rate may be at most this many basis points above N's (`GATE_ERRORS`, 0.1 points) [guess].
 pub const GATE_ERRORS_BP: u32 = 10;
 /// A site day that cannot advance for this long undrains its site under the 1% lead limit (`STUCK_DAY`) [guess].
@@ -60,8 +64,9 @@ pub struct Side {
     pub apply_lag_p99_ms: u64,
     /// Apply and verify exceptions.
     pub exceptions: u64,
-    /// Acks over calls, in basis points.
-    pub ack_bp: u32,
+    /// AppendEntries answered, and how many of those acked.
+    pub appends: u64,
+    pub acks: u64,
     /// `STEP_DOWN` trips on this side's leaders.
     pub step_downs: u64,
     /// Entries applied in the step.
@@ -87,12 +92,30 @@ pub fn judge_site(n1: &Side, n: &Side) -> Gate {
     if n1.step_downs > 0 {
         return Gate::Breach(format!("GATE_STEP_DOWN: {} on N+1 leaders", n1.step_downs).into());
     }
-    // An N that applied nothing is no baseline (a site's first release): only the backstop applies. At 100% and on
-    // the first day no member runs N, so the host passes N's counters from the whole intent, when N last ran beside
-    // N+1 (`ops::Exec::gate`).
-    let has_n = n.entries > 0;
+    // The shares (`GATE_APPLY_LAG`, `GATE_ACK_RATE`) are judged only once N+1 has `STEP_MIN_ENTRIES` entries and as
+    // many answers: under it one slow entry is over 2% (1 of 20 is 5%), and one refused answer of 180 is 0.56 points,
+    // so a healthy step would breach on chance (R43). An N under it is no lag baseline either, since its p99 bucket is
+    // not yet its own (a site's first release: only the backstop). At 100% and on the first day no member runs N, so
+    // the host passes N's counters from the whole intent, when N last ran beside N+1 (`ops::Exec::gate`).
+    if n1.entries < STEP_MIN_ENTRIES || n1.appends < STEP_MIN_ENTRIES {
+        return Gate::Starved(n1.entries.min(n1.appends));
+    }
+    if let Some(z) = ack_excess_z(n1, n)
+        && z >= GATE_ACK_RATE_Z
+    {
+        return Gate::Breach(
+            format!(
+                "GATE_ACK_RATE: N+1 refused {} of {} answers, N {} of {}, z {z:.2}",
+                n1.appends - n1.acks,
+                n1.appends,
+                n.appends - n.acks,
+                n.appends
+            )
+            .into(),
+        );
+    }
     let tail = n1.share_over_bp(n.apply_lag_p99_ms);
-    if has_n && tail > GATE_APPLY_LAG_SHARE_BP {
+    if n.entries >= STEP_MIN_ENTRIES && tail > GATE_APPLY_LAG_SHARE_BP {
         return Gate::Breach(
             format!("GATE_APPLY_LAG: {tail} bp of N+1 entries over N's p99 {} ms", n.apply_lag_p99_ms).into(),
         );
@@ -103,14 +126,21 @@ pub fn judge_site(n1: &Side, n: &Side) -> Gate {
             format!("GATE_APPLY_LAG: {stalled} bp of N+1 entries over {GATE_APPLY_LAG_CAP_MS} ms").into(),
         );
     }
-    if has_n && n1.ack_bp + GATE_ACK_RATE_BP < n.ack_bp {
-        return Gate::Breach(format!("GATE_ACK_RATE: N+1 {} bp, N {} bp", n1.ack_bp, n.ack_bp).into());
-    }
-    if n1.entries < STEP_MIN_ENTRIES {
-        return Gate::Starved(n1.entries);
-    }
     Gate::Pass
 }
+
+/// How many standard errors N+1's refused share exceeds N's plus `GATE_ACK_RATE_MARGIN`; `None` with no N answers.
+/// The variance is floored at `ACK_VAR_FLOOR`, so two sides that refused nothing (or everything) give a finite z.
+fn ack_excess_z(n1: &Side, n: &Side) -> Option<f64> {
+    let refused = |s: &Side| ((s.appends - s.acks) as f64 / s.appends as f64, s.appends as f64);
+    let (p1, c1) = refused(n1);
+    let (p0, c0) = (n.appends > 0).then(|| refused(n))?;
+    let var = (p1 * (1.0 - p1) / c1 + p0 * (1.0 - p0) / c0).max(ACK_VAR_FLOOR);
+    Some((p1 - p0 - GATE_ACK_RATE_MARGIN) / var.sqrt())
+}
+
+/// `ack_excess_z`'s variance floor: one refused answer in a million each side, far under any real step's.
+const ACK_VAR_FLOOR: f64 = 1e-12;
 
 /// Upper bounds, in ms, of the apply-lag histogram's buckets; the last holds everything above.
 pub const LAG_EDGES: [u64; 24] = [
@@ -184,8 +214,7 @@ impl Counters {
         *self == Counters::default()
     }
 
-    /// The window as `judge_site` reads one side: the p99 lag is its bucket's upper bound, and with no AppendEntries
-    /// answered the ack rate is 100%.
+    /// The window as `judge_site` reads one side: the p99 lag is its bucket's upper bound.
     pub fn side(&self) -> Side {
         let total: u64 = self.lag.iter().sum();
         let mut seen = 0;
@@ -197,11 +226,11 @@ impl Counters {
                 break;
             }
         }
-        let ack_bp = (self.acks * 10_000).checked_div(self.appends).map_or(10_000, |b| b as u32);
         Side {
             apply_lag_p99_ms: p99,
             exceptions: self.exceptions,
-            ack_bp,
+            appends: self.appends,
+            acks: self.acks,
             step_downs: self.step_downs,
             entries: self.entries,
             lag: self.lag.clone(),
