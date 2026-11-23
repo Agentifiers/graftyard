@@ -9132,9 +9132,8 @@ clearance after this merges and runs on graft-m2b after LM-1's read-memo rows.
 
 ### `removed-read`: a replaced voter answers a read-index read at once with the config that removed it, 2026-11-23
 
-**Status.** Code built and tested at $0, cleared by the lead on 2026-11-23 for F113's warm case. Site only, so it ships
-on a site day, the same one as F112's G39 catch-up levers. The hosted check is the next B0-32 row on graft-m3f after it
-ships, on a kept host up to 40 ms, judged on 450.
+**Status.** Built at $0, cleared by the lead on 2026-11-23 for F113's warm case, merged with G39 at `5bed46af`, and
+hosted on B0-32 m3fmA's site day (2026-11-23): neither flip condition held (Evidence).
 
 **Decision.**
 - A voter that a re-placement or `ReplaceMember` replaced learns it from its own site's registry row: a row naming
@@ -9178,7 +9177,13 @@ it: after `Degraded` committed at index 10, the old member's committed config wa
   `meta.removed`, in 2 to 5 ms, with `removedReads` 4. The replacement served the value in 12 ms. The control's 4
   reads served in 4 to 11 ms, with `removedReads` 0. No wasm traps. On m3fk2B the replacement went in during
   setup, minutes before the burst, so its first check would find `Normal` [inference].
-- Not measured: the hosted ReadIndex count and the line.
+- **Hosted, B0-32 m3fmA (2026-11-23, graft-m3f, main `5bed46af`): the flip held** [measured, `tests/am1/results/lm1-rows-m3f.md`, "Row m3fmA"]. Site 1's voter `repo:65629#1#f1` was replaced by `#2#f1` in setup, as on m3fk2B.
+  - F1's answers on the burst's repository spread passes went from `ov` 158 (about 1.18 s each) to `ov` 0, and to `nl` 89 at p50 169 ms.
+  - Late pushes whose pass began on F1 went from 49 of 53 to 0 of 5.
+  - The leader's `IndexTaken` from the removed member's boot went from 457 (42 in the burst's first 10 s) to 10, all in setup, and **0 in load**.
+  - The removed member answered its 98 burst `/read`s at wall p50 0 ms.
+  - No pass asked the removed name twice; `suspect` was 0.
+  - B0-32 is met at 90% on this row: 495 of 500.
 
 **Flip.**
 - **Back it out if a removed member's `notLeader` makes cold isolates loop:** a hosted row whose edge `x-graft-spread`
