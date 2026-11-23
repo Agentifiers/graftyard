@@ -205,12 +205,14 @@ pub(crate) fn put<K: Ord, V: Clone>(
 
 /// A read through `cache`: a read-class request's entry for `k` when one is at most `READ_CACHE` old, else `read`,
 /// whose answer is stored stamped `at` (when the read started) if the cache keeps it. A write-class request reads
-/// fresh through `k`'s batch (`batched`), and `t` counts it for `server-timing` (`rcread`, `rcshare`, `rcwait`).
+/// fresh through `k`'s batch (`batched`), or on its own when `alone` (a REST merge, `merge-front`), and `t` counts it
+/// for `server-timing` (`rcread`, `rcshare`, `rcwait`).
 pub(crate) async fn through<K: Ord + Clone + 'static, V: Clone + 'static, E: std::fmt::Display + From<String>>(
     cache: &'static std::thread::LocalKey<RefCell<Ttl<K, V>>>,
     k: K,
     at: Timestamp,
     read_class: bool,
+    alone: bool,
     t: &crate::api::Timing,
     read: impl Future<Output = Result<Option<V>, E>>,
 ) -> Result<Option<V>, E> {
@@ -224,7 +226,7 @@ pub(crate) async fn through<K: Ord + Clone + 'static, V: Clone + 'static, E: std
         }
         return Ok(v);
     }
-    let b = batched(cache, k, at, read, || js_sys::Date::now() as u64, worker::Delay::from).await;
+    let b = batched(cache, k, at, alone, read, || js_sys::Date::now() as u64, worker::Delay::from).await;
     t.rcache(b.shared, b.waited_ms);
     b.answer
 }
@@ -233,19 +235,21 @@ pub(crate) async fn through<K: Ord + Clone + 'static, V: Clone + 'static, E: std
 /// entry at most `READ_CACHE` old answers it, as for a read-class request, and a miss reads through the key's batch,
 /// as any write does, so a burst of such writes on a cold isolate still shares its reads. Any other request is
 /// `through`.
+#[expect(clippy::too_many_arguments, reason = "each flag is a different request property the caller already holds")]
 pub(crate) async fn through_bound<K: Ord + Clone + 'static, V: Clone + 'static, E: std::fmt::Display + From<String>>(
     cache: &'static std::thread::LocalKey<RefCell<Ttl<K, V>>>,
     k: K,
     at: Timestamp,
     read_class: bool,
     decided: bool,
+    alone: bool,
     t: &crate::api::Timing,
     read: impl Future<Output = Result<Option<V>, E>>,
 ) -> Result<Option<V>, E> {
     if let Some(v) = held(cache, &k, at, read_class, decided) {
         return Ok(Some(v));
     }
-    through(cache, k, at, read_class, t, read).await
+    through(cache, k, at, read_class, alone, t, read).await
 }
 
 /// The entry a write `decide` binds takes in place of its fresh read (`through_bound`): one at most `READ_CACHE` old,
@@ -274,6 +278,10 @@ pub(crate) struct Batched<V, E> {
 /// the key idle starts. So it waits at most for the read in flight and one more, each counted up to BATCH_STALE, plus
 /// a BATCH_POLL per step. An error is shared as the answer is (as text), and the read ended, so the next call starts a
 /// new one. The call that runs a read stores a kept answer stamped `at`, as before; a waiter stores nothing.
+///
+/// A call `alone` (`merge-front`) starts its own read at once, whatever is in flight, and leaves the batch as it is:
+/// it waits for no read, no other call takes its answer, and it takes no other call's. Its read starts after it
+/// arrived, so it reads fresh as a waiter does.
 pub(crate) async fn batched<
     K: Ord + Clone + 'static,
     V: Clone + 'static,
@@ -283,10 +291,18 @@ pub(crate) async fn batched<
     cache: &'static std::thread::LocalKey<RefCell<Ttl<K, V>>>,
     k: K,
     at: Timestamp,
+    alone: bool,
     read: impl Future<Output = Result<Option<V>, E>>,
     now: impl Fn() -> u64,
     delay: impl Fn(Duration) -> D,
 ) -> Batched<V, E> {
+    if alone {
+        let answer = read.await;
+        if let Ok(Some(v)) = &answer {
+            put(cache, k, at, v.clone());
+        }
+        return Batched { answer, shared: false, waited_ms: 0.0 };
+    }
     let since = now();
     let need = cache.with(|c| c.borrow().next_id());
     let id = loop {
@@ -374,9 +390,9 @@ mod tests {
             Ok::<_, String>(answer)
         };
         let out = if read_class {
-            through(&T, 1, Timestamp(at), true, &crate::api::Timing::default(), r).now_or_never()
+            through(&T, 1, Timestamp(at), true, false, &crate::api::Timing::default(), r).now_or_never()
         } else {
-            batched(&T, 1, Timestamp(at), r, || at, |_| std::future::ready(())).now_or_never().map(|b| b.answer)
+            batched(&T, 1, Timestamp(at), false, r, || at, |_| std::future::ready(())).now_or_never().map(|b| b.answer)
         };
         (out.expect("ready").expect("ok"), read)
     }
@@ -500,6 +516,7 @@ mod tests {
         arrives: u64,
         read_ms: Option<u64>,
         fails: bool,
+        alone: bool,
     }
 
     /// A started call's future.
@@ -540,6 +557,7 @@ mod tests {
                         &B,
                         1,
                         Timestamp(now),
+                        call.alone,
                         read,
                         move || c1.get(),
                         move |d: Duration| At(c2.clone(), c2.get() + d.as_millis() as u64),
@@ -570,7 +588,7 @@ mod tests {
     }
 
     fn at(arrives: u64, read_ms: u64) -> Call {
-        Call { arrives, read_ms: Some(read_ms), fails: false }
+        Call { arrives, read_ms: Some(read_ms), fails: false, alone: false }
     }
 
     /// The batch's rule: a write-class call never takes the answer of a read that started before it arrived. Three
@@ -600,7 +618,7 @@ mod tests {
     /// read rather than taking the error.
     #[test]
     fn a_shared_read_that_fails_fails_every_waiter_and_the_next_call_reads_again() {
-        let fail = Call { arrives: 10, read_ms: Some(100), fails: true };
+        let fail = Call { arrives: 10, read_ms: Some(100), fails: true, alone: false };
         let calls = [at(0, 100), fail, Call { arrives: 20, ..fail }, at(400, 50)];
         let (got, reads) = run(&calls, None);
         let g = |i: usize| got[i].clone().expect("answered");
@@ -615,7 +633,7 @@ mod tests {
     #[test]
     fn a_stuck_or_dropped_read_does_not_hold_its_waiters() {
         let stale = BATCH_STALE.as_millis() as u64;
-        let stuck = Call { arrives: 0, read_ms: None, fails: false };
+        let stuck = Call { arrives: 0, read_ms: None, fails: false, alone: false };
         let (got, reads) = run(&[stuck, at(10, 100), at(20, 100)], None);
         let g = |i: usize| got[i].clone().expect("answered");
         assert_eq!((g(1).0, g(2).0, reads), (Ok(Some(2)), Ok(Some(2)), 2));
@@ -624,6 +642,29 @@ mod tests {
         let g = |i: usize| got[i].clone().expect("answered");
         assert_eq!((g(1).0, g(2).0), (Ok(Some(2)), Ok(Some(2))));
         assert!(g(1).2 <= 50 + 100 + 2 * BATCH_POLL.as_millis() as u64, "a dropped read freed them: {}", g(1).2);
+    }
+
+    /// `merge-front`: a call alone that arrives while read 1 is in flight starts read 2 at once and ends one read
+    /// after it came, never read 1's answer (in flight or finished) and never waiting for it. The batch goes on as if it were not there: the
+    /// call that came before it still shares read 3 with the one after, which a stuck read in flight does not hold
+    /// alone either. A held entry does not answer it, and its kept answer refills the entry.
+    #[test]
+    fn a_call_alone_reads_at_once_and_takes_no_other_read() {
+        let alone = |arrives, read_ms| Call { alone: true, ..at(arrives, read_ms) };
+        let (got, reads) = run(&[at(0, 300), at(10, 100), alone(20, 50), at(30, 100)], None);
+        let g = |i: usize| got[i].clone().expect("answered");
+        assert_eq!(g(2), (Ok(Some(2)), false, 70), "its own read, started at once");
+        assert_eq!((g(1).0, g(3).0, reads), (Ok(Some(3)), Ok(Some(3)), 3), "the batch shares read 3, not read 2");
+        let stuck = Call { arrives: 0, read_ms: None, fails: false, alone: false };
+        let (got, _) = run(&[stuck, alone(10, 40)], None);
+        assert_eq!(got[1].clone().expect("answered"), (Ok(Some(2)), false, 50));
+        let (got, _) = run(&[at(0, 50), alone(100, 10)], None);
+        assert_eq!(got[1].clone().expect("answered").0, Ok(Some(2)), "a finished read is no answer for a later call");
+        put(&B, 1, Timestamp(5_000), 99);
+        let fresh = async { Ok::<_, String>(Some(7)) };
+        let b = batched(&B, 1, Timestamp(5_001), true, fresh, || 5_001, |_| std::future::ready(())).now_or_never();
+        assert_eq!(b.expect("ready").answer, Ok(Some(7)), "a held entry never answers a write alone");
+        assert_eq!(get(&B, &1, Timestamp(5_001), true), Some(7), "its answer refills the entry");
     }
 
     /// The call that runs a read stores a kept answer stamped with its own start, so read-class requests in the

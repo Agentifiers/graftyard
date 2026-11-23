@@ -9129,3 +9129,88 @@ clearance after this merges and runs on graft-m2b after LM-1's read-memo rows.
   bound that the rerun measures.
 - **Under-read left.** Leader refusals over 50% of pfA's count with both rules live. Then the 23% of lane growth in
   flight is what is left, and the lever moves to the leader's own admission.
+
+### `merge-front`: a REST merge's identity reads run alone, outside their key's batch, and it guesses its repository at any age or from the link entry, 2026-11-23
+
+**Status.** Built on branch `b029-mfront` from main `4040b083`. Edge only, so it ships on an edge day. The lead cleared
+the design, the build and a three-run B0-29 set on graft-m3f (A45). Not yet measured hosted.
+
+**Decision.**
+- **Reads alone.** A REST merge (`Ctx::leader_reads`, `PUT pulls/{n}/merge`) reads its write-class identity answers on
+  its own: the token row, the `ghs_` keys and `jti`, the login, the owner's `Placement`, and the owner's `Authz`
+  (`rcache::through` and `through_bound` with `alone`, `batched`'s first branch). Such a read:
+  - starts at once, whatever read of its key is in flight;
+  - waits for no read, and takes no other call's answer;
+  - gives its answer to no other call, and leaves the key's batch as it was.
+  It still refills the entry for read-class requests, stamped at its own start. A merge whose `decide` binds its
+  credential (`write-identity`) still takes a held entry first, as before. A merge never did, since `rest_decided`
+  does not list it. Every other write keeps `edge-read-batch`'s batch unchanged.
+- **The guess.** A merge guesses which repository its name names (`merge_guess`), and reads its rows and the owner's
+  `Authz` ahead on that guess beside its fresh `resolve`, as `merge-p99` built it.
+  - The guess is the isolate's login, `Placement` and `Authz` entries at any age (`held_repo`, `rcache::last`). On
+    main it was those entries within `READ_CACHE` only (`resolve_cached`, removed).
+  - With no such entries, the guess is the data center's link entry (`beside`'s `colo::link_url`). Unless the share
+    is off (`x-graft-colo: off`), a merge whose fresh `resolve` answers another repository puts its answer there
+    after the reply.
+  - `resolve` takes the same guess (`resolve_on`), so its three reads start at once (`chained`).
+  - `kept_ahead` keeps the reads ahead only when the fresh `resolve` names the same repository, owner and record. A
+    guess still never answers a read.
+
+**Why.** B0-29's merge line sat between the lines after the three-run set: `merge:only` median p99 2,286 ms, pooled
+2,488, against the 90% line of 2,222 (`tests/am1/results/b029-m4a.md`, "Where merge:only's time goes"; A45). The
+slowest merges' extra time was in the front [measured, the four runs' `mergeSteps`]:
+- **`rcwait`.** In the slowest 31 merges, 16 waited 100 ms or more. Run 1's slowest merge waited 580 ms and b9m4a1's
+  800, on the owner's `Authz` batch. That batch is shared with every write on the owner, pushes included: a merge
+  waited out a push's read in flight and then the next read, through the far members' read-index. The merge's own
+  read goes to the `Authz` leader and takes 68 to 70 ms at the median with no wait.
+- **No guess.** 15 of 332 merges had no `resolve_cached` guess. They paid `auth` and `resolve` in turn and then
+  `authz` and `tier` (front median 530 ms, against 121). Run 3's slowest merge (2,286) had no guess: `resolve` 487
+  ms, then `tier` 153. An agent fleet's isolates read the owner every few seconds, but an isolate's entries lapse at
+  `READ_CACHE`, 10 s, and a merge runs about once in 6 s across all colos.
+
+**Priced** against the four runs' merges with `tests/fanout/mergefront.py`, a model over each merge's measured stages
+[inference, not a run]:
+- "alone" takes each identity stage's `rcwait` down to one 70 ms read;
+- a guess takes `resolve` to half its serial time plus a 50 ms link match, with the reads ahead beside it.
+
+| Run | merge:only p99 now | Reads alone | The guess | Both |
+| --- | --- | --- | --- | --- |
+| 1 | 2,106 | 1,192 | 1,553 | 1,111 |
+| 2 (slow host) | 4,542 | 4,542 | 4,542 | 4,542 |
+| 3 | 2,286 | 2,286 | 1,989 | 1,989 |
+| b9m4a1 | 2,134 | 1,507 | 1,507 | 1,507 |
+| Median of the set's three | 2,286 | 2,286 | 1,989 | 1,989 |
+| Pooled, the set | 2,488 | 2,468 | 1,989 | 1,989 |
+
+Neither lever alone moves the median of the set: run 3's tail is the missing guess, run 1's is `rcwait`. Both move it
+under 2 s. Run 2 stays on its slow host's commit, and run 3's 1,042 ms client leg is untouched.
+
+**What it beat.**
+- **Sharing the read in flight (single-flight).** It would break `edge-read-batch`'s rule: a merge would take an answer
+  read before it arrived.
+- **Taking a merge out of the batch by having it share only reads that start after it, sooner** (a call starting a
+  new read whenever it finds one in flight, for every write). Every push on an owner would then read alone, which is
+  m3fb32's front, the reason the batch exists.
+- **Caching the `Authz` fold for merges.** SHARED's write path reads it fresh; the fold names who may merge.
+- **Raising journey 9's merge rate** so isolates stay warm. It changes the row's load.
+
+**Flips.**
+- **`edge-read-batch`'s revocation invariant holds.** A merge's read starts after the merge arrived, so its answer is
+  as fresh as a waiter's. `plant48` still catches 7 of 7, and its mutant 0 (a waiter takes the read in flight) is
+  unchanged. A merge takes no batched answer, finished or in flight (`plant103` mutant 2).
+- **Reads on the `Authz` leader.** A merge used to share some of its reads; now each merge reads its own, on the
+  leader. At about 10 merges a minute that is at most 10 more reads a minute per key [inference]. Flip with
+  `merge-p99`'s: if the `Authz` leader's `/read` share or `READS_MAX` sheds show merge reads, back the reads alone out.
+- **The guess.** If a kept read ahead ever answers for another repository or record, back it out (`beside`'s
+  `beside_bad` rule). If the set's merges with no guess (`authz_ahead` absent) do not fall below run 3's 5 of 90, the
+  link entry is not being hit: read `resolve_guess` before going further.
+- **The row.** If the set's median merge p99 does not fall under 2,222, the front was not the tail: back to A45.
+
+**Evidence.**
+- `workers/edge/src/rcache.rs` (`batched`, `through`, `through_bound` with `alone`), `workers/edge/src/lib.rs`
+  (`merge_guess`, `held_repo`, `resolve_on`), `workers/edge/src/api.rs` (`rest_repo`), `workers/edge/src/ident.rs`.
+- Tests: `a_call_alone_reads_at_once_and_takes_no_other_read` (a merge's read during read 1 is read 2 and ends one
+  read after it came, the batch still shares read 3, a stuck read holds it no more, a finished read is no answer,
+  a held entry never answers it, and its answer refills the entry) and
+  `a_merge_guesses_from_its_isolates_entries_at_any_age`. `edge-read-batch`'s batch tests are unchanged.
+- Plants: `tests/m0carried/plant103.py`, 6 of 6 caught; `plant48.py` 7 of 7 and `plant59.py` 9 of 9 still caught.

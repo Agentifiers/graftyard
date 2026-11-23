@@ -1735,7 +1735,7 @@ fn rest_merge(method: &Method, tail: &[&str]) -> Option<MergeOf> {
     }
 }
 
-/// The reads a REST write made ahead for its `guess` (`resolve_cached`), kept only when its own fresh `resolve`
+/// The reads a REST write made ahead for its `guess` (`crate::merge_guess`), kept only when its own fresh `resolve`
 /// answered the same repository, owner, and placement record; a failed `Authz` read is dropped and read again.
 fn kept_ahead<T, A, E>(
     found: &Option<std::result::Result<Option<Repo>, String>>,
@@ -1855,21 +1855,25 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     c.decided.set(rest_decided(&method, tail));
     let merge_of = rest_merge(&method, tail);
     c.leader_reads.set(merge_of.is_some());
+    // A REST merge reads its rows and the owner's `Authz`, both fresh, for the repository it guesses the name names
+    // (`crate::merge_guess`), while its own fresh `resolve` runs on the same guess; it keeps them only if that
+    // `resolve` names the same repository and record, and reads again otherwise. Serial, the resolve was a REST
+    // merge's third stage at 500 agents, p50 452 and p99 861 ms (`merge-p99`); with no guess, 15 of 332 merges paid a
+    // front median of 530 ms against 121 (`merge-front`).
+    let (guess, link) = match (&at, merge_of) {
+        (graftyard_wire::RepoPath::Name { owner, name }, Some(of)) => {
+            let (g, link) = crate::merge_guess(c, owner, name).await;
+            (g.map(|g| (g, of)), link)
+        }
+        _ => (None, None),
+    };
     let find = async {
         match &at {
-            graftyard_wire::RepoPath::Name { owner, name } => Some(resolve(c, owner, name).await),
+            graftyard_wire::RepoPath::Name { owner, name } => {
+                Some(crate::resolve_on(c, owner, name, guess.as_ref().map(|(g, _)| g)).await)
+            }
             graftyard_wire::RepoPath::Id(_) => None,
         }
-    };
-    // A REST merge reads its rows and the owner's `Authz`, both fresh, for the repository this isolate last resolved
-    // the name to, while its own fresh `resolve` runs; it keeps them only if that `resolve` names the same repository
-    // and record, and reads again otherwise. Serial, the resolve was a REST merge's third stage at 500 agents, p50 452
-    // and p99 861 ms (`merge-p99`).
-    let guess = match (&at, merge_of) {
-        (graftyard_wire::RepoPath::Name { owner, name }, Some(of)) => {
-            crate::resolve_cached(owner, name).map(|g| (g, of))
-        }
-        _ => None,
     };
     let ahead = async {
         let (g, of) = guess.as_ref()?;
@@ -1881,6 +1885,11 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         futures_util::future::join3(timed(c, "auth", authenticate(c, req)), timed(c, "resolve", find), ahead).await;
     let who = who?;
     let found = found.transpose()?;
+    if let (Some(u), Some(Ok(Some(r)))) = (link, &found)
+        && guess.as_ref().map(|(g, _)| g) != Some(r)
+    {
+        c.ctx.wait_until(crate::colo::put_link(u, r.clone()));
+    }
     // A credential the edge refuses (revoked, lapsed, unknown) is 401, as on GitHub, not an anonymous caller whom the
     // read gate would answer 404 on a private repository.
     if who.is_none() && crate::token_of(req)?.is_some() {
