@@ -21,7 +21,7 @@ use graftyard_types::SiteId;
 
 use crate::ReleaseFold;
 use crate::ops::Gate;
-use crate::types::{DayTarget, Intent, IntentState, Script, VersionId};
+use crate::types::{DayTarget, Intent, IntentState, ReleaseEntry, Script, VersionId};
 
 /// Entries the N+1 members must apply in a step before its gate is judged (`STEP_MIN_ENTRIES`) [guess].
 pub const STEP_MIN_ENTRIES: u64 = 1_000;
@@ -239,7 +239,9 @@ impl Counters {
 }
 
 /// The current site day's site with its N+1 version and its N version: the version the intent's release uploaded for
-/// the site, and the one the release the site runs uploaded, if it differs. `None` with no running site day.
+/// the site, and the one the release the site runs uploaded, if it differs. Once `SiteRelease` names the day's own
+/// release (100% and the first day), N is the release of the intent's pre-signed `Rollback` for the site, which is
+/// what the site ran before (OPEN-QUESTIONS R44). `None` with no running site day.
 pub fn day_versions(fold: &ReleaseFold) -> Option<(SiteId, VersionId, Option<VersionId>)> {
     let c = fold.current.as_deref()?;
     let (
@@ -251,9 +253,22 @@ pub fn day_versions(fold: &ReleaseFold) -> Option<(SiteId, VersionId, Option<Ver
     };
     let script = Script::Site(*s);
     let n1 = crate::ops::version(fold, release, script)?;
-    let n =
-        crate::ops::running(fold, script).filter(|n| n != release).and_then(|n| crate::ops::version(fold, &n, script));
+    let undo = c.undo.iter().find_map(|(u, _)| match u {
+        ReleaseEntry::Rollback { target: DayTarget::Site(t), release: r } if t == s => Some(*r),
+        _ => None,
+    });
+    let n = crate::ops::running(fold, script)
+        .filter(|n| n != release)
+        .or(undo)
+        .and_then(|n| crate::ops::version(fold, &n, script));
     Some((*s, n1, n))
+}
+
+/// Whether N's counters over the step's window are too few to judge against, so the host reads N's from the
+/// intent's start instead: the 1, 10 and 50% steps, where N last ran beside N+1. At 100% N's new window holds only
+/// the members that had not yet moved (207 entries on graft-m4a, OPEN-QUESTIONS R44).
+pub fn n_from_start(n_step: &Counters) -> bool {
+    n_step.entries < STEP_MIN_ENTRIES
 }
 
 /// A pinned or front script's step gate: N+1's 5xx rate against N's, in basis points.

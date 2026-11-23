@@ -256,12 +256,12 @@ impl Exec for Live<'_> {
             }
         };
         let Some(c1) = read(n1, since).await else { return Gate::Pending };
-        // N's baseline is N beside N+1 in the same window. At 100% and on the first day no member runs N, so it is N's
-        // counters from the intent's start: the 1, 10 and 50% steps, where N last ran on this site (DECISIONS
-        // "`gate-relative`").
+        // N's baseline is N beside N+1 in the same window. At 100% and on the first day few or no members run N, so it
+        // is N's counters from the intent's start: the 1, 10 and 50% steps, where N last ran on this site (DECISIONS
+        // "`gate-relative`", R44).
         let c0 = match n {
             Some(n) => match read(n, since).await {
-                Some(c) if c.entries == 0 => match read(n, c_start).await {
+                Some(c) if gate::n_from_start(&c) => match read(n, c_start).await {
                     Some(c) => c,
                     None => return Gate::Pending,
                 },
