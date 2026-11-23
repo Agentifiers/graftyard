@@ -9292,3 +9292,82 @@ written as multi-row statements.
   deferred transaction at 30% or more of leader CPU, and probe arms (a) and (b) showing hosted per-call cost at 50% or
   more of a one-row statement.
 - **Never build it:** probe arm (b) costs as much hosted as arm (a), so there is no per-call cost to remove.
+
+### `catchup-lag`: a catch-up run carries its room budget and unapplied entries across pieces, and ingests ready stored packs in one call, 2026-11-23
+
+**Status.** Ruled by the lead on 2026-11-23 from `tests/am1/results/catchup-lag-design.md` (G39). Built on branch
+`g39-catchup` from main `53d4b6d7` as three commits, one per lever. Not hosted.
+
+**Decision.**
+- **A. The room budget across a run's pieces.** `catch_up` takes a `Run` (`crates/git/src/catchup.rs`) that the
+  shard's `Jobs::start` keeps across a run's pieces (`workers/site/src/shard.rs`). It carries `until`, as before, and
+  the `make_room` budget, so the disk walk runs once per `ROOM_EVERY` of the run, not once a piece.
+  `Report::room_calls` counts the walks.
+- **B. A page's unapplied tail across pieces.** A piece that stops at its cap hands the entries it read and did not
+  apply to the `Run`: the rest of a capped page, the read-ahead page, or a page that did not fit. The next piece starts
+  from them only when their first entry is just past the cursor, and reads its page otherwise. A run that ends, or an
+  isolate reset, drops them.
+- **C. Batched stored ingests.** In `ingest_all` a spooled stored pack goes in one call with the stored packs right
+  after it whose fetches have already ended, up to `INGEST_BATCH_BYTES`. It never waits on a fetch still running, and a
+  pack with a stored `.idx` goes alone, as before. The call is the container's new `/ingest-spooled-batch`
+  (`containers/git/server/main.go`). It refuses 404 before anything moves when a pack is neither here, aside nor
+  staged. Otherwise, under the writer's section, it marks packs already here, adopts a validate's aside first, and
+  runs the rest through `ingestRun`: one joined pack, one `index-pack`, split in two on failure, each pack recorded
+  under its own sum. A container with no such route (the previous image) answers 404, and the shard sends each pack
+  through `/ingest &spooled=1`. `StoredMs` gains `adopted` and `batches`.
+
+**Why.** On B0-33 erDA the network's home shard took the load's staged packs at 11.8 a second of catch-up wall against
+18 offered (19.2 in the busiest minute), and its pools at 18.6 to 18.7. It ended 150 s behind them, and 17 of 23
+`PUT …/merge` calls answered `warming` after `MERGE_WAIT` (mrB 9 of 22, msA 6 of 23) [measured,
+`tests/am1/results/catchup-lag-design.md`]. Of the home's 84.4 ms a pack:
+- 16 ms was `make_room`, called by all 277 pieces because each piece's `Tally` started with no budget. That is a
+  regression from `catchup-pieces`, which never meant to walk the disk per piece.
+- 17 to 21 ms (every shard) was the page read again at each piece's start, with no read-ahead.
+- 48.5 ms was the per-pack ingest, against 27 to 33 on the pools, each pack its own call and `index-pack`.
+
+A and B remove the first two, pricing the home at 19.7 packs a second, the busiest minute's rate with no margin. C
+prices it at 26 to 30 a second, bounded then by the stored packs' fetch at `FETCH_AT_ONCE` 4 [inference from the
+measured parts; C's share is a guess].
+
+**What it beat.**
+- **A larger `k` on the home site.** Every shard ingests every pack, and merges stay on the home.
+- **Routing merges to the most caught-up shard.** The pools were behind too, and it changes the merge's home-shard
+  contract.
+- **Merges reading the leader's tip instead of waiting.** A tip brings no objects, so the merge still waits.
+- **Larger pieces.** They save the reads but lengthen the turns `catchup-pieces` exists for. B saves the reads
+  without that.
+- **A batch that waits for the next fetch.** It would hold ingests behind a slow fetch, and a fetch is 96 ms on the
+  home against a batch's few tens of ms.
+
+**Evidence.**
+- `crates/git/tests/catchup.rs`:
+  - `a_runs_pieces_walk_the_disk_once_and_read_each_page_once`: 90 stored packs in pieces of 32, 32 and 26 make one
+    `make_room` call and one page read, each entry served and each pack ingested once, and the next run walks again.
+  - `a_carried_tail_past_the_cursor_is_read_again`: a cursor another run moved from 42 to 60 between two pieces reads
+    61 onward, and ingests each of 61..=100 once.
+  - `ready_stored_packs_go_in_one_call_and_a_slow_fetch_is_not_waited_for`: with entry 15's fetch 5 s, packs 11 to 14
+    go in one call without it, all 20 packs go in 5 or fewer calls in log order, and the run takes under 5,400 ms.
+  - On main the three don't build (`Run`, `room_calls` and `ingest_spooled_batch` do not exist). The plants are the
+    behavioural proof.
+- `containers/git/server/batch_test.go`, `TestIngestSpooledBatchMatchesOneSpooledIngestPerPack`: in a batch of staged,
+  aside and already-ingested packs, each pack's `.objs` record lists exactly the objects that pack carries, a pack thin
+  against a commit no pack of the call brings answers `later` and stays staged, an aside counts as `adopted`, a call
+  naming a pack not staged answers 404 and moves nothing, and `fsck --strict` passes at the end.
+- Plants (`tests/m0carried/`), every mutant caught:
+  - 107 (A): the budget reset each piece; a run that hands on no budget.
+  - 108 (B): a tail used past the cursor; a tail that starts before the cursor, so entries apply twice; no tail kept;
+    a run that outlives its last piece.
+  - 109 (C): a run recording each pack's objects under the next pack's sum; an adopted pack recorded under the call's
+    last sum; a refused call that moved packs first; a batch that waits on a running fetch.
+
+**Flip.** The first B0-33 row through the site day that carries it:
+- **A or B didn't hold:** the home's `room_calls` exceed one per 256 MiB of a run, or its wall a pack minus the
+  ingest lap stays over 40 ms. Read the pieces' laps before changing anything.
+- **The levers aren't enough:** the home takes fewer than 19.2 packs a second over the busiest minute, or ends more
+  than 15 s behind the pools, or any `PUT …/merge` answers `warming`. Then the next bound is the fetch: price a fifth
+  spool against the page read's connection.
+- **C costs more than it saves:** batches raise the home's `later` re-ingests over the per-pack path's (a split joined
+  pack runs `index-pack` again), or its ingest lap a pack stays over 30 ms. Then send stored packs alone again, and
+  keep A and B.
+- **A lets the disk overfill:** a shard answers a disk-full error during a run whose `make_room` budget was carried.
+  Then reset the budget when a piece's container reports low space.

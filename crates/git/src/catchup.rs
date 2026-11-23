@@ -150,6 +150,16 @@ pub trait ShardIo {
     /// Ingests a pack `fetch_stored` spooled: through its stored `.idx` when that checks against the pack, otherwise
     /// with `index-pack`. `Later` keeps it spooled for the next try.
     async fn ingest_spooled(&self, checksum: Digest) -> Result<Ingested, StoreError>;
+    /// Ingests packs `fetch_stored` spooled, in order, in one call: one `index-pack` for the run, split on failure,
+    /// a pack a validate kept aside moved in first (`catchup-lag`). One answer per pack; `Later` keeps it spooled.
+    /// The default is one `ingest_spooled` a pack.
+    async fn ingest_spooled_batch(&self, checksums: &[Digest]) -> Result<Vec<Ingested>, StoreError> {
+        let mut out = Vec::with_capacity(checksums.len());
+        for s in checksums {
+            out.push(self.ingest_spooled(*s).await?);
+        }
+        Ok(out)
+    }
     /// Every stored `.idx` of the network's packs in the buckets, with the range its custom metadata names, if any.
     async fn idx_ranges(&self) -> Result<BTreeMap<PackId, Option<IdxRange>>, StoreError>;
     /// Whether the history of every ref, and the whole tree at each ref's tip, is on the disk: `Ok(Err(why))` when not.
@@ -212,6 +222,10 @@ pub struct StoredMs {
     pub index_ms: u64,
     /// Packs served by each site's bucket.
     pub from_site: BTreeMap<u8, u32>,
+    /// Packs a validate had kept aside, moved in with no `index-pack` (`adopt` in the container).
+    pub adopted: u32,
+    /// Calls that ingested more than one stored pack (`ShardIo::ingest_spooled_batch`).
+    pub batches: u32,
     /// Packs loaded through their stored `.idx`, and stored `.idx` the container refused (then `index-pack` ran).
     pub idx_used: u32,
     pub idx_rejected: u32,
@@ -443,6 +457,19 @@ impl<'a> Ahead<'a> {
         }
     }
 
+    /// The next stored pack's fetch if it has already ended, without waiting for it.
+    async fn take_ready(&mut self) -> Option<Result<Fetched, StoreError>> {
+        let k = self.taken;
+        let r = std::future::poll_fn(|cx| {
+            self.pump(cx);
+            Poll::Ready(self.done.remove(&k))
+        })
+        .await?;
+        self.taken += 1;
+        self.held -= self.list[k].2;
+        Some(r)
+    }
+
     /// The next stored pack's fetch, once it ends, with the later ones going on meanwhile.
     async fn take(&mut self) -> Result<Fetched, StoreError> {
         let k = self.taken;
@@ -472,7 +499,9 @@ impl<'a> Ahead<'a> {
 
 /// Ingests `loads` in order; a pack answered `Later` is tried again after the others, until a pass makes no progress.
 /// Runs of inline packs go in one call each, up to `INGEST_BATCH_BYTES`. Stored packs are fetched ahead (`Ahead`) and
-/// each ingested alone, in its place in the order; those in `with_idx` come with their stored `.idx`. `Ok(n)` with the
+/// ingested in their place in the order: a stored pack whose fetch ended goes in one call with the stored packs right
+/// after it whose fetches also ended, up to `INGEST_BATCH_BYTES` (a larger one alone), and with no wait for a fetch
+/// still running (`catchup-lag`). Those in `with_idx` come with their stored `.idx` and go alone. `Ok(n)` with the
 /// packs ingested, or `Err(Unresolved)` naming how many never resolved. `calls` counts the calls.
 async fn ingest_all<I: ShardIo>(
     io: &I,
@@ -501,17 +530,58 @@ async fn ingest_all<I: ShardIo>(
             })
             .collect();
         let mut ahead = Ahead::new(io, ahead_list);
+        // Fetches a batch took from `ahead` and did not ingest: the container already held the pack.
+        let mut had: BTreeSet<Digest> = BTreeSet::new();
         let mut i = 0;
         while i < left.len() {
             let (s, l) = left[i];
             let (run, answers) = match l {
-                Load::Stored { .. } => {
-                    let fetched = if spooled.contains(&s) { Fetched::Spooled } else { ahead.take().await? };
+                Load::Stored { id, bytes: first, .. } => {
+                    let fetched = if spooled.contains(&s) {
+                        Fetched::Spooled
+                    } else if had.remove(&s) {
+                        Fetched::Have
+                    } else {
+                        ahead.take().await?
+                    };
                     match fetched {
                         Fetched::Have => (1, vec![Ingested::Done]),
-                        Fetched::Spooled => {
+                        Fetched::Spooled if with_idx.contains(id) => {
                             *calls += 1;
                             (1, vec![ahead.beside(io.ingest_spooled(s)).await?])
+                        }
+                        Fetched::Spooled => {
+                            let mut batch = vec![s];
+                            let mut bytes = *first;
+                            for (s, l) in &left[i + 1..] {
+                                let Load::Stored { id, bytes: b, .. } = l else { break };
+                                if with_idx.contains(id) || bytes + b > INGEST_BATCH_BYTES as u64 {
+                                    break;
+                                }
+                                if !spooled.contains(s) {
+                                    match ahead.take_ready().await {
+                                        None => break,
+                                        Some(r) => {
+                                            if r? == Fetched::Have {
+                                                had.insert(*s);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                bytes += b;
+                                batch.push(*s);
+                            }
+                            *calls += 1;
+                            let a = if batch.len() == 1 {
+                                vec![ahead.beside(io.ingest_spooled(s)).await?]
+                            } else {
+                                ahead.beside(io.ingest_spooled_batch(&batch)).await?
+                            };
+                            if a.len() != batch.len() {
+                                return Err(StoreError(format!("{} answers for {} packs", a.len(), batch.len())));
+                            }
+                            (batch.len(), a)
                         }
                     }
                 }

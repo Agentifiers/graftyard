@@ -73,7 +73,7 @@ struct Disk {
     idx: RefCell<BTreeMap<PackId, (Digest, Option<IdxRange>)>>,
     /// Packs spooled onto the disk, each with its staged index if one came.
     spooled: RefCell<BTreeMap<Digest, (PackId, Option<Digest>)>>,
-    /// Packs ingested through their stored index, and through `index-pack`.
+    /// Packs ingested through their stored index, and packs that went through `index-pack` (a batch's packs each count).
     idx_used: Cell<usize>,
     index_packs: Cell<usize>,
     /// Checksums in the order the container ingested them.
@@ -89,6 +89,8 @@ struct Disk {
     room_ms: Cell<u64>,
     /// `make_room` calls.
     rooms: Cell<usize>,
+    /// `ingest_spooled_batch` calls, and the packs each carried.
+    batches: RefCell<Vec<usize>>,
     /// Fetches in flight now, and the most at once.
     in_flight: Cell<usize>,
     in_flight_max: Cell<usize>,
@@ -248,6 +250,26 @@ impl ShardIo for Disk {
             }
         }
         Ok(a)
+    }
+    /// As the container's `/ingest-spooled-batch`: one `index-pack` for the call, each pack in turn so a later one may
+    /// build on an earlier one of the same call.
+    async fn ingest_spooled_batch(&self, checksums: &[Digest]) -> Result<Vec<Ingested>, StoreError> {
+        self.tick()?;
+        self.batches.borrow_mut().push(checksums.len());
+        self.index_packs.set(self.index_packs.get() + checksums.len());
+        self.clock.sleep(self.index_ms.get()).await;
+        let mut out = Vec::with_capacity(checksums.len());
+        for s in checksums {
+            self.ingests.set(self.ingests.get() + 1);
+            let (id, _) = *self.spooled.borrow().get(s).ok_or_else(|| StoreError("not spooled".into()))?;
+            let b = self.bucket.borrow().get(&id).cloned().unwrap();
+            let a = self.take(*s, &b);
+            if a == Ingested::Done {
+                self.spooled.borrow_mut().remove(s);
+            }
+            out.push(a);
+        }
+        Ok(out)
     }
     async fn idx_ranges(&self) -> Result<BTreeMap<PackId, Option<IdxRange>>, StoreError> {
         Ok(self.idx.borrow().iter().map(|(id, (_, r))| (*id, *r)).collect())
@@ -1571,5 +1593,42 @@ fn a_carried_tail_past_the_cursor_is_read_again() {
     assert_eq!(pieces, 2, "61..=100 in two pieces");
     assert!(b.log.calls.get() > reads, "the page from 61 is read, not the tail from 43");
     assert_eq!(b.disk.ingests.get() - ingests, 40, "61..=100 once each");
+    b.assert_serves_head();
+}
+
+/// G39 (`catchup-lag`): stored packs whose fetches have ended go to the container in one call, one `index-pack`, in log
+/// order; a pack whose fetch is still running is not waited for, so a batch never holds an ingest behind a fetch. On
+/// erDA's home shard each stored pack was its own call and `index-pack`, 48.5 ms a pack against 27 to 33 on the pools.
+#[test]
+fn ready_stored_packs_go_in_one_call_and_a_slow_fetch_is_not_waited_for() {
+    let b = bed(30, 0, 1);
+    warm_to_10(&b);
+    b.disk.fetch_ms.set(100);
+    b.disk.index_ms.set(40);
+    // Entry 15's fetch takes 5 s: the packs before it go without it, and it does not hold them.
+    b.disk.slow.borrow_mut().insert(PackId(Ulid(15)), 5_000);
+    let (t0, ingests, before) = (b.disk.clock.now.get(), b.disk.ingests.get(), b.disk.batches.borrow().len());
+    let r = b.run_timed().unwrap_or_else(|e| panic!("{}", e.0));
+    assert_eq!(r.packs, 20);
+    assert_eq!(b.disk.ingests.get() - ingests, 20, "every pack once");
+    let calls = b.disk.batches.borrow()[before..].to_vec();
+    assert_eq!(calls.first(), Some(&4), "11..=14 go without waiting on 15's fetch: {calls:?}");
+    assert_eq!(calls.iter().sum::<usize>(), 20, "every pack in a batch: {calls:?}");
+    assert!(calls.len() <= 5, "a batch carries the packs whose fetches ended, not one pack: {calls:?}");
+    // The ingest order is the log's, whatever the batches.
+    let order: Vec<u64> = b
+        .disk
+        .order
+        .borrow()
+        .iter()
+        .rev()
+        .take(20)
+        .rev()
+        .map(|s| b.disk.bucket.borrow().iter().find(|(_, v)| sum(v) == *s).map(|(k, _)| k.0.0 as u64).unwrap())
+        .collect();
+    assert_eq!(order, (11..=30).collect::<Vec<_>>());
+    // The slow fetch plus a few batches; one index-pack a pack after it (16..=30) would be 5,000 + 15 * 40.
+    let took = b.disk.clock.now.get() - t0;
+    assert!(took < 5_000 + 10 * 40, "{took} ms");
     b.assert_serves_head();
 }
