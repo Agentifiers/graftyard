@@ -1473,3 +1473,86 @@ fn only_a_first_try_away_from_home_holds_maintenance() {
     // One call per MAINT_HOLD_EVERY keeps the container's 60 s hold renewed with time to spare.
     assert!(MAINT_HOLD_EVERY.as_secs() * 3 <= 60);
 }
+
+/// The builder's chain step on a model container (`compose::builder_step`, `builder-install`). The container's step is
+/// the container's rule: with no chain, a base at HEAD; with one, a part from its tip to HEAD. On B0-34 mt20b and mt14
+/// the restarted home's container held no chain while the warm buckets held the one it put before the kill, and its
+/// step rebuilt a 260 MB base for 2 and 4.5 minutes (`tests/am1/results/g37-design.md`). On main's rule the builder
+/// only steps, so a new container always builds a base.
+#[test]
+fn a_restarted_builder_installs_the_buckets_chain_and_steps_a_part() {
+    use graftyard_git::compose::{BuilderIo, ChainHead, builder_step};
+    use std::cell::{Cell, RefCell};
+    fn id(c: char) -> String {
+        c.to_string().repeat(40)
+    }
+    let chain = |base: char, parts: &[char]| ChainHead {
+        base: id(base),
+        parts: parts.iter().map(|p| id(*p)).collect(),
+        tree: id('f'),
+    };
+    struct Model {
+        held: RefCell<Option<ChainHead>>,
+        bucket: Option<ChainHead>,
+        install_ok: bool,
+        head: String,
+        installs: Cell<usize>,
+        bases: Cell<usize>,
+    }
+    impl BuilderIo for Model {
+        async fn held(&self) -> Result<Option<ChainHead>, StoreError> {
+            Ok(self.held.borrow().clone())
+        }
+        async fn bucket_head(&self) -> Result<Option<ChainHead>, StoreError> {
+            Ok(self.bucket.clone())
+        }
+        async fn install(&self, head: &ChainHead) -> Result<bool, StoreError> {
+            self.installs.set(self.installs.get() + 1);
+            if self.install_ok {
+                *self.held.borrow_mut() = Some(head.clone());
+            }
+            Ok(self.install_ok)
+        }
+        async fn step(&self) -> Result<Option<ChainHead>, StoreError> {
+            let mut held = self.held.borrow_mut();
+            let next = match held.take() {
+                None => {
+                    self.bases.set(self.bases.get() + 1);
+                    ChainHead { base: self.head.clone(), parts: vec![], tree: id('f') }
+                }
+                Some(mut h) if h.tip() != self.head => {
+                    h.parts.push(self.head.clone());
+                    h
+                }
+                Some(h) => h,
+            };
+            *held = Some(next.clone());
+            Ok(Some(next))
+        }
+    }
+    let model = |held: Option<ChainHead>, bucket: Option<ChainHead>, install_ok: bool| Model {
+        held: RefCell::new(held),
+        bucket,
+        install_ok,
+        head: id('9'),
+        installs: Cell::new(0),
+        bases: Cell::new(0),
+    };
+    let step = |m: &Model| futures_executor::block_on(builder_step(m)).unwrap().unwrap();
+    // mt20b's case: a new container, the buckets at the pre-kill chain (base a, parts b, c), HEAD moved to 9.
+    let m = model(None, Some(chain('a', &['b', 'c'])), true);
+    assert_eq!(step(&m), chain('a', &['b', 'c', '9']), "the bucket chain installed, then a part to HEAD");
+    assert_eq!((m.installs.get(), m.bases.get()), (1, 0), "never a base");
+    // A container that holds a chain, even one other than the buckets' (its own later step), installs nothing over it.
+    let m = model(Some(chain('a', &['b', 'c', 'd'])), Some(chain('a', &['b'])), true);
+    assert_eq!(step(&m), chain('a', &['b', 'c', 'd', '9']));
+    assert_eq!((m.installs.get(), m.bases.get()), (0, 0), "the local chain is not replaced by an older bucket head");
+    // No bucket head (the network's first warm): a base, as before.
+    let m = model(None, None, true);
+    assert_eq!(step(&m), ChainHead { base: id('9'), parts: vec![], tree: id('f') });
+    assert_eq!((m.installs.get(), m.bases.get()), (0, 1));
+    // A bucket file missing: the install fails and the step still builds a base, so the builder is never left with none.
+    let m = model(None, Some(chain('a', &['b'])), false);
+    assert_eq!(step(&m), ChainHead { base: id('9'), parts: vec![], tree: id('f') });
+    assert_eq!((m.installs.get(), m.bases.get()), (1, 1));
+}

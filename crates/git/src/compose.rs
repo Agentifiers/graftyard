@@ -527,6 +527,35 @@ pub fn steps_after_catch_up(
     builder || crate::chain_buckets(network, record).contains(&site)
 }
 
+/// What `builder_step` reads and does on the builder's container and its warm buckets (`ShardHost::ready_chain`).
+#[allow(async_fn_in_trait)]
+pub trait BuilderIo {
+    /// The chain the container holds (`/compose-head`).
+    async fn held(&self) -> Result<Option<ChainHead>, crate::StoreError>;
+    /// The chain the first warm bucket that has a `head` names.
+    async fn bucket_head(&self) -> Result<Option<ChainHead>, crate::StoreError>;
+    /// Stages `head`'s files from the buckets and installs it on the container: `false` when a file is missing.
+    async fn install(&self, head: &ChainHead) -> Result<bool, crate::StoreError>;
+    /// The container's next step to HEAD (`/compose?start=1`): a base when it holds no chain, else a part or a fold.
+    async fn step(&self) -> Result<Option<ChainHead>, crate::StoreError>;
+}
+
+/// The builder's step (`decisions/DECISIONS.md`, "`builder-install`"). A container that holds no chain (a new one, after
+/// a kill or a restart) first installs the chain the warm buckets name, so its step is a part from that chain's tip,
+/// not a new base. A container that holds a chain never installs one over it. If there is no bucket head, or the install
+/// fails, the step builds a base, as before. On B0-34 mt20b and mt14 the restarted builder rebuilt a 260 MB base at nice
+/// 19 for 2 and 4.5 minutes while the buckets held the chain it had put before the kill, and the home answered 25 and
+/// 45 forwarded misses `warming` at the 2 s chain wait (`tests/am1/results/g37-design.md`).
+pub async fn builder_step<I: BuilderIo>(io: &I) -> Result<Option<ChainHead>, crate::StoreError> {
+    if io.held().await?.is_none()
+        && let Ok(Some(head)) = io.bucket_head().await
+    {
+        // A failed install leaves the container with no chain, and the step below builds a base, as before.
+        let _ = io.install(&head).await;
+    }
+    io.step().await
+}
+
 /// Whether a composable miss goes on to ask its container (`true`) or the shard answers 503 `warming` (`false`), once
 /// its chain is ready (`ready` ended) or its wait runs out. `follows`: the edge has another site to try (`next=1`).
 /// `chain_site`: this site's bucket holds the network's chain (`crate::chain_buckets`, its warm sites).
