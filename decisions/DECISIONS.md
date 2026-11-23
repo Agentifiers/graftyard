@@ -9338,3 +9338,28 @@ every member-to-member envelope.
 
 **Flip.** Lever A is built, and a row shows the receivers' decode or the inline bytes (held for learners, sent, or
 stored) binding: a follower's or learner's apply turn, or a member's memory, with inline packs as the largest part.
+
+### `learner-relay`: learner replication stays on the leader; relay and pull priced, not built, 2026-11-23
+
+**Status.** Ruled by the lead on 2026-11-23 from `tests/am1/results/learner-relay.md`. Not built.
+
+**Decision.** The leader keeps replicating to every learner itself, and learners keep calling only the leader. No
+follower relays AppendEntries to a learner, and no learner pulls entries from a follower.
+
+**Why.**
+- Relay or pull saves a slow leader 4 to 12% of its CPU an entry, and mrB's B0-33 leader 2 to 4%: the held entries and
+  append replies of the learners moved. That is the same 2 to 12% as lever A (`encode-once`) [inference from
+  `tests/fanout/learnercost.py`].
+- It is more code: a new replication source in `crates/raft/src`, relay state, and a fallback to the leader when the
+  follower lags or is down.
+- It adds a lag tail feed polls can see: a relayed learner trails the slower follower, whose AppendEntries calls ran
+  p90 847 ms on m3fsf2 and 1,659 to 1,795 ms on m3fg3, against FEED_BATCH (1 s) and `ROUTE_LATE` (1 s) [measured].
+- The read-index calls, 43 to 58% of the learner bill, stay on the leader in every form, because only the leader
+  confirms R.
+
+**What it beat.** Followers relaying held AppendEntries to their region's learners; learners pulling entries from
+their region's follower, with or without forwarding read-index asks through it.
+
+**Evidence.** `tests/am1/results/learner-relay.md`; `tests/fanout/raw/learnercost.out`.
+
+**Flip.** A leader's learner bill passes 30% of its CPU, with read-index calls under half of that bill.
