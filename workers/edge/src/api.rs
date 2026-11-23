@@ -445,6 +445,18 @@ pub(crate) async fn read_repo(
     rows: Rows,
     gate: Gate,
 ) -> Result<std::result::Result<Read, Reply>> {
+    // edge-refusal: an Agent-classed write whose group's leader advertised more than AGENT_PUSH_BOUND of agent queue is
+    // refused before its tier read, as GitHub's secondary rate limit (`design/DESIGN.md`, Shape, the agent block). B0-33
+    // pfA's and pgA's slow leaders shed these reads on their learners, 3,999 and 3,476 times, as 503s.
+    if c.write.get()
+        && gate == Gate::Readers
+        && let Some(who) = viewer
+    {
+        let budget = graftyard_raft::admit::AGENT_PUSH_BOUND;
+        if let Some(s) = crate::advert_refusal(c, &repo, who, false, budget).await {
+            return Ok(Err(Reply::secondary_rate_limit(s)));
+        }
+    }
     let merge = match &rows {
         Rows::All | Rows::Core | Rows::Api(_) | Rows::Command(_) => None,
         Rows::Merge(of, _) => Some(*of),
@@ -1007,14 +1019,7 @@ async fn commit_issue_rid(
             if let Some(e) = done.pointer("/refused/err") {
                 worker::console_log!("issue command {} refused: {e}", rid);
             }
-            let wire = done
-                .pointer("/ok/out/issue/reply")
-                .or_else(|| done.pointer("/refused/issue"))
-                .and_then(|v| serde_json::from_value::<WireReply>(v.clone()).ok());
-            match wire {
-                Some(w) => w.reply(),
-                None => unavailable(&format!("the member answered {done}")),
-            }
+            done_reply(&done, "/ok/out/issue/reply", "/refused/issue")
         }
         Err(Ok(e)) => match e.pointer("/unsupported") {
             Some(u) => unavailable(&format!("the repository's members do not read record format {u}")),
@@ -1392,14 +1397,7 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
             if let Some(e) = done.pointer("/refused/err") {
                 worker::console_log!("merge command {} refused: {e}", c.rid);
             }
-            let wire = done
-                .pointer("/ok/out/merge/reply")
-                .or_else(|| done.pointer("/refused/merge/reply"))
-                .and_then(|v| serde_json::from_value::<WireReply>(v.clone()).ok());
-            match wire {
-                Some(w) => w.reply(),
-                None => unavailable(&format!("the member answered {done}")),
-            }
+            done_reply(&done, "/ok/out/merge/reply", "/refused/merge/reply")
         }
         Err(Ok(e)) => match e.pointer("/unsupported") {
             Some(u) => unavailable(&format!("the repository's members do not read record format {u}")),
@@ -1407,6 +1405,24 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
         },
         Err(Err(e)) => unavailable(&e),
     })
+}
+
+/// The reply to an issue or merge command's `done`: the leader's render at `ok` or `refused`, or, for an agent
+/// command the leader refused at admission or let wait out its bound (`{"full": {"retry_after_s": n}}`), 429 with
+/// `retry-after` and the secondary-rate-limit text, as the ref writes answer it (`design/DESIGN.md`, Shape, the agent
+/// block). B0-33 pfA and pgA answered 2,754 and 1,728 of these 503 (`tests/am1/results/b033-pfa.md`).
+fn done_reply(done: &Value, ok: &str, refused: &str) -> Reply {
+    if let Some(s) = done.pointer("/full/retry_after_s").and_then(Value::as_u64) {
+        return Reply::secondary_rate_limit(u32::try_from(s).unwrap_or(u32::MAX));
+    }
+    match done
+        .pointer(ok)
+        .or_else(|| done.pointer(refused))
+        .and_then(|v| serde_json::from_value::<WireReply>(v.clone()).ok())
+    {
+        Some(w) => w.reply(),
+        None => unavailable(&format!("the member answered {done}")),
+    }
 }
 
 /// A `Push` with one ref update, M1's write path: `DELETE /git/refs/{ref}`.
@@ -2658,6 +2674,22 @@ mod tests {
         assert_eq!(super::tier_off_line("rows", &shed), None, "a members' shed is not tierOff");
         let r = super::read_failed("rows", "repo:9: repo:9#1#f0: no answer");
         assert_eq!((r.status, r.header("retry-after")), (503, Some("5")));
+    }
+
+    /// A leader's `full` for an issue or merge command is GitHub's secondary rate limit, 429 with the leader's own
+    /// `retry-after`, never the 503 a reply it cannot read gets; a `done` with neither render nor `full` stays 503.
+    #[test]
+    fn a_leader_full_on_an_issue_or_merge_command_is_429_with_its_retry_after() {
+        for (ok, refused) in
+            [("/ok/out/issue/reply", "/refused/issue"), ("/ok/out/merge/reply", "/refused/merge/reply")]
+        {
+            let r = super::done_reply(&serde_json::json!({ "full": { "retry_after_s": 7 } }), ok, refused);
+            assert_eq!((r.status, r.header("retry-after")), (429, Some("7")), "{ok}");
+            let super::Body::Json(b) = &r.body else { panic!("json") };
+            assert!(b["message"].as_str().unwrap().contains("secondary rate limit"), "{b}");
+            let r = super::done_reply(&serde_json::json!({ "other": {} }), ok, refused);
+            assert_eq!(r.status, 503, "{ok}: an unreadable done");
+        }
     }
 
     /// `command-rows`: a task or lease write reads its one task and the read gate's rows, never the whole tiers, which

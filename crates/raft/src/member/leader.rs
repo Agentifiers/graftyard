@@ -8,8 +8,8 @@ use smallvec::SmallVec;
 
 use crate::admit::{
     AGENT_CMDS_ENTRY, AGENT_FLOOR, AGENT_INLINE_ENTRY, AGENT_QUEUE_MAX, AGENT_SHARE, AGENT_WAIT, ActorKey, Admit,
-    AdmitClass, AdmitError, DEMOTE_PER_MIN, DEMOTE_WINDOW, HOT_PUSHES, HOT_WINDOW, INLINE_MAX_HOT, Lane, PRESSURE_AGE,
-    retry_after_s,
+    AdmitClass, AdmitError, DEMOTE_PER_MIN, DEMOTE_WINDOW, Drain, HOT_PUSHES, HOT_WINDOW, INLINE_MAX_HOT, Lane,
+    PRESSURE_AGE, retry_after_s,
 };
 use crate::fold::{Command, Fold, Scratch};
 use crate::outcome::{self, Acked};
@@ -143,6 +143,8 @@ struct Admission<C> {
     /// and without them a demoted actor whose writes are refused falls back under DEMOTE_PER_MIN and is classed Human
     /// again. Memory only, so a new leader counts only what committed [inference].
     refused_by: BTreeMap<ActorKey, VecDeque<Timestamp>>,
+    /// What this leadership's cuts drained of a non-empty agent lane (`admit::Drain`).
+    drain: Drain,
 }
 
 /// The round a fresh leader assumes before it has measured one [guess: B0-01's commit p50 on `Tri`].
@@ -157,11 +159,10 @@ pub const READ_AHEAD: usize = 3;
 /// How many frozen batches the leader holds behind the entry in flight: enough that each batch's read, asked a round
 /// after the one before, lands about when the entry before it commits, so the cycle is a round plus `decide` and not
 /// a read plus `decide`. One while a read fits in a round, which is cutting early as before; at most READ_AHEAD.
-/// How long an agent command admitted now should wait to enter an entry: the agent commands queued ahead of it at the
-/// agent rate (AGENT_SHARE of capacity), plus one round for its own entry to commit.
-fn expected_wait(agent_queued: usize, capacity: f32, round_ms: f32) -> Duration {
-    let rate = (AGENT_SHARE * capacity).max(1.0);
-    Duration::from_millis((agent_queued as f32 / rate * 1000.0 + round_ms.max(ROUND_MIN_MS)) as u64)
+/// How long an agent command admitted now should wait to enter an entry: the agent commands queued ahead of it at
+/// `agent_rate` (`Admission::agent_rate`), plus one round for its own entry to commit.
+fn expected_wait(agent_queued: usize, agent_rate: f32, round_ms: f32) -> Duration {
+    Duration::from_millis((agent_queued as f32 / agent_rate.max(1.0) * 1000.0 + round_ms.max(ROUND_MIN_MS)) as u64)
 }
 
 pub fn read_ahead(round_ms: f32, deps_ms: f32) -> usize {
@@ -188,6 +189,7 @@ impl<C> Admission<C> {
             pending_by: BTreeMap::new(),
             seq_actor: BTreeMap::new(),
             refused_by: BTreeMap::new(),
+            drain: Drain::default(),
         }
     }
 
@@ -206,6 +208,15 @@ impl<C> Admission<C> {
             let per_entry = (soft as f32 / self.cmd_bytes.max(CMD_BYTES_MIN)).max(1.0);
             per_entry * 1000.0 / self.round_ms.max(ROUND_MIN_MS)
         })
+    }
+
+    /// Agent commands a second this leader drains: what its cuts took from a non-empty agent lane over DRAIN_WINDOW
+    /// (`admit::Drain`), never above the AGENT_SHARE bucket's rate, which stands until DRAIN_MIN of it is measured.
+    /// The bucket's rate counts commands an entry by bytes, but AGENT_CMDS_ENTRY and a slow host's rounds bound the
+    /// drain below it: B0-33 pfA drained 54.6 a second at p50 while its bucket read about 1.3 times that.
+    fn agent_rate(&self, now: Timestamp, cap: f32) -> f32 {
+        let bucket = AGENT_SHARE * cap;
+        self.drain.rate(now).map_or(bucket, |r| r.min(bucket)).max(1.0)
     }
 
     fn refill(&mut self, now: Timestamp, cap: f32) {
@@ -790,14 +801,17 @@ impl<C: Command> Member<C> {
         let lead = self.lead.as_ref()?;
         let ad = &lead.admission;
         let cap = ad.capacity(self.admit_capacity, self.entry_soft);
+        let rate = ad.agent_rate(self.now, cap);
         Some(AdmissionView {
             capacity: cap,
+            agent_rate: rate,
+            agent_wait: expected_wait(ad.agent().len(), rate, ad.round_ms),
             agent_queued: ad.agent().len(),
             agent_bytes: ad.agent_bytes,
             queued: ad.lanes.iter().map(Lane::len).sum(),
             hot: self.hot(),
             pressure: self.pressure(cap),
-            retry_after_s: retry_after_s(ad.agent().len(), cap),
+            retry_after_s: retry_after_s(ad.agent().len(), rate),
             round_ms: ad.round_ms,
             cmd_bytes: ad.cmd_bytes,
             held: lead.deciding.len(),
@@ -847,13 +861,14 @@ impl<C: Command> Member<C> {
         let class = self.demoted(a);
         let agent = class == AdmitClass::Agent;
         let cap = ad.capacity(self.admit_capacity, self.entry_soft);
-        let full = || AdmitError::Full { retry_after_s: retry_after_s(ad.agent().len(), cap) };
+        let rate = ad.agent_rate(self.now, cap);
+        let full = || AdmitError::Full { retry_after_s: retry_after_s(ad.agent().len(), rate) };
         if agent && !a.placement_ok && a.inline > INLINE_MAX_HOT {
             return Err(full());
         }
         // AGENT_PUSH_BOUND: an agent command whose queue ahead, at the agent rate, plus one round is longer than what
         // is left of its bound is refused now, not queued to be refused later.
-        if agent && a.budget.is_some_and(|b| expected_wait(ad.agent().len(), cap, ad.round_ms) > b) {
+        if agent && a.budget.is_some_and(|b| expected_wait(ad.agent().len(), rate, ad.round_ms) > b) {
             return Err(full());
         }
         let hot_stage = a.push && a.placement_ok && a.inline > INLINE_MAX_HOT && self.hot();
@@ -1252,6 +1267,7 @@ impl<C: Command> Member<C> {
         }
         if !batch.is_empty() {
             ad.cut_at = now;
+            ad.drain.cut(now, taken[AdmitClass::Agent.lane()], ad.agent().len());
         }
         // A Human, MergeQueue or Bot command left had no lane rule but bytes to stop it; an Agent one, bytes or tokens.
         let past = |q: &Queued<C>| if bytes.0 + q.soft_bytes > soft { CutEnd::Soft } else { CutEnd::EntryMax };
@@ -1284,7 +1300,8 @@ impl<C: Command> Member<C> {
             ad.agent_bytes -= q.bytes;
             ad.agent_inline -= q.agent_inline;
         }
-        let retry_after_s = retry_after_s(ad.agent().len(), ad.capacity(self.admit_capacity, self.entry_soft));
+        let cap = ad.capacity(self.admit_capacity, self.entry_soft);
+        let retry_after_s = retry_after_s(ad.agent().len(), ad.agent_rate(now, cap));
         for q in &old {
             if let Some(a) = ad.seq_actor.get(&q.seq).copied() {
                 ad.refused(Some(a), now);

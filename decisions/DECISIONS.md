@@ -8511,3 +8511,79 @@ tool-overhead p50 run on the second hosted day.
 - **Sessions.** If a client L0-08 adds needs `Mcp-Session-Id` or SSE, add them on that lane only.
 - **Slash refs.** If an agent needs `get_commit` on a branch with a slash, the edge's `commits/{ref}` route must take
   more than one segment first; then allow `/` in `ref` and keep refusing `..`, `?`, and `#`.
+
+### `edge-refusal`: the edge refuses an agent write at the leader's measured drain, before it reaches the leader, 2026-11-23
+
+**Status.** Code-only, on branch `edge-refusal`. The hosted row is B in the lead's A-then-B order for B0-33, after
+LM-1's apply cut and its row. B0-33 step 3; the lead approved the design on 2026-11-23.
+
+**Decision.**
+- The leader measures its agent drain: the agent commands its cuts take while its agent lane stays non-empty, over
+  DRAIN_WINDOW (10 s) of its own clock (`crates/raft/src/admit.rs`, `Drain`). Below DRAIN_MIN (1 s [guess]) of
+  saturated time the AGENT_SHARE bucket's rate stands, and the drain is never taken above the bucket's rate.
+- The expected wait behind `Admit::budget`, the retry hint, and the advert all use the drain.
+- Every leader reply's `meta` carries `admit: {waitMs, retryAfterS}`. The edge keeps it per chain from the commit
+  path's answers (`graftyard_lookup::note_advert`), with no read of its own and no Cloudflare API call.
+- While the last advert is at most ADVERT_TTL (2 s [guess]) old and its wait passes an Agent-classed write's bound, the
+  edge refuses the write in the existing `full` shape, before it reaches the leader:
+  - a push, with what is left of AGENT_PUSH_BOUND, at `receive_pack` after the `early` refusal and before staging,
+    validate or commit, as `ng <ref> agent admission full, retry after <n>s`;
+  - a REST, GraphQL or agent-API write, with AGENT_PUSH_BOUND, at the top of `read_repo` before its tier read, as 429
+    with `retry-after`.
+- So an agent REST write never waits past AGENT_PUSH_BOUND of measured queue, where it waited up to AGENT_WAIT.
+- Human, MergeQueue and Bot are never refused this way. A user token with no App and no session header reads nothing
+  more. A lapsed advert sends the write, and the leader decides as before.
+- A leader `full` on an issue or merge command renders 429 (`api::done_reply`), not 503.
+- **Disclosure: the pre-read position.** The advert answers before the read gate decides 404. So an Agent-classed
+  caller may learn that a resolved private repository's group is busy. The overloaded 503 already says as much, and
+  `gate_ng` takes the same position for pushes. A token that cannot reach the repository at all is never refused by the
+  advert (`token_reaches`): an installation token selected for other repositories, or a user token scoped to another
+  owner or other repositories.
+
+**Why.**
+- B0-33 pfA (ATL) and pgA (ORD) answered 6,754 and 5,205 edge 503s, a human commit p99 of 9.4 and 11.0 s, and 1,371
+  and 2,251 h2 errors on agent pushes. Their leaders stalled and dropped (`tests/am1/results/b033-pfa.md`,
+  `b033-pga.md`).
+- Of those 503s, 2,754 and 1,728 were the leader's own `full` rendered as 503. 3,999 and 3,476 were tier reads the
+  learners shed while the leader's agent lane was deep [measured, `tests/am1/results/edge-refusal.md`].
+- The leaders drained 54.6 (ATL) and 76.3 (ORD) agent commands a second at p50 while their agent lanes stayed queued,
+  against blB's 108.8 (EWR). Their buckets read 1.26 to 1.36 times the drain. So bounded pushes they admitted expired in
+  the lane, 4,689 on pfA [measured, `Trace::Cut`].
+- Graftyard cannot choose its host (`decisions/OPEN-QUESTIONS.md`, A41), and LM-1's apply cut changes the drain. So the
+  rate is measured on every leader, not configured.
+
+**What it beat.**
+- **A configured rate, or `capacity` as it was.** Its bytes-per-entry estimate does not see AGENT_CMDS_ENTRY or a slow
+  host's rounds, and it overstates the drain by 1.3x on every row measured.
+- **A leader read on each request, or a colo cache of the rate.** The first is a new read on the hot path. The second
+  is a new store and failure domain for a value every leader reply already carries.
+- **Refusing only after the read gate** (the strict disclosure alternative). It keeps every refused write's tier read
+  on the learners, 3,999 and 3,476 of them on pfA and pgA, which is the shed this decision removes. And the 503 shed
+  path already tells a caller with a resolved name that the group is busy.
+- **A REST bound of AGENT_WAIT (30 s).** Side commands are 84% of B0-33's agent class, and without the 5 s bound they
+  fill the lane and the edge never refuses before AGENT_QUEUE_MAX.
+
+**Evidence.**
+- `tests/am1/results/edge-refusal.md`, `tests/fanout/agentdrain.py`, `tests/fanout/raw/fivexx20-{pfA,pgA}.jsonl`.
+- `crates/raft/tests/admission.rs`, `a_slow_leader_refuses_at_once_what_it_cannot_drain_within_the_bound`: with the
+  drain, 2,918 refused at once and 0 expired. With the bucket rate, 5 refused at once, 2,858 expired, and 2,467 committed
+  past their bound [measured in memory].
+- The edge's, lookup's and admit's tests named there, and `tests/m0carried/plant92.py`: 11 of 11 planted bugs caught.
+
+**Flip.** Any of the following on a hosted row, read from the `edgefull` lines, the leader's `Trace::Cut` rows and the
+push log:
+1. **A Human, Bot or MergeQueue write answered `full` by the edge.** It must be 0. This one is an invariant, not a
+   90% gate.
+2. **Over-refusal.** In more than 10% of 10 s windows with edge refusals, the leader's own cuts show an agent wait
+   under half the bound.
+3. **Starvation.** The edge refuses while the leader's agent lane is empty (cuts ending `Empty` with fewer than
+   AGENT_CMDS_ENTRY agent commands taken), or agent commands admitted a second fall below the drain measured before
+   refusing began.
+4. **The leader still refuses at pfA's counts** (admission plus `expire_agents`) while edges refuse few. Read the
+   `edgefull` lines' per-isolate `failOpen` counts first. An isolate that refuses everything hears no advert and
+   fails open each ADVERT_TTL, which lets a burst through. That differs from adverts that never reach the edge.
+5. **Human commit p99 is unchanged on a host `tests/fanout/hostguard.py` rates slow.** Then the lever is apply CPU
+   (LM-1), not admission, and this decision stays only for its refusal shapes.
+
+Disclosure flips: any case where a caller with no read access to the repository gets 429 where it would have got 404,
+and where the 503 path would not have answered.

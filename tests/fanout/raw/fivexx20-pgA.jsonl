@@ -1,0 +1,18 @@
+{"t": "02:20:00", "c": {}}
+{"t": "02:20:20", "c": {}}
+{"t": "02:20:40", "c": {"rest-repo-write:shed": 10, "graphql:shed": 2}}
+{"t": "02:21:00", "c": {"rest-repo-write:shed": 1}}
+{"t": "02:21:20", "c": {"rest-repo-write:shed": 13, "lease:shed": 3, "task:shed": 13, "graphql:shed": 15, "renew:shed": 14}}
+{"t": "02:21:40", "c": {"rest-repo-write:shed": 1, "graphql:shed": 3}}
+{"t": "02:22:00", "c": {"rest-repo-write:shed": 26, "lease:shed": 3, "task:shed": 19, "graphql:shed": 27, "renew:shed": 13}}
+{"t": "02:22:20", "c": {"rest-repo-write:shed": 4, "task:shed": 2, "graphql:shed": 6, "renew:shed": 1}}
+{"t": "02:22:40", "c": {"rest-repo-write:shed": 1, "lease:shed": 2, "task:shed": 10, "graphql:shed": 5, "renew:shed": 4}}
+{"t": "02:23:00", "c": {}}
+{"t": "02:23:20", "c": {}}
+{"t": "02:23:40", "c": {}}
+{"t": "02:24:00", "c": {"rest-repo-write:shed": 148, "lease:shed": 43, "task:shed": 272, "graphql:shed": 207, "receive-pack:shed": 3, "renew:shed": 159, "info-refs:shed": 1}}
+{"t": "02:24:20", "c": {"rest-repo-write:shed": 81, "lease:shed": 33, "task:shed": 121, "graphql:shed": 168, "renew:shed": 51}}
+{"t": "02:24:40", "c": {"rest-repo-write:shed": 103, "graphql:full": 36, "renew:full": 55, "rest-repo-write:full": 40, "task:full": 76, "lease:shed": 20, "lease:full": 14, "task:shed": 99, "graphql:shed": 128, "renew:shed": 56}}
+{"t": "02:25:00", "c": {"renew:full": 145, "rest-repo-write:shed": 183, "graphql:full": 115, "task:full": 267, "rest-repo-write:full": 66, "lease:full": 46, "lease:shed": 35, "task:shed": 203, "graphql:shed": 266, "renew:shed": 122}}
+{"t": "02:25:20", "c": {"rest-repo-write:shed": 156, "graphql:full": 143, "rest-repo-write:full": 79, "lease:full": 43, "renew:full": 138, "task:full": 220, "lease:shed": 33, "task:shed": 149, "graphql:shed": 223, "renew:shed": 96}}
+{"t": "02:25:40", "c": {"rest-repo-write:shed": 18, "graphql:full": 53, "renew:full": 51, "rest-repo-write:full": 28, "task:full": 97, "lease:shed": 8, "lease:full": 16, "task:shed": 39, "graphql:shed": 37, "renew:shed": 17}}

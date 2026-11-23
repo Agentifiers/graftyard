@@ -840,6 +840,7 @@ where
                 continue;
             }
             learn_leader(chain, &v);
+            note_advert(chain, &v, now());
             let t = Target { site: s, do_name: name };
             KNOWN.with(|k| {
                 if let Some(e) = k.borrow_mut().get_mut(&chain).filter(|e| e.leader == Some(s)) {
@@ -1921,8 +1922,63 @@ thread_local! {
     static HEARD: RefCell<HashMap<(ChainId, SiteId), (u64, u64)>> = RefCell::new(HashMap::new());
 }
 
+thread_local! {
+    /// Per isolate: each chain's last agent admission advert from its leader (`note_advert`), when this isolate heard it.
+    static ADVERTS: RefCell<HashMap<ChainId, (Advert, u64)>> = RefCell::new(HashMap::new());
+}
+
+/// What a group's leader advertises in each reply's `meta.admit` (`design/DESIGN.md`, Shape, the agent block): how
+/// long an agent command it admitted now would wait, at the agent commands it measures itself draining, and the retry
+/// hint its own refusal would carry. The edge refuses an Agent-classed write whose bound this wait passes, before the
+/// write reaches the leader, and never needs a read of its own to learn it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Advert {
+    pub wait_ms: u64,
+    pub retry_after_s: u32,
+}
+
+/// An advert as the edge holds it at a moment: heard within ADVERT_TTL (`Fresh`), heard longer ago (`Lapsed`, with its
+/// age in ms), or never.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Heard {
+    Fresh(Advert),
+    Lapsed(Advert, u64),
+    Never,
+}
+
+/// Keeps the advert in a leader's reply `v` on `chain`, heard at `now` on this isolate's clock. A reply with none (a
+/// follower's, or a member built before it) leaves the last one, and so does one from a term below the highest this
+/// isolate saw from the group: a deposed leader's queue says nothing about the group now.
+pub fn note_advert(chain: ChainId, v: &Value, now: u64) {
+    let Some(a) = v.pointer("/meta/admit") else { return };
+    let (Some(wait_ms), Some(retry)) = (a["waitMs"].as_u64(), a["retryAfterS"].as_u64()) else { return };
+    let term = v.pointer("/meta/term").and_then(Value::as_u64).unwrap_or(0);
+    if term < known_term(chain) {
+        return;
+    }
+    let advert = Advert { wait_ms, retry_after_s: u32::try_from(retry).unwrap_or(u32::MAX) };
+    ADVERTS.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() > 4_096 {
+            m.clear();
+        }
+        m.insert(chain, (advert, now));
+    });
+}
+
+/// `chain`'s advert at `now`: `Fresh` within ADVERT_TTL of when it was heard, and never from the future.
+pub fn advert(chain: ChainId, now: u64) -> Heard {
+    let ttl = graftyard_raft::admit::ADVERT_TTL.as_millis() as u64;
+    match ADVERTS.with(|m| m.borrow().get(&chain).copied()) {
+        None => Heard::Never,
+        Some((a, at)) if now.saturating_sub(at) <= ttl => Heard::Fresh(a),
+        Some((a, at)) => Heard::Lapsed(a, now - at),
+    }
+}
+
 /// Records a member's 200 answer `v` on `chain`'s commit path at `now`, with the term its `meta` names.
 fn heard(chain: ChainId, site: SiteId, v: &Value, now: u64) {
+    note_advert(chain, v, now);
     let Some(term) = v.pointer("/meta/term").and_then(Value::as_u64) else { return };
     HEARD.with(|h| {
         let mut h = h.borrow_mut();
@@ -3057,6 +3113,28 @@ mod tests {
         KNOWN.with(|k| k.borrow_mut().entry(chain).or_default().term = 4);
         heard(chain, SiteId(0), &json!({ "meta": { "term": 3 } }), 40_000);
         assert!(!busy(chain, SiteId(0), 0, 40_000), "older than the highest term this isolate saw from the group");
+    }
+
+    /// edge-refusal: the leader's advert in a reply's `meta.admit` is held for ADVERT_TTL (2 s) and not a millisecond
+    /// past it, when it lapses with its age; a reply without one keeps it, and a reply from an older term than the
+    /// group's highest is ignored. `heard`, the commit path's record of every 200, feeds it.
+    #[test]
+    fn a_leader_advert_is_fresh_for_advert_ttl_and_only_from_the_current_term() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(9_301)));
+        assert_eq!(advert(chain, 1_000), Heard::Never);
+        let reply = |term: u64, wait: u64| json!({ "done": {}, "meta": { "term": term, "admit": { "waitMs": wait, "retryAfterS": 9 } } });
+        heard(chain, SiteId(0), &reply(2, 7_500), 10_000);
+        let a = Advert { wait_ms: 7_500, retry_after_s: 9 };
+        assert_eq!(advert(chain, 10_000), Heard::Fresh(a));
+        assert_eq!(advert(chain, 12_000), Heard::Fresh(a), "at ADVERT_TTL");
+        assert_eq!(advert(chain, 12_001), Heard::Lapsed(a, 2_001), "past ADVERT_TTL it lapses");
+        note_advert(chain, &json!({ "meta": { "term": 2 } }), 12_500);
+        assert_eq!(advert(chain, 12_500), Heard::Lapsed(a, 2_500), "a reply with no advert keeps the last");
+        KNOWN.with(|k| k.borrow_mut().entry(chain).or_default().term = 3);
+        note_advert(chain, &reply(2, 100), 13_000);
+        assert_eq!(advert(chain, 13_000), Heard::Lapsed(a, 3_000), "a deposed leader's advert is ignored");
+        note_advert(chain, &reply(3, 100), 13_000);
+        assert_eq!(advert(chain, 13_000), Heard::Fresh(Advert { wait_ms: 100, retry_after_s: 9 }));
     }
 
     /// A capped read's answer is the leader saying "busy, retry": never a missed member, which `call_opt` reports
