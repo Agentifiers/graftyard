@@ -27,6 +27,10 @@ var yieldHold = 60 * time.Second
 // client CPU delays its start at most another yieldHold. A var for the tests.
 var maintDeferMax = 10 * time.Minute
 
+// maintClock is the hold's clock; the tests step it rather than sleep, so a loaded runner cannot let a hold lapse
+// between two calls the test meant to fall inside it.
+var maintClock = time.Now
+
 // fanoutUp: FANOUT_UP, the client CPU p99 past which `fanout` adds shards (crates/git, shard.rs).
 const fanoutUp = 0.75
 
@@ -65,7 +69,7 @@ func cpuP99() float64 {
 func maintBegin() (ctx context.Context, end func(reset bool), ok bool) {
 	maint.Lock()
 	defer maint.Unlock()
-	now := time.Now()
+	now := maintClock()
 	deferred := time.Duration(0)
 	if !maint.firstHeld.IsZero() {
 		deferred = now.Sub(maint.firstHeld)
@@ -104,7 +108,7 @@ func handleMaintHold(w http.ResponseWriter, r *http.Request) {
 	}
 	maint.Lock()
 	defer maint.Unlock()
-	now := time.Now()
+	now := maintClock()
 	if !now.Before(maint.until) {
 		maint.heldFrom = now
 	}
@@ -128,7 +132,7 @@ func handleMaintHold(w http.ResponseWriter, r *http.Request) {
 func maintStats() map[string]any {
 	maint.Lock()
 	defer maint.Unlock()
-	return map[string]any{"held": time.Now().Before(maint.until), "running": maint.cancel != nil,
+	return map[string]any{"held": maintClock().Before(maint.until), "running": maint.cancel != nil,
 		"longest_hold_s": maint.longest.Seconds(), "max_unkept_held": maint.maxUnkept, "stops": maint.stops}
 }
 
