@@ -3454,6 +3454,19 @@ The fold gains what the executor needs: where each finished intent left each scr
 - The check row's healthy N+1 puts more than 2% of entries over a real N's p99 on any step.
 - A planted regression smaller than one bucket (under about 100 ms at 1,500 ms) passes and matters: then measure lag on entries that were not the last of their round.
 - N's rows from the intent's start are gone by 100% (a day longer than `GATE_KEEP_MS`): keep them longer, or carry N's p99 in the intent's state.
+- A hosted 100% step or first day whose share rule still reads no N (R44's fix, below).
+
+**R44's fix (2026-11-23, code-only, not deployed; the lead cleared it).** Gate check row 2 found that N at 100% and on the first day was never read from the intent's start. The fix has two parts:
+- `day_versions` takes N from the intent's pre-signed `Rollback` release for that site once `SiteRelease` names the day's own release. Before, `running` equalled the day's release, so there was no N.
+- `Exec::gate` reads N from the intent's start whenever N's step window has fewer than `STEP_MIN_ENTRIES` entries (`gate::n_from_start`). Before, it did so only at 0 entries, and row 2's 100% window held 207.
+
+Evidence:
+- `sitedays.rs`, `after_site_release_n_is_the_rollbacks_release_and_a_thin_n_window_reads_from_the_start`:
+  - N is unchanged before `SiteRelease` and is the `Rollback`'s release after it, with another site's rollback listed first;
+  - with no site rollback, N is `None`;
+  - `n_from_start` holds at 0, 207 and 999 entries and not at 1,000.
+- `tests/m0carried/plant98.py`: 4 of 4 caught.
+- plant87's mutant 50 was re-anchored and is still caught.
 
 #### `gate-ack`: the ack rate is judged from `STEP_MIN_ENTRIES` answers, on an excess beyond chance (2026-11-23)
 
