@@ -314,6 +314,16 @@ BF-47's hosted row (`build/BUILD-PLAN.md`, M5-WP5) needs a vault account apart f
 - **The runner account is the vault account for test installs** until go-live, under `CLOUDFLARE_VAULT_API_TOKEN` scoped to the vault's Worker and bucket. Its spend counts toward `graft-m4a`, as the runner account's does.
 - **What it does not test.** The runner account also holds `graft-runners`, so the vault is not isolated from Actions runners the way "Every install runs a vault account" requires in production (`decisions/DECISIONS.md`). A production install still gets its own vault account; BF-47's verdict records the stand-in.
 
+### Operator decision, 2026-11-23, B0-33's agent line at 110 a second
+
+> "Set B0-33's agent line to 110/s and record it in FRAME"
+
+B0-33's read-memo set kept two runs, mrB and msA, which admitted 107.3 and 106.8 agent commands a second against the 140 line and its 90% line of 126 [measured, `tests/am1/results/b033-readmemo.md`]. The memo cut leader CPU per event by 42% and did not move that line. LM-1's seal/byte design found no leader-side lever that would (`tests/am1/results/seal-bytes-design.md`). The orchestrator recommended 110, and the operator took it:
+
+- **B0-33's pass line is at least 110 agent commands a second admitted** (`build/BUILD-PLAN.md` and `design/DESIGN.md`, B0-33). The fail line stays under 100 a second, which reopens ref lanes, so the pass line keeps 10% above it.
+- **The hosted figure is about 2,100 agents a group** at journey 9's mix, against the design's 3,000 at 150 a second (`design/AGENT-LAYER.md`, "Journeys", A1, step 11). Fleets above that on one repository wait for metadata child groups, as LM-1 already says.
+- **What 110 does not change.** B0-33's other lines stand as written, including zero `suspect` reports (A48 still asks what that counts), and the gate is still judged as the median of three runs on fresh placements. The daily spend limit, the $180 hard stop, the standing row queue, the 90% rule, and every invariant in `AGENTS.md` are unchanged.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
