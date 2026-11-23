@@ -1,0 +1,18 @@
+2026-11-23T18:09:05Z start 3a5255bd, run stop $10 on graft-m3f from 2026-11-23T17:53:46Z
+2026-11-23T18:15:32Z placement A (m3fkA) starts
+2026-11-23T18:17:12Z placement A guard error (exit 1), asking again
+2026-11-23T18:17:33Z placement A guard error (exit 1), asking again
+2026-11-23T18:19:09Z placement A repo 65620 hostguard repo:65620#1#f0: re-place, 41.9 ms of leader CPU a setup commit (42 commits, 1761 ms, line 28.4); GUARD: a1 ends before load
+2026-11-23T18:21:54Z placement A done: 2026-11-23T18:19:53Z b0-32 fm3fkA-b032 65620 done exit 4
+2026-11-23T18:25:22Z placement A retire and purge of 65620 exit 0: 2026-11-23T18:25:22.028Z purge: {"dry": false, "purged": 1, "objects": 19, "refused": [], "second": 0}
+2026-11-23T18:25:22Z placement B (m3fkB) starts
+2026-11-23T18:29:53Z placement B repo 65621 hostguard repo:65621#1#f0: re-place, 29.7 ms of leader CPU a setup commit (43 commits, 1276 ms, line 28.4); GUARD: a1 ends before load
+2026-11-23T18:33:23Z placement B done: 2026-11-23T18:30:20Z b0-32 fm3fkB-b032 65621 done exit 4
+2026-11-23T18:40:25Z placement B retire and purge of 65621 exit 0: 2026-11-23T18:40:25.109Z purge: {"dry": false, "purged": 1, "objects": 20, "refused": [], "second": 0}
+2026-11-23T18:40:25Z placement C (m3fkC) starts
+2026-11-23T18:44:24Z placement C repo 65622 hostguard repo:65622#1#f0: re-place, 33.1 ms of leader CPU a setup commit (41 commits, 1357 ms, line 28.4); GUARD: a1 ends before load
+2026-11-23T18:47:24Z placement C done: 2026-11-23T18:45:21Z b0-32 fm3fkC-b032 65622 done exit 4
+2026-11-23T18:55:22Z placement C retire and purge of 65622 exit 0: 2026-11-23T18:55:22.560Z purge: {"dry": false, "purged": 1, "objects": 20, "refused": [], "second": 0}
+2026-11-23T18:55:22Z third placement re-placed too: set stopped without load, not a fail
+GUARDm3fkDONE
+2026-11-23T18:55:24Z start 3a5255bd, run stop $10 on graft-m3f from 2026-11-23T17:53:46Z

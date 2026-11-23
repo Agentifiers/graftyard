@@ -1,0 +1,63 @@
+2026-11-23T19:12:57Z start d1943877 ~/workspace/b032k
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T19:13:13Z start sweep ok
+2026-11-23T19:13:13Z cost account 63.77 since 2026-11-23T00:00:00Z, run 0.51 since 2026-11-23T17:53:46Z, at b0-32
+2026-11-23T19:13:48.130Z m3org/fm3fk2B-b032 = 65624
+2026-11-23T19:13:48.723Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:13:52.023Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:13:55.260Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:13:58.458Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:01.655Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:04.851Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:08.065Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:11.254Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:14.492Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:17.688Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:20.868Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:24.091Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:27.278Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:30.472Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:33.651Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:36.856Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:40.032Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:43.244Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:46.437Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:49.635Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:52.815Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:56.040Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:14:59.228Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:15:02.455Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:15:05.706Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:15:08.910Z repo:65624 leader 0 placing since 1795461225513: waiting
+2026-11-23T19:15:19.287Z repo:65624 leader 0: config 11 learners [{"addr":192,"doName":"repo:65624#4#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65624#4#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65624#4#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65624#4#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65624#4#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65624#4#l5","join":200,"sit
+2026-11-23T19:15:24.402Z repo:65624 leader 0: set k 4: {"grants":[[0,[1,5,0]],[1,[1,5,0]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":228},"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T19:15:34.757Z repo:65624 leader 0: set k 4: {"grants":[[0,[1,5,0]],[1,[1,5,0]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":228},"configIndex":11,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T19:15:45.284Z repo:65624 leader 0: set k 4: {"grants":[[0,[1,5,0]],[1,[1,5,0]]],"k":4,"meta":{"admit":{"retryAfterS":1,"waitMs":228},"configIndex":11,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-23T19:15:45.439Z repo:65624 leader 0: k 4 at 12
+2026-11-23T19:15:51Z b0-32 shard gate site 0: warm site 0 after 1.2 s
+2026-11-23T19:15:51Z b0-32 shard gate site 1: warm site 1 after 3.3 s
+2026-11-23T19:15:51Z b0-32 shard gate site 2: warm site 2 after 1.9 s
+2026-11-23T19:15:51Z b0-32 fm3fk2B-b032 65624 start
+2026-11-23T19:22:24.995Z repo:65624 leader 0: set k 1: {"grants":[[0,[]],[1,[]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":187},"configIndex":11,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-23T19:22:25.199Z repo:65624 leader 0: k 1 at 791
+2026-11-23T19:22:27Z b0-32 fm3fk2B-b032 65624 done exit 0
+2026-11-23T19:22:33Z torn down 65624
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T19:24:01Z sweep ok
+ALLDONE
+b0-32 colos (voters' Reported rows):
+harness outages (2026-11-23T19:18:39Z, the first request, to 2026-11-23T19:21:37Z; announced 2026-11-23T19:18:37Z; edge 0 while the sites serve; over 5% of the window: invalid, rerun):
+{"outages": [["2026-11-23T19:18:39Z", "2026-11-23T19:18:40Z"], ["2026-11-23T19:19:43Z", "2026-11-23T19:19:47Z"]], "outageSeconds": 5.0, "share": 0.0281, "valid": true}
+{"kind": "read:api", "measured": {"n": 33926, "served": 1.0, "p50": 260, "p99": 1872, "cap": 0}, "outagesRemoved": {"n": 33854, "served": 1.0, "p50": 260, "p99": 1844, "cap": 0}}
+{"kind": "read:ref", "measured": {"n": 5680, "served": 0.9993, "p50": 287, "p99": 2051, "cap": 0}, "outagesRemoved": {"n": 5664, "served": 0.9993, "p50": 287, "p99": 2043, "cap": 0}}
+{"kind": "merge:only", "measured": {"n": 22, "served": 0.8636, "p50": 1166, "p99": 15255, "cap": 0}, "outagesRemoved": {"n": 22, "served": 0.8636, "p50": 1166, "p99": 15255, "cap": 0}}
+{"kind": "push:agent", "measured": {"n": 769, "served": 0.9961, "p50": 1752, "p99": 5350, "cap": 0}, "outagesRemoved": {"n": 765, "served": 0.9961, "p50": 1748, "p99": 5004, "cap": 0}}
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T19:24:35Z SWEEP2 OK
+2026-11-23T19:24:35Z cost {"from": "2026-11-23T17:53:46Z", "to": "2026-11-23T19:24:35Z", "containers": 2.6, "do_rows": 3.34, "do_duration": 0.22, "do_requests": 0.19, "workers": 0.12, "usd": 6.47, "prefix": "graft-m3f", "prefix_usd": 1.21}
+FINISHED

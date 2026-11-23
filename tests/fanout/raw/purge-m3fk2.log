@@ -1,0 +1,8 @@
+2026-11-23T19:12:07Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T19:12:52Z 65623 purged: a 7 -> 0, b 4 -> 0, c 8 -> 0
+2026-11-23T19:12:52Z 65623 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T19:12:52Z {"dry": false, "purged": 1, "objects": 19, "refused": [], "second": 0}
+2026-11-23T19:24:56Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T19:25:54Z 65624 purged: a 1291 -> 0, b 844 -> 0, c 1102 -> 0
+2026-11-23T19:25:54Z 65624 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T19:25:54Z {"dry": false, "purged": 1, "objects": 3237, "refused": [], "second": 0}

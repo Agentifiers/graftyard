@@ -1,0 +1,48 @@
+2026-11-23T18:25:28Z start 3a5255bd ~/workspace/b032k
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T18:25:45Z start sweep ok
+2026-11-23T18:25:44Z cost account 60.99 since 2026-11-23T00:00:00Z, run 0.13 since 2026-11-23T17:53:46Z, at b0-32
+2026-11-23T18:26:18.418Z m3org/fm3fkB-b032 = 65621
+2026-11-23T18:26:18.976Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:22.221Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:25.456Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:28.650Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:31.844Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:35.062Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:38.274Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:41.483Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:44.683Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:47.903Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:51.107Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:54.338Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:26:57.543Z repo:65621 leader 0 placing since 1795458377580: waiting
+2026-11-23T18:27:07.521Z repo:65621 leader 0: config 9 learners [{"addr":192,"doName":"repo:65621#6#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65621#6#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65621#6#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65621#6#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65621#6#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65621#6#l5","join":200,"sit
+2026-11-23T18:27:11.780Z repo:65621 leader 0: set k 4: {"grants":[[0,[2,6,4]],[2,[2,6,4]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":229},"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T18:27:22.184Z repo:65621 leader 0: set k 4: {"grants":[[0,[2,6,4]],[2,[2,6,4]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":229},"configIndex":9,"leader":0,"term":2},"stepped":false,"want":3}
+2026-11-23T18:27:32.738Z repo:65621 leader 0: set k 4: {"grants":[[0,[2,6,4]],[2,[2,6,4]]],"k":4,"meta":{"admit":{"retryAfterS":1,"waitMs":229},"configIndex":9,"leader":0,"term":2},"stepped":true,"want":3}
+2026-11-23T18:27:32.832Z repo:65621 leader 0: k 4 at 12
+2026-11-23T18:27:38Z b0-32 shard gate site 0: warm site 0 after 1.1 s
+2026-11-23T18:27:38Z b0-32 shard gate site 1: warm site 1 after 2.7 s
+2026-11-23T18:27:38Z b0-32 shard gate site 2: warm site 2 after 2.7 s
+2026-11-23T18:27:38Z b0-32 fm3fkB-b032 65621 start
+2026-11-23T18:30:17.349Z repo:65621 leader 0: set k 1: {"grants":[[0,[]],[2,[]]],"k":1,"meta":{"admit":{"retryAfterS":1,"waitMs":115},"configIndex":9,"leader":0,"term":2},"stepped":true,"want":0}
+2026-11-23T18:30:17.451Z repo:65621 leader 0: k 1 at 117
+2026-11-23T18:30:20Z b0-32 fm3fkB-b032 65621 done exit 4
+2026-11-23T18:31:26Z TEARDOWN FAILED for 65621; the end sweep retries
+site fault off: 200
+git#2#net:65621 200
+{"torn_down": 1, "codes": {"200": 1}}
+sweep: no shard container running
+2026-11-23T18:32:54Z sweep ok
+ALLDONE
+b0-32 colos (voters' Reported rows):
+  colo DFW 2 {'leader': 1, 'promised': 1}
+outages: no load window in tests/am1/raw/runs/a1-b0-32-fm3fkB-b032.log
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-23T18:33:19Z SWEEP2 OK
+2026-11-23T18:33:19Z cost {"from": "2026-11-23T17:53:46Z", "to": "2026-11-23T18:33:19Z", "containers": 0.85, "do_rows": 2.53, "do_duration": 0.11, "do_requests": 0.13, "workers": 0.08, "usd": 3.7, "prefix": "graft-m3f", "prefix_usd": 0.25}
+FINISHED
