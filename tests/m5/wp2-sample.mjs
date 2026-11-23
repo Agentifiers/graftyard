@@ -20,7 +20,9 @@ if (mode === "front") {
         const r = await fetch(base + path, { headers: { "x-graftyard-report-version": "1", "user-agent": "graftyard-m5-wp2" }, signal: AbortSignal.timeout(30_000) });
         await r.arrayBuffer();
         const h = (k) => r.headers.get(k);
-        row(out, { t0, t1: Date.now(), s: r.status, ran: h("x-graftyard-edge-version"), pin: h("x-graftyard-front-pin"),
+        // `ran` is the version of the script the front sent the request to: the edge's report, or graft-mcp's for
+        // `mcp.<host>` (AM2-WP3).
+        row(out, { t0, t1: Date.now(), s: r.status, ran: h("x-graftyard-edge-version") ?? h("x-graftyard-mcp-version"), pin: h("x-graftyard-front-pin"),
           alarm: h("x-graftyard-front-alarm"), view: h("x-graftyard-front-view") });
       } catch (e) {
         row(out, { t0, t1: Date.now(), s: 0, err: String(e).slice(0, 120) });
