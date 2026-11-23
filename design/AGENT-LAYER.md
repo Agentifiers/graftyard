@@ -745,11 +745,11 @@ grant: {id, client, redirect_hosts: [host], generation, created_at}
 /agents/apps: {get: {200: [{app_id, slug, kind: graftyard_run | third_party | mcp, confine: pattern | null}]}}   # site admin
 /agents/apps/{app_id}: {put: {body: {kind, confine?}, 200: row, 422: graftyard_run or mcp for an App the install does not
   own}, delete: {204: removed}}
-/mcp/grants:   # Basic client_id:client_secret of the install's Graftyard MCP, and X-Graftyard-User-Token: ghu_ (POST and GET only; /{id}/generation takes the client credentials alone, so the check runs before the upstream refresh rotates the ghr_)
-  post: {body: {client, redirect_hosts}, 201: grant}
-  get: {200: [grant]}
-/mcp/grants/{id}/generation: {post: {body: {generation}, 200: grant (generation + 1), 409: {message, revoked: true}}}
-/mcp/grants/{id}: {delete: {204: revoked}}
+/mcp/grants:   # Basic client_id:client_secret of the install's Graftyard MCP, and X-Graftyard-User-Token: ghu_ (POST, GET and DELETE; /{id}/generation takes the client credentials alone, so the check runs before the upstream refresh rotates the ghr_). 401 for wrong credentials or a user token that is not a live ghu_ of Graftyard MCP
+  post: {body: {client, redirect_hosts, write?: read | write | write_approve_merge}, 201: grant}
+  get: {200: [grant]}   # grant: {id: "<account>.<n>", client, redirect_hosts, write, generation, created_at}; live grants only
+/mcp/grants/{id}/generation: {post: {body: {generation}, 200: grant (generation + 1), 409: {message, revoked: true}}}   # any other generation revokes the grant and its tokens
+/mcp/grants/{id}: {delete: {204: revoked}}   # revokes every scoped ghu_ minted under it and the last unscoped ghu_, whose ghr_ goes with it
 /release/entries:   # an App JWT of the install's graftyard-agent
   get: {query: [after, per_page], 200: [{index, entry: base64 of the signed bytes}]}   # Genesis, Keys, ControllerPointer,
     # ControllerRoll and agents-account Rotate with their ReleaseUploaded, IntentStep, and IntentDone, Halt, Resume, Abort

@@ -315,6 +315,8 @@ fn current() -> (Vec<String>, Vec<String>) {
         fold::SnapshotFrame, fold::Val,
         id::Visibility, id::AgentKind, id::WorkspaceMode, id::SessionId, id::Access, id::audit::Owed,
         id::AccountKind, id::OrgRole, id::RepoPermission, id::RepoEntry, id::AuthzOut, id::AuthzErr,
+        // AM2-WP1: what a committed `IdentityCmd` answers.
+        id::IdentityOut,
         id::IdentityDep, id::CredentialRefusal, id::CredentialRef, id::CredentialEvent, id::SessionEvent,
         id::SsoEvent, id::IdentityErr, id::LoginRow, id::NamesOut, id::TeamEvent, id::Invitee,
         id::InvitationGrant, id::InvitationEvent, id::InstanceAuth, id::SignInMethod, id::Family, id::TokenKind,

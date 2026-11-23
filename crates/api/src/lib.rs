@@ -18,6 +18,7 @@ pub mod graphql;
 pub mod hosted;
 pub mod leases;
 pub mod lfs;
+pub mod mcp;
 pub mod narrow;
 pub mod protection;
 pub mod release;

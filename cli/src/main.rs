@@ -1,9 +1,10 @@
 //! `graftyard`, the operator CLI (`design/DESIGN.md`, "Usage (caller's view)", the operator block; "Install
 //! operations"). Milestone 1 builds `init`, `sites add`, `sites add-spare`, `placement set`, `genesis`, `sign`, and
-//! `install --genesis`; Milestone 3 `admin bootstrap` and `mint-key rotate | step`. The deploy token comes from
-//! `CLOUDFLARE_API_TOKEN`.
+//! `install --genesis`; Milestone 3 `admin bootstrap` and `mint-key rotate | step`; AM2 `apps init`. The deploy token
+//! comes from `CLOUDFLARE_API_TOKEN`.
 
 mod admin;
+mod apps;
 mod cf;
 mod config;
 mod genesis;
@@ -87,6 +88,11 @@ enum Cmd {
     Admin {
         #[command(subcommand)]
         cmd: AdminCmd,
+    },
+    /// The install's first-party Apps, `Graftyard MCP` and `graftyard-insights` (`cli/src/apps.rs`).
+    Apps {
+        #[command(subcommand)]
+        cmd: AppsCmd,
     },
     /// The installation-token signing key in `MintWrapKey`.
     MintKey {
@@ -301,6 +307,23 @@ enum AdminCmd {
 }
 
 #[derive(Subcommand)]
+enum AppsCmd {
+    /// Without --app-ids: draws the Apps' keys, the MCP client secret, and graft-mcp's sealing key into the install's
+    /// Secrets Store, and writes apps.json and the slug claims. With --app-ids: writes the registration requests.
+    Init {
+        /// The install's host; `Graftyard MCP`'s callback is https://mcp.<host>/callback.
+        #[arg(long, required_unless_present = "app_ids", conflicts_with = "app_ids")]
+        host: Option<String>,
+        /// The slug claims' answers: graftyard-mcp's App id, then graftyard-insights'.
+        #[arg(long, value_delimiter = ',')]
+        app_ids: Option<Vec<i64>>,
+        /// The folder for apps.json and the request files.
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum MintKeyCmd {
     /// Draws the next signing key: writes its `MintWrapKey` text and its `PutVerifyingKey` request.
     Rotate {
@@ -479,6 +502,11 @@ fn run(cli: Cli) -> Res<()> {
         Cmd::Admin { cmd: AdminCmd::Bootstrap { account, link_out, out } } => {
             admin::bootstrap(account, &link_out, &out)
         }
+        Cmd::Apps { cmd: AppsCmd::Init { host, app_ids, out } } => match (host, app_ids) {
+            (_, Some(ids)) => apps::register(&out, &ids),
+            (Some(host), None) => apps::init(config, &host, &out),
+            (None, None) => Err("apps init takes --host or --app-ids".into()),
+        },
         Cmd::MintKey { cmd: MintKeyCmd::Rotate { kid, secret_out, out } } => admin::rotate(kid, &secret_out, &out),
         Cmd::MintKey { cmd: MintKeyCmd::Step { old_kid, old_public, new_kid, new_published, switched, out } } => {
             admin::step(&admin::StepArgs {

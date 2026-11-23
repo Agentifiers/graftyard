@@ -1454,6 +1454,25 @@ Built (`design/AGENT-LAYER.md`, "Milestones"): `graftyard apps init` in the inst
 
 It also carries LM-2's MCP row (the rerun of L0-08).
 
+**Built so far (2026-11-22), the pure half** (`tests/am2/results/am2-wp1.md`; branch `am2-wp1`). `graftyard apps init`
+(`cli/src/apps.rs`); the grant rows in Identity format 0x14.4 and scoped `ghu_` fields in Tokens format 0x11.4; the
+grant endpoints and `token/scoped` for `Graftyard MCP` (`crates/api/src/mcp.rs`, routed by `workers/edge/src/mcp.rs`);
+and `graft-mcp` as `workers/mcp`, with the metadata, CIMD, PKCE, consent, callback, token, settings, and the MCP door.
+- **LF-6: pass in memory.** 422 for each bad `token/scoped` request, 409 with the grant and its tokens revoked for a
+  stale generation, and 401 for wrong client credentials, 100 of 100 each. The 200 and 422 replies validate against
+  GHES 3.22.
+- **L0-08's local checks: pass.** 100 of 100 wrong-audience tokens refused, a refreshed token keeps its scope over 100
+  refreshes, a replayed refresh revokes the grant, framed, cross-site, or skipped consent issues no code, and each
+  refresh succeeds with the unscoped `ghu_` held, which is deleted after it.
+- 20 of 20 planted bugs caught (`tests/m0carried/plant86.py`).
+
+The hosted half needs:
+1. A site day onto a release that reads 0x14.4 and 0x11.4, then `FormatsEnable` for both. Until then the grant
+   endpoints and `token/scoped` answer 503.
+2. `graftyard apps init` on a test install, and `graft-mcp` deployed with its bindings.
+3. AM2-WP3's routing of `mcp.<host>`.
+4. L0-08 hosted, with the four SDK clients.
+
 ### AM2-WP2. `graft-mcp` tools
 
 **Build.** `call`, `Toolset`, `ToolError` with `retry_after_s` and rate fields, the `coordination` and `provenance` tools, and the trust view on every text field (`design/AGENT-LAYER.md`, Shape, "graft-mcp"; journey A7, step 7). Writes run as the `Graftyard MCP` `AgentApp` with `requester = sub`.
