@@ -9130,6 +9130,51 @@ clearance after this merges and runs on graft-m2b after LM-1's read-memo rows.
 - **Under-read left.** Leader refusals over 50% of pfA's count with both rules live. Then the 23% of lane growth in
   flight is what is left, and the lever moves to the leader's own admission.
 
+### `edge-shed-429`: an Agent write whose row read the members shed answers 429, and a fetch's shard 503 carries `Retry-After: 2`, 2026-11-23
+
+**Status.** Code built and tested at $0, cleared by the lead on 2026-11-23 (`FRAME.md`, "Operator decision, 2026-11-23,
+B0-33's merge-queue and refusal-shape lines"). No hosted row yet; the next B0-33 run waits for this and F112's
+catch-up fix.
+
+**Decision.**
+- When every member sheds (`graftyard_lookup::OVERLOADED`) the row read of a write the edge classes Agent
+  (`crate::admission`), the edge answers GitHub's secondary rate limit, 429 `retry-after: 1`, instead of
+  `read_failed`'s 503. One helper, `shed_reply` over the pure `shed_for` (`workers/edge/src/api.rs`), in `read_repo`'s
+  error arm, which every REST, GraphQL, task and lease write's rows pass through, `command_tier_rows` included. This is
+  `gate_ng`'s rule for an Agent push at the read gate, on the API writes.
+- Human, Bot and MergeQueue writes, every read, and an Agent write whose read failed any other way keep their 503. A
+  plain user token's write is Human before any read (`admission` returns `None`), so nothing new is read for it.
+  `task_claim`'s own row read is an App's token request under its JWT, not an agent write, and keeps its 503.
+- A fetch whose shard answered non-200 (`warming` most often) answers 503 with `Retry-After: 2`, the value
+  `shard_unavailable` sends a push (`shard_read_failed`, `workers/edge/src/lib.rs`). It had none.
+
+**Why.** B0-33 erDA answered 4,669 Agent-class writes as 503 shed reads with `Retry-After: 1`, none in the 429 shape,
+and 215 upload-pack `warming` 503s with no `Retry-After` [measured, `tests/am1/results/edge-refusal.md`, "Row B2"]. The
+lead's ruling reads B0-33's refusal-shape line as every Agent-class refusal in `ng` or 429 and every Human or Bot 503
+with `Retry-After`.
+
+**What it beat.**
+- **429 for every class's shed write.** It would refuse Humans in the agent shape, which admission never does, and
+  change a plain client's response (the GHES invariant).
+- **A check in each handler.** `read_repo` is the one place every write's rows pass, so one call covers them.
+- **`Retry-After: 1` on the fetch's 503.** 2 matches receive-pack's 503 for the same shard state.
+
+**Evidence.**
+- `api::tests::an_agent_write_whose_rows_were_shed_is_429_and_a_plain_pat_write_stays_503`; plant 105 caught 5 of 5
+  mutants (`tests/m0carried/plant105.py`), including 429 for every class and 429 for an Agent read.
+- `tests/plaindiff/run.sh fetch=2`: origin/main's edge and this one in local workerd on coldwrite's bed, seven plain-PAT
+  requests (git info/refs, ls-refs, a fetch, receive-pack's advertisement, a REST read, a REST label write, a GraphQL
+  query). Six identical after the mask; the fetch differs only by `retry-after: 2`. With no allowance it fails.
+- Not measured: a hosted byte diff (`tests/am1/hosted/bytediff.py`) and GHES 3.22's own upload-pack 503 headers
+  [unverified].
+
+**Flip.**
+- **Revert the 429:** a hosted row shows any Human, Bot or MergeQueue write answered 429 by it (an invariant, as
+  edge-refusal's flip 1), or agent ok/s falls below the matched baseline's because clients back off longer on 429
+  than on the 503.
+- **Revert the fetch's `Retry-After`:** the hosted byte diff shows a plain client's reply changed other than by that
+  header, or a GHES 3.22 appliance answers the same state without it and a client depends on that.
+
 ### `merge-front`: a REST merge's identity reads run alone, outside their key's batch, and it guesses its repository at any age or from the link entry, 2026-11-23
 
 **Status.** Built on branch `b029-mfront` from main `4040b083`. Edge only, so it ships on an edge day. The lead cleared
