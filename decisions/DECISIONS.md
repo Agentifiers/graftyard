@@ -8033,6 +8033,10 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
 - `workers/vault/tests/vault.rs` with a bucket that refuses a held key with 409 before the precondition, as R2 does:
   a pass rerun from an older `state/vault` stores nothing new and fails nothing; another object at a feed key fails
   the pass and stays; another pack at a pack key is missed and stays.
+- Hosted vh1 (2026-11-23, the runner account as a stand-in vault account, `tests/m5/results/m5-wp5-vault.md`): a
+  create-only put over a held `feed/` key answered 409, code 10069, and a delete answered 200 with error 10069 and
+  deleted nothing; a pass rerun from an older `state/vault` found 3 objects held and failed nothing; `vault upgrade`
+  left a release already at 100%, refused a tampered one, and deployed a second one keeping the bindings.
 - `tests/vaultbed/run.sh`: a pass rerun after `state/vault` is dropped, in local workerd (local R2 has no locks, so
   this covers the 412 half); `tests/m0carried/plant88.py`.
 
