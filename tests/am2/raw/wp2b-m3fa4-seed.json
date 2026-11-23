@@ -1,0 +1,22 @@
+{
+ "id": "131072.wp2b-m3fa4",
+ "main": "24aff7babff64d1634853cd6c471c721dd109e65",
+ "x": {
+  "ok": true,
+  "sha": "9f5e69b370fb25394eb3f2fd288ae6cc5bc0fc19"
+ },
+ "y": {
+  "ok": true,
+  "sha": "1f7ae5d3140bbcf4531f255c44693193a4225888"
+ },
+ "z": {
+  "ok": true,
+  "sha": "d9fa84409e222c4363552df51c5e0f2a3135ca7b"
+ },
+ "X": "refs/heads/claude/wp2b-x",
+ "Y": "refs/heads/claude/wp2b-y",
+ "Z": "refs/heads/claude/wp2b-z",
+ "n": 1,
+ "nx": 2,
+ "lease": "01M847WEX00000000000000001"
+}

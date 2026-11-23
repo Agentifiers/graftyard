@@ -67,9 +67,56 @@ Branch `am2-wp2b`, from main `e942cd53`. Code only, nothing hosted. This is the 
   and both tools' query, path, grant check, and toolset.
 - The full checks (`tests/am1/runs/checks.sh`) and both edgeboot builds: see the commit message.
 
+## Hosted, day m3fa4 (2026-11-23): both tools on a real repository, and the 503 before the site day
+
+Cleared by the lead after the merge (main `7c9a67f3`), within AM2's remaining $9.40. It ran on graft-m3f, taken
+from B0-32 at 12:28Z, from main `7c9a67f3` (`tests/am1/results/install-m3f.md`). The driver is
+`tests/am2/hosted/wp2b.mjs`; its rows are `tests/am2/raw/wp2b-m3fa4b.jsonl` (`old`) and
+`tests/am2/raw/wp2b-m3fa4.jsonl` (`seed`, `check`, `check3`).
+
+**Order.** First the start sweep (no shard running), RERETIRE OK, and edgeboot on both builds (PASS, 0 traps). The
+day ran in two halves so the 503 case was real: first the edge (`ee326616`, from `7c9a67f3`) over B0-32's members
+from `ad8fd52f`, which do not know the two narrow specs. Then a fresh `m3org/am2-m3fa4` (repo:65619, 201 in 34 s),
+graft-mcp deployed (`day.sh m3fa4` init, claims, register, deploy, smoke), and `wp2b old`. Then the sites. Site a's
+first deploy hit wrangler's "Container application settings were not fully applied"; the `--skip-build` rerun
+exited 0 with sites a `7474e910`, b `0ee3b84d`, c `ab9a4792`. Images were reused (`containers/` unchanged since
+`8d390b0f`), with the same flags and FORMATS as m3fa3.
+
+| Case | Result |
+|---|---|
+| Before the site day: both routes direct | **pass**: 503 "the repository's members do not serve this read yet (site release)", never an empty list |
+| Before the site day: both tools | **pass**: `isError`, `status` 503, `retry_after_s` 5 |
+| Overlaps of agent ref x | **pass**: y alone (shares `pkg/auth/session.go`), not z or x itself; `verdict` null, `last_push` y's head, `pr` 1, `session` the task's; one lease (`pkg/auth/**`), not the `infra/**` one |
+| The tool's body equals the edge's | **pass**, byte for byte |
+| Overlaps by `pr` (x's draft #2) and by `paths` (`web/**`) | **pass**: y and z |
+| Provenance of an agent line on x | **pass**: x's commit, lines 1 to 3, draft #2; a `session` source linked, the forged `Claude-Session` `claimed` and unlinked, its `visible` 163 characters with the HTML comment dropped |
+| Provenance of a human line (`README.md` on main) | **pass**: no sources, `pr` null |
+| A line past the end | **pass**: 422 through the tool |
+| Squash-merge y (#1), then provenance of its line on main | **pass**: the squash commit `8419ca91`, #1 merged, the task's session (through `agent_meta`); no sources, as no push wrote that commit |
+| After the merge, overlaps of x | **pass**: y's row is gone |
+| Anonymous direct read; a repository outside the grant | **pass**: 401; 404 from the tool with no edge call |
+
+**15 of 15 pass.** Two driver faults were fixed during the day, and neither is a product finding:
+- The first `old` run (its four rows open `wp2b-m3fa4.jsonl`: both direct reads 503, both tools HTTP 400) sent
+  `tools/call` without the `Mcp-Name` header that the 2026-07-28 lane requires. `mcpCall` now sends it, and `old`
+  was rerun as tag m3fa4b, still before the site day.
+- The squash merge needs two human writers' approvals (`graftyard/agent-gate`, task with no requester). `check`
+  merged without them (403), and the orb then lost DNS for graft-mcp for one call, which ended the run. A second
+  run (`check2`) tried REST `POST pulls/{n}/reviews`, which the edge does not route (404; only `GET` is served, F61's
+  scope), so its two merge-dependent cases are void. `check3` approved through GraphQL `addPullRequestReview` as
+  admin and member, merged (200), and passed the last four cases. Cases 1 to 7 come from `check`.
+
+The claimed `ghs_` for the task was refused (422, "not a live graftyard_run task"), as it should be for an
+external task. The pushes used the installation token, and the trailer still linked, because the linking rule
+takes the App's own sessions on the repository.
+
+**Teardown.** At 13:04:31Z graft-mcp, graft-mcp-aux, and the four `graft-m3f-` store secrets were deleted, and
+m3-ci was unflagged (204). net:65619's 3 shards were torn down (200 each). repo:65619 was retired (4 names, all
+not joined, retired rows) and purged (25 objects, second pass 0; `tests/am2/raw/retire-m3fa4.log`). End sweep at
+13:10:48Z: no shard running. Cost $0.21 for the `graft-m3f` prefix from 12:28:53Z (`acctcost.py`; the account
+total of $0.83 includes graft-m2b's running sites).
+
 ## Not done here
 
-- **Hosted.** The member half ships only through a site day. Until then a member answers `error` and the routes
-  answer 503. The hosted day needs the lead's clearance after the merge, within AM2's remaining $9.40.
 - **`graftyard_provenance` on `GET /commits/{sha}`:** unowned (`decisions/OPEN-QUESTIONS.md`, A47).
 - **A push time for `last_push`:** needs a `PathSet` field and a format (A46).

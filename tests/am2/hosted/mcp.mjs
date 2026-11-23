@@ -84,7 +84,8 @@ export async function login(scope = "write:write", client = "ts-v2", origin = MC
 /** One stateless MCP request with `bearer`: `{status, text}`. */
 export async function mcpCall(bearer, method = "tools/list", params = {}, origin = MCP) {
   const r = await fetch(`${origin}/`, { method: "POST", headers: { ...(bearer ? { authorization: `Bearer ${bearer}` } : {}), "content-type": "application/json",
-    accept: "application/json, text/event-stream", "mcp-protocol-version": "2026-07-28", "mcp-method": method },
+    accept: "application/json, text/event-stream", "mcp-protocol-version": "2026-07-28", "mcp-method": method,
+    ...(method === "tools/call" ? { "mcp-name": params.name } : {}) },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: { ...params, _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28",
       "io.modelcontextprotocol/clientInfo": { name: "am2-l008", version: "1" }, "io.modelcontextprotocol/clientCapabilities": {} } } }) });
   return { status: r.status, text: await r.text(), www: r.headers.get("www-authenticate") };

@@ -1,0 +1,35 @@
+{"at":"2026-11-23T12:43:42.349Z","step":"old","case":"old overlaps direct","ok":true,"status":503,"msg":"the repository's members do not serve this read yet (site release)"}
+{"at":"2026-11-23T12:43:43.822Z","step":"old","case":"old provenance direct","ok":true,"status":503,"msg":"the repository's members do not serve this read yet (site release)"}
+{"at":"2026-11-23T12:43:53.608Z","step":"old","case":"old overlaps tool","ok":false,"status":400,"value":null}
+{"at":"2026-11-23T12:43:53.661Z","step":"old","case":"old provenance tool","ok":false,"status":400,"value":null}
+{"at":"2026-11-23T12:59:53.152Z","step":"seed","case":"flag","status":200}
+{"at":"2026-11-23T13:00:02.391Z","step":"seed","case":"task","status":201,"id":"131072.wp2b-m3fa4"}
+{"at":"2026-11-23T13:00:03.619Z","step":"seed","case":"claimed ghs","status":422,"msg":"graftyard_task names a task that is not a live graftyard_run task"}
+{"at":"2026-11-23T13:00:14.330Z","step":"seed","case":"pushes","x":{"ok":true,"sha":"9f5e69b370fb25394eb3f2fd288ae6cc5bc0fc19"},"y":{"ok":true,"sha":"1f7ae5d3140bbcf4531f255c44693193a4225888"},"z":{"ok":true,"sha":"d9fa84409e222c4363552df51c5e0f2a3135ca7b"}}
+{"at":"2026-11-23T13:00:17.399Z","step":"seed","case":"leases","auth":201,"apart":201,"id":"01M847WEX00000000000000001"}
+{"at":"2026-11-23T13:00:21.456Z","step":"seed","case":"pr","status":200,"n":1}
+{"at":"2026-11-23T13:00:23.172Z","step":"seed","case":"prx","status":200,"n":2}
+{"at":"2026-11-23T13:00:56.639Z","step":"check","case":"overlaps of X","ok":true,"refs":["refs/heads/claude/wp2b-y"],"y":{"app":131072,"draft":false,"last_push":"1f7ae5d3140bbcf4531f255c44693193a4225888","pr":1,"ref":"refs/heads/claude/wp2b-y","requester":null,"session":"131072.wp2b-m3fa4","shared_paths":["pkg/auth/session.go"],"truncated":false,"verdict":null},"leases":[["pkg/auth/**"]],"direct":200,"same":true}
+{"at":"2026-11-23T13:00:56.646Z","step":"check","case":"overlaps tool equals the edge","ok":true,"direct":200}
+{"at":"2026-11-23T13:00:57.003Z","step":"check","case":"overlaps by pull request","ok":true,"refs":["refs/heads/claude/wp2b-y"]}
+{"at":"2026-11-23T13:00:57.522Z","step":"check","case":"overlaps by paths","ok":true,"refs":["refs/heads/claude/wp2b-z"]}
+{"at":"2026-11-23T13:00:58.245Z","step":"check","case":"provenance of an agent line","ok":true,"commit":"9f5e69b370fb25394eb3f2fd288ae6cc5bc0fc19","lines":{"end":3,"start":1},"pr":{"draft":true,"merged":false,"number":2,"state":"open"},"sessions":[{"app":131072,"id":"131072.wp2b-m3fa4","issue":null,"requester":null,"snapshot":16}],"sources":[{"kind":"session","linked":true},{"kind":"claimed","linked":false,"len":163}]}
+{"at":"2026-11-23T13:00:59.164Z","step":"check","case":"provenance of a human line","ok":true,"value":{"commit":"24aff7babff64d1634853cd6c471c721dd109e65","lines":{"end":1,"start":1},"pr":null,"sessions":[],"sources":[]}}
+{"at":"2026-11-23T13:00:59.732Z","step":"check","case":"a line past the end","ok":true,"value":{"message":"Validation Failed","rate":null,"retry_after_s":null,"status":422}}
+{"at":"2026-11-23T13:01:00.559Z","step":"check","case":"merge","status":403,"msg":"refused: graftyard/agent-gate is not satisfied for 1f7ae5d: 0 of 2 approvals from human writers (no recorded requester, so one more is needed)"}
+{"at":"2026-11-23T13:02:47.735Z","step":"check2","case":"approve admin","status":404,"msg":"Not Found"}
+{"at":"2026-11-23T13:02:48.951Z","step":"check2","case":"approve member","status":404,"msg":"Not Found"}
+{"at":"2026-11-23T13:02:49.446Z","step":"check2","case":"merge","status":403,"msg":"refused: graftyard/agent-gate is not satisfied for 1f7ae5d: 0 of 2 approvals from human writers (no recorded requester, so one more is needed)"}
+{"at":"2026-11-23T13:02:56.693Z","step":"check2","case":"provenance of a squash commit","ok":false,"merge":403,"value":{"message":"Not Found","rate":null,"retry_after_s":null,"status":404}}
+{"at":"2026-11-23T13:02:57.166Z","step":"check2","case":"a merged ref leaves overlaps","ok":false,"refs":["refs/heads/claude/wp2b-y"]}
+{"at":"2026-11-23T13:02:57.860Z","step":"check2","case":"anonymous is 401","ok":true,"status":401}
+{"at":"2026-11-23T13:02:57.900Z","step":"check2","case":"outside the grant is 404","ok":true,"status":200,"tool":404}
+{"at":"2026-11-23T13:02:59.025Z","step":"check2","case":"unflag","status":204}
+{"at":"2026-11-23T13:03:40.521Z","step":"check3","case":"approve admin","status":200,"ok":true}
+{"at":"2026-11-23T13:03:42.504Z","step":"check3","case":"approve member","status":200,"ok":true}
+{"at":"2026-11-23T13:03:43.231Z","step":"check3","case":"merge","status":200,"sha":"8419ca912d3d56af5bdc0b372e91fe7b550ff5d5","msg":"Pull Request successfully merged"}
+{"at":"2026-11-23T13:03:51.281Z","step":"check3","case":"provenance of a squash commit","ok":true,"merge":200,"value":{"commit":"8419ca912d3d56af5bdc0b372e91fe7b550ff5d5","lines":{"end":3,"start":1},"pr":{"draft":false,"merged":true,"number":1,"state":"closed"},"sessions":[{"app":131072,"id":"131072.wp2b-m3fa4","issue":null,"requester":null,"snapshot":16}],"sources":[]}}
+{"at":"2026-11-23T13:03:51.736Z","step":"check3","case":"a merged ref leaves overlaps","ok":true,"refs":[]}
+{"at":"2026-11-23T13:03:53.038Z","step":"check3","case":"anonymous is 401","ok":true,"status":401}
+{"at":"2026-11-23T13:03:53.079Z","step":"check3","case":"outside the grant is 404","ok":true,"status":200,"tool":404}
+{"at":"2026-11-23T13:03:54.219Z","step":"check3","case":"unflag","status":204}
