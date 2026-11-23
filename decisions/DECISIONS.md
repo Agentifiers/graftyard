@@ -3453,6 +3453,24 @@ The fold gains what the executor needs: where each finished intent left each scr
 - A planted regression smaller than one bucket (under about 100 ms at 1,500 ms) passes and matters: then measure lag on entries that were not the last of their round.
 - N's rows from the intent's start are gone by 100% (a day longer than `GATE_KEEP_MS`): keep them longer, or carry N's p99 in the intent's state.
 
+#### `gate-ack`: the ack rate is judged from `STEP_MIN_ENTRIES` answers, on an excess beyond chance (2026-11-23)
+
+**Status.** Code-only, not deployed; `judge_site` runs in `graft-ops`, so it ships on an ops deploy. Answers R43 (`decisions/OPEN-QUESTIONS.md`), as the lead chose.
+
+**Decision.** `GATE_ACK_RATE` is judged only once N+1 has `STEP_MIN_ENTRIES` AppendEntries answers, as well as entries; under it the step is `Starved`. At or above it, the step breaches only when (p1 − p0 − 0.001) / sqrt(p1(1 − p1)/n1 + p0(1 − p0)/n0) ≥ 3.09, where p is each side's refused share of answers and n its answers: N+1's excess over N past the 0.1-point margin, at a one-sided z of about 1 in 1,000 per read. The variance is floored at 1e-12, so two sides that refused nothing give a finite z. With no N answers there is no ack baseline. `Side` carries the answer counts, not a rate in basis points.
+
+**Why.** The gate check row's judged day, whose N+1 was N's own code, breached at 10% on `GATE_ACK_RATE: N+1 9944 bp, N 10000 bp` with N+1 at 100 entries, about one refused answer, and its `Rollback` ran. N's own rate read 97.44 to 100% from one read to the next. A floor alone still breaches a healthy 1,000-answer N+1 about 12% of the time [inference, binomial at N's 0.12% refusals]. The bound keeps chance at about 1 in 1,000 per read.
+
+**Beat.**
+- The floor alone: about 12% false breaches per read at 1,000 answers.
+- Dropping the rate: `verify` refusals are already `GATE_EXCEPTIONS`, but a version that acks less without a refusal, such as one that answers late or drops answers, would then go uncaught.
+
+**Evidence.**
+- `sitedays.rs`, `the_ack_rate_breaches_only_on_an_excess_past_its_margin_beyond_chance_and_starves_under_the_floor`: the row's reading (100 entries, 1 refused of 180, N at 100%) is `Starved`; 1,000 answers at 0.3% against N's 0.2% pass (z 0.0); a planted 2% at 1,000 answers breaches (z 3.80); at 3,000 answers against N's 10,000 at 0.2%, 24 refused passes (z 2.96) and 25 breaches (z 3.10); against a noisy N (1,000 answers at 1%), 110 of 5,000 passes (z 2.92, where N+1's error alone would read 5.3) and 120 breaches; two clean sides pass; no N answers is no baseline.
+- `tests/m0carried/plant87.py`: 55 of 55, 7 of them for this rule.
+
+**Flip.** A planted ack fault that the bound misses at 10% with 1,000 or more N+1 answers: then lower the margin or the z, or judge over the whole step's dwell.
+
 #### `drain-budget`: a missed call deadline is budgeted at 1 in 100, drained at 5 x over 5 minutes, and calm under 2 x over 15 minutes (2026-11-23)
 
 **Status.** Code-only, not deployed; the thresholds live in `graft-ops`, so they ship on an ops deploy. R41 stays open: the values come from one install.

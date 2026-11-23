@@ -1759,7 +1759,7 @@ The lifeboat runs on the same `localDisk` storage and `localDocker` engine, and 
   | `FIRST_DAY` | 24 h, with the site leading 1% of its home groups | The day gate |
   | `GATE_APPLY_LAG` | Once N+1 has `STEP_MIN_ENTRIES`: at most 2% of its applied entries slower than N's p99 on the same site (an N under `STEP_MIN_ENTRIES` is no baseline), and at most 1% slower than 5 s with or without N; at 100% and on the first day N's p99 is from the intent's 1, 10 and 50% steps. Relative because a drained site's followers apply about 1 s late on quiet chains, R29's commit heartbeat, so the old absolute 500 ms cap breached every drained day [measured, BF-39 hosted, replayed: healthy N+1 0.07 to 1.01% over N's p99, +300 ms 47 to 50%] (`decisions/DECISIONS.md`, "`gate-relative`") | Breach |
   | `GATE_EXCEPTIONS` | 0 apply or verify exceptions on N+1 | Breach |
-  | `GATE_ACK_RATE` | N+1 ack rate at most 0.1 points below N's | Breach |
+  | `GATE_ACK_RATE` | Once N+1 has `STEP_MIN_ENTRIES` AppendEntries answers: N+1's refused share at most 0.1 points over N's, breached only when the excess past 0.1 points is at least 3.09 standard errors of the two shares (one-sided, about 1 in 1,000 per read), because a healthy N+1 of 100 entries read 0.56 points under N by chance [measured, the gate check row] (`decisions/DECISIONS.md`, "`gate-ack`") | Breach |
   | `GATE_STEP_DOWN` | 0 `STEP_DOWN` trips on N+1 leaders | Breach |
   | `GATE_ERRORS` | N+1 5xx rate at most N's plus 0.1 points | Breach for edge, front, ops, MCP, and controller rolls |
   | `IDENTITY_RATIO` | 3 identity reads per edge request | An edge isolate above it submits the `EdgePointer` undo |
