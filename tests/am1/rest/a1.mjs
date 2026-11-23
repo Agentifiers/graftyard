@@ -39,6 +39,9 @@
 //     [--hosted N]       # B0-34 with --b034: the load runs in N Load34 clients on Cloudflare (tests/am1/load34/), not
 //                        # here; this process does setup, the kill, k, the leader reads, and the row, from their
 //                        # samples in R2 (decisions/DECISIONS.md, `load34`). [--hints wnam,...] their location hints.
+//     [--hold-file F]    # B0-33's host guard (tests/fanout/guardrow.sh): after the learner gate, wait for F before load; F
+//                        # holding `go` starts the load, anything else exits 4 before load, unwritten after HOLD_WAIT_MS
+//                        # exits 4 too. No row is written on exit 4, so a guarded run never loads on an unjudged host.
 //     [--b034 FILE]      # B0-34 as written, on the seeded 5 GB monorepo (tests/fanout/b034.sh). FILE is JSON:
 //                        # `bare` (the local torvalds/linux clone) and `future` (the first-parent commits after the
 //                        # seeded main), which replace the PR merges: 10 a minute push the next one to main, so the
@@ -63,7 +66,7 @@
 
 import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { Agent as HttpsAgent } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,7 +84,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict:
   repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" }, "colo-off": { type: "string" },
   run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
-  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, "seed-prs": { type: "string" }, workflow: { type: "boolean" },
+  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, "seed-prs": { type: "string" }, "hold-file": { type: "string" }, workflow: { type: "boolean" },
   "ls-refs-shard": { type: "boolean" }, "ls-refs-shard-every": { type: "string" }, hosted: { type: "string" },
   hints: { type: "string" }, lean: { type: "boolean" } } });
 if (opt.hosted && !opt.b034) throw new Error("--hosted runs B0-34's load only: pass --b034");
@@ -719,6 +722,19 @@ const LEARNER_WAIT_MS = 300_000;
     writeRow(OUT, gate);
     log(`learner gate: ${ls.length}/${ls.length} learners within one entry of ${commit} (applied ${JSON.stringify(at)}) in ${Date.now() - since} ms, leader wasm ${mem} MiB`);
   }
+}
+// The host guard's hold (`--hold-file`): no load until the guard has judged the leader's host. Fails closed.
+const HOLD_WAIT_MS = 300_000;
+if (opt["hold-file"]) {
+  const f = opt["hold-file"], since = Date.now();
+  while (!existsSync(f) && Date.now() - since < HOLD_WAIT_MS) await sleep(1_000);
+  const v = existsSync(f) ? readFileSync(f, "utf8").trim() : "";
+  writeRow(OUT, { step: "host guard hold", verdict: v || null, waitMs: Date.now() - since });
+  if (v !== "go") {
+    log(`host guard: ${v ? `verdict ${JSON.stringify(v)}` : `no verdict in ${HOLD_WAIT_MS} ms`}; exiting before load, not counted`);
+    process.exit(4);
+  }
+  log(`host guard: go after ${Date.now() - since} ms`);
 }
 // Hosted clients start from an alarm set at begin, so they get time to be created and placed.
 t0 = Date.now() + (opt.hosted ? 90_000 : 5_000);
