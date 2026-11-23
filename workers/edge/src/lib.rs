@@ -396,23 +396,27 @@ async fn read_gate(
     repo: &Repo,
     who: Option<&Principal>,
     beside: Option<Beside<'_>>,
+    share: colo::Share,
 ) -> Result<std::result::Result<graftyard_identity::Decision, String>> {
-    let key = gate::key(repo.id, who);
+    let key = gate::key(repo.id, who, c.write.get());
     // The test arm with the share off (`x-graft-colo: off` with the bed token) keeps the isolate cache alone, under its
     // own keys, so it never takes an entry the shared arm copied (`colo-gate`'s flip compares the two in one row).
     #[cfg(feature = "test-faults")]
     let key = if c.colo_off { key.map(gate::off_key) } else { key };
     let Some(k) = key else {
-        return Ok(match fresh_gate(c, repo, who).await {
+        return Ok(match fresh_gate(c, repo, who, None).await {
             Ok((d, _)) => Ok(d),
             Err(GateFail::Read(e)) => Err(e),
             Err(GateFail::Edge(e)) => return Err(e),
         });
     };
-    // Only a read-class request shares (`colo-gate`); a write reads members as before, its leader binding the answer.
-    let share = c.read_class.get() && !colo_off(c);
+    // Every write keys and keeps its entries as a push's, whatever its share, so no write holds a read-only `Allow`
+    // where a POST could take it.
+    let share = colo::Share { push: c.write.get(), ..share };
+    let share = if colo_off(c) { colo::Share { matches: false, puts: false, ..share } } else { share };
     let url = colo::gate_url(repo.id, k.1, &repo.record);
-    let io = GateIo { c, repo, who, key: k, url, beside: std::cell::RefCell::new(beside) };
+    let io =
+        GateIo { c, repo, who, key: k, url, beside: std::cell::RefCell::new(beside), writable: Default::default() };
     // Boxed for the same reason: with `beside` the gate holds both its fresh read and the rows read beside the front.
     let g = Box::pin(colo::gate(&io, share)).await;
     match g.served {
@@ -457,6 +461,8 @@ struct GateIo<'a, 'c, 'b> {
     key: gate::Key,
     url: String,
     beside: std::cell::RefCell<Option<Beside<'b>>>,
+    /// Whether the last fresh read found the caller may also push here (`fresh_gate_on`, `colo::Share::push`).
+    writable: std::cell::Cell<bool>,
 }
 
 impl colo::GateFx for GateIo<'_, '_, '_> {
@@ -478,7 +484,10 @@ impl colo::GateFx for GateIo<'_, '_, '_> {
         self.c.ctx.wait_until(colo::put_gate(url, at));
     }
     async fn read(&self) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
-        fresh_gate(self.c, self.repo, self.who).await
+        fresh_gate(self.c, self.repo, self.who, Some(&self.writable)).await
+    }
+    fn writable(&self) -> bool {
+        self.writable.get()
     }
     async fn beside(
         &self,
@@ -510,7 +519,7 @@ impl colo::GateFx for GateIo<'_, '_, '_> {
         if kept && mismatch {
             c.timing.put("beside_bad", 1.0);
         }
-        Some((start, fresh_gate_on(c, self.repo, self.who, std::future::ready(Ok(Ok(store)))).await))
+        Some((start, fresh_gate_on(c, self.repo, self.who, std::future::ready(Ok(Ok(store))), None).await))
     }
 }
 
@@ -533,7 +542,15 @@ fn reread_ahead(c: &Ctx<'_>, repo: &Repo, who: Option<&Principal>, k: gate::Key)
         let ctx = Context::new(js);
         let bg = Ctx::background(&env, &ctx, &cfg, &sites, anchor, colo, fields, ssh_front);
         let url = colo::gate_url(repo.id, k.1, &repo.record);
-        let io = GateIo { c: &bg, repo: &repo, who: who.as_ref(), key: k, url, beside: Default::default() };
+        let io = GateIo {
+            c: &bg,
+            repo: &repo,
+            who: who.as_ref(),
+            key: k,
+            url,
+            beside: Default::default(),
+            writable: Default::default(),
+        };
         colo::reread(&io).await;
         colo::end(&k);
     });
@@ -546,6 +563,7 @@ async fn fresh_gate(
     c: &Ctx<'_>,
     repo: &Repo,
     who: Option<&Principal>,
+    writable: Option<&std::cell::Cell<bool>>,
 ) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
     // A push that reads the access rows reads its agent rows in the same read, which the push keeps
     // (`Ctx::push_rows`); with the decision cached it reads no rows here, and `agents::push_context` reads its own.
@@ -559,15 +577,17 @@ async fn fresh_gate(
             core
         }))
     };
-    fresh_gate_on(c, repo, who, rows).await
+    fresh_gate_on(c, repo, who, rows, writable).await
 }
 
-/// `fresh_gate` on the access rows `rows` answers: its own read, or the rows read beside the front (`beside`).
+/// `fresh_gate` on the access rows `rows` answers: its own read, or the rows read beside the front (`beside`). With
+/// `writable`, also whether the caller may push here on the same rows and folds (`may_push`), set on each decision.
 async fn fresh_gate_on(
     c: &Ctx<'_>,
     repo: &Repo,
     who: Option<&Principal>,
     rows: impl std::future::Future<Output = RowsRead>,
+    writable: Option<&std::cell::Cell<bool>>,
 ) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
     // A read-class request may decide on the owner's `Authz` from `rcache`, and the decision is then cached from that
     // fold's read, not from now, so a revocation still binds within one `READ_CACHE` (`reopened`).
@@ -594,7 +614,11 @@ async fn fresh_gate_on(
     let decide = |owner| {
         let owner = gate_owner(owner)?;
         let folds: [&dyn graftyard_identity::AuthzRead; 1] = [&owner];
-        Ok(graftyard_identity::authorize_read(who, c.token_fields.borrow().as_ref(), &folds, &access))
+        let fields = c.token_fields.borrow();
+        if let Some(w) = writable {
+            w.set(who.is_some_and(|p| may_push(p, fields.as_ref(), &folds, &access, &core)));
+        }
+        Ok(graftyard_identity::authorize_read(who, fields.as_ref(), &folds, &access))
     };
     let (d, stamp) = reopened(held.map(|(t, _)| t), at, decide(owner), fresh, decide).await.map_err(GateFail::Read)?;
     Ok((d, Some(stamp)))
@@ -616,6 +640,23 @@ async fn reopened<V, E, F: std::future::Future<Output = V>>(
         (Some(_), Ok(d)) if d != graftyard_identity::Decision::Allow => Ok((decide(fresh().await)?, at)),
         (held, first) => Ok((first?, held.unwrap_or(at))),
     }
+}
+
+/// Whether `p` may push to the repository on the gate's rows and folds: `Push::decide`'s `may_write` (a `Write`
+/// permission through the owner's `Authz` or a collaborator row, the token's own reach with `contents: write`, and a
+/// repository not deleted). An advertisement puts its `Allow` for a POST only when this holds (`cold-write`, C); the
+/// POST's leader decides it again on its own read either way.
+fn may_push(
+    p: &Principal,
+    fields: Option<&graftyard_identity::TokenFields>,
+    folds: &[&dyn graftyard_identity::AuthzRead],
+    access: &graftyard_git::issue_ops::Access<'_>,
+    core: &dyn graftyard_fold::Read,
+) -> bool {
+    use graftyard_identity::{Access, Decision::Allow, WriteAction};
+    graftyard_git::tiers::deleted(core).is_none()
+        && graftyard_identity::authorize_write(p, WriteAction::Push, folds, access) == Allow
+        && graftyard_identity::token_allows(fields, &[("contents", Access::Write)], access) == Allow
 }
 
 /// The owner's `Authz` for the read gate, or why it failed. A read its members shed keeps its OVERLOADED reason, so
@@ -659,15 +700,31 @@ mod gate {
         hash.finalize().into()
     }
 
-    pub(crate) fn key(repo: RepoId, who: Option<&Principal>) -> Option<Key> {
-        match who {
-            None => Some((repo, None)),
-            Some(Principal { actor: Actor::User(_), credential: Credential::Stored(h), .. }) => Some((repo, Some(*h))),
-            Some(Principal { credential: Credential::Stateless(claims), .. }) => {
-                Some((repo, Some(stateless_key(claims))))
+    /// A write's key (`push`) is another hash of the same credential, so its entries, in the isolate and in the data
+    /// center (`colo::gate_url` hashes this credential), never serve a fetch and a fetch's never serve a push
+    /// (`cold-write`, C).
+    pub(crate) fn key(repo: RepoId, who: Option<&Principal>, push: bool) -> Option<Key> {
+        let k = match who {
+            None => (repo, None),
+            Some(Principal { actor: Actor::User(_), credential: Credential::Stored(h), .. }) => (repo, Some(*h)),
+            Some(Principal { credential: Credential::Stateless(claims), .. }) => (repo, Some(stateless_key(claims))),
+            Some(_) => return None,
+        };
+        Some(if push { push_key(k) } else { k })
+    }
+
+    /// Anonymous stays distinct from every credential.
+    fn push_key(k: Key) -> Key {
+        let mut hash = Sha256::new();
+        hash.update(b"graftyard-read-gate-push\0");
+        match k.1 {
+            Some(c) => {
+                hash.update([1]);
+                hash.update(c);
             }
-            Some(_) => None,
+            None => hash.update([0]),
         }
+        (k.0, Some(hash.finalize().into()))
     }
 
     /// The decision held for `k` at any age, the time of the oldest fold read it was made on, and whether it was
@@ -882,8 +939,8 @@ mod gate_tests {
         let repo = RepoId(DbId(1));
         let first = stateless(10);
         let second = stateless(11);
-        assert_eq!(gate::key(repo, Some(&first)), gate::key(repo, Some(&first)));
-        assert_ne!(gate::key(repo, Some(&first)), gate::key(repo, Some(&second)));
+        assert_eq!(gate::key(repo, Some(&first), false), gate::key(repo, Some(&first), false));
+        assert_ne!(gate::key(repo, Some(&first), false), gate::key(repo, Some(&second), false));
     }
 
     #[test]
@@ -894,16 +951,53 @@ mod gate_tests {
         let unseparated: [u8; 32] = Sha256::digest(jti.to_be_bytes()).into();
         for hash in [[0; 32], unseparated] {
             let stored = principal(Credential::Stored(hash));
-            assert_ne!(gate::key(repo, Some(&stateless)), gate::key(repo, Some(&stored)));
+            assert_ne!(gate::key(repo, Some(&stateless), false), gate::key(repo, Some(&stored), false));
         }
+    }
+
+    /// `cold-write` C's key: a receive-pack's entry, in the isolate and in the data center, binds the credential
+    /// and the repository and is never a fetch's. A fetch's `Allow` for the same token and repository, another token's
+    /// push entry, another repository's, and anonymous all key apart, so none serves a POST.
+    #[test]
+    fn a_push_gate_key_misses_a_fetchs_allow_and_another_tokens() {
+        let (repo, other_repo) = (RepoId(DbId(1)), RepoId(DbId(2)));
+        let record = graftyard_types::PlacementRecord {
+            name: graftyard_types::PlacementName::Tri,
+            sites: [graftyard_types::SiteId(0), graftyard_types::SiteId(1), graftyard_types::SiteId(2)]
+                .into_iter()
+                .collect(),
+            home: graftyard_types::SiteId(0),
+            generation: 1,
+            moving_from: None,
+            at: Timestamp(1),
+        };
+        let (a, b) = (principal(Credential::Stored([7; 32])), principal(Credential::Stored([8; 32])));
+        let url = |k: gate::Key| super::colo::gate_url(k.0, k.1, &record);
+        let push = |r, p: Option<&Principal>| gate::key(r, p, true).unwrap();
+        let post = push(repo, Some(&a));
+        assert_eq!(post, push(repo, Some(&a)), "an advertisement and its POST share the entry");
+        for (what, k) in [
+            ("a fetch's Allow, same token and repository", gate::key(repo, Some(&a), false).unwrap()),
+            ("another token's push entry", push(repo, Some(&b))),
+            ("another token's fetch", gate::key(repo, Some(&b), false).unwrap()),
+            ("another repository's push entry", push(other_repo, Some(&a))),
+            ("an anonymous push entry", push(repo, None)),
+            ("an anonymous fetch", gate::key(repo, None, false).unwrap()),
+        ] {
+            assert_ne!(post, k, "isolate key: {what}");
+            assert_ne!(url(post), url(k), "data-center key: {what}");
+        }
+        let (s1, s2) = (stateless(10), stateless(11));
+        assert_ne!(push(repo, Some(&s1)), push(repo, Some(&s2)), "a ghs_ push entry follows its jti");
+        assert_ne!(push(repo, Some(&s1)), gate::key(repo, Some(&s1), false).unwrap());
     }
 
     #[test]
     fn sessions_stay_uncached_and_anonymous_stays_repository_scoped() {
         let repo = RepoId(DbId(1));
         let session = principal(Credential::Session(WebSessionId(Ulid(1))));
-        assert_eq!(gate::key(repo, Some(&session)), None);
-        assert_eq!(gate::key(repo, None), Some((repo, None)));
+        assert_eq!(gate::key(repo, Some(&session), false), None);
+        assert_eq!(gate::key(repo, None, false), Some((repo, None)));
     }
 }
 
@@ -1138,10 +1232,17 @@ pub(crate) async fn install_authz(c: &Ctx<'_>) -> Option<graftyard_identity::Aut
     }
     let read = async {
         let account = graftyard_identity::install_account();
-        let record = placement(c, account).await.ok()??;
-        authz_fold(c, account, &record).await
+        let guess = match rcache::last(&rcache::PLACEMENTS, &account) {
+            Some(r) => Some(r),
+            None => c.system_record(ChainId::Names(account_shard(account))).await.ok(),
+        };
+        let read = |r: PlacementRecord| async move { authz_read(c, account, &r).await };
+        let started = guess.map(|r| (r.clone(), read(r)));
+        link(started, placement(c, account), read).await.ok()?.map(|(_, f)| f)
     };
-    let got = read.await;
+    // Boxed: the link holds two `Authz` reads, and inline in `fetch`'s future it took the edge past wasm's 1 MiB
+    // stack on every request, as `beside` did (`tests/edgeboot/run.sh`).
+    let got = Box::pin(read).await;
     c.install.replace(Some(got.clone()));
     got
 }
@@ -3776,12 +3877,20 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     graftyard_lookup::set_colo(colo_id(&req));
     graftyard_lookup::set_client();
+    // A spread read's learner refresh runs after the reply, not inside the read (`cold-write`, B).
+    graftyard_lookup::defer_refreshes();
     // The version this request ran, from the version metadata binding, for `graft-front`'s mismatch check. Only a
     // request that asks for it (`graft-front` sends `FRONT_HEADER`) gets the header, and `graft-front` takes it off
     // the client's response, so no client response changes.
     let report = req.headers().has(FRONT_HEADER)?;
     let method = req.method();
     let r = serve(req, &env, &ctx, rid, &cfg, url, path.clone(), &sites, anchor).await;
+    if graftyard_lookup::refreshes_pending() {
+        let (env, sites) = (env.clone(), sites.clone());
+        ctx.wait_until(async move {
+            graftyard_lookup::run_refreshes(&graftyard_lookup::Bindings { env: &env, sites: &sites }).await;
+        });
+    }
     // why-logs: one line per 5xx, whatever route answered it, with the reply's message, so a row counts its 5xx by
     // reason (`tests/fanout/fivexxwhy.py`). The body is read from a clone after the reply is sent.
     let r = match r {
@@ -4097,6 +4206,16 @@ async fn serve(
         if dumb {
             return Ok(None);
         }
+        // Under 32.8 every push reads the install's `Authz` whoever sent it (`needs_install`), so it starts beside
+        // the token's read rather than after it.
+        if rpc_push && c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT) {
+            let (who, _) = Box::pin(futures_util::future::join(
+                api::timed(&c, "auth", authenticate(&c, &req)),
+                api::timed(&c, "install", install_authz(&c)),
+            ))
+            .await;
+            return who;
+        }
         let who = api::timed(&c, "auth", authenticate(&c, &req)).await?;
         if rpc_push && who.as_ref().is_some_and(|w| needs_install(&c, w)) {
             api::timed(&c, "install", install_authz(&c)).await;
@@ -4107,7 +4226,8 @@ async fn serve(
     // data center's link entry, and starts the read gate's access rows on it beside the front, unless a shared gate
     // entry will answer the gate; the gate keeps those rows only if the resolve names the same repository.
     let own = held_guess(&owner).is_some();
-    let link = (read_class && !dumb && !own && !colo_off(&c))
+    // A receive-pack takes the guess too, for its `resolve` alone: it reads no rows beside (`cold-write`, E).
+    let link = ((read_class || write) && !dumb && !own && !colo_off(&c))
         .then(|| Some(colo::link_url(&Login::parse(&owner).ok()?.key(), &RepoName::parse(&name).ok()?.key())))
         .flatten();
     let linked = match &link {
@@ -4134,7 +4254,7 @@ async fn serve(
         },
     );
     let mut side = match &linked {
-        Some(g) if !gate_shared(&c, &req, g).await? => Some(beside_start(&c, g.clone())),
+        Some(g) if read_class && !gate_shared(&c, &req, g).await? => Some(beside_start(&c, g.clone())),
         _ => None,
     };
     let both =
@@ -4179,7 +4299,13 @@ async fn serve(
         );
         // An upload-pack's body, key and clone-cache lookup run beside the gate, and are kept only if it allows
         // (`hit-gate`): no byte of the repository leaves before the gate decides.
-        let gate = api::timed(&c, "gate", read_gate(&c, repo, who.as_ref(), side.take()));
+        let share = match route {
+            _ if read_class => colo::READ,
+            Route::InfoRefs { service: Some(Service::ReceivePack), .. } => colo::ADVERT,
+            Route::Rpc { service: Service::ReceivePack, .. } => colo::POST,
+            _ => colo::OFF,
+        };
+        let gate = api::timed(&c, "gate", read_gate(&c, repo, who.as_ref(), side.take(), share));
         let gate = if upload {
             let allows = |g: &Result<_>| matches!(g, Ok(Ok(graftyard_identity::Decision::Allow)));
             let (g, f) = graftyard_git::compose::beside_gate(gate, upload_front(&c, &mut req, repo), allows).await;
@@ -5022,6 +5148,54 @@ mod tests {
         assert_eq!(run(None, Ok(Hidden), true), (Ok((Hidden, at)), 0));
         assert_eq!(run(None, Ok(Allow), true), (Ok((Allow, at)), 0));
         assert_eq!(run(Some(Timestamp(12_000)), Err("down".into()), true), (Err("down".into()), 0));
+    }
+
+    /// `cold-write` C: an advertisement puts its `Allow` for a POST only when the caller may push, on the same terms
+    /// as `Push::decide`'s `may_write`: a `Write` grant passes; a `Read` grant, a token whose own reach is
+    /// `contents: read` or another owner, and anyone on a deleted repository do not.
+    #[test]
+    fn only_a_caller_who_may_push_has_an_allow_a_post_can_take() {
+        use graftyard_identity::{
+            AccountKind, Actor, AuthzEvent, AuthzFold, AuthzRead, Credential, PermissionSet, Principal, RepoPermission,
+            ScopeSet, TokenFields, UserId,
+        };
+        use graftyard_raft::Fold;
+        let (owner, repo) = (AccountId(DbId(70)), RepoId(DbId(9)));
+        let user = |id: i64| Principal {
+            actor: Actor::User(UserId(AccountId(DbId(id)))),
+            scopes: ScopeSet(1),
+            credential: Credential::Stored([id as u8; 32]),
+            sso_orgs: smallvec::SmallVec::new(),
+        };
+        let mut fold = AuthzFold::new(owner);
+        fold.apply(&AuthzEvent::Opened { kind: AccountKind::User, enterprise: None });
+        for (who, p) in [(71, RepoPermission::Write), (72, RepoPermission::Read)] {
+            fold.apply(&AuthzEvent::Grant { repo, grantee: UserId(AccountId(DbId(who))), permission: Some(p) });
+        }
+        let folds: [&dyn AuthzRead; 1] = [&fold];
+        let core = graftyard_fold::MemStore::default();
+        let access = graftyard_git::issue_ops::Access { repo, owner, core: &core };
+        let fields = |level, resource_owner| TokenFields {
+            permissions: Some(PermissionSet([(Box::from("contents"), level)].into_iter().collect())),
+            resource_owner,
+            ..TokenFields::default()
+        };
+        let may = |p: &Principal, f: Option<&TokenFields>| super::may_push(p, f, &folds, &access, &core);
+        assert!(may(&user(71), None), "a Write grant may push");
+        assert!(may(&user(70), None), "the owner may push");
+        assert!(!may(&user(72), None), "a Read grant's Allow is a fetch's, never a push's");
+        assert!(!may(&user(73), None), "no grant");
+        let w = graftyard_identity::Access::Write;
+        assert!(may(&user(71), Some(&fields(w, None))));
+        assert!(!may(&user(71), Some(&fields(graftyard_identity::Access::Read, None))), "a contents: read token");
+        assert!(!may(&user(71), Some(&fields(w, Some(AccountId(DbId(99)))))), "a token for another owner");
+        let mut gone = graftyard_fold::MemStore::default();
+        let tomb = postcard::to_allocvec(&(Timestamp(5), None::<AccountId>)).expect("encodes");
+        let row =
+            graftyard_fold::Stored { written: Default::default(), cols: vec![graftyard_fold::Val::Blob(tomb.into())] };
+        graftyard_fold::Store::put(&mut gone, "deleted", Vec::new(), row);
+        let access = graftyard_git::issue_ops::Access { repo, owner, core: &gone };
+        assert!(!super::may_push(&user(71), None, &folds, &access, &gone), "a deleted repository");
     }
 
     /// An owner's `Authz` read its members shed keeps the shed reason through the read gate, so the git and LFS gates

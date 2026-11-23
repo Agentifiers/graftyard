@@ -15,6 +15,7 @@ No git cache shard runs, so each POST ends at validate (503). The stages before 
 ```
 bash tests/coldwrite/run.sh                         # build both scripts, serve, seed, measure, stop
 B=/tmp/cw bash tests/coldwrite/run.sh               # reuse builds already in /tmp/cw/{site,edge}
+ADVERT=1 B=/tmp/cw bash tests/coldwrite/run.sh      # each cold POST after an advertisement on edge 0
 ```
 
 ## Where a cold POST's front and gate go (base build, `raw/base.txt`)
@@ -53,6 +54,18 @@ Arms are cumulative. Each is 6 cold first POSTs, one per fresh edge script; fron
 | A+B+C: a receive-pack POST's gate matches the data center's `Allow` entry | 266 (199-299) | 98 | 266 | 2 (2-3) | 268 (201-302) |
 | A+B+C+E: a receive-pack POST takes the data center's link guess for `resolve` | 160 (101-166) | 100 | 160 | 2 (2-3) | 163 (104-168) |
 
+As built (branch `f112-cold-build`, the same bed), only an advertisement puts the gate entry a POST serves from:
+
+| Arm | front | gate | front + gate | gate served |
+| --- | --- | --- | --- | --- |
+| built, each cold POST after an advertisement on edge 0 (`ADVERT=1`, `raw/built-advert.txt`) | 100 (97-161) | 2 (1-165) | 132 (99-262) | 5 of 6 from the data center's entry |
+| built, no advertisement (`raw/built.txt`) | 161 (110-170) | 159 (105-173) | 320 (267-331) | 0 of 6: nothing put the entry |
+
+The sixth advertised POST read its gate fresh. Edge 0 served its five advertisements from its own first read, as an
+advertisement may within `READ_CACHE`, and put that read's stamp each time, so the entry was 9.9 s old at the sixth
+POST, past `READ_CACHE` less `COLO_SKEW`. The POST after an advertisement on its own isolate paid gate 0
+(`gate_iso`). Warm POSTs stayed at front 100 to 169 ms.
+
 A fifth arm, D, let a POST take an install `Authz` and `Placement` up to `READ_CACHE` old. It changed only the
 warm POST's `install` (to 0 ms), not its front, which `resolve` sets (`raw/abcd.txt`).
 
@@ -66,6 +79,7 @@ each arm is in `raw/`.
 
 - Round trips are fixed waits. Hosted round trips vary, and members do their own work besides.
 - One client, no load. The batch (`edge-read-batch`) and the shed retries never engage.
-- In C and E, the data center's entries came from edge 0's earlier POST. On a real push, the advertisement just before
-  the POST would put them; the design has the advertisement put and the POST match.
+- In the prototype's C and E, the data center's entries came from edge 0's earlier POST. As built only an
+  advertisement puts, so `ADVERT=1` sends one on edge 0 before each cold POST, as git does; without it a built cold
+  POST reads its gate fresh (`raw/built.txt`, `raw/built-advert.txt`).
 - One local machine: no colo boundaries, and every edge script shares one Cache API.

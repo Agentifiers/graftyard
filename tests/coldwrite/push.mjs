@@ -56,7 +56,11 @@ const out = [];
 // Edge 0 pushes first, so the repository's group exists and leads, as on a hosted install: the cold edges then time
 // a cold isolate, not the group's first create.
 show("edge 0 setup POST", await post(0, "refs/heads/setup"));
+// ADVERT=1: each cold POST follows its advertisement on edge 0, another isolate, as git sends them and as mt18's cold
+// POSTs did (`cold-write`, C: only an advertisement puts the entry a POST serves from).
+const advertFirst = process.env.ADVERT === "1";
 for (let e = 1; e < n - 1; e++) {
+  if (advertFirst) show(`edge 0 advertisement before edge ${e}`, await req(0, "GET", `${path}/info/refs?service=git-receive-pack`));
   const cold = await post(e, `refs/heads/cold${e}`);
   show(`edge ${e} cold POST`, cold);
   const warm = await post(e, `refs/heads/warm${e}`);

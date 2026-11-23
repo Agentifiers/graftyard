@@ -75,6 +75,8 @@ pub(crate) trait GateFx {
     async fn matched(&self) -> Option<Timestamp>;
     async fn share(&self, at: Timestamp);
     async fn read(&self) -> Result<(Decision, Option<Timestamp>), Self::Err>;
+    /// Whether the last fresh read also found the caller may push to the repository (`Share::push`).
+    fn writable(&self) -> bool;
     /// The decision on the access rows read beside the front on the guessed repository (`beside`), kept only when
     /// the resolve named that repository: when those rows' read started, and the decision with the stamp a fresh read
     /// at the gate would give it. `None` when no rows were read beside, or they were dropped.
@@ -92,29 +94,65 @@ async fn fresh<F: GateFx>(fx: &F) -> Result<(Decision, Option<Timestamp>), F::Er
     }
 }
 
-/// The read gate on the served path. `share` is false for a write, a session, or the test arm with the share off,
-/// which then keeps the isolate cache alone, as before `colo-gate`.
-pub(crate) async fn gate<F: GateFx>(fx: &F, share: bool) -> Gated<F::Err> {
+/// How a gate uses the data center's entries. A fetch both matches and puts, and re-reads ahead (`READ`). A
+/// receive-pack advertisement only puts, and only an `Allow` its fresh read found it may also push on (`ADVERT`): it
+/// sends refs, so it decides on its own read. A receive-pack POST only matches (`POST`): its leader's `decide`
+/// re-reads the credential and the owner's `Authz` and binds, and nothing reaches the client before it, so it serves
+/// from an advertisement's entry under the same stamp rule and never puts or re-reads ahead (`cold-write`, C). The
+/// two receive-pack uses key their entries apart from a fetch's (`crate::gate::push_key`), so a fetch's `Allow`
+/// never serves a POST. Anything else, a session, or the test arm with the share off, uses neither (`OFF`).
+/// Under a receive-pack's key (`push`), a fresh `Allow` is held or put only when that read found the caller may also
+/// push (`GateFx::writable`), so a read-only caller's `Allow` never serves a POST. An advertisement served from its
+/// isolate's own read puts that read's stamp, so a POST's earlier read on the isolate never keeps the entry from the
+/// next POST on another isolate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Share {
+    pub(crate) matches: bool,
+    pub(crate) puts: bool,
+    pub(crate) push: bool,
+}
+
+pub(crate) const READ: Share = Share { matches: true, puts: true, push: false };
+pub(crate) const ADVERT: Share = Share { matches: false, puts: true, push: true };
+pub(crate) const POST: Share = Share { matches: true, puts: false, push: true };
+pub(crate) const OFF: Share = Share { matches: false, puts: false, push: false };
+
+/// The read gate on the served path, sharing as `share` says; with `OFF` it keeps the isolate cache alone, as before
+/// `colo-gate`.
+pub(crate) async fn gate<F: GateFx>(fx: &F, share: Share) -> Gated<F::Err> {
+    let ahead_ok = share == READ;
     let now = fx.now();
+    // A copy a POST took of the data center's entry never answers an advertisement, which decides on its own
+    // isolate's reads.
     if let Some((at, d, foreign)) = fx.held()
         && servable(at, now, foreign)
+        && !(share.push && !share.matches && foreign)
     {
-        let ahead = share && d == Decision::Allow && now.0.saturating_sub(at.0) >= ms(COLO_AHEAD);
+        let ahead = ahead_ok && d == Decision::Allow && now.0.saturating_sub(at.0) >= ms(COLO_AHEAD);
+        if share.push && share.puts && d == Decision::Allow && !foreign {
+            fx.share(at).await;
+        }
         return Gated { decision: Ok(d), served: Served::Isolate(now.0.saturating_sub(at.0)), ahead };
     }
-    if share && let Some(at) = fx.matched().await {
+    if share.matches
+        && let Some(at) = fx.matched().await
+    {
         let now = fx.now();
         if servable(at, now, true) {
             // The copy keeps the entry's stamp, so the isolate never serves it longer than the data center would.
             fx.hold(at, Decision::Allow, true);
             let age = now.0.saturating_sub(at.0);
-            return Gated { decision: Ok(Decision::Allow), served: Served::Colo(age), ahead: age >= ms(COLO_AHEAD) };
+            let ahead = ahead_ok && age >= ms(COLO_AHEAD);
+            return Gated { decision: Ok(Decision::Allow), served: Served::Colo(age), ahead };
         }
     }
     let decision = match fresh(fx).await {
         Ok((d, Some(at))) => {
-            fx.hold(at, d, false);
-            if share && d == Decision::Allow {
+            let keep = d != Decision::Allow || !share.push || fx.writable();
+            if keep {
+                fx.hold(at, d, false);
+            }
+            if share.puts && d == Decision::Allow && keep {
                 fx.share(at).await;
             }
             Ok(d)
@@ -330,6 +368,8 @@ mod tests {
         colo: RefCell<Option<Timestamp>>,
         revoked: Cell<Option<u64>>,
         read_ms: u64,
+        /// The caller may read but not push: every fresh read allows a fetch only.
+        read_only: Cell<bool>,
     }
 
     struct Isolate<'w> {
@@ -372,10 +412,19 @@ mod tests {
             let d = |granted| (if granted { Allow } else { Hidden }, Some(Timestamp(self.w.now.get())));
             Some((Timestamp(start), rows.map(d).map_err(|()| "shed".to_string())))
         }
+        fn writable(&self) -> bool {
+            !self.w.read_only.get()
+        }
     }
 
     fn world(read_ms: u64) -> World {
-        World { now: Cell::new(0), colo: RefCell::new(None), revoked: Cell::new(None), read_ms }
+        World {
+            now: Cell::new(0),
+            colo: RefCell::new(None),
+            revoked: Cell::new(None),
+            read_ms,
+            read_only: Cell::new(false),
+        }
     }
 
     fn iso(w: &World) -> Isolate<'_> {
@@ -414,21 +463,21 @@ mod tests {
         let (a, b) = (iso(&w), iso(&w));
         // Isolate a reads fresh at 1,000; the read takes 600 ms.
         at(&w, 1_000);
-        let g = run(gate(&a, true));
+        let g = run(gate(&a, READ));
         assert_eq!((g.decision, g.served, g.ahead), (Ok(Allow), Served::Read, false));
         assert_eq!(*w.colo.borrow(), Some(Timestamp(1_000)), "stamped at the fold read's start, not at its put");
         assert_eq!(a.held(), Some((Timestamp(1_000), Allow, false)));
         // Isolate b matches at 5,000 and copies the entry with its stamp.
         at(&w, 5_000);
-        let g = run(gate(&b, true));
+        let g = run(gate(&b, READ));
         assert_eq!((g.decision, g.served, g.ahead), (Ok(Allow), Served::Colo(4_000), false));
         assert_eq!(b.held(), Some((Timestamp(1_000), Allow, true)), "the copy keeps the entry's stamp");
         // At 9,999 b serves its copy and a re-read ahead is due; at 10,000 the copy and the entry have both lapsed.
         at(&w, 9_999);
-        let g = run(gate(&b, true));
+        let g = run(gate(&b, READ));
         assert_eq!((g.decision, g.served, g.ahead), (Ok(Allow), Served::Isolate(8_999), true));
         at(&w, 10_000);
-        let g = run(gate(&b, true));
+        let g = run(gate(&b, READ));
         assert_eq!(g.served, Served::Read, "past READ_CACHE less the skew nothing serves it");
         assert_eq!(*w.colo.borrow(), Some(Timestamp(10_000)));
         // A re-read ahead at 15,000 replaces the entry with its own stamp.
@@ -447,13 +496,13 @@ mod tests {
         w.revoked.set(Some(0));
         let c = iso(&w);
         at(&w, 1_000);
-        assert_eq!(run(gate(&c, true)).decision, Ok(Hidden));
+        assert_eq!(run(gate(&c, READ)).decision, Ok(Hidden));
         assert_eq!(*w.colo.borrow(), None, "a refusal is never put");
         let w = world(100);
         *w.colo.borrow_mut() = Some(Timestamp(900));
         let d = iso(&w);
         at(&w, 1_000);
-        let g = run(gate(&d, false));
+        let g = run(gate(&d, OFF));
         assert_eq!(g.served, Served::Read, "the share off reads members as before");
         assert_eq!(*w.colo.borrow(), Some(Timestamp(900)), "and puts nothing");
     }
@@ -485,7 +534,7 @@ mod tests {
         // The rows' read started at 1,000; the front (1.2 s cold) ends at 2,200, when the gate runs.
         *a.beside.borrow_mut() = Some((1_000, Ok(true)));
         at(&w, 2_200);
-        let g = run(gate(&a, true));
+        let g = run(gate(&a, READ));
         assert_eq!((g.decision, g.served), (Ok(Allow), Served::Read));
         assert_eq!(a.reads.get(), 0, "the rows read beside are the gate's read");
         assert_eq!(a.held(), Some((Timestamp(1_000), Allow, false)), "stamped at the rows' read, not at the gate");
@@ -494,21 +543,21 @@ mod tests {
         w.revoked.set(Some(1_500));
         let b = iso(&w);
         at(&w, 9_999);
-        assert_eq!(run(gate(&b, true)).served, Served::Colo(8_999));
+        assert_eq!(run(gate(&b, READ)).served, Served::Colo(8_999));
         let b = iso(&w);
         at(&w, 10_000);
-        assert_eq!(run(gate(&b, true)).decision, Ok(Hidden), "past READ_CACHE less the skew from the rows' read");
+        assert_eq!(run(gate(&b, READ)).decision, Ok(Hidden), "past READ_CACHE less the skew from the rows' read");
         at(&w, 11_000);
-        assert_eq!(run(gate(&a, true)).served, Served::Isolate(10_000));
+        assert_eq!(run(gate(&a, READ)).served, Served::Isolate(10_000));
         at(&w, 11_001);
-        assert_eq!(run(gate(&a, true)).decision, Ok(Hidden), "the isolate's own copy lapses past READ_CACHE");
+        assert_eq!(run(gate(&a, READ)).decision, Ok(Hidden), "the isolate's own copy lapses past READ_CACHE");
         // Rows read after the removal refuse: the gate reads again fresh, refuses, and puts nothing.
         let w = world(100);
         w.revoked.set(Some(500));
         let c = iso(&w);
         *c.beside.borrow_mut() = Some((1_000, Ok(false)));
         at(&w, 2_000);
-        assert_eq!(run(gate(&c, true)).decision, Ok(Hidden));
+        assert_eq!(run(gate(&c, READ)).decision, Ok(Hidden));
         assert_eq!((c.reads.get(), *w.colo.borrow()), (1, None), "a refusal on the rows read beside is read fresh");
         // A grant given since the rows' read opens on the fresh read.
         let w = world(100);
@@ -517,13 +566,13 @@ mod tests {
         *d.beside.borrow_mut() = Some((1_000, Ok(false)));
         at(&w, 2_000);
         w.revoked.set(None);
-        assert_eq!((run(gate(&d, true)).decision, d.reads.get()), (Ok(Allow), 1));
+        assert_eq!((run(gate(&d, READ)).decision, d.reads.get()), (Ok(Allow), 1));
         // An error on the rows read beside fails the gate; it is not hidden by another read.
         let w = world(100);
         let e = iso(&w);
         *e.beside.borrow_mut() = Some((1_000, Err(())));
         at(&w, 2_000);
-        assert_eq!((run(gate(&e, true)).decision, e.reads.get()), (Err("shed".into()), 0));
+        assert_eq!((run(gate(&e, READ)).decision, e.reads.get()), (Err("shed".into()), 0));
     }
 
     /// A revocation: the grant is removed at t. Five isolates serve a request every 700 ms each way it can be served,
@@ -540,7 +589,7 @@ mod tests {
         for (n, now) in (0..60_000).step_by(700).enumerate() {
             at(&w, now);
             let i = &isolates[n % isolates.len()];
-            let g = run(gate(i, true));
+            let g = run(gate(i, READ));
             if g.served == Served::Read && now >= t {
                 assert_eq!(g.decision, Ok(Hidden), "a fresh read at {now} after the revocation");
             }
@@ -558,6 +607,71 @@ mod tests {
         assert!(late.is_empty(), "served Allow past t + READ_CACHE: {late:?}");
         assert!(served_after_t > 0, "entries from before t still serve within the bound");
         assert!(colo_max < t, "the shared entry was stamped at {colo_max}, at or after the revocation at {t}");
+    }
+
+    /// `cold-write` C, the modes: an advertisement decides on its own read every time and only puts; a POST serves the
+    /// advertisement's entry under the same stamp rule, never puts, and never re-reads ahead; a refusal is never put
+    /// for a POST to find.
+    #[test]
+    fn a_push_post_serves_only_an_advertisements_entry_and_an_advertisement_never_serves_one() {
+        let w = world(300);
+        let (adv, post) = (iso(&w), iso(&w));
+        // An entry already there does not answer an advertisement: it reads fresh, and puts its own stamp.
+        *w.colo.borrow_mut() = Some(Timestamp(500));
+        at(&w, 1_000);
+        let g = run(gate(&adv, ADVERT));
+        assert_eq!((g.decision, g.served, adv.reads.get()), (Ok(Allow), Served::Read, 1), "an advertisement reads");
+        assert_eq!(*w.colo.borrow(), Some(Timestamp(1_000)), "and puts its fresh Allow");
+        // Its own isolate copy still answers its next advertisement within READ_CACHE, as before colo-gate.
+        at(&w, 2_000);
+        assert_eq!(run(gate(&adv, ADVERT)).served, Served::Isolate(1_000));
+        // A POST on a cold isolate serves the entry, with no read, and is never due a re-read ahead.
+        at(&w, 7_000);
+        let g = run(gate(&post, POST));
+        assert_eq!((g.decision, g.served, g.ahead, post.reads.get()), (Ok(Allow), Served::Colo(6_000), false, 0));
+        at(&w, 9_500);
+        let g = run(gate(&post, POST));
+        assert_eq!((g.served, g.ahead), (Served::Isolate(8_500), false), "a POST's copy never re-reads ahead");
+        // Past READ_CACHE less the skew the POST reads fresh, and puts nothing.
+        let post2 = iso(&w);
+        at(&w, 10_000);
+        let g = run(gate(&post2, POST));
+        assert_eq!((g.served, post2.reads.get()), (Served::Read, 1));
+        assert_eq!(*w.colo.borrow(), Some(Timestamp(1_000)), "a POST never puts");
+        assert_eq!(post2.held(), Some((Timestamp(10_000), Allow, false)), "it holds its own read for its next POST");
+        // An advertisement on that isolate serves the POST's read and puts its stamp, not now, for a POST elsewhere.
+        at(&w, 11_000);
+        assert_eq!((run(gate(&post2, ADVERT)).served, post2.reads.get()), (Served::Isolate(1_000), 1));
+        assert_eq!(*w.colo.borrow(), Some(Timestamp(10_000)));
+        // A copy a POST took from the data center never answers an advertisement: it reads fresh.
+        let post3 = iso(&w);
+        at(&w, 11_500);
+        assert_eq!(run(gate(&post3, POST)).served, Served::Colo(1_500));
+        at(&w, 12_000);
+        assert_eq!((run(gate(&post3, ADVERT)).served, post3.reads.get()), (Served::Read, 1));
+        assert_eq!(*w.colo.borrow(), Some(Timestamp(12_000)));
+        // A refused advertisement puts nothing, so a POST after it reads fresh.
+        let w = world(100);
+        w.revoked.set(Some(0));
+        let (adv, post) = (iso(&w), iso(&w));
+        at(&w, 1_000);
+        assert_eq!(run(gate(&adv, ADVERT)).decision, Ok(Hidden));
+        assert_eq!(*w.colo.borrow(), None);
+        assert_eq!((run(gate(&post, POST)).decision, post.reads.get()), (Ok(Hidden), 1));
+        // A caller who may fetch but not push: its advertisement's `Allow` is neither put nor held, so its next
+        // advertisement and a POST each read fresh, while a fetch's own `Allow` is held and put as before.
+        let w = world(100);
+        w.read_only.set(true);
+        let (adv, post) = (iso(&w), iso(&w));
+        at(&w, 1_000);
+        assert_eq!(run(gate(&adv, ADVERT)).decision, Ok(Allow));
+        assert_eq!((*w.colo.borrow(), adv.held()), (None, None), "a read-only Allow is never a push's entry");
+        at(&w, 2_000);
+        assert_eq!((run(gate(&adv, ADVERT)).served, adv.reads.get()), (Served::Read, 2));
+        assert_eq!((run(gate(&post, POST)).served, post.reads.get(), post.held()), (Served::Read, 1, None));
+        let fetch = iso(&w);
+        run(gate(&fetch, READ));
+        assert!(w.colo.borrow().is_some() && fetch.held().is_some(), "a fetch's Allow is kept under its own key");
     }
 
     /// Every input of the key is in it: the credential, the repository, and the placement record, and the raw

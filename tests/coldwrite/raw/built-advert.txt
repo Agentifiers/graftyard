@@ -1,0 +1,178 @@
+bed up on 8796 in /tmp/cw
+seeded cw/r (repo 65536), install account 1
+edge 0 setup POST: 503 in 1971 ms | auth 78, install 167, resolve 242, front 242, gate_rows 1634, gate_authz 164, gate 1641, context 0, total 1906
+    +  59   61 ms  s0 /read                names:438#1#f0
+    +  59   63 ms  s0 /read                tokens:2746#1#f0
+    +  59   63 ms  s0 /read                names:24#1#f0
+    +  59  156 ms  s2 /read                authz:1#1#f2
+    + 129   61 ms  s0 /read                names:174#1#f0
+    + 193   96 ms  s1 /read                authz:7000001#1#f1
+    + 298  161 ms  s2 /read                authz:7000001#1#f2
+    + 300  150 ms  s2 /read                repo:65536#1#f2
+    + 458   61 ms  s0 /read                repo:65536#1#f0
+    + 523   91 ms  s1 /read                repo:65536#1#f1
+    + 617   61 ms  s0 /read                repo:65536#1#f0
+    + 681   91 ms  s1 /read                repo:65536#1#f1
+    + 775  152 ms  s2 /read                repo:65536#1#f2
+    + 935   61 ms  s0 /read                repo:65536#1#f0
+    + 998   91 ms  s1 /read                repo:65536#1#f1
+    +1092  150 ms  s2 /read                repo:65536#1#f2
+    +1258   61 ms  s0 /read                names:195#1#f0
+    +1258   67 ms  s0 /read                names:195#1#f0
+    +1261   68 ms  s0 /read                names:195#1#f0
+    +1324   62 ms  s0 /read                names:174#1#f0
+    +1328  155 ms  s0 /read                names:174#1#f0
+    +1331  225 ms  s0 /read                names:174#1#f0
+    +1636   63 ms  s0 /read                repo:65536#1#f0
+    +1701   62 ms  s0 /place               repo:65536#1#f0
+    +1766  160 ms  s2 /read                repo:65536#1#f2
+    +1954   93 ms  s1 /status              authz:7000001#1#f1
+    +1954  152 ms  s2 /status              authz:1#1#f2
+    +1954  153 ms  s2 /status              repo:65536#1#f2
+edge 0 advertisement before edge 1: 200 in 241 ms | 
+    +   7   63 ms  s0 /read                names:438#1#f0
+    +   7   64 ms  s0 /read                names:174#1#f0
+    +   7   65 ms  s0 /read                tokens:2746#1#f0
+    +   7  158 ms  s2 /read                authz:7000001#1#f2
+    + 169   63 ms  s0 /read                repo:65536#1#f0
+edge 1 cold POST: 503 in 125 ms | auth 70, install 71, resolve 98, front 98, gate 1, context 0, total 111
+    +  12   63 ms  s0 /read                names:438#1#f0
+    +  12   63 ms  s0 /read                names:174#1#f0
+    +  12   64 ms  s0 /read                tokens:2746#1#f0
+    +  12   64 ms  s0 /read                names:24#1#f0
+    +  13   63 ms  s0 /read                authz:1#1#f0
+    +  13   93 ms  s1 /read                authz:7000001#1#f1
+    + 120   61 ms  s0 /status              authz:1#1#f0
+    + 120   92 ms  s1 /status              authz:7000001#1#f1
+edge 1 warm POST: 503 in 179 ms | auth 0, install 160, resolve 98, front 161, gate 0, gate_iso 3114, context 0, total 170
+    +   7   61 ms  s0 /read                names:438#1#f0
+    +   7   62 ms  s0 /read                names:174#1#f0
+    +   7   62 ms  s0 /read                names:24#1#f0
+    +   7   94 ms  s1 /read                authz:7000001#1#f1
+    +   8  155 ms  s2 /read                authz:1#1#f2
+edge 0 advertisement before edge 2: 200 in 240 ms | 
+    +   6   61 ms  s0 /read                names:438#1#f0
+    +   6   62 ms  s0 /read                tokens:2746#1#f0
+    +   6   69 ms  s0 /read                names:174#1#f0
+    +   6  159 ms  s2 /read                authz:7000001#1#f2
+    + 169   62 ms  s0 /read                repo:65536#1#f0
+edge 2 cold POST: 503 in 189 ms | auth 68, install 102, resolve 160, front 160, gate 1, context 0, total 174
+    +  14   63 ms  s0 /read                names:438#1#f0
+    +  14   63 ms  s0 /read                names:174#1#f0
+    +  14   63 ms  s0 /read                tokens:2746#1#f0
+    +  14   63 ms  s0 /read                names:24#1#f0
+    +  14  155 ms  s2 /read                authz:7000001#1#f2
+    +  15   99 ms  s1 /read                authz:1#1#f1
+    + 184   93 ms  s1 /status              authz:1#1#f1
+    + 185  152 ms  s2 /status              authz:7000001#1#f2
+edge 2 warm POST: 503 in 179 ms | auth 0, install 100, resolve 159, front 159, gate 0, gate_iso 4625, context 0, total 168
+    +   6   63 ms  s0 /read                names:438#1#f0
+    +   6   64 ms  s0 /read                names:174#1#f0
+    +   6   64 ms  s0 /read                names:24#1#f0
+    +   7   96 ms  s1 /read                authz:1#1#f1
+    +   7  155 ms  s2 /read                authz:7000001#1#f2
+edge 0 advertisement before edge 3: 200 in 171 ms | 
+    +   5   62 ms  s0 /read                names:438#1#f0
+    +   5   62 ms  s0 /read                names:174#1#f0
+    +   5   62 ms  s0 /read                tokens:2746#1#f0
+    +   6   94 ms  s1 /read                authz:7000001#1#f1
+    + 102   63 ms  s0 /read                repo:65536#1#f0
+edge 3 cold POST: 503 in 191 ms | auth 68, install 99, resolve 161, front 161, gate 4, context 0, total 175
+    +  15   62 ms  s0 /read                names:438#1#f0
+    +  15   62 ms  s0 /read                names:174#1#f0
+    +  15   63 ms  s0 /read                tokens:2746#1#f0
+    +  15   63 ms  s0 /read                names:24#1#f0
+    +  16   95 ms  s1 /read                authz:1#1#f1
+    +  16  155 ms  s2 /read                authz:7000001#1#f2
+    + 186   92 ms  s1 /status              authz:1#1#f1
+    + 186  152 ms  s2 /status              authz:7000001#1#f2
+edge 3 warm POST: 503 in 180 ms | auth 0, install 99, resolve 161, front 161, gate 0, gate_iso 6072, context 0, total 170
+    +   6   62 ms  s0 /read                names:438#1#f0
+    +   6   62 ms  s0 /read                names:174#1#f0
+    +   6   62 ms  s0 /read                names:24#1#f0
+    +   7   95 ms  s1 /read                authz:1#1#f1
+    +   7  156 ms  s2 /read                authz:7000001#1#f2
+edge 0 advertisement before edge 4: 200 in 241 ms | 
+    +   6   63 ms  s0 /read                names:438#1#f0
+    +   6   63 ms  s0 /read                tokens:2746#1#f0
+    +   6   69 ms  s0 /read                names:174#1#f0
+    +   7  155 ms  s2 /read                authz:7000001#1#f2
+    + 165   64 ms  s0 /read                repo:65536#1#f0
+edge 4 cold POST: 503 in 134 ms | auth 82, install 97, resolve 86, front 98, gate 1, context 0, total 113
+    +  13   68 ms  s0 /read                names:174#1#f0
+    +  13   69 ms  s0 /read                authz:7000001#1#f0
+    +  13   69 ms  s0 /read                tokens:2746#1#f0
+    +  13   70 ms  s0 /read                names:24#1#f0
+    +  13   81 ms  s0 /read                names:438#1#f0
+    +  13   93 ms  s1 /read                authz:1#1#f1
+    + 122   62 ms  s0 /status              authz:7000001#1#f0
+    + 122   93 ms  s1 /status              authz:1#1#f1
+edge 4 warm POST: 503 in 183 ms | auth 0, install 161, resolve 101, front 162, gate 0, gate_iso 7534, context 0, total 172
+    +   6   62 ms  s0 /read                names:438#1#f0
+    +   6   63 ms  s0 /read                names:174#1#f0
+    +   6   63 ms  s0 /read                names:24#1#f0
+    +   6   96 ms  s1 /read                authz:7000001#1#f1
+    +   6  158 ms  s2 /read                authz:1#1#f2
+edge 0 advertisement before edge 5: 200 in 181 ms | 
+    +  10   62 ms  s0 /read                names:438#1#f0
+    +  10   62 ms  s0 /read                names:174#1#f0
+    +  10   63 ms  s0 /read                tokens:2746#1#f0
+    +  10   99 ms  s1 /read                authz:7000001#1#f1
+    + 112   63 ms  s0 /read                repo:65536#1#f0
+edge 5 cold POST: 503 in 126 ms | auth 76, install 99, resolve 78, front 101, gate 2, context 0, total 114
+    +  12   64 ms  s0 /read                names:438#1#f0
+    +  12   65 ms  s0 /read                names:174#1#f0
+    +  12   65 ms  s0 /read                authz:7000001#1#f0
+    +  12   65 ms  s0 /read                tokens:2746#1#f0
+    +  12   75 ms  s0 /read                names:24#1#f0
+    +  12   96 ms  s1 /read                authz:1#1#f1
+    + 121   62 ms  s0 /status              authz:7000001#1#f0
+    + 121   92 ms  s1 /status              authz:1#1#f1
+edge 5 warm POST: 503 in 191 ms | auth 0, install 167, resolve 169, front 169, gate 0, gate_iso 8938, context 0, total 179
+    +   9   61 ms  s0 /read                names:438#1#f0
+    +   9   62 ms  s0 /read                names:174#1#f0
+    +   9   62 ms  s0 /read                names:24#1#f0
+    +  10  162 ms  s2 /read                authz:1#1#f2
+    +  10  162 ms  s2 /read                authz:7000001#1#f2
+edge 0 advertisement before edge 6: 200 in 173 ms | 
+    +   6   63 ms  s0 /read                names:438#1#f0
+    +   6   63 ms  s0 /read                names:174#1#f0
+    +   6   69 ms  s0 /read                tokens:2746#1#f0
+    +   7   96 ms  s1 /read                authz:7000001#1#f1
+    + 106   62 ms  s0 /read                repo:65536#1#f0
+edge 6 cold POST: 503 in 285 ms | auth 72, install 76, resolve 97, front 97, gate_rows 162, gate_authz 162, gate 165, context 0, total 272
+    +  13   62 ms  s0 /read                names:438#1#f0
+    +  13   62 ms  s0 /read                names:174#1#f0
+    +  13   62 ms  s0 /read                tokens:2746#1#f0
+    +  13   62 ms  s0 /read                names:24#1#f0
+    +  13   71 ms  s0 /read                authz:1#1#f0
+    +  13   93 ms  s1 /read                authz:7000001#1#f1
+    + 109  159 ms  s2 /read                authz:7000001#1#f2
+    + 109  159 ms  s2 /read                repo:65536#1#f2
+    + 281   62 ms  s0 /status              authz:1#1#f0
+    + 281   92 ms  s1 /status              authz:7000001#1#f1
+    + 281  152 ms  s2 /status              repo:65536#1#f2
+edge 6 warm POST: 503 in 185 ms | auth 0, install 99, resolve 162, front 162, gate 0, gate_iso 645, context 0, total 172
+    +   6   62 ms  s0 /read                names:438#1#f0
+    +   6   62 ms  s0 /read                names:174#1#f0
+    +   6   63 ms  s0 /read                names:24#1#f0
+    +   7   95 ms  s1 /read                authz:1#1#f1
+    +   7  155 ms  s2 /read                authz:7000001#1#f2
+edge 7 cold advertisement: 200 in 412 ms | 
+    +  11   62 ms  s0 /read                names:438#1#f0
+    +  11   62 ms  s0 /read                names:174#1#f0
+    +  11   63 ms  s0 /read                tokens:2746#1#f0
+    +  11  153 ms  s2 /read                authz:7000001#1#f2
+    + 168  165 ms  s2 /read                authz:7000001#1#f2
+    + 168  170 ms  s2 /read                repo:65536#1#f2
+    + 342   62 ms  s0 /read                repo:65536#1#f0
+    + 407  152 ms  s2 /status              authz:7000001#1#f2
+    + 407  153 ms  s2 /status              repo:65536#1#f2
+edge 7 POST after it: 503 in 179 ms | auth 0, install 71, resolve 157, front 157, gate 0, gate_iso 711, context 0, total 167
+    +   8   63 ms  s0 /read                names:438#1#f0
+    +   8   63 ms  s0 /read                names:174#1#f0
+    +   8   64 ms  s0 /read                names:24#1#f0
+    +   8   64 ms  s0 /read                authz:1#1#f0
+    +   9  154 ms  s2 /read                authz:7000001#1#f2
+    + 176   62 ms  s0 /status              authz:1#1#f0
+JSON [{"edge":1,"cold":{"resolve_guess":2,"auth":70,"install":71,"resolve":98,"front":98,"gate_match":1,"gate_colo":2630,"gate":1,"context":0,"validate_tries":3,"validate_hedge":0,"validate":8,"rcread":5,"rcshare":0,"rcwait":0,"total":111},"warm":{"resolve_guess":1,"auth":0,"resolve":98,"install":160,"front":161,"gate_iso":3114,"gate":0,"context":0,"validate_tries":3,"validate_hedge":0,"validate":9,"rcread":4,"rcshare":0,"rcwait":0,"total":170},"coldCalls":8,"warmCalls":5},{"edge":2,"cold":{"resolve_guess":2,"auth":68,"install":102,"resolve":160,"front":160,"gate_match":1,"gate_colo":4143,"gate":1,"context":0,"validate_tries":3,"validate_hedge":0,"validate":9,"rcread":5,"rcshare":0,"rcwait":0,"total":174},"warm":{"resolve_guess":1,"auth":0,"install":100,"resolve":159,"front":159,"gate_iso":4625,"gate":0,"context":0,"validate_tries":3,"validate_hedge":0,"validate":8,"rcread":4,"rcshare":0,"rcwait":0,"total":168},"coldCalls":8,"warmCalls":5},{"edge":3,"cold":{"resolve_guess":2,"auth":68,"install":99,"resolve":161,"front":161,"gate_match":1,"gate_colo":5590,"gate":4,"context":0,"validate_tries":3,"validate_hedge":0,"validate":6,"rcread":5,"rcshare":0,"rcwait":0,"total":175},"warm":{"resolve_guess":1,"auth":0,"install":99,"resolve":161,"front":161,"gate_iso":6072,"gate":0,"context":0,"validate_tries":3,"validate_hedge":0,"validate":8,"rcread":4,"rcshare":0,"rcwait":0,"total":170},"coldCalls":8,"warmCalls":5},{"edge":4,"cold":{"resolve_guess":2,"auth":82,"resolve":86,"install":97,"front":98,"gate_match":1,"gate_colo":7041,"gate":1,"context":0,"validate_tries":3,"validate_hedge":0,"validate":10,"rcread":5,"rcshare":0,"rcwait":0,"total":113},"warm":{"resolve_guess":1,"auth":0,"resolve":101,"install":161,"front":162,"gate_iso":7534,"gate":0,"context":0,"validate_tries":3,"validate_hedge":0,"validate":7,"rcread":4,"rcshare":0,"rcwait":0,"total":172},"coldCalls":8,"warmCalls":5},{"edge":5,"cold":{"resolve_guess":2,"resolve":78,"auth":76,"install":99,"front":101,"gate_match":2,"gate_colo":8446,"gate":2,"context":0,"validate_tries":3,"validate_hedge":0,"validate":9,"rcread":5,"rcshare":0,"rcwait":1,"total":114},"warm":{"resolve_guess":1,"auth":0,"install":167,"resolve":169,"front":169,"gate_iso":8938,"gate":0,"context":0,"validate_tries":3,"validate_hedge":0,"validate":8,"rcread":4,"rcshare":0,"rcwait":0,"total":179},"coldCalls":8,"warmCalls":5},{"edge":6,"cold":{"resolve_guess":2,"auth":72,"install":76,"resolve":97,"front":97,"gate_match":2,"gate_authz":162,"gate_rows":162,"gate":165,"context":0,"validate_tries":3,"validate_hedge":0,"validate":7,"rcread":6,"rcshare":0,"rcwait":0,"total":272},"warm":{"resolve_guess":1,"auth":0,"install":99,"resolve":162,"front":162,"gate_iso":645,"gate":0,"context":0,"validate_tries":3,"validate_hedge":0,"validate":10,"rcread":4,"rcshare":0,"rcwait":0,"total":172},"coldCalls":11,"warmCalls":5},{"edge":7,"advertised":true,"cold":{"resolve_guess":1,"auth":0,"install":71,"resolve":157,"front":157,"gate_iso":711,"gate":0,"context":0,"validate_tries":3,"validate_hedge":0,"validate":8,"rcread":4,"rcshare":0,"rcwait":0,"total":167},"coldCalls":6}]

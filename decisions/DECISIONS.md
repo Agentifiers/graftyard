@@ -8488,12 +8488,34 @@ directly, not through a deployed Worker, so neither of these can fail there. The
 
 ### `cold-write`: a push's install read starts beside the token, learner refreshes stop holding reads, and receive-pack shares the colo link and gate entries, 2026-11-23
 
-**Status.** Proposed, design only (branch `f112-cold-write`), for F112. Nothing is built. Every lever was
+**Status.** Built (branch `f112-cold-build`), for F112; approved 2026-11-23 with C on the key condition below. It ships
+on an edge day, and no hosted row has read it yet. Every lever was
 prototyped and measured on `tests/coldwrite/` and then reverted; the prototype of A, B, C and E is `tests/coldwrite/proto.diff`. The
 change is edge and `crates/lookup` only (the site links `crates/lookup`, but B changes only when a spread read
 answers), so it ships on an edge day. If B's change to the site's own `read_spread` callers is wanted on the sites
 too, it waits for a site day and changes nothing until then. Both edgeboot builds gate it: the prototype's new
 futures, unboxed, overflowed wasm's stack on every request (`RuntimeError: unreachable`) until boxed, as `beside` did.
+
+**C's key.** A receive-pack's gate entry, in the isolate and in the data center, binds what the POST's own gate
+would read, and only a receive-pack advertisement puts one:
+- **Credential and repository.** `gate::key(repo, who, push)` with `push` set for every write hashes the credential
+  again under its own domain (`graftyard-read-gate-push\0`, then 1 and `gate::Key`'s hash of the stored token or the
+  `ghs_` `jti`, or 0 for anonymous), and `colo::gate_url` hashes that with the repository and its placement record. A
+  fetch's entry for the same token and repository, another token's, another repository's and anonymous all key apart.
+  A session is never cached, as before.
+- **Write permission.** Under that key a fresh `Allow` is held or put only when the same read also found the caller
+  may push (`may_push`, on the gate's own rows and folds): not deleted, `authorize_write(Push)` allows (a `Write`
+  permission through the owner's `Authz` or a collaborator row), and `token_allows(contents: write)` allows (the
+  token's own reach). It is `Push::decide`'s `may_write`. A caller who may fetch but not push gets the fetch's answer
+  at the advertisement, and no entry a POST could take.
+- **Only an advertisement puts.** `colo::Share` splits `matches` and `puts`: `READ` (a fetch) both, `ADVERT` (the
+  receive-pack advertisement) puts only, `POST` (the receive-pack POST) matches only, and nothing else either. Only
+  `READ` re-reads ahead. A refusal is never put.
+- **An advertisement decides on its own isolate's reads.** It never serves a copy a POST took of the data center's
+  entry. When its isolate holds its own fresh read under the push key (an earlier advertisement's or POST's), it
+  serves it and puts that read's stamp, not now, so the entry is never younger than the fold read under it. Without
+  this put, a POST that read fresh on an isolate (the entry lapsed) would leave the next advertisement there serving
+  that read and putting nothing, and the POST after it, on another isolate, would read fresh again.
 
 **Decision.** There are four changes. Each keeps every answer one the request's own fresh reads would give, or one
 that `colo-gate`'s stamp rule already bounds.
@@ -8560,15 +8582,26 @@ that `colo-gate`'s stamp rule already bounds.
 - `tests/coldwrite/` (`run.sh`, `seed.mjs`, `push.mjs`, `site.mjs`, `driver.mjs`, `README.md`, `raw/`).
 - `tests/am1/raw/a1-pushes-b0-34-mws7hr33.jsonl` on branch `b034-mt18`.
 
-**Plan once approved.**
-- A, B, C and E in `workers/edge/src/lib.rs` (`install_authz`, the git `auth` future, the `resolve` link guess,
-  `read_gate`'s `share`, split into match and put) and `crates/lookup` (`refresh_config` pending, drained by the
-  edge).
-- Tests: `colo::gate` with match and put split (an advertisement puts and never matches; a POST matches only under
-  the stamp rule and never re-reads ahead), and `install_authz`'s chained read keeping a guessed fold only when the
-  `Placement` read names its record.
-- A plant number from the lead.
-- Both edgeboot builds, then the bed rerun on the built head.
+**Built.**
+- A: `install_authz` chains its `Placement` and fold reads through `link` on `rcache`'s last install `Placement` or
+  the genesis `Names` record, boxed; under 32.8 `serve`'s `auth` future joins `authenticate` and `install_authz`.
+  `link`'s tests already hold that a guess never answers.
+- B: `refresh_config` marks a due refresh (`refresh_due`) and, where the edge called `defer_refreshes`, queues it
+  (at most 64; past that it unmarks the index). The edge runs `run_refreshes` in `waitUntil` after its reply.
+- C: `colo::Share`, `gate::key`'s `push`, `GateFx::writable` and `may_push` (above). The LFS gate passes `READ` for a
+  read-class request and `OFF` otherwise.
+- E: the link guess is taken for a write as for a read-class request; `beside_start` stays read-class only.
+- Tests: `colo::tests::a_push_post_serves_only_an_advertisements_entry_and_an_advertisement_never_serves_one` (an
+  advertisement reads and puts; a POST serves the entry and never puts or re-reads ahead; a refusal and a read-only
+  caller's `Allow` are never a push's entry), `gate_tests::a_push_gate_key_misses_a_fetchs_allow_and_another_tokens`,
+  `tests::only_a_caller_who_may_push_has_an_allow_a_post_can_take` (a `Read` grant, no grant, a `contents: read`
+  token, a token for another owner and a deleted repository), and lookup's
+  `a_learner_refresh_is_due_once_per_index_and_queued_not_awaited_when_deferred`.
+- `tests/m0carried/plant94.py`: 14 mutants, 14 caught.
+- The bed on the built edge, 6 cold first POSTs, each after an advertisement on another isolate: front + gate median
+  132 ms (99 to 262), 5 of 6 gates from the data center's entry; the sixth read fresh because the advertising
+  isolate's own read, which it serves within `READ_CACHE`, had aged the entry past 9 s. With no advertisement, 320 ms
+  (`tests/coldwrite/README.md`).
 
 **Flip.**
 - **C.**
