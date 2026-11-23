@@ -169,3 +169,64 @@ run) logs one console line as it starts: the step's name and the stored log byte
 range summed from the member's `sizes`, the snapshot's batch, the archive's walk), only for a step with stored reads to
 do, so an idle 50 ms alarm logs nothing. A reset then shows the step it was in and how much it had to scan, which tests
 the rescan hypothesis in `b033-readmemo.md` ("msA's resets"). Probe (c) and lever A, if cleared, ride the same site day.
+
+## 7. Probe readings, run pb (graft-m2b, 2026-11-23)
+
+**Setup.** Test-faults site day -pb from main 327ac2bb, with row B's shard image (sha256:db305d1e…): site-a 460cbcac,
+site-b f5a3c62b, site-c 769d3000, edge b659229d at 100%. A fresh repository, 131405, had its leader on site 0, object
+`repo:131405#1#f0` in ATL. `tests/fanout/proberow.sh` ran three reps of every arm, 2 s apart (19:14:44 to 19:15:46Z).
+Each arm was one `/bench_seed {"sqlProbe": ...}` invocation of n = 50 transactions, and its CPU is that invocation's
+Workers Logs `cpuTimeMs`. That covers the request, the scratch table's create and drop, and building the rows.
+Raws: `tests/fanout/raw/probe-pb.jsonl`, `probe-pb-wl.json`, `probe-pb.fit`, `proberow-pb.status`. The 24
+invocations join the 24 asks in order (`sqlprobe.py`'s `join`). Workers Logs stamped each one 2.1 to 3.5 s after the
+client's `at`, so a time window paired some asks with their neighbour's CPU.
+
+**Arms (a) and (b): per call against per row** [measured]. CPU per invocation, three reps:
+
+| Arm | Rows a transaction | Statements | Rows | CPU ms | Median |
+|---|---|---|---|---|---|
+| (a) one-row statements | 60 | 3,000 | 3,000 | 48, 52, 53 | 52 |
+| (b) one statement (33 + 27 rows) | 60 | 100 | 3,000 | 21, 18, 31 | 21 |
+| (a) one-row statements | 8 | 400 | 400 | 16, 7, 26 | 16 |
+| (b) one statement | 8 | 50 | 400 | 3, 3, 9 | 3 |
+
+- Fit over the 12 invocations: 6.4 ms an invocation, plus **0.0099 ms a call** and **0.0052 ms a row**.
+- **Hosted per-call share: 66%** of a one-row statement. Local was 62 to 65%, and local per call was 0.0087 ms. So
+  inside one transaction on this host, a statement costs what it costs in the bed. It is not 7 to 50 times the bed.
+
+**Arm (c): per transaction against per byte** [measured]. One `log`-shaped row a transaction:
+
+| Row | CPU ms, 50 transactions | Median | ms a transaction |
+|---|---|---|---|
+| 4 KB | 5, 3, 4 | 4 | 0.08 |
+| 32 KB | 4, 5, 4 | 4 | 0.08 |
+| 128 KB | 19, 24, 29 | 24 | 0.48 |
+| 256 KB | 57, 71, 55 | 57 | 1.14 |
+
+- Fit: **−0.02 ms a transaction** (zero) and **0.0047 ms a KB**. The cost is all per byte. A 128 KB row costs about
+  0.6 ms of CPU to write, building and copying the blob included.
+- Not measured: the per-transaction cost of a flush in its own event. The probe's 50 transactions share one invocation,
+  so their durability wait is one output gate, and that wait is not CPU anyway.
+
+**Readings against the flips (section 5)** [inference from the readings above].
+- **Seal batch.** "Never" does not fire, because (b) costs well under (a). The per-call condition of "build it" holds
+  at 66%. But a call costs 0.0099 ms, so B0-33's cut of about 65 statements an entry (31 to 33% of blB's 206) saves
+  about 0.65 ms an entry. At 61 events an entry and mrB's 0.92 ms an event, that is about 1.2% of the leader's entry
+  CPU, under section 2's 2.1 to 3.4%. The vCPU and deferred-share conditions still decide. Keep it unbuilt.
+- **The hosted one-row `log` flush is not SQLite's write.** The flush slices cost 5.0 ms on mrB and 16 to 23 ms on
+  B0-32's slow hosts at about 128 KB (sections 3 and 4), against 0.6 ms for the row's own write here. The other 4 to
+  22 ms is other work in the flush slice. Lever A's encodes and digests are candidates for it. This host's per-call cost
+  matches local, so it is probably a fast host. A slow host might double these readings, which still leaves the write
+  at most a sixth of a slow-host flush.
+- **Lever A.** Its first condition is met: (c) reads per byte, with nothing per transaction. Its second, the bed
+  confirming 7 to 10 ms an entry at 128 KB and 10 peers, is still open and costs $0.
+- **Lever B (B0-32).** The storage part of an entry's bytes is small: 72 to 95 KB is 0.33 to 0.44 ms of SQLite write.
+  A 62% byte cut saves about 0.25 ms of storage CPU an entry. Whatever else lever B buys comes through the same encodes
+  lever A removes, without changing agent semantics.
+
+**The instrument, hosted.** On the fresh leader the only step lines were the archive walk's, once a minute:
+`repo:131405#1#f0 alarm step archive scans stored 1..=2: 157 bytes` (19:14:22Z), then `1..=6: 1295 bytes` and
+`2..=8: 1569 bytes`. No other step read the stored log, as expected for a group whose entries are all in memory.
+
+**Cost.** graft-m2b's day went from $16.22 at the handover to $16.37 after the site day and $16.43 after the row: $0.21
+in all, against the $3 stop. The sweep reported no shard container running.
