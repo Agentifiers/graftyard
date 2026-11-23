@@ -3444,6 +3444,8 @@ The fold gains what the executor needs: where each finished intent left each scr
 - `sitedays.rs`: `a_step_gate_breaches_on_each_input_at_its_bound_and_starves_under_step_min_entries` (each bound, both sides), `a_drained_sites_followers_pass_against_n_and_a_slower_n1_still_breaches` (the row's histograms: the undrain step passes, the fault breaches, half a bucket slower breaches), and the no-baseline test.
 - `tests/m0carried/plant87.py`: 50 of 50 caught, 10 of them for this rule (the floor on N+1 and on N each).
 
+**Hosted check row (2026-11-23, `tests/m5/results/m5-wp4.md`): not confirmed.** The judged day's N+1 never reached `STEP_MIN_ENTRIES` (0 to 58 entries at 1%, 22 to 100 at 10%), so the share rule was judged on no step; it read 0 bp over N's p99 and over 5 s on every window it saw. The day breached at 10% on `GATE_ACK_RATE` by chance (OPEN-QUESTIONS R43) and ran the `Rollback`, so N from the intent's start at 100% was not exercised either.
+
 **Caveat: the replay flatters the rule.** N in the replay is R3's own healthy window, the same build as N+1, so N's p99 and N+1's tail come from the same distribution. A real N+1 runs beside a different N. The plants show it still catches regressions, but the hosted check row must judge against a real N: its site day leaves the previous version running beside N+1 at 1, 10 and 50%, with real counts on both.
 
 **Flip.**
@@ -3454,6 +3456,8 @@ The fold gains what the executor needs: where each finished intent left each scr
 #### `drain-budget`: a missed call deadline is budgeted at 1 in 100, drained at 5 x over 5 minutes, and calm under 2 x over 15 minutes (2026-11-23)
 
 **Status.** Code-only, not deployed; the thresholds live in `graft-ops`, so they ship on an ops deploy. R41 stays open: the values come from one install.
+
+**Hosted (2026-11-23):** not exercised. The gate check row stopped before its drain leg to stay under the $5 stop, so the values rest on the BF-39 replay alone (`tests/m5/results/m5-wp4.md`).
 
 **Decision.** `ALLOWED_MISS_DENOM` 100 [measured, one install], `DRAIN_BURN` 5 x over `DRAIN_WINDOW` 5 min, `MIN_CALLS` 300, `UNDRAIN_BURN` 2 (under 2 x) over `UNDRAIN_AFTER` 15 min. The two-observer rule is unchanged.
 

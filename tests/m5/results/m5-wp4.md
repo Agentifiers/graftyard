@@ -129,6 +129,50 @@ The undo restarted the step count at 0, as `IntentState::Undoing` does. Kills fe
 - **Hand undrain, entry 135, posted 03:54:25Z on the orb's clock (group time about 03:54:47Z), digest `bb3f81eb…`.** Signed by hand with graft-m4a's drain key, on the lead's instruction: the drain was false, B0-29 needs c leading, and this is the test install's own key. Just before signing, the group read 135 entries, no intent current, and c the only drained site. The seed was read only into the signing step and never printed.
 - **After.** The fold reads `count 136`, `current None`, `drained []`, and all three members are at 136. c leads its home groups again: at 04:04Z, after light writes, 6 of 6 sampled c-homed chains (`repo:7390000`, 011, 023, 037, 059, 433) had c's member as leader in a new term. `graft-ops` has run 0 times since 03:12:31Z, and its schedules read `[]`, so the old rules cannot drain c again.
 
+## Gate check row: `gate-relative` and `drain-budget` hosted (2026-11-23, main `bb64b0ff`)
+
+**Result: the judged day ran the real gate and breached on chance, so the share rule was never judged hosted; the drain leg and the slow-apply leg were not run.** Done line 07:00:33Z (end state read). Spend $4.50 on graft-m4a from 06:03Z to 07:00Z (`tests/fanout/acctcost.py`, PREFIX), against the $5 stop. Raw records in `raw/ck/`.
+
+**Setup** (all in `tests/am1/results/install-m4a.md`):
+- Token `graft-m4a-ops-deploy-3` minted 06:03Z, revoked 06:59Z.
+- Site day 70 (**test-faults**, setup, `deploy.mjs`, main `bb64b0ff`) 06:03Z to 06:04:43Z, exit 0: a `31436419`, b `ef13b1dc`, c `9861b487` (`tests/m4/raw/wp4/siteday70.log`). Its crons were removed at 06:04:43Z.
+- Bundles R5 `5d0ba4e9…` (the day-70 build), R6 `761a720d…` and R7 `44f1ddfe…` (R5 plus a marker each), `ReleaseUploaded` at entries 136 to 138.
+- `graft-ops` test-faults, `OPS_STEP_MIN_ENTRIES=50`, no `OPS_KILL`, 60 s dwells, a 1-minute cron. Its first run came about 8 minutes after the deploy, as in BF-39.
+- Load from the scratch Worker `graft-m4a-ck-edge` (deleted 06:59Z): 160 chains homed on c from observers a and b, about 25 puts/s each, and 40 chains homed on a and b.
+
+| Index | Group time | Entry | |
+| --- | --- | --- | --- |
+| 139 | 06:32:54Z | `Intent` SiteDay c R5, undo `Rollback{c, R2}` | **setup, unjudged (`GATE=pass`)**: moves c to a build with the `VERSION` binding, so R5 can be a real N |
+| 140 to 150 | 06:33:18Z to 06:40:20Z | drain, 1%, 10%, 50%, `SiteRelease` c R5, 100%, undrain, first day, `IntentDone` | c on R5 `1704e715` |
+| 151 | 06:41:46Z | `Intent` SiteDay c R6, undo `Rollback{c, R5}` | **judged (`GATE` unset)**, N+1 `c7687c36`, N `1704e715` |
+| 152, 153 | 06:42:20Z, 06:42:22Z | `SiteMode` Drain c, `IntentStep` 0 | |
+| 154 | 06:46:19Z | `IntentStep` 1 (1%) | passed only on the test override |
+| 155 | 06:47:19Z | `Rollback{c, R5}`, pre-signed | 10% breached `GATE_ACK_RATE` |
+| 156 to 160 | 06:47:21Z to 06:47:32Z | return steps 0 and 1 (R5 at 100%), `SiteMode` Normal c, step 2, `IntentDone` | |
+
+**`judge_site`'s real verdicts on the judged day** (`graft-ops`' own log lines, `raw/ck/crons.txt`; N over the same step window):
+
+| Step | Run | N+1 entries | N entries | N+1 over N's p99 / over 5 s | Ack N+1 / N | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1% | 06:43:14Z | 0 | 3,625 | — | 100% / 99.55% | `Starved(0)` |
+| 1% | 06:45:14Z | 13 | | | | `Starved`, then `PAGE … applied 13 entries in 2 x its dwell` |
+| 1% | 06:46:14Z | 58 | 14,166 | 0 / 0 bp | 100% / 99.88% | `Starved(58)`, **passed only on the override** (`OPS_STEP_MIN_ENTRIES` 50) |
+| 1% to 10% | 06:46:14Z, two later reads in the same run | 22, 31 | 1,357, 1,510 | 0 / 0 bp | 100% / 100% | `Starved` |
+| 10% | 06:47:14Z | 100 | 4,814 | 0 / 0 bp | **99.44% / 100%** | **`Breach("GATE_ACK_RATE: N+1 9944 bp, N 10000 bp")`** → `Rollback` |
+
+- **The share rule (`gate-relative`) was judged on no step.** No N+1 window reached `STEP_MIN_ENTRIES` (1,000): 0 to 58 at 1% and 22 to 100 at 10%, while N applied 1,357 to 14,166 in the same windows. It is not confirmed hosted. On the windows it saw, N+1 put 0 bp over N's p99 (1,500 ms) and 0 bp over 5 s, which is the healthy reading, but under the floor it counts for nothing.
+- **The breach was chance, not a regression.** R6 is R5's build plus one unused module, so N+1 and N run the same code. 99.44% is about 1 refused AppendEntries answer in about 180 [inference from the rate: the log gives the rate, not the count]. N's own ack rate, the same code, read 97.44% to 100% from one read to the next in the judged day's runs. `GATE_ACK_RATE`'s 0.1-point margin is far inside that noise and is judged at any count, so a step's N+1 breaches on chance often: even at a steady 0.12 to 0.33% of refused answers, an N+1 of 180 to 1,000 answers reads 0.1 points under N 12 to 45% of the time [inference, binomial]. This is the floor problem `gate-floor` fixed for the lag shares; the lead's ruling kept the ack rate judged at any count, and this row refutes that (OPEN-QUESTIONS R43).
+- **N's p99 from the intent's start at 100% and on the first day: not exercised.** The judged day ended at 10%. In the setup day N was R2's `39439670`, which counts nothing, so its fallback read 0 entries and only the backstop held, as designed.
+- **The pre-signed `Rollback` ran with the real gate**, and c ended on R5 at 100% with its undrain.
+- `raw/ck/gate.txt` holds a scratch mirror of each minute's counts. Its `judge(...)` lines from 06:47:23Z judge R5 against itself after the rollback and are not verdicts.
+
+**Not run.** At 06:48Z the row was at $4.20. The drain leg (about $2 in BF-39) would have passed the $5 stop, so it and the slow-apply leg after it were not run: the drain at about 126 s and the undrain at about 15 min 40 s stay replays, and no slow-apply breach was observed.
+
+**Cleanup.**
+- `graft-ops`' cron was removed at 06:47:56Z but fired `Idle` runs every minute until 06:56:14Z. A reset (a yearly cron, then `[]`) at 06:56:11Z stopped it; no run came from 06:56:14Z to 06:59:02Z.
+- Then `graft-m4a-ops` `8e90328d`, `GATE=pending`, schedules `[]`. Token revoked (the API answers it 1000), the scratch Worker deleted.
+- End state at 07:00Z: count 161, `drained []`; a `31436419`, b `ef13b1dc`, c `1704e715` (R5, the group's `site_release` for c); edge `f4e193b9` 100%, `dd713c1c` 0%, `/api/v3/meta` 200; 6 of 6 sampled c-homed chains led by c.
+
 ## Records this row changes
 
 - `decisions/OPEN-QUESTIONS.md`:
