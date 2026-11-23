@@ -15,7 +15,8 @@ export const MEMBER = tokens.member;
 export const CLIENTS = { "ts-v2": 4710, "py-v2": 4711, "go-v18": 4712, "ts-v1": 4713 };
 export const cimd = (name) => `${AUX}/cimd/${name}.json`;
 export const redirectOf = (name) => `http://127.0.0.1:${CLIENTS[name] ?? 4710}/callback`;
-export const REPO = "m3org/j4";
+// m3org/j4 (repo:65536) was retired and purged on 2026-11-18; day 2 made a fresh one (AM2_REPO).
+export const REPO = process.env.AM2_REPO ?? "m3org/j4";
 const b64u = (b) => Buffer.from(b).toString("base64url");
 const unent = (s) => s.replace(/&#(\d+);/g, (_, c) => String.fromCharCode(Number(c))).replace(/&quot;/g, "\"").replace(/&amp;/g, "&");
 const cookieOf = (r) => (r.headers.get("set-cookie") ?? "").split(";")[0];

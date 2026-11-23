@@ -1,0 +1,27 @@
+2026-11-23T07:16:20Z
+a60beca2
+npm notice run npx
+npm notice run 'wrangler' delete --name graft-m3f-mcp --force
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.166.0)
+───────────────────────────────────────────────
+Successfully deleted graft-m3f-mcp
+npm notice run npx
+npm notice run 'wrangler' delete --name graft-m3f-mcp-aux --force
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProxy environment variables detected. We'll use your proxy for fetch requests.[0m
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.166.0)
+───────────────────────────────────────────────
+Successfully deleted graft-m3f-mcp-aux
+{"n":"MCP_APP_KEY_A","success":true}
+{"n":"INSIGHTS_APP_KEY_A","success":true}
+{"n":"MCP_CLIENT_SECRET_A","success":true}
+{"n":"MCP_SEAL_KEY_A","success":true}
+step exit 0
+2026-11-23T07:16:32Z
+DONE

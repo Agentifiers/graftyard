@@ -252,3 +252,10 @@
 2026-11-21T15:27:44Z 3538982 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0, d 0 -> 0
 2026-11-21T15:27:44Z {"dry": false, "purged": 5, "objects": 3729, "refused": [], "second": 0}
 >>>>>>> Stashed changes
+2026-11-23T07:17:02Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T07:17:26Z waiting 453 s for sweep runs started before the first pass (until 2026-11-23T07:25:00.000006+00:00)
+2026-11-23T07:22:15Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T07:22:38Z waiting 141 s for sweep runs started before the first pass (until 2026-11-23T07:25:00.000009+00:00)
+2026-11-23T07:25:20Z 65612 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T07:25:20Z 65612 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T07:25:20Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}

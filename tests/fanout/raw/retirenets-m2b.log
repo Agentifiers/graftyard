@@ -152,3 +152,4 @@
 2026-11-21T00:55:21.220Z purge: 65604 purged: a 814 -> 0, b 777 -> 0, c 814 -> 0
 2026-11-21T00:55:21.220Z purge: 65604 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
 2026-11-21T00:55:21.220Z purge: {"dry": false, "purged": 1, "objects": 2405, "refused": [], "second": 0}
+2026-11-23T07:17:01.088Z repo:65612: 4 names, 4 were joined, all not joined, all with the retired row

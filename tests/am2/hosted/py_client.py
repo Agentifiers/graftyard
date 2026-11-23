@@ -29,6 +29,7 @@ CIMD = f"{AUX}/cimd/py-v2.json"
 REDIRECT = "http://127.0.0.1:4711/callback"
 ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
 CALLS = int(ARGS[0]) if ARGS else 30
+REPO = os.environ.get("AM2_REPO", "m3org/j4")
 DROP = "--drop-token" in sys.argv
 
 
@@ -107,7 +108,7 @@ async def session(out: dict, store: Mem, transport: Dropper) -> None:
             out["protocol"] = c.protocol_version
             # list_issues through graft-mcp, interleaved with the same REST read straight to the edge (M0-WP15's method).
             ok, lat, direct, errs = 0, [], [], []
-            args = {"owner": "m3org", "repo": "j4", "per_page": 5}
+            args = dict(zip(("owner", "repo"), REPO.split("/")), per_page=5)
             hdrs = {"authorization": f"token {member()}", "accept": "application/vnd.graftyard.agent+json", "user-agent": "am2-direct"}
             async with httpx2.AsyncClient(timeout=60) as plain:
                 for _ in range(CALLS):
@@ -122,7 +123,7 @@ async def session(out: dict, store: Mem, transport: Dropper) -> None:
                         errs.append(str(e)[:160])
                     lat.append(int((time.time() - s) * 1000))
                     s = time.time()
-                    await plain.get(f"{os.environ['GRAFT_EDGE']}/api/v3/repos/m3org/j4/issues?per_page=5", headers=hdrs)
+                    await plain.get(f"{os.environ['GRAFT_EDGE']}/api/v3/repos/{REPO}/issues?per_page=5", headers=hdrs)
                     direct.append(int((time.time() - s) * 1000))
             cp, dp = sorted(lat)[len(lat) // 2], sorted(direct)[len(direct) // 2]
             out.update(calls=CALLS, ok=ok, clientP50=cp, directP50=dp, overheadP50=cp - dp, errors=errs[:3])

@@ -333,3 +333,59 @@ secret. m3fa2g's `finally` restored it again at its end.
   are deleted from store `bfaa0c15…`, which holds 17 secrets after. The second day redeploys them with `apps init`,
   after moving `~/.graft-m3f/apps` aside, because step 1 refuses while `apps.json` exists. `teardown.py --sweep`: no
   shard container running.
+
+## Hosted, day 2 m3fa3 (2026-11-23): L0-08's 30-call cell and the tool-overhead p50
+
+The second day, after AM2-WP2a merged (main `4ca9413c`). It ran on graft-m3f, taken from B0-02 (handed back at
+05:13Z), from main `a60beca2` under the $9.49 left of AM2's $10 (`tests/am1/results/install-m3f.md`).
+
+### Verdicts
+
+- **L0-08, 30 calls each: pass.** Each of the four unmodified SDK clients went through CIMD, PKCE, consent, and the
+  host's OAuth, then made 30 `list_issues` calls on `m3org/am2-m3fa3` through graft-mcp. 30 of 30 succeeded for each
+  client, 120 of 120 in all (run m3fa3b, done line 07:15:53Z).
+- **Tool overhead p50 at most 50 ms: pass**, in every client. That is the p50 of the MCP tool call minus the p50 of the
+  same REST read sent straight to the edge with the member's PAT, interleaved call by call (M0-WP15's method):
+
+| Client | Lane | Calls ok | MCP p50 | Direct p50 | Overhead p50 |
+| --- | --- | --- | --- | --- | --- |
+| `@modelcontextprotocol/client` 2.4.0, pin | 2026-07-28 | 30 of 30 | 320 ms | 300 ms | 20 ms |
+| `@modelcontextprotocol/sdk` 1.32.2 | 2025-11-25 | 30 of 30 | 324 ms | 310 ms | 14 ms |
+| Go SDK v1.8.0 | 2026-07-28 | 30 of 30 | 345 ms | 300 ms | 45 ms |
+| Python `mcp` 2.3.0, `mode="2026-07-28"` | 2026-07-28 | 30 of 30 | 319 ms | 302 ms | 17 ms |
+
+  - Each client consented once. The TypeScript clients and Python redeemed one code each. Go redeemed two: its
+    x/oauth2 auth-style probe answers 400, then 200, as on m3fa2.
+  - The token scope was `write:read tools:context,repos,issues,pull_requests`.
+  - The overhead covers the graft-mcp hop, the sealed-token open, MCP framing, and the trust-view rewrite. Go's 45 ms
+    is the nearest the line. Each figure is one run of 30 calls [measured].
+- **With L0-08's auth cells from m3fa2, every L0-08 cell has now passed hosted.** The two days ran on different site
+  days. `workers/mcp` on this day is m3fa2's code plus WP2a's door and tools; WP2a left the auth flow unchanged.
+
+### What the day found
+
+- **`m3org/j4` is gone.** `repo:65536` was retired and purged on 2026-11-18
+  (`tests/m5/results/m5-wp5-hosted.md`). The first client run (m3fa3) got 404 from every tool call, and the direct
+  read did too, so graft-mcp answered what the edge answered. The drivers now read `AM2_REPO`, and the day created
+  `m3org/am2-m3fa3` (repo:65612, 201 in 33 s) with one issue for `list_issues` to read. The m3fa3 run is void, not a
+  fail: its 30 calls all reached the edge, which had no such repository.
+- **The first smoke after deploy** answered 404 on the RFC 8414 metadata and 500 at the door. Repeated 38 s later
+  (m3fa3b), it answered 200 and 401, as m3fa2 did. That is a new Worker version still propagating [inference]; no
+  client ran before the second smoke.
+
+### Versions, cost, and teardown
+
+- **Versions:** sites a `9377ee54`, b `08a6a601`, c `591e7002`, and the edge `57bd353b`, from main `a60beca2`. The
+  shard image `sha256:91a19f9f…` was reused, because `containers/` has not changed since `8d390b0f` built it.
+  `graft-m3f-mcp` was `7a241f66` and `graft-m3f-mcp-aux` was `6468ce39`. Edgeboot passed on both builds with 0 wasm
+  traps. FORMATS ran through 32.26, plus 20.4 and 17.4, and `--export-bucket graft-m3f-export` was on both deploys.
+- **apps init** was rerun over the App records m3fa2 left, which is safe: both claims answered `Taken` with the same
+  ids (327680 and 4784128). `RegisterApp` and `RegisterClient` for the same owner are no-ops, and `PutApp` replaced
+  both records with the new keys. The MCP record read back with 1 client secret.
+- **Teardown** at 07:16:32Z deleted `graft-m3f-mcp`, `graft-m3f-mcp-aux`, and the four store secrets. The three
+  shards of `net:65612` were torn down, and `repo:65612` was retired, with 4 of 4 members not joined and each holding
+  its `retired` row, then purged.
+  `purge.py`: 0 objects, and the second pass 0. The end sweep at 07:26:21Z found no shard container running, and both
+  MCP Workers answer 404. Store `bfaa0c15…` holds 17 secrets again.
+- **Cost:** $0.09 on graft-m3f by prefix from 06:35Z to 07:26:49Z (`PREFIX=graft-m3f tests/fanout/acctcost.py`).
+  Together with m3fa2's $0.51, AM2's two hosted days cost $0.60 of the $10.
