@@ -445,6 +445,18 @@ pub(crate) async fn read_repo(
     rows: Rows,
     gate: Gate,
 ) -> Result<std::result::Result<Read, Reply>> {
+    // edge-refusal: an Agent-classed write whose group's leader advertised more than AGENT_PUSH_BOUND of agent queue is
+    // refused before its tier read, as GitHub's secondary rate limit (`design/DESIGN.md`, Shape, the agent block). B0-33
+    // pfA's and pgA's slow leaders shed these reads on their learners, 3,999 and 3,476 times, as 503s.
+    if c.write.get()
+        && gate == Gate::Readers
+        && let Some(who) = viewer
+    {
+        let budget = graftyard_raft::admit::AGENT_PUSH_BOUND;
+        if let Some(s) = crate::advert_refusal(c, &repo, who, false, budget).await {
+            return Ok(Err(Reply::secondary_rate_limit(s)));
+        }
+    }
     let merge = match &rows {
         Rows::All | Rows::Core | Rows::Api(_) | Rows::Command(_) => None,
         Rows::Merge(of, _) => Some(*of),

@@ -999,6 +999,136 @@ fn bound_at_send(agent: bool, left: Option<std::time::Duration>) -> std::result:
     }
 }
 
+/// What the leader's last advert (`graftyard_lookup::advert`) says of a write with `budget` left: send it, refuse it
+/// at the edge (the advert is fresh and its wait passes the budget), or send it although the last advert said full,
+/// because that advert lapsed. An isolate that refuses everything hears no new advert, so it sends again each
+/// ADVERT_TTL; `edgefull` counts those sends per isolate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdvertSays {
+    Send,
+    Refuse(graftyard_lookup::Advert),
+    FailOpen,
+}
+
+fn advert_says(h: graftyard_lookup::Heard, budget: std::time::Duration) -> AdvertSays {
+    use graftyard_lookup::Heard;
+    let past = |a: &graftyard_lookup::Advert| u128::from(a.wait_ms) > budget.as_millis();
+    match h {
+        Heard::Fresh(a) if past(&a) => AdvertSays::Refuse(a),
+        Heard::Lapsed(a, _) if past(&a) => AdvertSays::FailOpen,
+        _ => AdvertSays::Send,
+    }
+}
+
+/// `advert_says` for a caller of `class` (`admission`, `None` for Human): only an Agent-classed caller whose token
+/// reaches the repository (`token_reaches`) is refused or counted; Human, Bot, and MergeQueue always send.
+fn advert_verdict(says: AdvertSays, class: Option<graftyard_git::group::ClassWire>, reaches: bool) -> AdvertSays {
+    match (says, class) {
+        (s, Some(graftyard_git::group::ClassWire::Agent)) if reaches => s,
+        _ => AdvertSays::Send,
+    }
+}
+
+/// Whether the caller's token can reach repository `repo` of `owner` at all, from what `authenticate` already holds:
+/// an installation token's repository list, or a scoped user token's owner and repository list. A token that cannot
+/// is never refused by the advert before the read gate, so a 429 never stands where the gate would answer 404
+/// (`decisions/DECISIONS.md`, "`edge-refusal`", disclosure).
+fn token_reaches(
+    who: &Principal,
+    fields: Option<&graftyard_identity::TokenFields>,
+    repo: RepoId,
+    owner: AccountId,
+) -> bool {
+    use graftyard_identity::RepoScope;
+    let listed = |s: &RepoScope| match s {
+        RepoScope::All => true,
+        RepoScope::Selected(r) => r.contains(&repo),
+    };
+    let claims = match &who.credential {
+        Credential::Stateless(claims) => listed(&claims.repos),
+        _ => true,
+    };
+    let scoped =
+        fields.is_none_or(|f| f.resource_owner.is_none_or(|o| o == owner) && f.repos.as_ref().is_none_or(listed));
+    claims && scoped
+}
+
+/// edge-refusal (`design/DESIGN.md`, Shape, the agent block): the retry hint to refuse a write by `who` to `repo`
+/// with, when its group's leader advertised, within ADVERT_TTL, an agent wait longer than `budget` and the edge classes
+/// the caller Agent. `None` sends the write as before. The advert is read first and costs nothing, so only a write the
+/// advert already refuses reads the install's `Authz` (`admission`), and a request that reads none today, a user token
+/// with no App and no session header, still reads none. Each refusal and each fail-open send logs an `edgefull` line.
+pub(crate) async fn advert_refusal(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    who: &Principal,
+    push: bool,
+    budget: std::time::Duration,
+) -> Option<u32> {
+    let says = advert_says(graftyard_lookup::advert(ChainId::Repo(repo.id), graftyard_lookup::now_ms()), budget);
+    if says == AdvertSays::Send {
+        return None;
+    }
+    let reaches = token_reaches(who, c.token_fields.borrow().as_ref(), repo.id, repo.owner);
+    let class = if reaches { admission(c, who, &[], push, 0).await.map(|a| a.class) } else { None };
+    match advert_verdict(says, class, reaches) {
+        AdvertSays::Send => None,
+        AdvertSays::Refuse(a) => {
+            // B0-32's split of `full` by shape: an advert refusal is `advert` in `server-timing`, apart from `bound`.
+            c.timing.put("advert", a.wait_ms as f64);
+            worker::console_log!("{}", edgefull::refused(repo.id, push, a.wait_ms, budget));
+            Some(a.retry_after_s.max(1))
+        }
+        AdvertSays::FailOpen => {
+            worker::console_log!("{}", edgefull::failed_open(repo.id, push, budget));
+            None
+        }
+    }
+}
+
+/// The `edgefull` log line (`decisions/DECISIONS.md`, "`edge-refusal`", its flips): one per write the advert refused
+/// and one per Agent write sent on a lapsed advert that said full, with this isolate's running counts of both, so a
+/// row tells an isolate that fails open each ADVERT_TTL from adverts that never reach the edge.
+mod edgefull {
+    use std::cell::Cell;
+
+    use graftyard_types::RepoId;
+
+    thread_local! {
+        static ISOLATE: Cell<u64> = const { Cell::new(0) };
+        /// (refused, sent on a lapsed full advert)
+        static COUNTS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    }
+
+    fn isolate() -> u64 {
+        ISOLATE.with(|i| {
+            if i.get() == 0 {
+                let r = super::rand10();
+                i.set(u64::from_le_bytes(r[..8].try_into().expect("8 bytes")) | 1);
+            }
+            i.get()
+        })
+    }
+
+    fn line(repo: RepoId, push: bool, what: &str, wait_ms: Option<u64>, budget: std::time::Duration) -> String {
+        let (refused, open) = COUNTS.with(Cell::get);
+        serde_json::json!({ "edgefull": what, "class": "agent", "push": push, "repo": repo.0.0, "waitMs": wait_ms,
+            "budgetMs": budget.as_millis() as u64, "isolate": format!("{:016x}", isolate()), "refused": refused,
+            "failOpen": open })
+        .to_string()
+    }
+
+    pub(crate) fn refused(repo: RepoId, push: bool, wait_ms: u64, budget: std::time::Duration) -> String {
+        COUNTS.with(|c| c.set((c.get().0 + 1, c.get().1)));
+        line(repo, push, "refused", Some(wait_ms), budget)
+    }
+
+    pub(crate) fn failed_open(repo: RepoId, push: bool, budget: std::time::Duration) -> String {
+        COUNTS.with(|c| c.set((c.get().0, c.get().1 + 1)));
+        line(repo, push, "failOpen", None, budget)
+    }
+}
+
 /// The install's `Authz(Genesis.account)` fold, read as a `dep` through `fresh`: its `AgentApp` rows. `None` when it
 /// cannot be read, which classes no App as an agent; the leader's `decide` reads the chain itself either way.
 /// Read once per request: a later call answers the first one's result.
@@ -1869,6 +1999,13 @@ async fn receive_pack(
     // A refusal decided before the body was read (`gate_bound_refusal`), rendered per ref once its commands are.
     if let Some(r) = early {
         return after_body(c, &mut tail, path, refuse(r)).await;
+    }
+    // edge-refusal: a bounded push whose leader advertised a wait past what is left of its bound is refused here, before
+    // context, staging (`first`), validate, or commit; nothing reaches the group.
+    if let Some(left) = budget_left(c)
+        && let Some(s) = advert_refusal(c, repo, &actor, true, left).await
+    {
+        return after_body(c, &mut tail, path, refuse(Refusal::agent_full(s))).await;
     }
     if atomicity == Atomicity::AllOrNothing && rp.updates.len() > ATOMIC_REFS_MAX {
         return after_body(c, &mut tail, path, refuse(Refusal::too_many_atomic(rp.updates.len()))).await;
@@ -4268,6 +4405,90 @@ mod tests {
         assert_eq!(super::shed_retry_for(true, Some(Duration::from_secs(60))), w);
         assert_eq!(super::shed_retry_for(true, Some(Duration::from_millis(900))), Duration::from_millis(900));
         assert_eq!(super::shed_retry_for(false, None), Duration::ZERO);
+    }
+
+    /// edge-refusal: only a fresh advert whose wait passes the budget refuses, and only an Agent-classed caller whose
+    /// token reaches the repository; a lapsed advert that said full sends (fail-open) and is counted; Human, Bot, and
+    /// MergeQueue send whatever the advert says.
+    #[test]
+    fn the_edge_refuses_only_an_agent_write_whose_fresh_advert_passes_its_budget() {
+        use std::time::Duration;
+
+        use graftyard_git::group::ClassWire;
+        use graftyard_lookup::{Advert, Heard};
+
+        use super::{AdvertSays, advert_says, advert_verdict};
+        let budget = Duration::from_millis(5_000);
+        let a = |wait_ms| Advert { wait_ms, retry_after_s: 9 };
+        assert_eq!(advert_says(Heard::Fresh(a(5_001)), budget), AdvertSays::Refuse(a(5_001)));
+        assert_eq!(advert_says(Heard::Fresh(a(5_000)), budget), AdvertSays::Send, "a wait at the budget fits it");
+        assert_eq!(advert_says(Heard::Fresh(a(100)), Duration::ZERO), AdvertSays::Refuse(a(100)));
+        assert_eq!(advert_says(Heard::Lapsed(a(9_000), 2_001), budget), AdvertSays::FailOpen);
+        assert_eq!(advert_says(Heard::Lapsed(a(10), 2_001), budget), AdvertSays::Send);
+        assert_eq!(advert_says(Heard::Never, budget), AdvertSays::Send);
+        let refuse = AdvertSays::Refuse(a(9_000));
+        assert_eq!(advert_verdict(refuse, Some(ClassWire::Agent), true), refuse);
+        assert_eq!(advert_verdict(AdvertSays::FailOpen, Some(ClassWire::Agent), true), AdvertSays::FailOpen);
+        for class in [None, Some(ClassWire::Human), Some(ClassWire::Bot), Some(ClassWire::MergeQueue)] {
+            assert_eq!(advert_verdict(refuse, class, true), AdvertSays::Send, "{class:?} is never refused");
+            assert_eq!(advert_verdict(AdvertSays::FailOpen, class, true), AdvertSays::Send, "{class:?} is not counted");
+        }
+        assert_eq!(
+            advert_verdict(refuse, Some(ClassWire::Agent), false),
+            AdvertSays::Send,
+            "a token that cannot reach it"
+        );
+    }
+
+    /// edge-refusal's disclosure rule: an installation token selected for other repositories, or a user token scoped
+    /// to another owner or other repositories, does not reach this one, so the advert never answers it before the read
+    /// gate does; an unscoped token, or one that lists it, does.
+    #[test]
+    fn a_token_that_cannot_reach_the_repository_is_never_refused_by_the_advert() {
+        use graftyard_identity::stateless::InstallationClaims;
+        use graftyard_identity::{
+            AppId, Credential, InstallationId, Jti, Kid, PermissionSet, Principal, RepoScope, ScopeSet, TokenFields,
+            UserId,
+        };
+        use graftyard_types::Ulid;
+
+        use super::token_reaches;
+        let (repo, other, owner) = (RepoId(DbId(5)), RepoId(DbId(6)), AccountId(DbId(9)));
+        let app = |repos| Principal {
+            actor: graftyard_identity::Actor::App { app: AppId(DbId(1)), installation: InstallationId(DbId(2)) },
+            scopes: ScopeSet(0),
+            credential: Credential::Stateless(Box::new(InstallationClaims {
+                app: AppId(DbId(1)),
+                installation: InstallationId(DbId(2)),
+                repos,
+                permissions: PermissionSet(Default::default()),
+                jti: Jti(Ulid(1)),
+                iat: Timestamp(0),
+                exp: Timestamp(1),
+                kid: Kid(0),
+                task: None,
+            })),
+            sso_orgs: Default::default(),
+        };
+        assert!(token_reaches(&app(RepoScope::All), None, repo, owner));
+        assert!(token_reaches(&app(RepoScope::Selected([repo].into_iter().collect())), None, repo, owner));
+        assert!(!token_reaches(&app(RepoScope::Selected([other].into_iter().collect())), None, repo, owner));
+        let user = Principal {
+            actor: graftyard_identity::Actor::User(UserId(AccountId(DbId(3)))),
+            scopes: ScopeSet(1),
+            credential: Credential::Stored([0; 32]),
+            sso_orgs: Default::default(),
+        };
+        let scoped = |o, r| TokenFields { resource_owner: o, repos: r, ..TokenFields::default() };
+        assert!(token_reaches(&user, None, repo, owner));
+        assert!(token_reaches(&user, Some(&scoped(Some(owner), None)), repo, owner));
+        assert!(!token_reaches(&user, Some(&scoped(Some(AccountId(DbId(10))), None)), repo, owner));
+        assert!(!token_reaches(
+            &user,
+            Some(&scoped(None, Some(RepoScope::Selected([other].into_iter().collect())))),
+            repo,
+            owner
+        ));
     }
 
     /// `b032-shed` B: an Agent push past its AGENT_PUSH_BOUND at the commit send is refused in B0-32's `ng` shape and

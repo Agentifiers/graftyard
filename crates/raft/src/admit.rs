@@ -240,10 +240,56 @@ impl<T> Lane<T> {
     }
 }
 
-/// The retry hint a refusal carries: the seconds the agent bucket needs to drain what is queued, plus one.
-pub fn retry_after_s(agent_queued: usize, capacity: f32) -> u32 {
-    let rate = (AGENT_SHARE * capacity).max(1.0);
-    ((agent_queued as f32 / rate).ceil() as u32 + 1).max(1)
+/// The retry hint a refusal carries: the seconds the leader needs to drain what is queued at `agent_rate` agent
+/// commands a second (`Drain::rate`), plus one.
+pub fn retry_after_s(agent_queued: usize, agent_rate: f32) -> u32 {
+    ((agent_queued as f32 / agent_rate.max(1.0)).ceil() as u32 + 1).max(1)
+}
+
+/// The window the leader measures its agent drain over (`Drain`), on its own clock. A busy leader's clock runs 1 to
+/// 3.5 s behind (`decisions/OPEN-QUESTIONS.md`, A41's correction), but counts of commands cut over 10 s of it stay
+/// sound (LM-1, 2026-11-23).
+pub const DRAIN_WINDOW: Duration = Duration::from_secs(10);
+/// Saturated time in DRAIN_WINDOW below which the drain is not measured and the agent bucket's rate stands [guess].
+pub const DRAIN_MIN: Duration = Duration::from_secs(1);
+/// How old an advertised wait the edge acts on (`design/DESIGN.md`, Shape, the agent block). Past it the edge sends
+/// the command and the leader decides [guess].
+pub const ADVERT_TTL: Duration = Duration::from_secs(2);
+
+/// The agent commands the leader cut a second while agent commands stayed queued: what it drains, measured, not the
+/// AGENT_SHARE bucket it is configured for. B0-33's slow hosts drained 27.7 to 108.8 a second while the bucket read
+/// about 1.3 times that, so bounded commands it admitted expired in the lane (pfA 4,689) [measured, `Trace::Cut` in
+/// `tests/fanout/raw/tsave-{pfA,pgA,blB}.jsonl.xz`]. Only the time from a cut that left agent commands queued to the
+/// next cut counts, with that next cut's agent commands: the first cut of a run follows an idle gap, which would
+/// dilute the rate. Memory only, per leadership.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Drain {
+    /// (cut time, agent commands cut, ms since the cut before it), for cuts that followed a saturated one.
+    runs: VecDeque<(Timestamp, u32, u64)>,
+    /// The last cut that took a command, and whether it left agent commands queued.
+    last: Option<(Timestamp, bool)>,
+}
+
+impl Drain {
+    /// A cut at `now` that took `agent` agent commands and left `left` queued. Call only for a cut that took a command.
+    pub(crate) fn cut(&mut self, now: Timestamp, agent: u32, left: usize) {
+        if let Some((at, true)) = self.last {
+            self.runs.push_back((now, agent, now.0.saturating_sub(at.0)));
+        }
+        self.last = Some((now, left > 0));
+        let from = now.0.saturating_sub(DRAIN_WINDOW.as_millis() as u64);
+        while self.runs.front().is_some_and(|r| r.0.0 < from) {
+            self.runs.pop_front();
+        }
+    }
+
+    /// Agent commands a second over the saturated time of the last DRAIN_WINDOW, or `None` below DRAIN_MIN of it.
+    pub(crate) fn rate(&self, now: Timestamp) -> Option<f32> {
+        let from = now.0.saturating_sub(DRAIN_WINDOW.as_millis() as u64);
+        let (n, ms) =
+            self.runs.iter().filter(|r| r.0.0 >= from).fold((0u64, 0u64), |(n, ms), r| (n + u64::from(r.1), ms + r.2));
+        (ms >= DRAIN_MIN.as_millis() as u64).then(|| n as f32 * 1000.0 / ms as f32)
+    }
 }
 
 #[cfg(test)]
@@ -278,7 +324,46 @@ mod tests {
 
     #[test]
     fn retry_after_counts_the_queue_at_the_agent_rate() {
-        assert_eq!(retry_after_s(0, 300.0), 1);
-        assert_eq!(retry_after_s(1_000, 300.0), 8);
+        assert_eq!(retry_after_s(0, 150.0), 1);
+        assert_eq!(retry_after_s(1_000, 150.0), 8);
+    }
+
+    /// The drain counts only saturated time: a 60 s idle gap before a burst, and the burst's first cut after it, add
+    /// nothing, so 64 commands a second cut over 2 s read 64, not the 2.1 a wall-clock window would give. A cut that
+    /// leaves nothing queued ends the run, and the next cut's commands do not count either.
+    #[test]
+    fn the_drain_counts_saturated_time_only() {
+        let t = |s: f64| Timestamp((s * 1000.0) as u64);
+        let mut d = Drain::default();
+        d.cut(t(0.0), 1, 0);
+        assert_eq!(d.rate(t(0.0)), None);
+        // The burst: the first cut follows the idle gap and leaves 500 queued; then one cut of 64 every second.
+        d.cut(t(60.0), 64, 500);
+        assert_eq!(d.rate(t(60.0)), None, "the run's first cut measures nothing");
+        d.cut(t(61.0), 64, 436);
+        assert_eq!(d.rate(t(61.0)), Some(64.0), "one saturated second reaches DRAIN_MIN");
+        d.cut(t(62.0), 64, 372);
+        assert_eq!(d.rate(t(62.0)), Some(64.0));
+        // A cut that empties the lane, then a lone command 5 s later: the gap is not saturated.
+        d.cut(t(62.5), 32, 0);
+        d.cut(t(67.5), 1, 0);
+        assert_eq!(
+            d.rate(t(67.5)),
+            Some(160.0 / 2.5),
+            "the cut that emptied the lane counts; the gap after it does not"
+        );
+        // Past DRAIN_WINDOW the runs age out and the bucket stands again.
+        assert_eq!(d.rate(t(72.6)), None);
+    }
+
+    /// Below DRAIN_MIN of saturated time the drain is not measured: 900 ms of cuts at any count reads `None`.
+    #[test]
+    fn the_drain_needs_drain_min_of_saturated_time() {
+        let mut d = Drain::default();
+        d.cut(Timestamp(1_000), 64, 100);
+        d.cut(Timestamp(1_899), 64, 100);
+        assert_eq!(d.rate(Timestamp(1_899)), None);
+        d.cut(Timestamp(2_000), 1, 100);
+        assert_eq!(d.rate(Timestamp(2_000)), Some(65.0));
     }
 }
