@@ -502,6 +502,7 @@ impl Jobs {
     /// `warming` key while it runs so the shard's alarm can restart it after a reset. It runs in pieces of at most
     /// `graftyard_git::catchup::PIECE`, each toward the head the first read, and wakes every waiter after each piece,
     /// so a held validate or a merge that misses a commit tries again on the disk between pieces (`catchup-pieces`).
+    /// The pieces share one `Run`, which carries the room budget (`catchup-lag`).
     fn start(&self) {
         let started = RUNS.with(|r| {
             let mut r = r.borrow_mut();
@@ -512,18 +513,15 @@ impl Jobs {
         }
         let me = self.clone();
         self.state.wait_until(async move {
-            let mut until = None;
+            let mut run = graftyard_git::catchup::Run::default();
             let r = loop {
                 // A teardown stops the run between pieces: its next piece would start the container again.
                 if RUNS.with(|m| m.borrow().get(&me.key()).is_some_and(|run| run.runs.torn)) {
                     break Err(TORN.to_string());
                 }
-                match me.run(until.as_ref()).await {
-                    Ok(Some(u)) => {
-                        until = Some(u);
-                        me.wake(&Ok(()));
-                    }
-                    Ok(None) => break Ok(()),
+                match me.run(&mut run).await {
+                    Ok(true) => me.wake(&Ok(())),
+                    Ok(false) => break Ok(()),
                     Err(e) => break Err(e),
                 }
             };
@@ -543,12 +541,9 @@ impl Jobs {
         }
     }
 
-    /// One piece of a run: `until` is the head the run's first piece read, `None` for the first. `Some` with it when
-    /// the piece stopped before it, so another follows.
-    async fn run(
-        &self,
-        until: Option<&graftyard_git::IngestCursor>,
-    ) -> std::result::Result<Option<graftyard_git::IngestCursor>, String> {
+    /// One piece of a run: `run` is what the run's pieces carry, `Run::default()` for the first. `true` when the piece
+    /// stopped before the head the first read, so another follows.
+    async fn run(&self, run: &mut graftyard_git::catchup::Run) -> std::result::Result<bool, String> {
         let site = SiteEnv::read(&self.env).map_err(|e| e.to_string())?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let instance = instance(&self.env).map_err(|e| e.to_string())?.0;
@@ -562,7 +557,7 @@ impl Jobs {
         let raw = graftyard_git::catchup::own_first(site.id, buckets(&self.env, &site));
         let bs: Vec<(SiteId, &R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
         let s = self.state.storage();
-        if until.is_none() {
+        if run.until.is_none() {
             // Checked again here, after the awaits above: a teardown in between deleted `warming` and the alarm, and
             // putting them back would let the alarm restart the container.
             if RUNS.with(|m| m.borrow().get(&self.key()).is_some_and(|run| run.runs.torn)) {
@@ -575,7 +570,7 @@ impl Jobs {
         }
         // The page-overlap trace: this object's cursor before the run, as its last run in this isolate left it.
         let before = CURSORS.with(|m| m.borrow().get(&self.key()).copied());
-        let r = host.catch_up(self.net, &[chain], &bs, &log, graftyard_git::catchup::PIECE, until).await;
+        let r = host.catch_up(self.net, &[chain], &bs, &log, graftyard_git::catchup::PIECE, run).await;
         // The key stays between a run's pieces: a reset there leaves the alarm to start the run again.
         if !r.as_ref().is_ok_and(|c| c.behind) {
             let _ = s.delete(WARMING_KEY).await;
@@ -599,12 +594,12 @@ impl Jobs {
                 "shard catch-up stored {}: {}",
                 self.net.0.0,
                 serde_json::json!({ "ms": c.ms, "pages_ms": c.pages_ms, "stored": c.stored, "entries": c.entries, "obj": self.obj,
-                    "from": before, "to": to, "refetched": refetched, "behind": c.behind })
+                    "from": before, "to": to, "refetched": refetched, "behind": c.behind, "room_calls": c.room_calls })
             );
         }
         REPORTS.with(|m| m.borrow_mut().insert(self.key(), v));
         if c.behind {
-            return Ok(Some(c.until));
+            return Ok(true);
         }
         // The builder takes the composed-miss chain's next step in the background, its base on a network with none,
         // and a shard on the other chain site installs it; the catch-up does not wait for either.
@@ -616,7 +611,7 @@ impl Jobs {
             record: self.record.clone(),
         }
         .start(false);
-        Ok(None)
+        Ok(false)
     }
 
     /// Waits for a catch-up that started after this call arrived, at most `wait` when given: `Err` with the reply to

@@ -1562,7 +1562,7 @@ impl ShardHost<'_> {
     /// Catch-up before serving, and `rehydrate` when the disk has no cursor (`crate::catchup`): a page of the log at a
     /// time, stored packs streamed from a bucket to the container, and every page saved before the next. One call is
     /// at most `piece` (`crate::catchup::PIECE` on the site, `WHOLE` for one call to the head); `Report::behind` says
-    /// another follows, toward `until`.
+    /// another follows, with the same `run` (`crate::catchup::Run`).
     ///
     /// `buckets` is read in the order given for a stored pack (`crate::catchup::own_first`: the shard's own site's
     /// first), and all of them for the markers.
@@ -1573,11 +1573,11 @@ impl ShardHost<'_> {
         buckets: &[(SiteId, &R2)],
         log: &impl ChainLog,
         piece: crate::catchup::Piece,
-        until: Option<&crate::shard::IngestCursor>,
+        run: &mut crate::catchup::Run,
     ) -> Result<Report, StoreError> {
         let io = Io { host: self, network, buckets, stored: Default::default(), direct: Default::default() };
         let mut r =
-            crate::catchup::catch_up(&io, &io, log, network, chains, piece, until, &|| js_sys::Date::now() as u64)
+            crate::catchup::catch_up(&io, &io, log, network, chains, piece, run, &|| js_sys::Date::now() as u64)
                 .await?;
         r.stored = io.stored.take();
         Ok(r)

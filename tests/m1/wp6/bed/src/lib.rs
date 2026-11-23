@@ -373,7 +373,9 @@ impl DurableObject for GitShard {
         }
         match path.as_str() {
             "/validate" => {
-                host.catch_up(net, &[chain], &bs, &log, graftyard_git::catchup::WHOLE, None).await.map_err(se)?;
+                host.catch_up(net, &[chain], &bs, &log, graftyard_git::catchup::WHOLE, &mut Default::default())
+                    .await
+                    .map_err(se)?;
                 let n: usize = q(&url, "tipsn").and_then(|v| v.parse().ok()).unwrap_or(0);
                 let body = req.inner().body().map(Into::into);
                 match host.validate(net, n, 0, false, false, graftyard_git::host::OnDisk::CaughtUp, body, &[]).await {
@@ -383,8 +385,10 @@ impl DurableObject for GitShard {
                 }
             }
             "/info-refs" | "/upload-pack" => {
-                let c =
-                    host.catch_up(net, &[chain], &bs, &log, graftyard_git::catchup::WHOLE, None).await.map_err(se)?;
+                let c = host
+                    .catch_up(net, &[chain], &bs, &log, graftyard_git::catchup::WHOLE, &mut Default::default())
+                    .await
+                    .map_err(se)?;
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
@@ -398,7 +402,10 @@ impl DurableObject for GitShard {
                 Ok(r.with_headers(h))
             }
             "/catchup" => Response::from_json(
-                &host.catch_up(net, &[chain], &bs, &log, graftyard_git::catchup::WHOLE, None).await.map_err(se)?,
+                &host
+                    .catch_up(net, &[chain], &bs, &log, graftyard_git::catchup::WHOLE, &mut Default::default())
+                    .await
+                    .map_err(se)?,
             ),
             "/fsck" => Response::from_json(&host.fsck(net).await.map_err(se)?),
             "/status" => {

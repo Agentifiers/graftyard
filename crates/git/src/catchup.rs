@@ -15,8 +15,9 @@
 //!   before the cursor moves, and only to the last index the page held, never to the end of the range asked for. A
 //!   short or empty page from a newly elected leader cannot skip an entry (blocker 12).
 //! - **A run goes in pieces.** One call applies at most a `Piece` of whole entries and saves its cursor; the shard
-//!   wakes whoever waits and calls again toward the same head (`until`), so a validate or merge waiting on the disk
-//!   gets a turn between pieces instead of waiting out a burst's whole catch-up.
+//!   wakes whoever waits and calls again toward the same head (`Run`), so a validate or merge waiting on the disk
+//!   gets a turn between pieces instead of waiting out a burst's whole catch-up. The `Run` also carries the room
+//!   budget, so a run of many pieces pays one disk walk per `ROOM_EVERY`, as one call to the head does.
 //! - **Every page is saved before the next is applied.** Catch-up saves its cursor after each page. Rehydrate saves its
 //!   tail cursor after each page and skips the stored packs the container already holds (`ShardIo::have`), so a run
 //!   cut off at any point, by a caller's deadline or an isolate reset, resumes on the same disk where it stopped.
@@ -90,6 +91,18 @@ pub const PIECE: Piece = Piece { packs: 32, bytes: 8 << 20 };
 
 /// No cap: the call runs to the head it read.
 pub const WHOLE: Piece = Piece { packs: usize::MAX, bytes: u64::MAX };
+
+/// What a catch-up run carries from one `catch_up` call, a piece, to the next (`decisions/DECISIONS.md`,
+/// "`catchup-lag`"): the head its first piece read, the `make_room` budget left, so the disk walk runs once per
+/// `ROOM_EVERY` of the run and not once a piece. Since `catchup-pieces` each piece walked the disk, about 16 ms a pack
+/// on B0-33 erDA's home shard (`tests/am1/results/catchup-lag-design.md`). `Run::default()` before a
+/// run's first piece; a call that ends the run, or goes to a rehydrate, leaves it at the default again.
+#[derive(Debug, Default)]
+pub struct Run {
+    /// The head the run's first piece read; `None` before it. The run's later pieces read no heads and go no further.
+    pub until: Option<IngestCursor>,
+    room: u64,
+}
 
 /// The container's answer to one ingest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,8 +308,10 @@ pub struct Report {
     pub pages_ms: PageMs,
     /// The call stopped at its `Piece` before `until`: the cursor is saved there, and the next call goes on.
     pub behind: bool,
-    /// The index each chain is caught up to by this run: the head its first piece read (`catch_up`'s `until`).
+    /// The index each chain is caught up to by this run: the head its first piece read (`Run::until`).
     pub until: IngestCursor,
+    /// `ShardIo::make_room` calls this call made.
+    pub room_calls: usize,
 }
 
 /// A catch-up's or a rehydrate tail's time per part of applying its log pages, summed over the pages: `make_room`
@@ -594,6 +609,7 @@ struct Tally {
     held_max: usize,
     calls: usize,
     room: u64,
+    room_calls: usize,
     evicted: Vec<i64>,
     ms: PageMs,
     /// The packs and bytes this call applied, against its `Piece`.
@@ -716,6 +732,7 @@ async fn apply_page<I: ShardIo, S: Saved>(
     if t.room == 0 || t.room < bytes {
         t.evicted.extend(io.make_room(ROOM_EVERY.max(bytes)).await?);
         t.room = ROOM_EVERY.max(bytes);
+        t.room_calls += 1;
     }
     t.room -= bytes;
     lap(&mut t.ms.room);
@@ -775,9 +792,10 @@ async fn apply_page<I: ShardIo, S: Saved>(
 }
 
 /// Catch-up before serving: for each chain whose leader's applied index is past the cursor, its entries a page at a
-/// time, at most `piece` of them (`Report::behind` when it stopped there). A run's first piece reads the heads; its
-/// later ones pass the first's `Report::until` and go no further, so the run ends at the head it started from however
-/// fast the log moves, which is what a caller waiting for a run that started after it needs. No cursor for the
+/// time, at most `piece` of them (`Report::behind` when it stopped there). A run's first piece reads the heads into
+/// `run`; its later ones pass the same `run` and go no further, so the run ends at the head it started from however
+/// fast the log moves, which is what a caller waiting for a run that started after it needs. `run` also carries the
+/// room budget from piece to piece (`Run`). No cursor for the
 /// container's disk, a cursor below a chain's first log index, or an entry from a member release that sends no ref
 /// changes, means a rehydrate. Packs whose bases the disk lacks mean the disk skipped an
 /// entry below its cursor: the cursor is dropped, so the next call rehydrates instead of failing on the same pack.
@@ -789,9 +807,11 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     network: NetworkId,
     chains: &[ChainId],
     piece: Piece,
-    until: Option<&IngestCursor>,
+    run: &mut Run,
     now: &dyn Fn() -> u64,
 ) -> Result<Report, StoreError> {
+    // Whatever this call ends in, only a call that stops at its piece hands the run on.
+    let carried = std::mem::take(run);
     let t0 = now();
     let mut ms = Vec::new();
     let lap = |ms: &mut Vec<(&'static str, u64)>, name: &'static str| ms.push((name, now().saturating_sub(t0)));
@@ -802,7 +822,7 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     // A run's later pieces read no heads: `until` names where the run ends and HEAD's branch. One heads read is a
     // member round trip, 85 to 122 ms on m3fst1, about a tenth of a piece.
     let mut ends: Vec<(Index, Option<String>)> = Vec::with_capacity(chains.len());
-    match until.filter(|_| cursor.is_some()) {
+    match carried.until.as_ref().filter(|_| cursor.is_some()) {
         Some(u) => ends.extend(chains.iter().enumerate().map(|(i, c)| (u.at(*c), u.head.clone().filter(|_| i == 0)))),
         None => {
             for (chain, head) in chains.iter().zip(heads(log, chains).await) {
@@ -821,7 +841,7 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     // A rehydrate cut off in its last catch-up left its place: this catch-up finishes that one. A place for another
     // disk is a container that is gone, and goes too.
     let finishing = saved.rehydrating().await?.is_some();
-    let mut t = Tally::default();
+    let mut t = Tally { room: carried.room, ..Tally::default() };
     let mut seen = BTreeSet::new();
     // The network's own chain, first, names its default branch (G26).
     let head_ref = ends.first().and_then(|(_, b)| b.clone());
@@ -865,7 +885,11 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     if finishing && !behind {
         saved.drop_rehydrating().await?;
     }
+    if behind {
+        *run = Run { until: Some(to.clone()), room: t.room };
+    }
     Ok(Report {
+        room_calls: t.room_calls,
         behind,
         until: to,
         rehydrated: None,
@@ -1183,6 +1207,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     let mut pages_ms = t.ms;
     pages_ms.add(&c.ms);
     Ok(Report {
+        room_calls: t.room_calls + c.room_calls,
         behind: false,
         until: cursor.clone(),
         entries: c.entries,
