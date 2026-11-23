@@ -58,11 +58,22 @@ def main():
         if s.count(old) != 1:
             print(f'{i:2} NOT FOUND  {name}')
             continue
-        open(p, 'w').write(s.replace(old, new))
+        # The source is never truncated in place: the original stays a hard link (no new bytes on disk), the mutant goes
+        # in by rename, and the original comes back by rename. A full disk then fails the mutant's write with the source
+        # untouched, instead of leaving it empty (the lead's merge run, 2026-11-23).
+        keep, tmp = p + '.plant-orig', p + '.plant-new'
+        os.link(p, keep)
         try:
+            with open(tmp, 'w') as t:
+                t.write(s.replace(old, new))
+            os.replace(tmp, p)
             r = subprocess.run(cmd, cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=1800)
         finally:
-            open(p, 'wb').write(orig)
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            os.replace(keep, p)
+            if open(p, 'rb').read() != orig:
+                sys.exit(f'{f} did not restore: run `git diff -- {f}` before anything else')
         out = r.stdout + r.stderr
         if 'error[E' in out or 'could not compile' in out:
             print(f'{i:2} DID NOT COMPILE  {name}')
