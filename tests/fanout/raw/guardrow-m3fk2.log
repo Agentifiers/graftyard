@@ -1,0 +1,13 @@
+2026-11-23T18:57:56Z start d1943877, run stop $10 on graft-m3f from 2026-11-23T17:53:46Z, guard line 40 ms
+2026-11-23T19:05:09Z placement A (m3fk2A) starts
+2026-11-23T19:07:10Z placement A guard error (exit 1), asking again
+2026-11-23T19:07:31Z placement A guard error (exit 1), asking again
+2026-11-23T19:07:51Z placement A guard error (exit 1), asking again
+2026-11-23T19:09:08Z placement A repo 65623 hostguard repo:65623#1#f0: re-place, 44.0 ms of leader CPU a setup commit (43 commits, 1891 ms, line 40.0); GUARD: a1 ends before load
+2026-11-23T19:11:53Z placement A done: 2026-11-23T19:09:41Z b0-32 fm3fk2A-b032 65623 done exit 4
+2026-11-23T19:12:52Z placement A retire and purge of 65623 exit 0: 2026-11-23T19:12:52.731Z purge: {"dry": false, "purged": 1, "objects": 19, "refused": [], "second": 0}
+2026-11-23T19:12:52Z placement B (m3fk2B) starts
+2026-11-23T19:17:54Z placement B repo 65624 hostguard repo:65624#1#f0: keep, 33.9 ms of leader CPU a setup commit (39 commits, 1321 ms, line 40.0); load released
+2026-11-23T19:24:39Z placement B done: 2026-11-23T19:22:27Z b0-32 fm3fk2B-b032 65624 done exit 0
+2026-11-23T19:25:54Z placement B retire and purge of 65624 exit 0: 2026-11-23T19:25:54.874Z purge: {"dry": false, "purged": 1, "objects": 3237, "refused": [], "second": 0}
+GUARDm3fk2DONE

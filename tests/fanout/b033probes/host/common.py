@@ -15,6 +15,9 @@ RUNS = {  # tag: (load start ISO, leader site, seconds of site-0 leadership to u
     'm3fsf2-b0-32': ('2026-11-23T09:42:41Z', 96),
     # B0-32 m3fg3 (measurement on a 55.8 ms IAD leader): 90 s from this start is 12:16:58Z, the burst's first big second.
     'm3fg3-b0-32': ('2026-11-23T12:15:28Z', 96),
+    # B0-32 m3fk2B (gate run, a 33.9 ms MIA leader kept at the 40 line): 90 s from this start is 19:19:49Z, the burst's
+    # first big apply.
+    'm3fk2B-b0-32': ('2026-11-23T19:18:19Z', 96),
     'qlA': ('2026-11-22T16:24:36Z', 300), 'qlB': ('2026-11-22T17:09:28Z', 300), 'qlC': ('2026-11-22T17:52:14Z', 300),
     'pfA': ('2026-11-23T01:04:05Z', 296),
     'pgA': ('2026-11-23T02:20:20Z', 229),

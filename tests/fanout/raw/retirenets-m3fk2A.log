@@ -1,0 +1,5 @@
+2026-11-23T19:12:06.036Z repo:65623: 12 names, 12 were joined, all not joined, all with the retired row
+2026-11-23T19:12:52.730Z purge: buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T19:12:52.731Z purge: 65623 purged: a 7 -> 0, b 4 -> 0, c 8 -> 0
+2026-11-23T19:12:52.731Z purge: 65623 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T19:12:52.731Z purge: {"dry": false, "purged": 1, "objects": 19, "refused": [], "second": 0}

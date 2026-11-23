@@ -377,6 +377,107 @@ Batching every table instead stays under 4% of leader CPU on either row. The pro
 
 **The measured candidates on these hosts are the entry's `log`-row bytes and apply cost per KB.** They are LM-1's to design, as input to its own work.
 
+## Rows m3fk and m3fk2: B0-32's gate set, 447 of 500 on a kept 33.9 ms MIA host (2026-11-23, graft-m3f)
+
+**Outcome: m3fk2B is a valid fail on two lines** (orchestrator's ruling): within 5 s, at 447 of 500 against 450, and merges, with 3 of 22 `merge:only` over 2 s. B0-32 is not met, and no more sets run. m3fk kept no host, which is not a fail.
+
+**What ran.**
+- **Site day and edge day m3fk** from main `3a5255bd`, 17:53:46 to 18:07:33Z, both exit 0. Test-faults, `--anchor`, and `--ssh` on both days (R35), with m3fa4's flags. A new shard image, `graft-m3f-gitshard` `sha256:bd11b479cc5b…`, was built from `3a5255bd`'s `containers/git`, because maint-yield changed it; sshfront `fc6eda91…` was reused. Version ids: sites a `b0b05e93`, b `cb3a12db`, c `a0861738`; edge `3f6e6671`.
+- **Set m3fk:** `tests/fanout/guardrow-m3f.sh` from main `3a5255bd`, with GUARD_WANT=fast at the 28.4 line and at most 3 placements. Log: `tests/fanout/raw/guardrow-m3fk.log`.
+- **Set m3fk2:** the harness from main `d1943877` (`GUARD_LINE_MS`, branch `b032-guardline`), at a 40 ms line, on the m3fk site day. Log: `guardrow-m3fk2.log`.
+- **Spend:** graft-m3f $1.21 from 17:53:46Z, against the $10 run stop, and $4.96 for the UTC day, against $40. Every repository (65620 to 65624) was retired and purged, second pass 0. The sweep found no shard running, and graft-m3f went to B0-29 at 19:27Z.
+- **Committed raw files:** `tests/fanout/raw/{rows,admit,terms,vmem,retirenets}-m3fk{A,B,C}*` and `-m3fk2{A,B}*`, `shardgate-m3fk*-b0-32-*.jsonl`, `guardrow-m3fk{,2}.log`, `reretire-graft-m3f-m3fk{,2}.log` and `purge-m3fk{,2}.log`. For m3fk2B: `arrivals-m3fk2B.jsonl`, `tsave-m3fk2B-b0-32.jsonl.xz`, the leader's Workers Logs (`wl-m3/m3fk2B-b0-32-f0.json.xz`), site 1's removed voter's (`wl-m3/m3fk2B-b0-32-site1-1f1.json.xz`: timestamp, wall, CPU, path and outcome only), and `lm1-rows-m3f-data/m3fk2B-raw/` (the client's summary and its 23 merge pushes).
+
+| Set | Placement | Repository | hostguard (ms a setup commit) | Leader colo (f0) | Line | Verdict |
+|---|---|---|---|---|---|---|
+| m3fk | A | 65620 | 41.9 | IAD | 28.4 | re-place |
+| m3fk | B | 65621 | 29.7 | ATL | 28.4 | re-place |
+| m3fk | C | 65622 | 33.1 | ATL | 28.4 | re-place; set stopped without load |
+| m3fk2 | A | 65623 | 44.0 | ATL | 40 | re-place |
+| m3fk2 | B | 65624 | **33.9** | **MIA** | 40 | **keep**; loaded |
+
+**m3fk2B** (run `mwtnbva5`): 8 learners, k 4, leader site 0 term 2. Load from 19:18:37Z for 180 s, burst on the leader from 19:19:49Z, done line 19:22:27Z exit 0. Harness outage 5 s (2.8%), valid.
+
+| Line | m3fk2B |
+|---|---|
+| Every burst push acknowledged within 5 s or `full` | **447 of 500** (430 `ok` within 5 s, 17 `full`); 450 needed. 496 at 5.3 s, 499 at 5.5 s |
+| No other refusal shape | pass: `full` only |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | pass: peak 135,031 B |
+| Merges, none over 2 s | **3 of 22 `merge:only` over 2 s** (15.3 s 503 `warming`; 14.4 and 10.1 s). Merge pushes 2 of 23 over 2 s, max 2.7 s |
+| Zero leader changes | pass |
+| Zero `suspect` | pass: 0 (12 asks, 0 missed) |
+
+- `ok` total p50 4,031 ms, p99 5,278, max 5,823. Last commit p50 1,594 ms, p90 2,163. No `ok` committed twice.
+- **Leader burst CPU** (`heavyturns.py m3fk2B-b0-32`, 857 slices): apply 19% at 0.47 ms an event (48 events, 137 KB, 95 statements an entry). Deferred transaction 21% at 0.14 ms a statement. Storage confirm mean 5.3 ms. Of the B0-32 leaders on graft-m3f, this is the cheapest per event applied [measured].
+- **The merge fail is the home shard's catch-up, B0-33's cause.** The two slow 200s spent 13.4 and 9.4 s in `merge_plan`, of which 6.1 and 1.8 s waited and about 7.0 and 7.2 s were the shard's catch-up. The third was a 503 `warming`. F112's thread owns that fix (`decisions/OPEN-QUESTIONS.md`, F112), so nothing is built here.
+
+### The 53 late `ok` pushes, split by stage [measured, the a1 file's `server-timing`]
+
+The late pushes were over 5 s by 100 ms at p50 and by 823 ms at most.
+
+| Stage, ms | late `ok` (53) p50 / p90 | within 5 s (430) p50 / p90 |
+|---|---|---|
+| install | 480 / 640 | 440 / 660 |
+| `rcwait` | 680 / 1,180 | 620 / 1,100 |
+| front | 522 / 686 | 479 / 662 |
+| gate | **1,603** / 2,175 | **0** / 869 |
+| context | 0 / 2,214 | 140 / 1,910 |
+| validate | 873 / 1,532 | 626 / 931 |
+| commit (last) | 1,560 / 2,042 | 1,608 / 2,175 |
+| budget left at send | 1,415 / 1,992 | 3,155 / 3,632 |
+
+- Largest stage per late push: gate 20, context 19, commit 13, validate 1.
+- The late pushes did not commit slower than the ones on time. Their extra time came before the commit.
+
+**Rescues per lever** [inference: each counterfactual takes the named time off a late push and recounts it against 5 s]:
+
+| Lever | Late pushes rescued | Line |
+|---|---|---|
+| The gate's shed try on site 1 removed (`F1:…:ov`) | **49** | **496** |
+| …the same try answering in 600 ms instead | 48 | 495 |
+| Commit ×0.8 | 48 | 495 |
+| Commit ×0.9 | 37 | 484 |
+| validate capped at 700 ms | 35 | 482 |
+| `rcwait` to 0 | 34 | 481 |
+| Gate capped at 600 ms | 29 | 476 |
+| Context capped at 600 ms | 24 | 471 |
+| Identity read alone (merge-front's `alone` for agent pushes), front kept at least max(auth, resolve) | 22 | 469 |
+| Commit capped at 1.5 s | 19 | 466 |
+
+### Why site 1 shed every gate read: the edge read a removed voter [measured, one inference marked]
+
+- **49 of the 53 late pushes began their repository spread read with `F1:~1180:ov`:** site 1's voter answered `overloaded` after about 1.2 s, and F2 then served. The other four began with `L2:ov`.
+  - F1 answered `ov` to 158 of 158 repository reads and served none. F2 served 334 (p50 598 ms), F0 69.
+  - Of the 144 pushes whose pass began with `F1:ov`, 49 were late. Passes that began anywhere else had 4 late pushes out of 339.
+- **Site 1's voter had been replaced in setup.** The voter trace names `repo:65624#1#f1` until 19:15:09Z, and `repo:65624#3#f1` from 19:15:29Z: generation 3, a placement re-try (`vmem-m3fk2B-b0-32.jsonl`). The edge's reads still went to `#1#f1`:
+  - `#1#f1`'s Workers Logs, 19:19:46 to 19:19:58Z: 169 `/read`, wall p50 1,013 ms (982 to 1,039), CPU 0 to 13 ms, **no `/raft` call**. `#3#f1`, the voter, took the leader's appends.
+  - The leader took 457 `ReadIndex` calls from a site-1 member boot that the site-1 trace (`#3#f1`) never sent, 42 of them in the burst's first 10 s. It answered each, at indices 347 to 388.
+  - A removed member gets no appends, so it never applies the index it was granted. Each read waits out FOLLOWER_WAIT (1 s) and answers `overloaded` (`workers/site/src/member.rs`, `read_wait`). That answer carries no config and no `meta.removed`, so the edge learns nothing from it and asks the same member on the next pass [inference, from the code and the two traces].
+- **The same signature is on every B0-32 row whose site-1 voter was replaced, and on none whose voter was not:**
+
+| Row | Site-1 voter | F1 on repository reads | Line | Line with F1's `ov` time removed |
+|---|---|---|---|---|
+| m3fk2B | `#1` → `#3` | ov 158, ok 0 | 447 | 496 |
+| m3fsf2 | `#1` → `#2` | ov 159, ok 0 | 284 | 287 |
+| m3fac1 | `#1` → `#2` | ov 94, ok 0 | 311 | 311 |
+| m3fpc1 | `#1` → `#3` | ov 104, ok 0 | 251 | 257 |
+| m3fgb1 | `#1` → `#2` | ov 177, ok 0 | 422 | 422 |
+| m3fsf1 | `#1` | ok 159 | 323 | 323 |
+| m3fgt1 | `#1` | ok 85 | 135 | 135 |
+| m3fhs1, m3fst1, m3fg3 | `#1` | ok and ov mixed | 364, 332, 262 | 364 to 365 |
+
+- This is F113 (`decisions/OPEN-QUESTIONS.md`), found by B0-34 on a cold isolate after a `Degraded` repair. There the removed voter answered `notLeader` in 160 to 572 ms. Here it still names a leader, so it takes the read-index path and costs a full FOLLOWER_WAIT on warm isolates too. 403 of the 500 pushes' repository passes held no learners, so their isolates had never learned config 11. Why their deferred learner refresh did not take is unmeasured.
+- On the slow-host rows the shed try cost little, because the commit stage dominated. On m3fk2B's fast host it is the line.
+
+### The smallest change, and B0-33 [inference]
+
+- **Smallest change that reaches 450 with margin:** a removed member answers a read-index read at once with `notLeader`, its `meta.removed` and its last config, rather than queuing a read it can never apply. That is F113's first option, applied to read-index reads. The edge's pass already moves on from `nl` and learns the config the answer carries (`graftyard_lookup::learn_config`), so it needs no edge change. The removed member's last config either names the new voter or drops site 1, so either way the edge stops asking it.
+  - It prices at 495 to 496 of 500 on m3fk2B, with the try answering in 300 to 600 ms against 1.2 s.
+  - It is a site change, in `workers/site/src/member.rs`'s read path beside `removed` and `not_leader_reply`, and ships only through a site day. F113's owner is F112's thread.
+- **The next best levers each need a larger change and give less:** commit ×0.9 gives 484, `rcwait` to 0 gives 481, and identity alone gives 469.
+  - Identity alone for agent pushes turns the burst's batched identity reads into about 500 single reads. That load lands on the Identity group that B0-33's agent line also reads.
+- **B0-33's agent line:** the change only removes work. A removed voter stops taking reads it sheds, and the leader stops answering its `ReadIndex` calls. On a group with no replaced voter, nothing changes. No B0-33 trace I checked names a replaced repository voter, so it should not move B0-33's line [inference]. On a group where a repair replaced a voter, it takes up to FOLLOWER_WAIT off each pass that tried the removed name.
+
 ## Row m3fg3: B0-32 measurement on whatever leader it got, 262 of 500 on a 55.8 ms IAD host (2026-11-23, graft-m3f)
 
 **A measurement, not a gate row** (orchestrator's ruling (b) after m3fg): one placement, loaded whatever hostguard read, to find where B0-32's own line sits. It does not count toward the gate or the two-fails rule.

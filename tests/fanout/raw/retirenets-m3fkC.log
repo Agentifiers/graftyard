@@ -1,0 +1,6 @@
+2026-11-23T18:47:38.075Z repo:65622: 12 names, 12 were joined, all not joined, all with the retired row
+2026-11-23T18:55:22.559Z purge: buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-23T18:55:22.560Z purge: waiting 415 s for sweep runs started before the first pass (until 2026-11-23T18:55:00.000007+00:00)
+2026-11-23T18:55:22.560Z purge: 65622 purged: a 7 -> 0, b 9 -> 0, c 4 -> 0
+2026-11-23T18:55:22.560Z purge: 65622 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-23T18:55:22.560Z purge: {"dry": false, "purged": 1, "objects": 20, "refused": [], "second": 0}
