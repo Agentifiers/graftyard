@@ -1461,6 +1461,7 @@ impl<C: Command> Member<C> {
             moved.extend(qs);
         }
         moved.sort_unstable_by_key(|q| q.seq);
+        self.out.topped.push((moved.len() as u32, d.behind));
         d.batch.extend(moved);
     }
 

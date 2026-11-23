@@ -720,6 +720,11 @@ pub enum Trace {
     /// sized, not timed; `tests/fanout/raftcalls.py` fits the logged CPU on these sizes.
     #[cfg(feature = "test-faults")]
     RaftCall = 33,
+    /// reask-read's top-up (`raft::Out::topped`): a re-ask's answer moved commands into the open batch. `batch` is the
+    /// commands moved, `index` the entry in flight the batch rides behind; `peer` and `ms` are 0. A command a cut took
+    /// is in its `Cut` row, so a cut's commands plus its top-ups are what its entry carries.
+    #[cfg(feature = "test-faults")]
+    TopUp = 34,
 }
 
 /// raft-split: what one `/raft` call carried at each stage of `Routes::raft`. `body` and `envs` are what it decoded,
@@ -2499,6 +2504,10 @@ impl<F: Family> Host<F> {
         for n in &out.cuts {
             let (peer, batch, index, ms) = cut_row(n);
             self.trace(Trace::Cut, peer, batch, index, ms);
+        }
+        #[cfg(feature = "test-faults")]
+        for (n, behind) in &out.topped {
+            self.trace(Trace::TopUp, 0, u64::from(*n), behind.0, 0);
         }
         #[cfg(feature = "test-faults")]
         for a in &out.alarms {
