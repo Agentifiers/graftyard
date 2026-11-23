@@ -124,3 +124,106 @@ func TestIngestBatchMatchesOneIngestPerPack(t *testing.T) {
 		t.Fatalf("a corrupt pack answered %d: %s", code, got)
 	}
 }
+
+// /ingest-spooled-batch (catchup-lag) ingests staged stored packs as /ingest &spooled=1 would one by one: in order, a
+// pack thin against a later pack of the call answering "later" and staying staged, two packs carrying the same object,
+// a pack a validate kept aside moved in with no index-pack, and each pack's objects recorded under its own sum, which
+// /promote and /have rely on. A pack neither staged nor here fails the call 404, leaving the others staged.
+func TestIngestSpooledBatchMatchesOneSpooledIngestPerPack(t *testing.T) {
+	s := serve(t)
+	wt := t.TempDir()
+	run(t, wt, "", "init", "-q", "-b", "main")
+	base := commit(t, wt, map[string]string{"f": "base\n"})
+	full, err := gitOut(wt, base+"\n", "pack-objects", "--stdout", "--revs", "-q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(t, wt, "", "checkout", "-q", "-b", "x", base)
+	a := commit(t, wt, map[string]string{"same": "shared bytes\n", "x": "x\n"})
+	run(t, wt, "", "checkout", "-q", "-b", "y", base)
+	b := commit(t, wt, map[string]string{"same": "shared bytes\n", "y": "y\n"})
+	c := commit(t, wt, map[string]string{"y": "y2\n"})
+	d := commit(t, wt, map[string]string{"y": "y3\n"})
+	e := commit(t, wt, map[string]string{"y": "y4\n"})
+	pa, pb, pc, pd, pe := packOfWt(t, wt, a, base), packOfWt(t, wt, b, base), packOfWt(t, wt, c, b),
+		packOfWt(t, wt, d, c), packOfWt(t, wt, e, d)
+	call(t, s, "POST", "/init?net=7")
+	_, sums := batchBody(full, pa, pb, pc, pd, pe)
+	stage := func(i int, p []byte) {
+		t.Helper()
+		if code, got := postBody(t, s.URL+"/spool?net=7&sha256="+sums[i], p); code != 200 {
+			t.Fatalf("spool %d: %d %s", i, code, got)
+		}
+	}
+	type out struct {
+		Results []string `json:"results"`
+		Adopted int      `json:"adopted"`
+	}
+	batch := func(want int, is ...int) out {
+		t.Helper()
+		var body strings.Builder
+		for _, i := range is {
+			body.WriteString(sums[i] + "\n")
+		}
+		code, got := postBody(t, s.URL+"/ingest-spooled-batch?net=7", []byte(body.String()))
+		if code != want {
+			t.Fatalf("ingest-spooled-batch %v: %d %s", is, code, got)
+		}
+		var o out
+		if code == 200 {
+			if err := json.Unmarshal(got, &o); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return o
+	}
+	staged := func(i int) bool {
+		_, err := os.Stat(storedPath("7", sums[i], ".pack"))
+		return err == nil
+	}
+	for i, p := range [][]byte{full, pa, pb, pd} {
+		stage([]int{0, 1, 2, 4}[i], p)
+	}
+	// pd (index 4) is thin against c, which no pack of the call brings; pa and pb carry the same blob.
+	if o := batch(200, 0, 1, 2, 4); !reflect.DeepEqual(o.Results, []string{"done", "done", "done", "later"}) {
+		t.Fatalf("first call %v", o.Results)
+	}
+	if !staged(4) || staged(1) {
+		t.Fatal("a later pack must stay staged and a done pack's staged file must go")
+	}
+	if _, err := os.Stat(filepath.Join(repo("7"), "objects", d[:2], d[2:])); err == nil {
+		t.Fatal("a later pack left an object behind")
+	}
+	// pc's validate keeps it aside, so it moves in with no index-pack; pd (staged), its base now in the same call,
+	// and pa again (already here) go in too. pe is neither staged nor here: the call fails before any of it.
+	putRefs(t, s.URL, b)
+	if code, body, err := validateReq(s.URL, "7", vspec{pack: pc, tips: []string{b}}); err != nil || code != 200 {
+		t.Fatalf("pc's validate: %d %s %v", code, body, err)
+	}
+	batch(404, 3, 4, 5)
+	if !staged(4) {
+		t.Fatal("a failed call removed a staged pack")
+	}
+	o := batch(200, 3, 4, 1)
+	if !reflect.DeepEqual(o.Results, []string{"done", "done", "done"}) || o.Adopted != 1 {
+		t.Fatalf("second call %v, %d adopted, want 3 done and pc adopted", o.Results, o.Adopted)
+	}
+	for i, revs := range []string{base, a + "\n^" + base, b + "\n^" + base, c + "\n^" + b, d + "\n^" + c} {
+		listed, err := gitOut(wt, revs+"\n", "rev-list", "--objects", "--stdin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want []string
+		for _, l := range strings.Split(strings.TrimSpace(string(listed)), "\n") {
+			want = append(want, strings.Fields(l)[0])
+		}
+		sort.Strings(want)
+		if got := objsOf(t, "7", sums[i]); !reflect.DeepEqual(got, want) {
+			t.Fatalf("pack %d recorded %v, it carries %v", i, got, want)
+		}
+	}
+	putRefs(t, s.URL, d)
+	if out := run(t, repo("7"), "", "fsck", "--strict", "--no-dangling"); out != "" {
+		t.Fatalf("fsck: %s", out)
+	}
+}

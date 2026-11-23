@@ -1562,7 +1562,7 @@ impl ShardHost<'_> {
     /// Catch-up before serving, and `rehydrate` when the disk has no cursor (`crate::catchup`): a page of the log at a
     /// time, stored packs streamed from a bucket to the container, and every page saved before the next. One call is
     /// at most `piece` (`crate::catchup::PIECE` on the site, `WHOLE` for one call to the head); `Report::behind` says
-    /// another follows, toward `until`.
+    /// another follows, with the same `run` (`crate::catchup::Run`).
     ///
     /// `buckets` is read in the order given for a stored pack (`crate::catchup::own_first`: the shard's own site's
     /// first), and all of them for the markers.
@@ -1573,11 +1573,11 @@ impl ShardHost<'_> {
         buckets: &[(SiteId, &R2)],
         log: &impl ChainLog,
         piece: crate::catchup::Piece,
-        until: Option<&crate::shard::IngestCursor>,
+        run: &mut crate::catchup::Run,
     ) -> Result<Report, StoreError> {
         let io = Io { host: self, network, buckets, stored: Default::default(), direct: Default::default() };
         let mut r =
-            crate::catchup::catch_up(&io, &io, log, network, chains, piece, until, &|| js_sys::Date::now() as u64)
+            crate::catchup::catch_up(&io, &io, log, network, chains, piece, run, &|| js_sys::Date::now() as u64)
                 .await?;
         r.stored = io.stored.take();
         Ok(r)
@@ -1787,6 +1787,8 @@ impl ShardIo for Io<'_, '_> {
             lock_excl_wait_ms: u64,
             #[serde(default)]
             idx: String,
+            #[serde(default)]
+            adopted: bool,
         }
         let t0 = js_sys::Date::now() as u64;
         let direct = self.direct.borrow().get(&checksum).copied();
@@ -1834,6 +1836,69 @@ impl ShardIo for Io<'_, '_> {
             "rejected" => st.idx_rejected += 1,
             _ => {}
         }
+        st.adopted += u32::from(o.adopted);
+        Ok(a)
+    }
+    /// `/ingest-spooled-batch`: the packs in order, one answer each. A container on the previous release's image has
+    /// no such route (404), so each goes through `ingest_spooled`; a pack this isolate must take from the bucket
+    /// itself (`direct`) makes the whole run go that way too.
+    async fn ingest_spooled_batch(&self, checksums: &[Digest]) -> Result<Vec<Ingested>, StoreError> {
+        #[derive(Default, Deserialize)]
+        struct Out {
+            results: Vec<String>,
+            #[serde(default)]
+            index_ms: u64,
+            #[serde(default)]
+            lock_ms: u64,
+            #[serde(default)]
+            midx_ms: u64,
+            #[serde(default)]
+            lock_wait_ms: u64,
+            #[serde(default)]
+            lock_excl_wait_ms: u64,
+            #[serde(default)]
+            adopted: u32,
+        }
+        let each = || async {
+            let mut out = Vec::with_capacity(checksums.len());
+            for s in checksums {
+                out.push(self.ingest_spooled(*s).await?);
+            }
+            Ok(out)
+        };
+        if checksums.iter().any(|s| self.direct.borrow().contains_key(s)) {
+            return each().await;
+        }
+        let t0 = js_sys::Date::now() as u64;
+        let body: String = checksums.iter().map(|s| format!("{}\n", s.hex())).collect();
+        let path = format!("/ingest-spooled-batch?net={}", self.network.0.0);
+        let mut r = self.host.call(Method::Post, &path, Some(body.into_bytes()), &[]).await?;
+        if r.status_code() == 404 {
+            return each().await;
+        }
+        if r.status_code() != 200 {
+            return Err(StoreError(format!("{path}: {} {}", r.status_code(), r.text().await.unwrap_or_default())));
+        }
+        let o: Out = r.json().await.map_err(worker_err)?;
+        let a: Vec<Ingested> = o
+            .results
+            .iter()
+            .map(|x| match x.as_str() {
+                "done" => Ok(Ingested::Done),
+                "later" => Ok(Ingested::Later),
+                x => Err(StoreError(format!("{path}: answered {x:?} for a pack"))),
+            })
+            .collect::<Result<_, _>>()?;
+        let mut st = self.stored.borrow_mut();
+        st.packs += a.iter().filter(|x| **x == Ingested::Done).count() as u32;
+        st.batches += 1;
+        st.adopted += o.adopted;
+        st.total_ms += js_sys::Date::now() as u64 - t0;
+        st.index_ms += o.index_ms;
+        st.lock_ms += o.lock_ms;
+        st.midx_ms += o.midx_ms;
+        st.lock_wait_ms += o.lock_wait_ms;
+        st.lock_excl_wait_ms += o.lock_excl_wait_ms;
         Ok(a)
     }
     /// None from a container on the previous release's image (`git_prev`), which has no `/connected` to check a

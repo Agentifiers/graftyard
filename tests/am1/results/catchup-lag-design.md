@@ -1,8 +1,9 @@
-# catchup-lag: the home shard's catch-up falls behind B0-33's pack rate (design, not built)
+# catchup-lag: the home shard's catch-up falls behind B0-33's pack rate (design; built 2026-11-23, not hosted)
 
 F112, 2026-11-23. Asked by the lead after edge refusal's Row B2 (`tests/am1/results/edge-refusal.md`, "The git cache
 `warming` 503s"): a $0 design, priced against B0-33's pack rate, with the question as G39 in
-`decisions/OPEN-QUESTIONS.md`. No code until the lead rules. Tags follow `design/SHARED.md`, "Read this first".
+`decisions/OPEN-QUESTIONS.md`. The lead ruled A, B and C on 2026-11-23, built on branch `g39-catchup` ("As built",
+below). Tags follow `design/SHARED.md`, "Read this first".
 
 **Short answer.**
 - **The home shard has about two thirds of the rate it needs.** On erDA and mrB, site a's pool shards took B0-33's
@@ -114,3 +115,19 @@ mrB (net 131396, load 13:15:50Z): the home took 85.0 ms a pack (11.8 a second), 
   C, a batch that records one pack's objects under another's sum.
 - Hosted check: one B0-33 row through a site day, with the home's packs a second, its lag, and the `warming` merge
   503s next to erDA's. Then B0-32's merge line.
+
+## As built (2026-11-23, branch `g39-catchup`, not hosted)
+
+- **A** (`crates/git/src/catchup.rs`, `Run`): `catch_up` takes a `Run` that `Jobs::start` keeps across a run's pieces.
+  It carries `until` and the room budget. `Report::room_calls` counts `make_room` calls, and the site's
+  `shard catch-up stored` line carries it, so a row reads A directly. Plant 107.
+- **B** (`follow`'s `carry`): a capped piece hands the unapplied rest of its page, the read-ahead page, or the page
+  that did not fit, to the `Run`. The next piece uses it only when its first entry is just past the cursor. Plant 108.
+- **C** (`containers/git/server/main.go`, `/ingest-spooled-batch`; `ingest_all`'s stored branch; `host.rs`): a
+  spooled stored pack goes with the stored packs right after it whose fetches have already ended (`Ahead::take_ready`),
+  up to `INGEST_BATCH_BYTES`. A pack with a stored `.idx` goes alone, as before. The container refuses the call 404
+  before anything moves when a pack is neither here, aside nor staged; otherwise it marks packs already here, adopts
+  asides, and runs the rest through `ingestRun` (split on failure). A container with no such route (404) makes the
+  shard send each pack through `/ingest &spooled=1`. `StoredMs` gains `adopted` and `batches`. Plant 109.
+- The hosted check is unchanged: one B0-33 row through a site day, reading the home's packs a second (target over
+  19.2), its lag behind the pools, `room_calls`, `adopted`, `batches`, and the `warming` merge 503s against erDA's 17.

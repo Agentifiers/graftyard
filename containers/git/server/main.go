@@ -51,6 +51,13 @@
 //	                                 "later" for /ingest's 409; lock_wait_ms the wait for the writer's section,
 //	                                 midx_ms as /ingest's.
 //	                                 422 for the call on a checksum mismatch or another index-pack failure
+//	POST /ingest-spooled-batch?net=N body: one sha256 a line, packs /spool staged. Each ingested in order as
+//	                                 /ingest &spooled=1 does with no stored .idx: a pack /validate kept aside
+//	                                 moves in first, the rest go into one pack and one index-pack, split in two on
+//	                                 failure (ingestRun). {"results": ["done"|"later", ...],"adopted","index_ms",
+//	                                 "lock_ms","lock_wait_ms","lock_excl_wait_ms","midx_ms"}; a "later" pack stays
+//	                                 spooled. 404 "not spooled" when a pack is neither staged nor here; 422 for the
+//	                                 call on another index-pack failure
 //	POST /spool?net=N&sha256=H       body: a stored pack, streamed. Spools it, holding no lock, to
 //	                                 <data>/spool/stored-<net>-<H>.pack for a later /ingest &spooled=1, so a
 //	                                 catch-up fetches several packs at once and still ingests them in log order.
@@ -2232,6 +2239,104 @@ func handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"results": results, "lock_wait_ms": lockWaitMs, "midx_ms": midxMs(rp)})
 }
 
+// handleIngestSpooledBatch is /ingest-batch for stored packs /spool staged (`catchup-lag`, decisions/DECISIONS.md): a
+// catch-up behind a burst's staged packs called /ingest &spooled=1 once a pack, each its own index-pack, 48.5 ms a pack
+// on B0-33 erDA's home shard against 27 to 33 on its pools (tests/am1/results/catchup-lag-design.md). Each pack goes in
+// as /ingest-batch's do: already here, then a /validate aside moved in (adopt), then the rest as one run through
+// ingestRun, under the writer's section. The run's packs are joined into one file in the spool directory, which holds
+// no lock. A pack answered "later" stays staged for the call that sends it again; every other pack's staged file goes.
+// A pack neither here, set aside nor staged refuses the call 404 before any pack moves.
+func handleIngestSpooledBatch(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	mark(rp, markCatchUp)
+	var packs []batchPack
+	sc := bufio.NewScanner(r.Body)
+	for sc.Scan() {
+		sum := strings.TrimSpace(sc.Text())
+		if !sumRe.MatchString(sum) {
+			fail(w, 400, "bad sha256 %q", sum)
+			return
+		}
+		packs = append(packs, batchPack{sum: sum, file: storedPath(net, sum, ".pack")})
+	}
+	if err := sc.Err(); err != nil || len(packs) == 0 {
+		fail(w, 400, "no packs: %v", err)
+		return
+	}
+	// A pack neither here, kept aside, nor staged refuses the call before any pack moves, so a refused call changes
+	// nothing.
+	for _, p := range packs {
+		_, here := os.Stat(filepath.Join(rp, "graft", p.sum+".objs"))
+		_, aside := os.Stat(filepath.Join(rp, "graft", "validated-"+p.sum))
+		_, staged := os.Stat(p.file)
+		if here != nil && aside != nil && staged != nil {
+			fail(w, 404, "not spooled: %s", p.sum)
+			return
+		}
+	}
+	dir, err := os.MkdirTemp(filepath.Join(data, "spool"), "sbatch-")
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	defer os.RemoveAll(dir)
+	results := make([]string, len(packs))
+	adopted := 0
+	var indexMs int64
+	var run []int
+	lockWaitMs, unlock := writeLock(net)
+	t1 := time.Now()
+	err = func() error {
+		for i, p := range packs {
+			if _, err := os.Stat(filepath.Join(rp, "graft", p.sum+".objs")); err == nil {
+				results[i] = "done"
+				continue
+			}
+			name, sent, ok, err := adopt(rp, p.sum)
+			if ok {
+				if err == nil {
+					err = record(rp, p.sum, name, filepath.Join(rp, "objects"), sent)
+				}
+				if err != nil {
+					return fmt.Errorf("pack %d: %v", i, err)
+				}
+				results[i] = "done"
+				adopted++
+				continue
+			}
+			if _, err := os.Stat(p.file); err != nil {
+				return errNotSpooled
+			}
+			run = append(run, i)
+		}
+		t0 := time.Now()
+		defer func() { indexMs = time.Since(t0).Milliseconds() }()
+		return ingestRun(net, rp, dir, packs, run, results)
+	}()
+	lockMs := time.Since(t1).Milliseconds()
+	unlock()
+	for i, p := range packs {
+		if results[i] == "done" {
+			removeStored(net, p.sum)
+		}
+	}
+	switch {
+	case errors.Is(err, errNotSpooled):
+		fail(w, 404, "not spooled")
+		return
+	case err != nil:
+		fail(w, 422, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"results": results, "adopted": adopted, "index_ms": indexMs,
+		"lock_ms": lockMs, "lock_wait_ms": lockWaitMs, "lock_excl_wait_ms": lockWaitMs, "midx_ms": midxMs(rp)})
+}
+
+var errNotSpooled = errors.New("not spooled")
+
 // One pack of an /ingest-batch call, spooled to file.
 type batchPack struct{ sum, file string }
 
@@ -3584,6 +3689,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/validate", handleValidate)
 	m.HandleFunc("/ingest", handleIngest)
 	m.HandleFunc("/ingest-batch", handleIngestBatch)
+	m.HandleFunc("/ingest-spooled-batch", handleIngestSpooledBatch)
 	m.HandleFunc("POST /spool", handleSpool)
 	m.HandleFunc("PUT /spool-idx", handleSpoolIdx)
 	m.HandleFunc("GET /idx", handleIdx)

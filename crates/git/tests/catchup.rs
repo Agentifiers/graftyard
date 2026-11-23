@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use futures_executor::block_on;
 use graftyard_git::catchup::{
-    Fetched, INGEST_BATCH_BYTES, IdxRange, Ingested, PIECE, Piece, Rehydrating, Report, Saved, ShardIo, WHOLE, catch_up,
+    Fetched, INGEST_BATCH_BYTES, IdxRange, Ingested, PIECE, Piece, Rehydrating, Report, Run, Saved, ShardIo, WHOLE,
+    catch_up,
 };
 use graftyard_git::group::RefsPage;
 use graftyard_git::{ChainLog, Compacted, Head, IngestCursor, LogPacks, Marker, PackId, PackRef, Promoted, StoreError};
@@ -72,7 +73,7 @@ struct Disk {
     idx: RefCell<BTreeMap<PackId, (Digest, Option<IdxRange>)>>,
     /// Packs spooled onto the disk, each with its staged index if one came.
     spooled: RefCell<BTreeMap<Digest, (PackId, Option<Digest>)>>,
-    /// Packs ingested through their stored index, and through `index-pack`.
+    /// Packs ingested through their stored index, and packs that went through `index-pack` (a batch's packs each count).
     idx_used: Cell<usize>,
     index_packs: Cell<usize>,
     /// Checksums in the order the container ingested them.
@@ -86,6 +87,10 @@ struct Disk {
     /// How long a `/refs` call and a `make_room` take on the clock.
     refs_ms: Cell<u64>,
     room_ms: Cell<u64>,
+    /// `make_room` calls.
+    rooms: Cell<usize>,
+    /// `ingest_spooled_batch` calls, and the packs each carried.
+    batches: RefCell<Vec<usize>>,
     /// Fetches in flight now, and the most at once.
     in_flight: Cell<usize>,
     in_flight_max: Cell<usize>,
@@ -246,6 +251,26 @@ impl ShardIo for Disk {
         }
         Ok(a)
     }
+    /// As the container's `/ingest-spooled-batch`: one `index-pack` for the call, each pack in turn so a later one may
+    /// build on an earlier one of the same call.
+    async fn ingest_spooled_batch(&self, checksums: &[Digest]) -> Result<Vec<Ingested>, StoreError> {
+        self.tick()?;
+        self.batches.borrow_mut().push(checksums.len());
+        self.index_packs.set(self.index_packs.get() + checksums.len());
+        self.clock.sleep(self.index_ms.get()).await;
+        let mut out = Vec::with_capacity(checksums.len());
+        for s in checksums {
+            self.ingests.set(self.ingests.get() + 1);
+            let (id, _) = *self.spooled.borrow().get(s).ok_or_else(|| StoreError("not spooled".into()))?;
+            let b = self.bucket.borrow().get(&id).cloned().unwrap();
+            let a = self.take(*s, &b);
+            if a == Ingested::Done {
+                self.spooled.borrow_mut().remove(s);
+            }
+            out.push(a);
+        }
+        Ok(out)
+    }
     async fn idx_ranges(&self) -> Result<BTreeMap<PackId, Option<IdxRange>>, StoreError> {
         Ok(self.idx.borrow().iter().map(|(id, (_, r))| (*id, *r)).collect())
     }
@@ -317,6 +342,7 @@ impl ShardIo for Disk {
         Ok(())
     }
     async fn make_room(&self, _incoming: u64) -> Result<Vec<i64>, StoreError> {
+        self.rooms.set(self.rooms.get() + 1);
         self.clock.sleep(self.room_ms.get()).await;
         Ok(Vec::new())
     }
@@ -520,7 +546,7 @@ fn bed(n: u64, pad: usize, stored_every: u64) -> Bed {
 
 impl Bed {
     fn run(&self) -> Result<Report, StoreError> {
-        block_on(catch_up(&self.disk, &self.store, &self.log, NET, &[CHAIN], WHOLE, None, &|| 0))
+        block_on(catch_up(&self.disk, &self.store, &self.log, NET, &[CHAIN], WHOLE, &mut Run::default(), &|| 0))
     }
 
     /// Promotes entries 1..=to into one stored, complete pack, as the archive alarm does, and records `Promoted` at a
@@ -959,7 +985,16 @@ fn a_shard_reads_its_own_sites_bucket_first_and_falls_back() {
 impl Bed {
     fn run_timed(&self) -> Result<Report, StoreError> {
         let now = || self.disk.clock.now.get();
-        self.disk.clock.run(catch_up(&self.disk, &self.store, &self.log, NET, &[CHAIN], WHOLE, None, &now))
+        self.disk.clock.run(catch_up(
+            &self.disk,
+            &self.store,
+            &self.log,
+            NET,
+            &[CHAIN],
+            WHOLE,
+            &mut Run::default(),
+            &now,
+        ))
     }
 
     /// Stores the `.idx` of promotion `1_000_000 + to`, good or not, with the range its metadata names.
@@ -1438,26 +1473,30 @@ fn a_burst_catch_up_goes_in_capped_pieces_to_the_head_its_first_piece_read() {
     b.run().unwrap();
     *b.disk.markers.borrow_mut() = marks;
     b.log.entries.borrow_mut().extend(all.iter().skip(10).take(90).cloned());
-    let piece = |until: Option<&IngestCursor>| {
-        block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], PIECE, until, &|| 0)).unwrap()
+    let run = RefCell::new(Run::default());
+    let piece = |fresh: bool| {
+        if fresh {
+            *run.borrow_mut() = Run::default();
+        }
+        block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], PIECE, &mut run.borrow_mut(), &|| 0)).unwrap()
     };
     let at = || b.store.cursor.borrow().clone().unwrap().1.at(CHAIN).0;
     // 90 stored packs past the cursor, one an entry: 32, 32, then 26.
-    let first = piece(None);
+    let first = piece(true);
     assert!(first.behind, "the first piece stops at the cap");
     assert_eq!((first.packs, at()), (PIECE.packs, 10 + PIECE.packs as u64), "the cursor is saved at the cap");
     assert_eq!(first.until.at(CHAIN), Index(100), "the run ends at the head the first piece read");
     // The log moves on while the run goes; its pieces still end at 100.
     b.log.entries.borrow_mut().extend(all.iter().skip(100).cloned());
-    let second = piece(Some(&first.until));
+    let second = piece(false);
     assert!(second.behind);
     assert_eq!((second.packs, at()), (PIECE.packs, 10 + 2 * PIECE.packs as u64));
-    let last = piece(Some(&second.until));
+    let last = piece(false);
     assert!(!last.behind, "the run ends at its head");
     assert_eq!((last.packs, at()), (90 - 2 * PIECE.packs, 100));
     assert!(b.disk.objects.borrow().contains(&100) && !b.disk.objects.borrow().contains(&101));
     // The next run reads the head again and goes past it.
-    while piece(None).behind {}
+    while piece(true).behind {}
     b.assert_serves_head();
     // A lone entry past the cap goes alone, never zero entries a call.
     let big = Piece { packs: 1, bytes: 1 };
@@ -1469,7 +1508,7 @@ fn a_burst_catch_up_goes_in_capped_pieces_to_the_head_its_first_piece_read() {
     let mut calls = 0;
     loop {
         calls += 1;
-        let r = block_on(catch_up(&c.disk, &c.store, &c.log, NET, &[CHAIN], big, None, &|| 0)).unwrap();
+        let r = block_on(catch_up(&c.disk, &c.store, &c.log, NET, &[CHAIN], big, &mut Run::default(), &|| 0)).unwrap();
         assert_eq!(r.entries, 1, "one entry a call at a cap below one entry's bytes");
         if !r.behind {
             break;
@@ -1477,4 +1516,119 @@ fn a_burst_catch_up_goes_in_capped_pieces_to_the_head_its_first_piece_read() {
     }
     assert_eq!(calls, 3);
     c.assert_serves_head();
+}
+
+/// A disk caught up to entry 10 of `b`'s log, the rest of the log committed after.
+fn warm_to_10(b: &Bed) {
+    let all = b.log.entries.replace(Vec::new());
+    let marks = b.disk.markers.borrow().clone();
+    b.log.entries.borrow_mut().extend(all.iter().take(10).cloned());
+    b.disk.markers.borrow_mut().retain(|(_, m)| m.index.0 <= 10);
+    b.run().unwrap();
+    *b.disk.markers.borrow_mut() = marks;
+    b.log.entries.borrow_mut().extend(all.into_iter().skip(10));
+}
+
+/// G39 (`decisions/DECISIONS.md`, "`catchup-lag`"): a run's pieces share one `Run`, so the run asks `make_room` once per
+/// `ROOM_EVERY` and reads each log page once, as one call to the head would. Before, every piece walked the disk and
+/// read its page again from the cursor: B0-33 erDA's home shard spent 16 and 17 to 21 ms a pack there, and took 11.8
+/// packs a second against 18 offered (`tests/am1/results/catchup-lag-design.md`).
+#[test]
+fn a_runs_pieces_walk_the_disk_once_and_read_each_page_once() {
+    let b = bed(100, 0, 1);
+    warm_to_10(&b);
+    let (rooms, reads, served, ingests) =
+        (b.disk.rooms.get(), b.log.calls.get(), b.log.served.get(), b.disk.ingests.get());
+    let mut run = Run::default();
+    let mut pieces = Vec::new();
+    loop {
+        let r = block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], PIECE, &mut run, &|| 0)).unwrap();
+        pieces.push((r.packs, r.room_calls));
+        if !r.behind {
+            break;
+        }
+    }
+    // 90 stored packs, one an entry, all in one 600 KB page (a stored pack counts 100 bytes there): 32, 32, 26.
+    assert_eq!(pieces, vec![(32, 1), (32, 0), (26, 0)], "one disk walk for the run, in its first piece");
+    assert_eq!(b.disk.rooms.get() - rooms, 1);
+    assert_eq!(b.log.calls.get() - reads, 1, "the page is read once, not once a piece");
+    assert_eq!(b.log.served.get() - served, 90, "no entry is read twice");
+    assert_eq!(b.disk.ingests.get() - ingests, 90, "no pack is ingested twice");
+    assert!(run.until.is_none(), "the run's last piece leaves nothing to carry");
+    b.assert_serves_head();
+    // The next run starts again: one more disk walk for its first page.
+    let more = bed(101, 0, 1);
+    let id = PackId(Ulid(101));
+    b.disk.bucket.borrow_mut().insert(id, more.disk.bucket.borrow()[&id].clone());
+    b.disk.markers.borrow_mut().push(more.disk.markers.borrow()[100].clone());
+    b.log.entries.borrow_mut().push(more.log.entries.borrow()[100].clone());
+    let r = block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], PIECE, &mut run, &|| 0)).unwrap();
+    assert_eq!((r.packs, r.room_calls, r.behind), (1, 1, false));
+}
+
+/// A carried tail is used only while it starts just past the cursor: a cursor that moved between two pieces (here
+/// another run's) reads its page again rather than applying entries the disk already holds or skipping some.
+#[test]
+fn a_carried_tail_past_the_cursor_is_read_again() {
+    let b = bed(100, 0, 1);
+    warm_to_10(&b);
+    let mut run = Run::default();
+    let first = block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], PIECE, &mut run, &|| 0)).unwrap();
+    assert!(first.behind);
+    // Another run takes the cursor to 60 between the pieces; this run's tail starts at 43.
+    let mut other = Run::default();
+    let cap = Piece { packs: 18, bytes: u64::MAX };
+    let r = block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], cap, &mut other, &|| 0)).unwrap();
+    assert_eq!(r.cursor.at(CHAIN), Index(60));
+    let (reads, ingests) = (b.log.calls.get(), b.disk.ingests.get());
+    let mut pieces = 0;
+    loop {
+        pieces += 1;
+        let r = block_on(catch_up(&b.disk, &b.store, &b.log, NET, &[CHAIN], PIECE, &mut run, &|| 0))
+            .unwrap_or_else(|e| panic!("{}", e.0));
+        if !r.behind {
+            break;
+        }
+    }
+    assert_eq!(pieces, 2, "61..=100 in two pieces");
+    assert!(b.log.calls.get() > reads, "the page from 61 is read, not the tail from 43");
+    assert_eq!(b.disk.ingests.get() - ingests, 40, "61..=100 once each");
+    b.assert_serves_head();
+}
+
+/// G39 (`catchup-lag`): stored packs whose fetches have ended go to the container in one call, one `index-pack`, in log
+/// order; a pack whose fetch is still running is not waited for, so a batch never holds an ingest behind a fetch. On
+/// erDA's home shard each stored pack was its own call and `index-pack`, 48.5 ms a pack against 27 to 33 on the pools.
+#[test]
+fn ready_stored_packs_go_in_one_call_and_a_slow_fetch_is_not_waited_for() {
+    let b = bed(30, 0, 1);
+    warm_to_10(&b);
+    b.disk.fetch_ms.set(100);
+    b.disk.index_ms.set(40);
+    // Entry 15's fetch takes 5 s: the packs before it go without it, and it does not hold them.
+    b.disk.slow.borrow_mut().insert(PackId(Ulid(15)), 5_000);
+    let (t0, ingests, before) = (b.disk.clock.now.get(), b.disk.ingests.get(), b.disk.batches.borrow().len());
+    let r = b.run_timed().unwrap_or_else(|e| panic!("{}", e.0));
+    assert_eq!(r.packs, 20);
+    assert_eq!(b.disk.ingests.get() - ingests, 20, "every pack once");
+    let calls = b.disk.batches.borrow()[before..].to_vec();
+    assert_eq!(calls.first(), Some(&4), "11..=14 go without waiting on 15's fetch: {calls:?}");
+    assert_eq!(calls.iter().sum::<usize>(), 20, "every pack in a batch: {calls:?}");
+    assert!(calls.len() <= 5, "a batch carries the packs whose fetches ended, not one pack: {calls:?}");
+    // The ingest order is the log's, whatever the batches.
+    let order: Vec<u64> = b
+        .disk
+        .order
+        .borrow()
+        .iter()
+        .rev()
+        .take(20)
+        .rev()
+        .map(|s| b.disk.bucket.borrow().iter().find(|(_, v)| sum(v) == *s).map(|(k, _)| k.0.0 as u64).unwrap())
+        .collect();
+    assert_eq!(order, (11..=30).collect::<Vec<_>>());
+    // The slow fetch plus a few batches; one index-pack a pack after it (16..=30) would be 5,000 + 15 * 40.
+    let took = b.disk.clock.now.get() - t0;
+    assert!(took < 5_000 + 10 * 40, "{took} ms");
+    b.assert_serves_head();
 }

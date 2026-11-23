@@ -346,10 +346,15 @@ impl DurableObject for GitShard {
         }
         match path.as_str() {
             "/catchup" => Response::from_json(
-                &host.catch_up(NET, &[CHAIN], &bs, &log, graftyard_git::catchup::WHOLE, None).await.map_err(se)?,
+                &host
+                    .catch_up(NET, &[CHAIN], &bs, &log, graftyard_git::catchup::WHOLE, &mut Default::default())
+                    .await
+                    .map_err(se)?,
             ),
             "/validate" => {
-                host.catch_up(NET, &[CHAIN], &bs, &log, graftyard_git::catchup::WHOLE, None).await.map_err(se)?;
+                host.catch_up(NET, &[CHAIN], &bs, &log, graftyard_git::catchup::WHOLE, &mut Default::default())
+                    .await
+                    .map_err(se)?;
                 let tips: Vec<String> = q(&url, "tips")
                     .map(|t| t.split(',').filter(|s| !s.is_empty()).map(str::to_owned).collect())
                     .unwrap_or_default();
@@ -366,7 +371,9 @@ impl DurableObject for GitShard {
                 }
             }
             "/promote" => {
-                host.catch_up(NET, &[CHAIN], &bs, &log, graftyard_git::catchup::WHOLE, None).await.map_err(se)?;
+                host.catch_up(NET, &[CHAIN], &bs, &log, graftyard_git::catchup::WHOLE, &mut Default::default())
+                    .await
+                    .map_err(se)?;
                 let sums: Vec<Digest> =
                     req.json::<Vec<String>>().await?.iter().filter_map(|s| Digest::parse_hex(s)).collect();
                 host.promote(NET, &sums).await.map_err(se)
@@ -417,7 +424,9 @@ impl DurableObject for GitShard {
                 Response::from_json(&serde_json::json!({ "torn_down": true }))
             }
             "/info-refs" | "/upload-pack" => {
-                host.catch_up(NET, &[CHAIN], &bs, &log, graftyard_git::catchup::WHOLE, None).await.map_err(se)?;
+                host.catch_up(NET, &[CHAIN], &bs, &log, graftyard_git::catchup::WHOLE, &mut Default::default())
+                    .await
+                    .map_err(se)?;
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
