@@ -2244,7 +2244,8 @@ fn mark_shard(repo: &Repo, site: SiteId, cold: bool) {
 /// How long the first shard tried, usually the home's, may hold a validate in its catch-up before the edge tries the
 /// next: past it the shard answers 503 `warming` and goes on catching up in the background. Each later shard gets
 /// `VALIDATE_WAIT_OTHER_S`. With three Full sites they stay under the push's 180 s deadline.
-const VALIDATE_WAIT_HOME_S: u32 = 15;
+/// A shard reads this `wait` as the edge's first try (`graftyard_git::maint_hold`), so the two are one constant.
+const VALIDATE_WAIT_HOME_S: u32 = graftyard_git::FIRST_TRY_WAIT_S;
 const VALIDATE_WAIT_OTHER_S: u32 = 60;
 
 /// Try `i` of `n` on a shard: the first waits `VALIDATE_WAIT_HOME_S` on its catch-up, each later one

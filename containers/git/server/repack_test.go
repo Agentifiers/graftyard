@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -373,7 +374,7 @@ func TestRepackRunsLowAndProcsListsIt(t *testing.T) {
 	ev := filepath.Join(t.TempDir(), "trace")
 	t.Setenv("GIT_TRACE2_EVENT", ev)
 	t.Setenv("GIT_TRACE2_CONFIG_PARAMS", "pack.threads,pack.windowMemory")
-	if err := runRepack(repo("7")); err != nil {
+	if err := runRepack(context.Background(), repo("7")); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(ev)

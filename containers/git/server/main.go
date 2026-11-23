@@ -115,9 +115,12 @@
 //	                                 validate, and ingest or ref write, each in ms or 0 for none (`mark`)
 //	POST /evict?net=N                deletes the repository; 409 while a request holds it, so a clone streaming
 //	                                 from it is never cut
-//	GET  /procs[?net=N]              {"procs": [{"pid","cmd","nice","cpu_s","rss_mb"}]}: every running git process,
-//	                                 most CPU first, for the shard object's /status; with net, also "packs":
+//	GET  /procs[?net=N]              {"procs": [{"pid","cmd","nice","cpu_s","rss_mb"}], "maint"}: every running git
+//	                                 process, most CPU first, for the shard object's /status, and maintenance's hold
+//	                                 (maint.go, `maintStats`); with net, also "packs":
 //	                                 {"count","bytes","kept","kept_bytes"} of that network's repository
+//	POST /maint/hold?net=N           moved load reached this shard: no repack, commit-graph or roll starts for
+//	                                 yieldHold, and a running one stops, unless held maintDeferMax already (maint.go)
 //	GET  /load                       {"cpu_p99","queue_depth"}: the last minute's p99 busy fraction of the
 //	                                 container's vCPUs, one sample a second, and the client validates waiting or
 //	                                 running. CPU excludes derived work (ingest, refs, repack, promotion packs, init,
@@ -1392,7 +1395,7 @@ func handleProcs(w http.ResponseWriter, r *http.Request) {
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CPUs > out[j].CPUs })
-	res := map[string]any{"procs": out}
+	res := map[string]any{"procs": out, "maint": maintStats()}
 	// With net, the network's packs on this disk: how many, how many kept (`.keep`, the promotions a rehydrate loaded
 	// through their stored .idx), and their bytes, so a run can check that a cold warm kept every promotion.
 	if net := r.URL.Query().Get("net"); netRe.MatchString(net) {
@@ -2725,8 +2728,16 @@ func startRepack(net, rp string) bool {
 	if unkeptPacks(rp) <= repackAt || !repacking.TryLock() {
 		return false
 	}
+	// Held for moved load or client CPU (maint.go): none starts now, and the next /refs asks again.
+	ctx, end, ok := maintBegin()
+	if !ok {
+		repacking.Unlock()
+		return false
+	}
 	go func() {
 		defer repacking.Unlock()
+		completed := false
+		defer func() { end(completed) }()
 		// The repack writes its own multi-pack-index and deletes the packs it rolled: not beside a midx write, which
 		// would fail on git's lock file or name a deleted pack (midxAfterIngest).
 		m := midxOf(rp)
@@ -2735,15 +2746,20 @@ func startRepack(net, rp string) bool {
 		if _, err := os.Stat(rp); err != nil {
 			return
 		}
-		if err := runRepack(rp); err != nil {
+		if err := runRepack(ctx, rp); err != nil {
 			fmt.Fprintf(os.Stderr, "repack %s: %v\n", net, err)
+		}
+		if ctx.Err() != nil {
+			fmt.Fprintf(os.Stderr, "repack %s: stopped for moved load\n", net)
+			return
 		}
 		// A commit-graph over every ref's history: validate's two `--not --all` walks read each ref's tip from the
 		// packs without one, so their CPU grew with the refs, 7.8 to 14.9 ms a call, and the shard's CPU climbed
 		// within every B0-29 run until it saturated a vCPU (tests/am1/results/hot-shards-3.md).
-		if _, err := gitLow(rp, []string{derivedEnv}, "commit-graph", "write", "--reachable", "--split", "--no-progress"); err != nil {
+		if _, err := gitMaint(ctx, rp, []string{derivedEnv}, nil, "commit-graph", "write", "--reachable", "--split", "--no-progress"); err != nil {
 			fmt.Fprintf(os.Stderr, "commit-graph %s: %v\n", net, err)
 		}
+		completed = ctx.Err() == nil
 	}()
 	return true
 }
@@ -2757,14 +2773,14 @@ func startRepack(net, rp string) bool {
 // bounded per thread, so it takes what catch-ups, validates, and reads leave (LM-1 round 25). Each kept pack is also
 // named with --keep-pack: the roll's `pack-objects --stdin-packs` walks history from the tail's commits for its
 // name-hash hints and stops only at packs kept in core, not at a `.keep` on disk, so without it the walk read every
-// promotion's trees, and 2.9 times their bytes stayed mapped (LM-1 round 27).
-var runRepack = func(rp string) error {
+// promotion's trees, and 2.9 times their bytes stayed mapped (LM-1 round 27). ctx's end stops it (`gitMaint`).
+var runRepack = func(ctx context.Context, rp string) error {
 	args := []string{"-c", "pack.threads=2", "-c", "pack.windowMemory=256m", "repack", "-d", "-q", "--geometric=2", "--write-midx"}
 	keeps, _ := filepath.Glob(filepath.Join(rp, "objects", "pack", "pack-*.keep"))
 	for _, k := range keeps {
 		args = append(args, "--keep-pack="+strings.TrimSuffix(filepath.Base(k), ".keep")+".pack")
 	}
-	_, err := gitLow(rp, []string{derivedEnv}, args...)
+	_, err := gitMaint(ctx, rp, []string{derivedEnv}, nil, args...)
 	return err
 }
 
@@ -2886,6 +2902,14 @@ func handleRoll(w http.ResponseWriter, r *http.Request) {
 
 	repacking.Lock()
 	defer repacking.Unlock()
+	// A roll's build is maintenance (maint.go): held, it answers 503 and the archive tries the next site's shard
+	// (`promote_moves_on`); a hold that arrives during the build stops it the same way.
+	ctx, end, ok := maintBegin()
+	if !ok {
+		fail(w, 503, "maint-held")
+		return
+	}
+	defer end(false)
 	l := lock(net)
 	l.RLock()
 	packs, err := filepath.Glob(filepath.Join(rp, "objects", "pack", "pack-*.pack"))
@@ -2906,8 +2930,11 @@ func handleRoll(w http.ResponseWriter, r *http.Request) {
 	args := []string{"-c", "pack.threads=2", "-c", "pack.windowMemory=256m", "pack-objects", "--stdin-packs",
 		"--stdout", "-q", "--delta-base-offset"}
 	// runGit buffers stdout: a roll is at most ROLL_IN_MAX (2 GiB) in and about 0.4-0.5 of that out (DECISIONS roll-up).
-	out, err := runGit(exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...), nil, rp,
-		[]string{derivedEnv}, &stdin, args...)
+	out, err := gitMaint(ctx, rp, []string{derivedEnv}, &stdin, args...)
+	if ctx.Err() != nil {
+		fail(w, 503, "maint-held")
+		return
+	}
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -3578,6 +3605,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/evict", handleEvict)
 	m.HandleFunc("/load", handleLoad)
 	m.HandleFunc("GET /procs", handleProcs)
+	m.HandleFunc("POST /maint/hold", handleMaintHold)
 	m.HandleFunc("GET /ui/resolve", handleUIResolve)
 	m.HandleFunc("GET /ui/tree", handleUITree)
 	m.HandleFunc("GET /ui/blame", handleUIBlame)

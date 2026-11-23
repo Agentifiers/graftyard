@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -483,7 +484,7 @@ func TestSpooledPromotionIsKeptBeforeItIsVisible(t *testing.T) {
 	old := packVisible
 	packVisible = func(rp string) {
 		ran = true
-		if err := runRepack(rp); err != nil {
+		if err := runRepack(context.Background(), rp); err != nil {
 			t.Errorf("repack: %v", err)
 		}
 	}
