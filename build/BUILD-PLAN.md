@@ -1403,6 +1403,10 @@ It also carries BM-5's unreadable format "commits nothing and moves A's groups".
 - `drain-budget` drained a gray-faulted c in 134.8 s and undrained it 15 min 34 s after the lift, with no false drain.
 - 1% and 10% passed only on the override (R38), and 100% and the first day read no N (R44, fix cleared).
 - The slow-apply leg was not run within the $8 stop.
+**Check row 3 (2026-11-23, main `ad8fd52f`):**
+- A real N was read at every step: what c runs through 100%, and the `Rollback`'s release on the first day (R44's fix shown hosted).
+- The first day breached `GATE_APPLY_LAG` at 215 bp against that N and ran the pre-signed `Rollback` to `IntentDone`, likely by chance after the full-site reset (R46).
+- 10% passed on the override only, and slow-apply was not run (install cap).
 
 ### M5-WP5. The change feed, the export endpoints, and the vault
 
