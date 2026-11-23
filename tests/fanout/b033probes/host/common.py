@@ -15,8 +15,10 @@ RUNS = {  # tag: (load start ISO, leader site, seconds of site-0 leadership to u
     'm3fsf2-b0-32': ('2026-11-23T09:42:41Z', 96),
     'qlA': ('2026-11-22T16:24:36Z', 300), 'qlB': ('2026-11-22T17:09:28Z', 300), 'qlC': ('2026-11-22T17:52:14Z', 300),
     'pfA': ('2026-11-23T01:04:05Z', 296),
-    'pgA': ('2026-11-23T02:20:20Z', 229)}
-COLO = {'sabA': 'EWR', 'blB': 'EWR', 'blA': 'IAD', 'blC2': 'IAD', 'chA': 'IAD', 'm64r33': 'IAD', 'crA': 'ORD', 'ncA': 'ATL', 'qlA': 'MIA', 'qlB': 'MIA', 'qlC': 'EWR', 'pfA': 'ATL', 'pgA': 'ORD'}
+    'pgA': ('2026-11-23T02:20:20Z', 229),
+    # read-memo's guarded row (b033-readmemo.md): leader site 0 held term 2 through the 300 s window.
+    'mrB': ('2026-11-23T13:15:50Z', 300)}
+COLO = {'sabA': 'EWR', 'blB': 'EWR', 'blA': 'IAD', 'blC2': 'IAD', 'chA': 'IAD', 'm64r33': 'IAD', 'crA': 'ORD', 'ncA': 'ATL', 'qlA': 'MIA', 'qlB': 'MIA', 'qlC': 'EWR', 'pfA': 'ATL', 'pgA': 'ORD', 'mrB': '?'}
 def ms(s): return int(datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp() * 1000)
 def pc(xs, q):
     xs = sorted(xs); return round(xs[min(len(xs) - 1, int(q * len(xs)))]) if xs else None
