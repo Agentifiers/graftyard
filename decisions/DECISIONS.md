@@ -8717,6 +8717,69 @@ that `colo-gate`'s stamp rule already bounds.
   (the base being 1.0 to 1.15 s on mt18): the bed's model is wrong. Find what the hosted path pays that the bed does
   not before changing anything further.
 
+**Proposed, 2026-11-23 (cw3), design only, not built: the install guess ignores the record's stamp, and a superseded
+bootstrap name is skipped on the first spread read too.** After `cw-link-drop`, cw2's 24 cold first POSTs paid front
+plus gate median 778 ms, p90 1,132 (`tests/am1/results/b034-cw2.md`). The lead asked for two levers, priced from
+cw2's marks with `tests/coldwrite/hosted/price.py` (a model over the measured stage times, not a measurement).
+- **What the marks show.**
+  - The token, `resolve` and `install` already run together. On all 24, front equals the longer of `resolve` and
+    `install`, never their sum.
+  - Inside `install` the reads run in series: the `Placement` read (median 199 ms, p90 432) and then `authz:1` again.
+    `link` drops the guessed `authz:1` read every time on a cold isolate (cw1's finding), because the guess is the
+    genesis `Names` record stamped `at` 1 and the install account's real row is the same record stamped `at` 5
+    (`names:708` read on graft-m1, 2026-11-23). On warm isolates the two reads overlap fully: `install` minus its
+    `authz:1` pass is 0 on 176 of 176.
+  - The `notLeader` tries are not follower lag. Of 12 `nl` answers, 9 came from F1 on `authz:7100001`, and every
+    one was that isolate's first try of that member. The site-1 member the isolate asked, `authz:7100001#1#f1`, was
+    removed in a `Degraded` repair (`meta.removed: true`, config 211); the group's site-1 voter is `#3#f1` (config
+    212). With no config yet, `spread_once` takes the record's bootstrap names, so F1 is asked first on about half of
+    cold isolates, and it never serves. `lookup` already skips such a name (`lookup-keep`, F101), but `spread_once`
+    does not. The other 3 `nl` are one 2,350 ms outlier whose `authz:1` pass got `nl` from all three members and went
+    to the leader.
+- **Lever 1, the install guess compares placement, not the stamp.** `link` keeps its guess when `prev`'s answer
+  equals it. For the install read, compare the records without `at`: `at` is when the row was written and plays no
+  part in a read. `bootstrap_members`, the lookup, `spread_once`, `create` and `from_record` read only `name`, `sites`,
+  `home`, `generation` and `moving_from`. A `Placement` that differs in any of those still drops the guess and reads
+  again, as now. `resolve`'s chain is left alone, since its guesses come from `rcache` answers that carry the real
+  stamp. Priced: all cold front plus gate median 778 to 698 ms, p90 1,132 to 1,132, p99 2,355 to 1,442; git arm
+  median 513 to 438, p90 609 to 494.
+- **Lever 2, as the lead framed it: skip a member that answered `notLeader` recently.** Not proposed. The marks show
+  no member answering `nl` twice to one isolate: each was a first try, so a per-isolate skip would have caught none
+  of the 9. Even as an upper bound (no `nl` try at all) it moves the median 778 to 760 and the p90 1,132 to 1,067.
+  - Against the lead's checks: `note_advert` and B0-29's term rule (`learn_leader_from_follower`, a follower's
+    answer from a term below the highest seen is ignored) both read 200 answers' `meta`. A skip set fed by `nl`
+    would not touch either, but it is a second per-isolate memory beside `KNOWN` that every read shares.
+  - When every member is skipped, the read would have to fall back to asking them anyway, or a group whose members
+    all answered `nl` in one leaderless moment would send its reads to the leader. This is the rule the design keeps
+    to the members alone (`design/DESIGN.md`, *Follower read*).
+- **Lever 2', in its place: `spread_once` leaves out a superseded bootstrap name**, by `lookup-keep`'s own rule:
+  with a held config at the record's generation or later naming another member on that site. That rule needs a
+  config, and a cold isolate holds none at its first read, so it would not have caught cw2's 9 on its own. The
+  narrower fix is in the answer itself: a `notLeader` with `meta.removed` already teaches the isolate the group's
+  config (`learn_config`). The pass should then try the config's member on that site, in place of the next bootstrap
+  name, within the same SPREAD_TRIES. Priced as the upper bound above: median 778 to 760, p90 1,132 to 1,067. With
+  lever 1: median 597, p90 879, p99 1,442 (git arm median 433, p90 458).
+- **Merges (B0-29, `tests/am1/results/b029-m4a.md`, A45): same code in part, small effect.**
+  - A REST merge does not read the install `Authz` (no `install` mark on any of 332 merges; `admission` returns
+    before it for a user token), so lever 1 does not reach it.
+  - A merge's `Authz` and tier reads go to the leader (`Ctx::leader_reads`, `call_opt`), not through `spread_once`,
+    so lever 2' does not reach them either.
+  - Its token (`Tokens`, `system_read`) and the `resolve` chain do share the lookup, and the slowest merges' front is
+    not those levers' cost. In the slowest tenth (31 merges), 16 waited 100 ms or more in `rcwait` and 10 had no
+    `resolve_cached` guess. Merges with no guess (15 of 332) paid front median 530 ms, p90 1,210, against 121 and 304
+    with one. On b9m4a1 and run 1, the slowest merge's `rcwait` was 800 and 580 ms on the `authz_ahead` or `authz`
+    read.
+  - B0-29's edge (`f4e193b9`) predates `cw-link-drop` (`abbc9a0b`), and a merge's `resolve` runs through
+    `chained` and `link`. Some of that `rcwait` may therefore be the same pinned-guess wait, where a wrong guess's
+    write-class read held its key's batch [inference, untested: `rcwait` is summed over keys, so the marks do not say
+    which key waited]. Taking `rcwait` out of each merge's front
+    would move `merge:only` p99 from 2,106 to 1,526 ms (run 1) and from 2,134 to 1,507 ms (b9m4a1), and leave run 2
+    (4,542, the slow host's commit) and run 3 (2,286, client leg 1,042) where they are [inference]. That is a
+    question for B0-29's next row on an edge carrying `cw-link-drop`, not a cw3 lever.
+- **Flip.** If cw3's rerun shows `install` still above its `authz:1` pass on cold isolates, the guess is still being
+  dropped: read the record again before going further. If any read through a kept install guess answers for a
+  `Placement` whose members differ, lever 1 is wrong: back it out.
+
 ### `am2-wp2a`: `graft-mcp`'s door is stateless JSON in both lanes, and its writes are the edge's GraphQL mutations, 2026-11-23
 
 **Status.** Built on branch `am2-wp2a`, code only (`tests/am2/results/am2-wp2a.md`). L0-08's 30-call cell and the
