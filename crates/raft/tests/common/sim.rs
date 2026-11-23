@@ -370,6 +370,9 @@ pub struct Stats {
     pub early_asks: u64,
     pub deps_entries: u64,
     pub rereads: u64,
+    /// Requests an entry decided on reads that were admitted after the batch's first read was asked, so a re-ask
+    /// brought them in (`reask-read`).
+    pub joined: u64,
     /// Gets a follower answered by read-index, and those it shed (503, no report).
     pub spread_reads: u64,
     pub shed: u64,
@@ -449,6 +452,8 @@ pub struct Sim {
     dep_reads: Vec<(Timestamp, SiteId, u64, graftyard_raft::DepsWanted)>,
     /// When each `DepsWanted` was asked for, by (site, id).
     deps_asked: BTreeMap<(SiteId, u64), Timestamp>,
+    /// Each site's latest cut, before the input being handled (`reask-read`'s join count).
+    last_cut: [Option<Timestamp>; 3],
     /// When each request was first admitted, by (site, ticket term, ticket boot, request id).
     admitted_at: BTreeMap<(SiteId, Term, u64, RequestId), Timestamp>,
     /// Per site, the host's own record of its storage confirms: (the disk's last index once a confirm that appended
@@ -517,6 +522,7 @@ impl Sim {
             catchups: Vec::new(),
             dep_reads: Vec::new(),
             deps_asked: BTreeMap::new(),
+            last_cut: [None; 3],
             admitted_at: BTreeMap::new(),
             synced: [vec![(0, 0)], vec![(0, 0)], vec![(0, 0)]],
             edge: Edge::default(),
@@ -771,14 +777,22 @@ impl Sim {
                 .expect("an entry decided on reads names one");
             let m = self.member(s).expect("up");
             let e = m.entry_at(used.index).expect("the decided entry is held");
+            // A lower bound on re-ask joins: requests admitted after this member's latest cut before this input.
+            let cut = self.last_cut[i];
+            let mut joined = 0;
             for (rid, _) in &e.requests {
                 let at = self.admitted_at.get(&(s, e.term, m.boot(), *rid)).copied();
+                joined += u64::from(at.is_some_and(|t| cut.is_some_and(|c| t > c)));
                 assert!(
                     at.is_some_and(|t| t <= asked),
                     "seed {seed}: {s:?} entry {:?} decided {rid:?}, admitted at {at:?}, on reads asked at {asked:?}",
                     used.index
                 );
             }
+            self.stats.joined += joined;
+        }
+        if !out.cuts.is_empty() {
+            self.last_cut[i] = Some(self.now);
         }
     }
 

@@ -6222,7 +6222,7 @@ The six slow merges in the three traces are exactly the six held-and-stepped mer
 
 ### B0-29 late join deferred, 2026-11-19
 
-**Status.** Current again, 2026-11-22: "`human-join`" built option (b) for Human and MergeQueue commands, and it was reversed on B0-33 crA (see its Status). Option (b) is not built.
+**Status.** Current again, 2026-11-22: "`human-join`" built option (b) for Human and MergeQueue commands, and it was reversed on B0-33 crA (see its Status). Option (b) is not built. On 2026-11-23 "`reask-read`" takes another route to the same window: an `Empty` cut, every class, on a re-ask that replaces the batch's read, not a joiner read beside it.
 
 **Decision.** Option (b) is not built: a command admitted after a batch froze does not join it. B0-29's freeze stays as built, and that is option (a): the first frozen batch is cut at the in-flight entry's append + `round_ms` − `deps_ms`, which is its expected apply less the measured read (`crates/raft/src/member/leader.rs`, `cut_early`).
 
@@ -7755,6 +7755,78 @@ after the command's admission, and a follower verifies k+1 only after it applies
 **Flip.**
 - On the next B0-33 or B0-29 row, Human commit p99 or the frozen-batch wait does not fall against the same build
   without it.
+- Any read-after-admission violation in the simulator sweep.
+
+### `reask-read`: a frozen `Empty` batch re-asks its read until the entry before it applies, and takes what was admitted before the re-ask, 2026-11-23
+
+**Status.** Built code-only on branch `b029-reask`, from main `f59ae900`, as the orchestrator (T-01a17bda) approved on
+2026-11-23 after the B0-29 join (`tests/am1/results/b029-m3f.md`, "The frozen-batch wait and the leader's CPU"). It
+ships on a site day. It is not measured hosted yet: the order is LM-1's apply cut first, one B0-29 row on graft-m4a
+measuring that alone, then this change on the three-run set.
+
+**Decision.** In `crates/raft/src/member/leader.rs` (`cut_early`, `deps_read`, `top_up`, `decide_held`,
+`hold_batch`, `Deciding`):
+- **Which batch.** A batch cut early while an entry is in flight, that ended `CutEnd::Empty` (nothing left queued),
+  that names a chain, and that is the only batch held, while `read_ahead` is 1, is open. Every other batch is cut and
+  read as before.
+- **The re-ask.** Once an open batch's read has answered and a command is queued behind it, `cut_early` asks one
+  `DepsWanted` for every chain the batch and the queue name on the fold at `applied`, and records the last seq
+  admitted then. One re-ask is out at a time, and none while a transfer runs.
+- **Its answer.** A re-ask that read every chain it asked replaces the batch's reads and `DepsUsed` ids. Then the
+  commands admitted at or before its seq and still queued join the batch, in admission order, within the cut's caps:
+  `entry_soft` and ENTRY_MAX in bytes, and AGENT_CMDS_ENTRY and the agent bucket for Agent commands. The first that
+  does not fit closes the batch. A re-ask that lacks a chain changes nothing.
+- **It never holds the batch.** When the entry before it applies, `decide_held` closes the batch and drops any re-ask
+  still out. The batch decides on the newest read that answered.
+
+**Invariant.** Each command's `decide` sees one read per chain: the batch's newest, asked after every command in the
+entry was admitted, and the same read for all of them. The batch's first read covers only the commands cut with it,
+and a re-ask covers those plus the ones admitted before it was asked. A re-ask replaces the reads, never adds to them.
+`decide` stays pure on the fold at `applied`, the entry's earlier commands, and that read. One entry is in flight as
+before, and a follower verifies k+1 only after it applies k.
+
+**Why it is not `human-join`.** `human-join` (reversed 2026-11-22) let Human and MergeQueue commands join a frozen
+batch behind an agent backlog. On B0-33 chA and crA, frozen batches then waited 81 to 95% of wall time. This change
+leaves alone every cut that left a backlog: `Soft`, `EntryMax`, `AgentTokens` and `AgentCmds` batches are never open,
+so they ask no re-ask and take no command. It also leaves alone a second held batch and any batch while reads outlast a
+round. B0-29's cuts were 100% `Empty` on all three m3f runs. B0-33's were 47 to 76% `Empty` (pgA, sabA, pfA), and only
+those join. `human-join` stays reverted.
+
+**Why.** The B0-29 join found that the frozen-batch wait is the window between the early freeze and the in-flight
+entry's apply. 60% of commands arrive in it and wait a whole extra cycle. LM-1's apply cut moves p99 by 46 to 79 ms at
+most [inference, replay]. Replayed on m3fb29, m3fb2r2 and m3fb2r3 with D at each run's `deps:all` p50, this change gives
+about 958 ms on the median run, and about 869 with LM-1's cut [inference, `tests/fanout/b029join.py`].
+
+**What it beat.**
+- Joining on the batch's first read: that breaks read-after-admission.
+- A read per joiner: BF-15's identity test bounds reads per entry.
+- Waiting for the re-ask at the apply: it would add a read to the cycle it means to cut.
+- Re-asking every class's batch: that is `human-join`'s scope.
+
+**Evidence.**
+- `crates/raft/tests/deps.rs`:
+  - `a_re_ask_answered_before_the_apply_brings_in_the_late_command_and_every_command_decides_on_it`: the dependency
+    changes between the batch's read and the re-ask (the re-ask carries a revocation). Both the command cut first and
+    the late one are refused `Revoked` in entry k+1, `DepsUsed` names only the re-ask, and a command admitted after the
+    re-ask was asked rides the entry after. It fails on main, where the late command rides k+2.
+  - `an_unanswered_re_ask_never_holds_the_batch`, `a_re_ask_keeps_the_batchs_caps_and_needs_every_chain` and
+    `a_cut_that_left_a_backlog_asks_no_re_ask`.
+- The simulator's dependency check (`deps_out`) is unchanged: every request an entry decided on reads was admitted no
+  later than the first of those reads was asked. It now also counts requests admitted after the asking member's last
+  cut that rode its next entry on reads (`joined`), and the harsh sweep asserts some did.
+- `tests/m0carried/plant91.py`: 10 of 10 mutants caught [measured]. They are main's rule, a backlogged cut re-asked
+  (`human-join`'s scope), a top-up that takes commands admitted after the re-ask, re-ask folds beside the first read,
+  `DepsUsed` naming both, a re-ask lacking a chain still replacing, a batch waiting for an unanswered re-ask, the top-up
+  ignoring soft bytes, the top-up ignoring AGENT_CMDS_ENTRY, and two re-asks out at once.
+- The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half at 4,000) passed: exit 0 in 923 s. The longest stretches
+  with a healthy quorum, requests waiting and none completing were harsh 14.7 s (seed 10439), gray 25.2 s (10554) and
+  live 24.9 s (13712), all under the 30 s bound. Joined on a re-ask (at least): 574, 10,663 and 1,225. Porcupine
+  (`-seg 2000`) was Ok on all three histories: 146,543, 2,346,656 and 5,474,828 operations [measured].
+
+**Flip.**
+- A hosted B0-29 row with the change whose dependency-read p99 (`deps:all`, or the owner `Authz` leader's `/read`
+  p99) rises by more than its commit p99 falls.
+- A B0-33 row whose frozen-batch wall share rises over sabA's 69%.
 - Any read-after-admission violation in the simulator sweep.
 
 ### `export-feed`: the change feed writes its object, then its `FeedState`, and export tokens are signed JSON, 2026-11-22

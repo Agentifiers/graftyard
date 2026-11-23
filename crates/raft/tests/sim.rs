@@ -72,6 +72,7 @@ struct Totals {
     early_asks: u64,
     deps_entries: u64,
     rereads: u64,
+    joined: u64,
     pipelined: u64,
     late_appends: u64,
     /// The liveness monitor's longest stretch (F67): ms, seed, and when it began.
@@ -120,6 +121,7 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         early_asks: 0,
         deps_entries: 0,
         rereads: 0,
+        joined: 0,
         pipelined: 0,
         late_appends: 0,
         stuck: (0, 0, 0),
@@ -189,6 +191,7 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         t.early_asks += s.early_asks;
         t.deps_entries += s.deps_entries;
         t.rereads += s.rereads;
+        t.joined += s.joined;
         t.pipelined += s.pipelined;
         t.late_appends += s.late_appends;
         // BF-14: a missed receipt is hedged only by `suspect`; no command reaches a second member.
@@ -203,7 +206,7 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
          forwarded {} call failures {} step-downs {} holds {} gray faults {} write failures {} | leader writes lost \
          after their AppendEntries left {} (a follower stored one the leader then lacked: {}) | id blocks recorded {} \
          committed {} | recorded entries {} committed {} | compacted members seen {} catch-up reads {} | entries \
-         decided on reads {} early asks {} re-reads {} | pipelined appends {} appends received late or twice {}",
+         decided on reads {} early asks {} re-reads {} joined on a re-ask (at least) {} | pipelined appends {} appends received late or twice {}",
         t.seeds,
         t.steps,
         t.ops,
@@ -239,6 +242,7 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         t.deps_entries,
         t.early_asks,
         t.rereads,
+        t.joined,
         t.pipelined,
         t.late_appends
     );
@@ -273,6 +277,8 @@ fn harsh_network_keeps_every_invariant() {
     assert!(t.compacted > 0 && t.catchups > SEEDS, "compacted {} catch-ups {}", t.compacted, t.catchups);
     // Dependency reads overlap the entry in flight, and a recorded entry moving the dependency forces a re-read.
     assert!(t.early_asks > SEEDS && t.rereads > 0, "early asks {} re-reads {}", t.early_asks, t.rereads);
+    // `reask-read`: commands admitted after a frozen batch's cut join it on a re-ask asked after them.
+    assert!(t.joined > 0, "no command joined a frozen batch on a re-ask");
     // PIPELINE: calls leave behind earlier ones still out, and reordering and duplicates deliver them late or twice.
     assert!(t.pipelined > SEEDS && t.late_appends > SEEDS, "pipelined {} late {}", t.pipelined, t.late_appends);
 }
