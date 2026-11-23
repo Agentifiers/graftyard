@@ -229,7 +229,7 @@ impl Exec for Live<'_> {
     }
 
     /// A site day's gate from the site's `gate` object (`graftyard_release::gate::judge_site`), N+1's version against
-    /// N's over the step, from the current intent's last entry. Every other intent's gate input (5xx rates for
+    /// N's over the step, from the current intent's last entry, or N's from the intent's start once N runs nowhere. Every other intent's gate input (5xx rates for
     /// `GATE_ERRORS`, a `ContainerDay`'s shards) is not counted yet, so it is pending and its step waits. A test install's
     /// `GATE` (`pass`, `pending`, or `breach:<why>`) overrides the reading.
     async fn gate(&mut self, fold: &ReleaseFold) -> Gate {
@@ -242,12 +242,12 @@ impl Exec for Live<'_> {
         let (Some((site, n1, n)), Some(c)) = (gate::day_versions(fold), fold.current.as_deref()) else {
             return Gate::Pending;
         };
-        let since = c.since.0;
+        let (since, c_start) = (c.since.0, c.intent.issued_at.0);
         let stub = match self.bindings().registry(site, "gate") {
             Ok(s) => s,
             Err(_) => return Gate::Pending,
         };
-        let read = |v: graftyard_release::VersionId| {
+        let read = |v: graftyard_release::VersionId, since: u64| {
             let (stub, path) = (&stub, format!("https://registry/gate?version={v}&since={since}"));
             async move {
                 let mut r = within(VIEW_CALL, stub.fetch_with_str(&path)).await?.ok()?;
@@ -255,9 +255,16 @@ impl Exec for Live<'_> {
                 r.json::<gate::Counters>().await.ok()
             }
         };
-        let Some(c1) = read(n1).await else { return Gate::Pending };
+        let Some(c1) = read(n1, since).await else { return Gate::Pending };
+        // N's baseline is N beside N+1 in the same window. At 100% and on the first day no member runs N, so it is N's
+        // counters from the intent's start: the 1, 10 and 50% steps, where N last ran on this site (DECISIONS
+        // "`gate-relative`").
         let c0 = match n {
-            Some(n) => match read(n).await {
+            Some(n) => match read(n, since).await {
+                Some(c) if c.entries == 0 => match read(n, c_start).await {
+                    Some(c) => c,
+                    None => return Gate::Pending,
+                },
                 Some(c) => c,
                 None => return Gate::Pending,
             },

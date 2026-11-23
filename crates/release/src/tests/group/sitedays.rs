@@ -38,31 +38,40 @@ fn modes_since(o: &Ops, from: usize) -> Vec<(u8, Mode)> {
         .collect()
 }
 
+/// A side with `n` entries in the 200 ms bucket and `slow` of them in the bucket that holds `ms`.
+fn lag_side(n: u64, slow: u64, ms: u64) -> Side {
+    let mut c = gate::Counters::default();
+    (0..n - slow).for_each(|_| c.applied(200));
+    (0..slow).for_each(|_| c.applied(ms));
+    Side { ack_bp: 9_990, ..c.side() }
+}
+
 #[test]
 fn a_step_gate_breaches_on_each_input_at_its_bound_and_starves_under_step_min_entries() {
-    let n = Side { apply_lag_p99_ms: 100, exceptions: 0, ack_bp: 9_990, step_downs: 0, entries: 5_000 };
-    let ok = Side { apply_lag_p99_ms: 200, ack_bp: 9_980, entries: gate::STEP_MIN_ENTRIES, ..n };
-    assert_eq!(gate::judge_site(&ok, &n), Gate::Pass, "twice N's lag, 0.1 points of ack rate, 1,000 entries");
+    let n = lag_side(5_000, 50, 300); // 99% at 200 ms: N's p99 is 200 ms
+    assert_eq!(n.apply_lag_p99_ms, 200);
+    let ok = Side { ack_bp: 9_980, ..lag_side(gate::STEP_MIN_ENTRIES, 20, 300) };
+    assert_eq!(gate::judge_site(&ok, &n), Gate::Pass, "2% over N's p99, 0.1 points of ack rate, 1,000 entries");
     let breach = |s: Side| matches!(gate::judge_site(&s, &n), Gate::Breach(_));
-    assert!(breach(Side { apply_lag_p99_ms: 201, ..ok }), "over twice N's p99");
-    assert!(breach(Side { ack_bp: 9_979, ..ok }), "more than 0.1 points under N's ack rate");
-    assert!(breach(Side { exceptions: 1, ..ok }));
-    assert!(breach(Side { step_downs: 1, ..ok }));
-    // The 500 ms cap holds even when N is slow too.
-    let slow = Side { apply_lag_p99_ms: 400, ..n };
-    assert_eq!(gate::judge_site(&Side { apply_lag_p99_ms: 500, ..ok }, &slow), Gate::Pass);
-    assert!(matches!(gate::judge_site(&Side { apply_lag_p99_ms: 501, ..ok }, &slow), Gate::Breach(_)));
+    assert!(breach(lag_side(1_000, 21, 300)), "2.1% of N+1 over N's p99");
+    assert!(breach(Side { ack_bp: 9_979, ..ok.clone() }), "more than 0.1 points under N's ack rate");
+    assert!(breach(Side { exceptions: 1, ..ok.clone() }));
+    assert!(breach(Side { step_downs: 1, ..ok.clone() }));
+    // The 5 s backstop holds even when N is as slow: 1% of N+1 over it passes, 1.1% breaches.
+    let slow = lag_side(5_000, 2_500, 10_000);
+    assert_eq!(gate::judge_site(&lag_side(1_000, 10, 10_000), &slow), Gate::Pass);
+    assert!(matches!(gate::judge_site(&lag_side(1_000, 11, 10_000), &slow), Gate::Breach(_)));
     // A quiet step is starved, not passed; a breach still wins over too few entries.
-    assert_eq!(gate::judge_site(&Side { entries: 999, ..ok }, &n), Gate::Starved(999));
-    assert!(breach(Side { entries: 10, exceptions: 1, ..ok }));
+    assert_eq!(gate::judge_site(&lag_side(999, 0, 200), &n), Gate::Starved(999));
+    assert!(breach(Side { exceptions: 1, ..lag_side(10, 0, 200) }));
     assert_eq!(gate::judge_errors(20, 10), Gate::Pass);
     assert!(matches!(gate::judge_errors(21, 10), Gate::Breach(_)));
 }
 
 /// The host's counters: summed across isolates, read back as the p99 bucket's upper bound and the ack rate; with no N
-/// baseline (a site's first release, or 100% where no member runs N) only the 500 ms cap and the absolute inputs hold.
+/// baseline (a site's first release) only the 5 s backstop and the absolute inputs hold.
 #[test]
-fn counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_leaves_only_the_cap() {
+fn counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_leaves_only_the_backstop() {
     let mut a = gate::Counters::default();
     for _ in 0..990 {
         a.applied(40);
@@ -83,12 +92,36 @@ fn counters_sum_across_isolates_into_the_side_the_gate_judges_and_no_baseline_le
     }
     assert_eq!(a.side().apply_lag_p99_ms, 300, "11 of 1,010 above: p99 moves to their bucket");
     assert_eq!(gate::Counters::default().side().ack_bp, 10_000, "no AppendEntries answered is not a 0% ack rate");
-    // No N: a lag that would be over twice N's, and an ack rate far under it, pass; the cap still breaches.
+    // No N: half the entries at 3 s and an ack rate far under N's pass; the backstop and exceptions still breach.
     let none = gate::Counters::default().side();
-    let n1 = Side { apply_lag_p99_ms: 400, exceptions: 0, ack_bp: 9_000, step_downs: 0, entries: 5_000 };
+    let n1 = Side { ack_bp: 9_000, ..lag_side(5_000, 2_500, 3_000) };
     assert_eq!(gate::judge_site(&n1, &none), Gate::Pass);
-    assert!(matches!(gate::judge_site(&Side { apply_lag_p99_ms: 501, ..n1 }, &none), Gate::Breach(_)));
+    assert!(matches!(gate::judge_site(&lag_side(5_000, 51, 10_000), &none), Gate::Breach(_)));
     assert!(matches!(gate::judge_site(&Side { exceptions: 1, ..n1 }, &none), Gate::Breach(_)));
+}
+
+/// BF-39 hosted's own histograms (`tests/m5/results/raw/bf39/gate.txt`) on drained site c, whose members are all
+/// followers that apply about `CALL_DEADLINE` after their leader on a quiet chain (R29's commit round), so the old
+/// 500 ms cap breached every read. Judged against N on the same role, a healthy step passes, the gray fault
+/// breaches, and so does the healthy step with half its entries a bucket slower.
+#[test]
+fn a_drained_sites_followers_pass_against_n_and_a_slower_n1_still_breaches() {
+    let side =
+        |lag: &[u64]| gate::Counters { entries: lag.iter().sum(), lag: lag.to_vec(), ..Default::default() }.side();
+    // R3's 12 minutes before the fault: 7,804 entries, 69% in the 1,000 to 1,500 ms bucket, the p99 there.
+    let n = side(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 513, 428, 148, 266, 185, 205, 367, 318, 5_348, 10, 6, 2, 8]);
+    assert_eq!(n.apply_lag_p99_ms, 1_500);
+    // The undrain step: 19,370 entries, 0.46% over 1,500 ms and 0.27% over 5 s.
+    let step = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 46, 215, 257, 507, 285, 457, 716, 759, 16_037, 18, 18, 2, 8, 44];
+    assert_eq!(gate::judge_site(&side(&step), &n), Gate::Pass);
+    // The gray fault (3 s hangs on 30% of c's calls): 27% over 1,500 ms.
+    let fault = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 9, 85, 77, 206, 157, 128, 314, 228, 3_257, 301, 776, 360, 163, 24];
+    assert!(matches!(gate::judge_site(&side(&fault), &n), Gate::Breach(w) if w.contains("over N's p99")));
+    // A regression that moves half the 1,500 ms bucket into the 2 s one.
+    let mut slower = step;
+    slower[19] += slower[18] / 2;
+    slower[18] -= slower[18] / 2;
+    assert!(matches!(gate::judge_site(&side(&slower), &n), Gate::Breach(_)));
 }
 
 /// `day_versions` names the rolling site with the intent's version as N+1 and the running release's as N, only while
@@ -114,23 +147,23 @@ fn a_site_burns_only_when_both_other_sites_report_it_and_each_report_counts_once
     let voters = [SiteId(0), SiteId(1), SiteId(2)];
     let h =
         |o: u8, t: u8, calls: u64, missed: u64| SiteHealth { observer: SiteId(o), target: SiteId(t), calls, missed };
-    // 10 x the allowed 1 in 2,000 is 10 missed in 2,000.
-    let both = [h(0, 2, 2_000, 10), h(1, 2, 2_000, 10)];
+    // 5 x the allowed 1 in 100 is 100 missed in 2,000.
+    let both = [h(0, 2, 2_000, 100), h(1, 2, 2_000, 100)];
     assert!(gate::verdict(&voters, &both, &[])[&2].burning);
-    let under = [h(0, 2, 2_000, 10), h(1, 2, 2_000, 9)];
+    let under = [h(0, 2, 2_000, 100), h(1, 2, 2_000, 99)];
     assert!(!gate::verdict(&voters, &under, &[])[&2].burning, "one observer under DRAIN_BURN");
     let one = [h(0, 2, 2_000, 2_000)];
     assert!(!gate::verdict(&voters, &one, &[])[&2].burning, "one observer alone");
     // The sick site's own report about itself or the others decides nothing.
-    let own = [h(2, 2, 2_000, 0), h(0, 2, 2_000, 10), h(1, 2, 2_000, 10), h(2, 0, 2_000, 2_000)];
+    let own = [h(2, 2, 2_000, 0), h(0, 2, 2_000, 100), h(1, 2, 2_000, 100), h(2, 0, 2_000, 2_000)];
     let v = gate::verdict(&voters, &own, &[]);
     assert!(v[&2].burning && !v[&0].burning);
-    let few = [h(0, 2, 99, 99), h(1, 2, 99, 99)];
+    let few = [h(0, 2, 299, 299), h(1, 2, 299, 299)];
     assert!(!gate::verdict(&voters, &few, &[])[&2].burning, "under MIN_CALLS is no evidence");
-    // Calm needs both under 1 x over the slow window: 1 missed in 2,000 is 1 x, not under it.
-    let calm = [h(0, 2, 2_000, 0), h(1, 2, 2_001, 1)];
+    // Calm needs both under 2 x over the slow window: 40 missed in 2,000 is 2 x, not under it.
+    let calm = [h(0, 2, 2_000, 0), h(1, 2, 2_000, 39)];
     assert!(gate::verdict(&voters, &[], &calm)[&2].calm);
-    let at = [h(0, 2, 2_000, 0), h(1, 2, 2_000, 1)];
+    let at = [h(0, 2, 2_000, 0), h(1, 2, 2_000, 40)];
     assert!(!gate::verdict(&voters, &[], &at)[&2].calm);
     assert!(!gate::verdict(&voters, &[], &few)[&2].calm, "no evidence is not calm");
 }

@@ -83,8 +83,9 @@ fn flush_due(env: &Env) {
 
 /// Health buckets' width.
 pub const HEALTH_BUCKET_MS: u64 = 10_000;
-/// Gate rows are kept this long: twice the longest starved dwell, `2 x STEP_DWELL` [inference].
-const GATE_KEEP_MS: u64 = 4 * graftyard_release::ops::STEP_DWELL;
+/// Gate rows are kept this long: a whole site day, each of its three gated steps starved for twice `STEP_DWELL`, then
+/// `FIRST_DAY`, because `graft-ops` reads N's rows from the intent's start at 100% and on the first day.
+const GATE_KEEP_MS: u64 = 6 * graftyard_release::ops::STEP_DWELL + graftyard_release::ops::FIRST_DAY;
 
 /// The `Registry` object's routes: PUT adds one isolate's counts to the current bucket; GET sums buckets from
 /// `since` (epoch ms), the gate's for `version`.
