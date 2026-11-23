@@ -1,0 +1,3 @@
+run cwmwt26umi: 40 rounds of 12 s on m3org/b034-cw1
+run cwmwt26umi done in 1911 s
+exit 0
