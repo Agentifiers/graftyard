@@ -280,7 +280,9 @@ where
 /// `guess` is the guessed answer and `next`'s read on it, which runs beside `prev`; it is kept only if `prev` answered
 /// what the guess said, else dropped once `prev` answers and read again on `prev`'s answer. So the pair is always the
 /// one the reads in turn would give, a guessed read that was not kept counts for nothing, its error included, and the
-/// answer is never the guess.
+/// answer is never the guess. A guessed read that is not kept is dropped before the read again starts: alive, a
+/// write-class one held its key's batch (`rcache::batched`), and the read again waited out BATCH_STALE behind it
+/// (B0-34 cw1: 16 of 19 cold first POSTs paid an `install` of about 2 s, `rcwait` 1,800 to 1,940 ms).
 async fn link<A, T, E, F1, F2>(
     guess: Option<(A, F2)>,
     prev: F1,
@@ -296,13 +298,13 @@ where
         let Some(a) = prev.await? else { return Ok(None) };
         return Ok(next(a.clone()).await?.map(|t| (a, t)));
     };
-    let (prev, started) = (std::pin::pin!(prev), std::pin::pin!(started));
-    let (a, started) = match select(prev, started).await {
+    let (a, started) = match select(std::pin::pin!(prev), Box::pin(started)).await {
         Either::Left((a, started)) => (a, Either::Left(started)),
         Either::Right((t, prev)) => (prev.await, Either::Right(t)),
     };
     let Some(a) = a? else { return Ok(None) };
     if a != g {
+        drop(started);
         return Ok(next(a.clone()).await?.map(|t| (a, t)));
     }
     let t = match started {
@@ -5115,6 +5117,41 @@ mod tests {
         assert_eq!(link(Err("down".into())), Err("down".into()));
         assert_eq!(link(Ok(None)), Ok(None));
         assert_eq!(link(Ok(Some(2))), Ok(Some((2, 20))));
+        // A guessed read still running when `prev` names another answer is dropped before the read again starts, so
+        // it holds nothing the read again waits on (a write-class read's batch, `rcache::batched`). `prev` answers on
+        // its second poll, so the guessed read has started by then.
+        struct Held<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for Held<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+        let running = std::cell::Cell::new(false);
+        let guessed = async {
+            running.set(true);
+            let _held = Held(&running);
+            std::future::pending::<Result<Option<i64>, String>>().await
+        };
+        let mut polled = false;
+        let prev = std::future::poll_fn(move |cx| {
+            if std::mem::replace(&mut polled, true) {
+                std::task::Poll::Ready(Ok::<_, String>(Some(2)))
+            } else {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        });
+        let again = |a: i64| {
+            let held = running.get();
+            futures_util::future::Either::Right(async move { Ok::<_, String>((!held).then_some(a * 10)) })
+        };
+        let mut got = std::pin::pin!(super::link(Some((1, futures_util::future::Either::Left(guessed))), prev, again));
+        let got = loop {
+            if let Some(v) = got.as_mut().now_or_never() {
+                break v;
+            }
+        };
+        assert_eq!(got, Ok(Some((2, 20))), "the read again ran while the guessed read was still held");
     }
 
     /// The git read gate on a cached `Authz`: a decision that does not allow is made again on a fresh read (a grant
