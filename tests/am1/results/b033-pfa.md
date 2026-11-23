@@ -137,6 +137,11 @@ to 1.75 ms with 39 PRs open. That is no evidence either way on the flip, which n
   in them. Those cost more (100, 80 and 15 ms), which fits a transaction that ran inside another input's turn.
 - **What this leaves for the request routes:** about 0.3 to 0.4 ms of CPU a call, in line with the local bed's learner
   call (`b033-profile.md`).
+- **Two caveats**, from the lead's review:
+  - "No traced work" is an upper bound on a route's own handling, since it also holds any work in the slice that wrote
+    no traced row.
+  - The slices are only the turns that follow a `/raft` call. That they stand for the leader's other turns is an
+    assumption [unverified].
 
 ### What it changes
 
