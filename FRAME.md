@@ -320,7 +320,7 @@ BF-47's hosted row (`build/BUILD-PLAN.md`, M5-WP5) needs a vault account apart f
 
 B0-33's read-memo set kept two runs, mrB and msA, which admitted 107.3 and 106.8 agent commands a second against the 140 line and its 90% line of 126 [measured, `tests/am1/results/b033-readmemo.md`]. The memo cut leader CPU per event by 42% and did not move that line. LM-1's seal/byte design found no leader-side lever that would (`tests/am1/results/seal-bytes-design.md`). The orchestrator recommended 110, and the operator took it:
 
-- **B0-33's pass line is at least 110 agent commands a second admitted** (`build/BUILD-PLAN.md` and `design/DESIGN.md`, B0-33). The fail line stays under 100 a second, which reopens ref lanes, so the pass line keeps 10% above it.
+- **B0-33's pass line is at least 110 agent commands a second admitted** (`build/BUILD-PLAN.md` and `design/DESIGN.md`, B0-33). The fail line stays under 100 a second, which reopens ref lanes, so the pass line keeps 10% above it. mrB and msA are under 110 itself; they meet it under the 90% rule (99), and the fail line still binds below 100.
 - **The hosted figure is about 2,100 agents a group** at journey 9's mix, against the design's 3,000 at 150 a second (`design/AGENT-LAYER.md`, "Journeys", A1, step 11). Fleets above that on one repository wait for metadata child groups, as LM-1 already says.
 - **What 110 does not change.** B0-33's other lines stand as written, including zero `suspect` reports (A48 still asks what that counts), and the gate is still judged as the median of three runs on fresh placements. The daily spend limit, the $180 hard stop, the standing row queue, the 90% rule, and every invariant in `AGENTS.md` are unchanged.
 
