@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -321,9 +322,9 @@ func TestRepackAndFreshInitWaitForAMidxWrite(t *testing.T) {
 	hold()
 	started := make(chan struct{})
 	old := runRepack
-	runRepack = func(rp string) error {
+	runRepack = func(ctx context.Context, rp string) error {
 		close(started)
-		return old(rp)
+		return old(ctx, rp)
 	}
 	defer func() { runRepack = old }()
 	if !startRepack("7", rp) {

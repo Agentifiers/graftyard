@@ -351,10 +351,10 @@ func TestRepackHoldsNoNetworkLock(t *testing.T) {
 	}
 	started, release := make(chan struct{}), make(chan struct{})
 	old := runRepack
-	runRepack = func(rp string) error {
+	runRepack = func(ctx context.Context, rp string) error {
 		close(started)
 		<-release
-		return old(rp)
+		return old(ctx, rp)
 	}
 	defer func() { runRepack = old }()
 	putRefs(t, s.URL, prev)
@@ -453,7 +453,7 @@ func TestConnectedRunsBeforeTheRehydratesRepack(t *testing.T) {
 	started := make(chan struct{}, 4)
 	release := make(chan struct{})
 	old := runRepack
-	runRepack = func(rp string) error {
+	runRepack = func(ctx context.Context, rp string) error {
 		started <- struct{}{}
 		<-release
 		return nil

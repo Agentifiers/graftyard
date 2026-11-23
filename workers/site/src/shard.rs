@@ -42,6 +42,9 @@ thread_local! {
     /// isolate's first shard of it last reported `NetworkLoad` (`crate::fanout`), and the pool slots its site's
     /// ledger last answered it holds.
     static FANOUT: std::cell::RefCell<std::collections::HashMap<i64, Fan>> = Default::default();
+    /// Per (shard object instance, network), when this isolate last told the container that moved load arrived
+    /// (`graftyard_git::maint_hold`, at most once per `MAINT_HOLD_EVERY`).
+    static MAINT_HELD: std::cell::RefCell<std::collections::HashMap<(String, i64), u64>> = Default::default();
     /// Per pool shard object name, when it last answered a forwarded push `warming` (`graftyard_git::pool_forward`).
     static POOL_COLD: std::cell::RefCell<std::collections::HashMap<String, u64>> = Default::default();
     /// Per (shard object instance, network): the composed-miss chain's step running in the background (`Compose`),
@@ -1040,6 +1043,32 @@ impl DurableObject for GitShard {
                     }
                     host.set_inactivity(d.as_millis() as u64).await.map_err(se)?;
                 }
+            }
+        }
+        // Moved load (`maint-yield`): a client's first try that reached this site rather than the record's home holds
+        // the container's maintenance, told off the request's path at most once per `MAINT_HOLD_EVERY`, so the
+        // repack, its commit-graph and a roll-up yield the CPU, the repack slot and the midx lock to the lost site's
+        // work (`tests/am1/results/b034-mt18.md`).
+        let wait_s = q(&url, "wait").and_then(|v| v.parse::<u32>().ok());
+        let derived = q(&url, "derived").is_some();
+        if graftyard_git::maint_hold(&path, caller, derived, site.id, log.record.home, wait_s) {
+            let due = MAINT_HELD.with(|m| {
+                let mut m = m.borrow_mut();
+                let last = m.entry((self.run_key.clone(), net.0.0)).or_insert(0);
+                let due = now_ms() >= *last + graftyard_git::MAINT_HOLD_EVERY.as_millis() as u64;
+                if due {
+                    *last = now_ms();
+                }
+                due
+            });
+            if due {
+                let (state, inst) = (self.state.clone(), instance(&self.env)?.0);
+                self.state.wait_until(async move {
+                    let host = ShardHost { state: &state, region, image: "git", instance: inst };
+                    if let Err(e) = host.maint_hold(net).await {
+                        console_error!("shard maint hold {}: {e}", net.0.0);
+                    }
+                });
             }
         }
         // Every catch-up runs in the background on this object (`Jobs`), so one a caller stops waiting for goes on,

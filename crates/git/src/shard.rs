@@ -996,6 +996,31 @@ pub fn pool_forward(cold_at: Option<u64>, now: u64) -> bool {
     cold_at.is_none_or(|at| now >= at.saturating_add(POOL_COLD_SKIP_MS))
 }
 
+/// The `wait` the edge gives a client call's first try on a network's shards, usually the home's: past it the shard
+/// answers 503 `warming` and goes on catching up in the background. Every later try, a hedge's included, waits longer
+/// (the edge's `VALIDATE_WAIT_OTHER_S`, 60 s), so a shard reads this `wait` as "the edge's first try"
+/// (`maint_hold`).
+pub const FIRST_TRY_WAIT_S: u32 = 15;
+
+/// How often a shard object tells its container that moved load arrived (`POST /maint/hold`): the container holds
+/// maintenance `YIELD_HOLD` (60 s) from each call, so one call per 10 s keeps a hold with 50 s to spare.
+pub const MAINT_HOLD_EVERY: Duration = Duration::from_secs(10);
+
+/// Whether a call on a shard is moved load, which holds the container's maintenance (`decisions/DECISIONS.md`,
+/// "`maint-yield`"): a client's push or fetch (`/validate`, `/upload-pack`, `/info-refs`, or the streamed probe's
+/// `/catchup`), not derived and not a warm call, reaching a shard on a site other than the record's `home` as the
+/// edge's first try (`wait` = `FIRST_TRY_WAIT_S`). The edge tries the home first unless the home failed it within
+/// `COLD_SHARD_MS`, so such a call means the home's shard is down, cold or failing and this site carries its work.
+/// A hedge's try waits 60 s and does not count: a slow but healthy home moves nothing. A pool shard a moved first
+/// shard forwards to counts too, because the forward keeps `wait`.
+pub fn maint_hold(path: &str, caller: Caller, derived: bool, me: SiteId, home: SiteId, wait: Option<u32>) -> bool {
+    matches!(path, "/validate" | "/upload-pack" | "/info-refs" | "/catchup")
+        && caller == Caller::Client
+        && !derived
+        && me != home
+        && wait == Some(FIRST_TRY_WAIT_S)
+}
+
 /// Whether a shard answers a call 503 `warming` at once rather than waiting out the call's `wait` on its catch-up.
 /// `follows`: the caller has another site's shard to try after this one (`next=1`; never on its last try, which
 /// waits, so a call never runs out of shards that would serve it). `rehydrating`: a rehydrate of the network is under

@@ -7933,10 +7933,19 @@ first shard staged. They keep today's rule: probe, then send once.
 
 ### `maint-yield`: a git cache shard's maintenance yields to moved load, for at most 10 minutes, 2026-11-22
 
-**Status.** Design for review; not built. It changes the container, the site script and `crates/git`, so it ships
-through a site day. The edge's binary changes only by naming a shared constant, with no change in what it sends. The
-lead ruled for it after B0-34 mt18 (2026-11-22): DESIGN's noisy-tenant row bounded a repack's CPU but never made it
-yield.
+**Status.** Built, not yet hosted (branch `b034-yield-code`): the container's hold (`containers/git/server/maint.go`,
+`POST /maint/hold`), the shard object's call (`graftyard_git::maint_hold`, `workers/site/src/shard.rs`), and
+`graftyard_git::FIRST_TRY_WAIT_S`, which the edge's `VALIDATE_WAIT_HOME_S` names. It ships through a site day. The
+edge's binary changes only by naming that constant, with no change in what it sends. The lead ruled for it after B0-34
+mt18 (2026-11-22): DESIGN's noisy-tenant row bounded a repack's CPU but never made it yield. Two choices the code
+made that the decision below left open:
+- **The deferral clock starts at the first start it refuses or run it stops**, not at the first hold call. A failover
+  with no repack due defers nothing, so it uses none of the bound.
+- **Only a completed repack, with its commit-graph, resets the clock.** A roll-up's build does not, or rolls between
+  holds would keep the repack the bound protects waiting past it.
+
+The row reads `/procs`'s `maint` (through the shard object's `/status`): the longest continuous hold, the most unkept
+packs any hold call saw, and the runs holds stopped.
 
 **Decision.** Maintenance is the geometric repack (`startRepack`, `runRepack`), the commit-graph write after it, and
 a roll-up's build (`handleRoll`). A shard container holds maintenance in two cases.
@@ -7975,8 +7984,8 @@ is in. So any point is a safe point:
   (`promote_moves_on`). If every shard is held, the step fails and the next alarm tries again. Archiving and
   promotion still run: they are not maintenance, and the log needs them.
 
-**The deferral bound.** `MAINT_DEFER_MAX` is 10 minutes [guess], counted from the first time maintenance was held
-since the last one completed. Past it, moved load no longer stops the next repack, though client CPU can still delay
+**The deferral bound.** `MAINT_DEFER_MAX` is 10 minutes [guess], counted from the first start refused or run stopped
+since the last repack completed. Past it, moved load no longer stops the next repack, though client CPU can still delay
 its start by at most another `YIELD_HOLD`. Against what the deferral costs:
 - **Pack growth.** On mt18 the surviving site's shard went from 122 to 268 unkept packs in 230 s while its repack
   starved, about 0.6 packs a second. Ten minutes at that rate adds about 380 packs [inference]. Merge-tree slowed from
@@ -8020,7 +8029,8 @@ a kill. A slow `runRepack` starts, then a moved-load call arrives, and the test 
 - after `MAINT_DEFER_MAX`, a repack that a moved call does not stop;
 - the repository whole after each step.
 
-Plants are in `tests/m0carried/plant86.py`.
+The test is `TestMaintenanceYieldsToMovedLoad` (`containers/git/server/maint_test.go`), with
+`TestAHeldRollAnswers503`. Plants are in `tests/m0carried/plant89.py`.
 
 **Flip.**
 - **Back it out** if the next full B0-34 row shows either of:

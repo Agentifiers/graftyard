@@ -877,6 +877,16 @@ impl ShardHost<'_> {
         r.json().await.map_err(worker_err)
     }
 
+    /// Tells the container that moved load reached it (`POST /maint/hold`, `graftyard_git::maint_hold`): it holds its
+    /// repack, commit-graph and roll `YIELD_HOLD` and stops a running one. A container that is not running holds no
+    /// maintenance and is not started for it.
+    pub async fn maint_hold(&self, network: NetworkId) -> Result<(), StoreError> {
+        if !self.container()?.running() {
+            return Ok(());
+        }
+        self.ok(Method::Post, &format!("/maint/hold?net={}", network.0.0), None).await.map(|_| ())
+    }
+
     /// The container's running git processes (`GET /procs`: command, nice, CPU seconds, RSS), most CPU first, and the
     /// network's pack counts (all and kept), as JSON for `/status`. A container that is not running lists none and is
     /// not started for it.
