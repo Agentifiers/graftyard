@@ -205,10 +205,26 @@ Workers Logs that every row already writes.
   The setup's CPU per commit separates the hosts without them.
 
 **In the wrapper.** `tests/fanout/guardrow.sh` is pgA's set wrapper with the colo test replaced by `hostguard.py`.
-- Every 20 s during a1's setup it asks the guard. Exit 2 means not enough commits yet.
-- On exit 3 it stops a1 before load and re-places on a fresh repository, at most twice.
-- If the third placement is also over the line, it stops the set and the sweep runs.
+- a1 runs with `--hold-file`: after the learner gate it waits, before load, until the guard writes the file.
+- Every 20 s the wrapper asks the guard. Exit 2 (not judged yet) keeps asking while a1 holds.
+- Exit 0 writes `go` and the load starts. Exit 3 writes `stop`: a1 exits 4 before load, and the wrapper re-places
+  on a fresh repository, at most twice.
+- **It fails closed.** With no verdict, a1 exits 4 before load after 300 s, and that counts as a re-place.
+- If the third placement is also re-placed, it stops the set and the sweep runs.
 - It logs each verdict with its number, and the row's results must quote it.
+
+**Fix, 2026-11-23, after the lead's live replay.** The first version found the first `/commit` the leader object ever
+served. On pgA that was one of the repository's own two creation commits at 02:13:28, a minute before the task
+creates began at 02:14:22. So its 60 s window held 6 commits, and the run read "unknown". The table above came from a
+replay that started its search later, which is why it did not show this. The fix:
+- The guard now anchors on the first of 5 commits each within 5 s of the next, which is the task phase's pace (1.2 to
+  1.6 s apart on every run).
+- It judges a window only once it ended 30 s ago, so Workers Logs' ingestion lag cannot read short.
+- Live, from the rows log's start time and with no end time, it reproduces the table on pgA (43.2 ms, 45 commits,
+  re-place), pfA (46.1, 45, re-place) and blB (23.7, 46, keep) [measured].
+- Replayed on pgA with an end time from 02:14:30 to 02:15:30 it says unknown; from 02:15:55 it says re-place.
+- On every run of the table the verdict is ready 21 to 41 s before a1 logged its load start (pgA, with its 1,000 seeded
+  PRs, 264 s). With the hold, a late verdict delays load rather than letting it start.
 
 The setup extracts behind the table are `tests/fanout/raw/wl-setup/<tag>-setup.json.xz`: each run's leader object
 from a1's log start to load start, from `wlobj.py fetch`.
