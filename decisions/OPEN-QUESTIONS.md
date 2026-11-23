@@ -340,6 +340,6 @@ One occurrence is not a claim and has no row: `design/SHARED.md`, "Read this fir
 | Git and storage | 37 |
 | G30 | Found in B0-33 m61's analysis (2026-11-19): should a last-site git shard that is rehydrating answer a `next`-less validate 503 with `Retry-After` at once, instead of holding it for the edge's whole wait? On m61 the home shard's 15 s `/catchup?next=1` probe failed while its catch-ups ran 25.5 to 73.5 s, so `validate_streamed` sent packs to site c, mid-rehydrate, which held each for 60 s and then answered `warming`: 400 receive-pack 503s, validate p99 75.8 s in the first minutes, and 28.5% of agent-seconds spent waiting in validate [measured, `tests/am1/results/b033-m61-why.md`, question 1]. Answering at once contradicts `chain-wait`'s rule, merged 2026-11-19, that the last site keeps the whole deadline so a miss never runs out of shards that would wait (`decisions/DECISIONS.md`, "`chain-wait`"), so it is not built. The harness now waits for every site's shard before load (`tests/fanout/rows.sh`, the shard gate), which removes the case from rows but not from a client whose shards go cold under load. `validate-hedge` (2026-11-22) keeps this: a human push's validate hedges to the next site after 1 s but never past the last site, which still holds the push for its whole wait | `design/DESIGN.md`, Shape, `IngestCursor`; `graftyard_git::warming_now` | Push availability while a non-home shard rehydrates under load | A row with a shard killed under load (B0-34's kill phase) with and without the gate, counting `warming` 503s and validate stalls; or an operator decision that the last site may answer at once while rehydrating |
 | Release and operations | 39 |
-| Agents | 35 |
+| Agents | 36 |
 | Costs | 13 |
-| Total | 246 |
+| Total | 247 |
