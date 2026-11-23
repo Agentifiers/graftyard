@@ -247,6 +247,18 @@ enum ReleaseCmd {
         out: Option<PathBuf>,
         #[arg(long)]
         edge: Option<String>,
+        /// The vault account: once the code intents are done, upgrade its vault Worker to R under
+        /// CLOUDFLARE_VAULT_API_TOKEN (never an install token). Without it the step is printed as owed.
+        #[arg(long, requires_all = ["vault_release", "release_key"])]
+        vault_account: Option<String>,
+        /// R's release folder (release.json, release.sig, vault/).
+        #[arg(long)]
+        vault_release: Option<PathBuf>,
+        /// The vendor's release public key (the genesis's Keys.release).
+        #[arg(long)]
+        release_key: Option<PathBuf>,
+        #[arg(long, default_value = "graft-vault")]
+        vault_script: String,
     },
 }
 
@@ -516,8 +528,28 @@ fn run(cli: Cli) -> Res<()> {
             release::entry(config, &spec, &out, prev.as_deref(), keys.as_deref())
         }
         Cmd::Release { cmd: ReleaseCmd::Post { input, edge } } => release::post(config, &input, edge.as_deref()),
-        Cmd::Release { cmd: ReleaseCmd::Roll { release, entries, key, ttl_s, out, edge } } => {
-            release::roll(config, &release, &entries, &key, ttl_s, out.as_deref(), edge.as_deref())
+        Cmd::Release {
+            cmd:
+                ReleaseCmd::Roll {
+                    release,
+                    entries,
+                    key,
+                    ttl_s,
+                    out,
+                    edge,
+                    vault_account,
+                    vault_release,
+                    release_key,
+                    vault_script,
+                },
+        } => {
+            let vault = match (&vault_account, &vault_release, &release_key) {
+                (Some(account), Some(dir), Some(key)) => {
+                    Some(release::VaultStep { account, script: &vault_script, release: dir, release_key: key })
+                }
+                _ => None,
+            };
+            release::roll(config, &release, &entries, &key, ttl_s, out.as_deref(), edge.as_deref(), vault.as_ref())
         }
         Cmd::Install { genesis, edge } => genesis::install(config, &genesis, edge.as_deref()),
         Cmd::Vault {

@@ -626,3 +626,95 @@ fn the_vault_worker_comes_only_from_a_verified_release() {
     let wasm_only = record(&files[1..]);
     refused(&wasm_only, sign(&RELEASE, &wasm_only), &files[1..], "no vault/entry.js");
 }
+
+/// BF-47's order (\"Install operations\", Release roll, step 4): the vault step is due once every code intent through
+/// `McpRoll` is done or skipped for R, before R's `ContainerDay`s and whether or not they ran, and only for a release
+/// that carries a vault Worker. It is never a group intent.
+#[test]
+fn bf47_the_vault_step_follows_the_code_intents_and_does_not_wait_for_container_days() {
+    let mut o = Ops::new(G::new());
+    // Every site's shards on release 1's images (none), so release 4's image changes them.
+    upload_all(&mut o.g, 1);
+    o.roll_all(1);
+    for site in 0..4 {
+        o.next_id += 1;
+        let b = o.g.intent(o.next_id, Intent::ContainerDay { site: SiteId(site), release: rel(1).0 }, &[], &VENDOR);
+        o.g.ok(b);
+        o.finish();
+    }
+    let sha = |b: &[u8]| crate::types::hex(&Sha256::digest(b));
+    // Release 4 lists the site's, the edge's, and graft-ops's modules, a vault Worker, and one container image.
+    let mut files = bundle(&RELEASE).2;
+    files.push(("vault/entry.js".into(), b"vault".to_vec()));
+    let listed: Vec<String> = files.iter().map(|(n, b)| format!(r#"{{"name":"{n}","sha256":"{}"}}"#, sha(b))).collect();
+    let img = format!(r#"{{"name":"git","digest":"sha256:{}"}}"#, "ab".repeat(32));
+    let rec = format!(r#"{{"label":"r4v","files":[{}],"images":[{img}]}}"#, listed.join(",")).into_bytes();
+    let c = ops::check_bundle(&o.g.f, &rec, sign_record(&RELEASE, &rec), &files, &[Script::Edge, Script::Ops]).unwrap();
+    assert!(!c.scripts.keys().any(|s| crate::ops::folder(*s) == ops::VAULT_FOLDER), "no script deploys vault/");
+    let r = c.release;
+    assert!(!ops::vault_due(&o.g.f, r), "no ReleaseUploaded yet");
+    let tagged: BTreeMap<Script, VersionId> =
+        c.scripts.keys().enumerate().map(|(i, s)| (*s, vid(4, i as u8))).collect();
+    let UploadStep::Commit(u) = ops::upload_next(&o.g.f, &c, &tagged) else { panic!() };
+    let b = o.g.entry(ReleaseEntry::ReleaseUploaded(u), &[&EXECUTOR]);
+    o.g.ok(b);
+    let mut order = Vec::new();
+    loop {
+        let due = ops::vault_due(&o.g.f, r);
+        match ops::next_roll(&o.g.f, r) {
+            Roll::Next { intent, undo } => {
+                let code = !matches!(intent, Intent::ContainerDay { .. });
+                assert_eq!(due, !code, "vault due before {intent:?}: {due}");
+                if due && !order.contains(&"vault") {
+                    order.push("vault");
+                }
+                order.push(intent.kind());
+                o.next_id += 1;
+                let e = ops::sign_intent(&o.g.f, intent, &undo, &VENDOR, id(o.next_id), o.g.at, 4 * HOUR);
+                o.g.ok(e.encode());
+                o.finish();
+            }
+            Roll::Done => {
+                assert!(due, "still due once the roll is done: release roll runs it then if it had not");
+                break;
+            }
+            Roll::Wait(w) => panic!("{w}"),
+        }
+    }
+    assert_eq!(
+        order,
+        [
+            "SiteDay",
+            "SiteDay",
+            "SiteDay",
+            "SiteDay",
+            "EdgeRoll",
+            "OpsRoll",
+            "vault",
+            "ContainerDay",
+            "ContainerDay",
+            "ContainerDay",
+            "ContainerDay"
+        ],
+        "the vault step after the last code intent and before the ContainerDays"
+    );
+    // A release with no vault Worker owes no vault step.
+    upload_all(&mut o.g, 5);
+    o.roll_all(5);
+    assert!(!ops::vault_due(&o.g.f, rel(5).0));
+    // Mid-roll, with a code intent current, the vault step is not due.
+    upload_all(&mut o.g, 6);
+    let mut files6 = files.clone();
+    files6[1].1 = b"site 6".to_vec();
+    let listed6: Vec<String> =
+        files6.iter().map(|(n, b)| format!(r#"{{"name":"{n}","sha256":"{}"}}"#, sha(b))).collect();
+    let rec6 = format!(r#"{{"label":"r6v","files":[{}]}}"#, listed6.join(",")).into_bytes();
+    let c6 =
+        ops::check_bundle(&o.g.f, &rec6, sign_record(&RELEASE, &rec6), &files6, &[Script::Edge, Script::Ops]).unwrap();
+    let t6: BTreeMap<Script, VersionId> = c6.scripts.keys().enumerate().map(|(i, s)| (*s, vid(7, i as u8))).collect();
+    let UploadStep::Commit(u) = ops::upload_next(&o.g.f, &c6, &t6) else { panic!() };
+    let b = o.g.entry(ReleaseEntry::ReleaseUploaded(u), &[&EXECUTOR]);
+    o.g.ok(b);
+    assert!(matches!(ops::next_roll(&o.g.f, c6.release), Roll::Next { intent: Intent::SiteDay { .. }, .. }));
+    assert!(!ops::vault_due(&o.g.f, c6.release), "a site day is owed first");
+}
