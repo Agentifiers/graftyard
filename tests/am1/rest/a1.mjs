@@ -42,6 +42,10 @@
 //     [--hold-file F]    # B0-33's host guard (tests/fanout/guardrow.sh): after the learner gate, wait for F before load; F
 //                        # holding `go` starts the load, anything else exits 4 before load, unwritten after HOLD_WAIT_MS
 //                        # exits 4 too. No row is written on exit 4, so a guarded run never loads on an unjudged host.
+//     [--advert-probe]   # B0-33 row B, a test edge: before the hold, the leader's measured agent rate in `/status`, and
+//                        # with a forced advert an agent push and REST write refused with `advert`, the admin's not;
+//                        # exits 5 before load otherwise. The row's 429s by caller and shape are `api429`, and a
+//                        # non-agent write the advert refused (flip 1) ends the load window and is `flip1` in the row.
 //     [--b034 FILE]      # B0-34 as written, on the seeded 5 GB monorepo (tests/fanout/b034.sh). FILE is JSON:
 //                        # `bare` (the local torvalds/linux clone) and `future` (the first-parent commits after the
 //                        # seeded main), which replace the PR merges: 10 a minute push the next one to main, so the
@@ -86,7 +90,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict:
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
   "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" }, "seed-prs": { type: "string" }, "hold-file": { type: "string" }, workflow: { type: "boolean" },
   "ls-refs-shard": { type: "boolean" }, "ls-refs-shard-every": { type: "string" }, hosted: { type: "string" },
-  hints: { type: "string" }, lean: { type: "boolean" } } });
+  hints: { type: "string" }, lean: { type: "boolean" }, "advert-probe": { type: "boolean" } } });
 if (opt.hosted && !opt.b034) throw new Error("--hosted runs B0-34's load only: pass --b034");
 if (opt["ls-refs-shard"] && opt["ls-refs-shard-every"]) throw new Error("--ls-refs-shard and --ls-refs-shard-every exclude each other");
 
@@ -372,7 +376,28 @@ if (!opt.repo || !opt.chain) throw new Error("--repo NAME and --chain repo:ID ar
 const { api: api0, bedGet, BED, ghs, log, member, row: writeRow, sleep, state, statuses, tokens, voterAt } = await import("../hosted/lib.mjs");
 // The leader-sync A/B's arm B (`--lean`): the header rides on every git and API request this driver sends.
 const leanHeaders = opt.lean ? { "x-graft-lean": "1", "x-bed-token": BED } : {};
-const api = (method, path, token, body, extra = {}) => api0(method, path, token, body, { ...leanHeaders, ...extra });
+// edge-refusal (B0-33 row B, `decisions/DECISIONS.md`, "`edge-refusal`"): every API 429 by caller (`human`'s tokens
+// are not agent, the App's are) and by shape (`advert` in a test edge's `server-timing`: the edge refused it on the
+// leader's advert; `other`: the leader's own `full`). Flip 1 is an invariant: any request not under the App's token that
+// the advert refused ends the load window at once (`flip1`), and the row carries `flip1`.
+const api429 = { agent: { advert: 0, other: 0 }, other: { advert: 0, other: 0 } };
+const advertMark = (timing) => /(^|,\s*)advert;dur=/.test(timing ?? "");
+const flip1Seen = [];
+function flip1(what, timing) {
+  flip1Seen.push({ at: new Date().toISOString(), what, timing });
+  if (flip1Seen.length === 1) log(`FLIP1: ${what} was refused by the edge's advert (${timing}); load window ended, row stopped for the lead`);
+  end = Math.min(end, Date.now());
+}
+// The admin's PAT (humans, merges) and the fast user's are the row's only non-agent tokens; any other is the App's.
+const human = (token) => token === tokens.admin || token === tokens.member;
+const api = async (method, path, token, body, extra = {}) => {
+  const r = await api0(method, path, token, body, { ...leanHeaders, ...extra });
+  const marked = advertMark(r.headers?.["server-timing"]);
+  if (extra["x-graft-advert"]) return r; // `--advert-probe`'s forced adverts are the probe's, not the row's
+  if (r.status === 429) api429[human(token) ? "other" : "agent"][marked ? "advert" : "other"]++;
+  if (marked && human(token)) flip1(`${method} ${path.replace(/\d+/g, "N")}`, r.headers["server-timing"]);
+  return r;
+};
 const RUN = opt.run ?? Date.now().toString(36);
 const R = `m3org/${opt.repo}`;
 const CHAIN = opt.chain;
@@ -520,7 +545,10 @@ async function push(tok, ref, from, path, bytes, extra = {}, agent = null) {
   // and every row passes `scan`).
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 160).trim()}`;
   if (res === "ok") pushed.set(commit, Date.now());
-  writeRow(PUSHES, { client, kind: ref.includes("/claude/") ? "agent" : ref.includes("/a1m-") ? "merge" : "human", ref, old: from ?? null, new: commit,
+  const kind = ref.includes("/claude/") ? "agent" : ref.includes("/a1m-") ? "merge" : "human";
+  // Flip 1 (edge-refusal): a human's or a merge's push the edge refused on the advert stops the row.
+  if (kind !== "agent" && !extra["x-graft-advert"] && advertMark(r.headers?.get?.("server-timing"))) flip1(`${kind} push`, r.headers.get("server-timing"));
+  writeRow(PUSHES, { client, kind, ref, old: from ?? null, new: commit,
     start, end: cfClock.now(), status: r.status, result: res, rid: r.headers?.get?.("x-github-request-id") ?? null, err: r.err ?? null,
     // why-logs: a test edge's `server-timing`, so each refusal's stage is read from the push (tests/fanout/pushfull.py).
     timing: r.headers?.get?.("server-timing") ?? null });
@@ -722,6 +750,39 @@ const LEARNER_WAIT_MS = 300_000;
     writeRow(OUT, gate);
     log(`learner gate: ${ls.length}/${ls.length} learners within one entry of ${commit} (applied ${JSON.stringify(at)}) in ${Date.now() - since} ms, leader wasm ${mem} MiB`);
   }
+}
+// B0-33 row B's pre-load probe (`--advert-probe`, a test edge only): the leader's `/status` carries the measured agent
+// rate, and with a forced advert (`x-graft-advert` and the bed token) the edge refuses an agent push and an agent REST
+// write with the `advert` mark, and refuses neither of the admin's. Any miss exits 5 before load, not counted.
+if (opt["advert-probe"]) {
+  const forced = { "x-graft-advert": "60000", "x-bed-token": BED };
+  const lead = (await statuses(CHAIN)).find((s) => s.role === "leader");
+  const adm = lead && (await member(CHAIN, lead.site, "/status", undefined, 15_000).catch(() => ({}))).v?.admission;
+  const probePush = async (tok, ref) => {
+    const { pack, commit } = onePack(`a1p/${ref.split("/").pop()}.txt`, randomBytes(64), main, "a1 advert probe");
+    const r = await gitOnce("git-receive-pack", tok, receiveBody(ref, null, commit, pack), { "content-type": "application/x-git-receive-pack-request", ...forced });
+    return { status: r.status, result: r.status === 200 ? pushResult(r.text) : `http ${r.status}`, timing: r.headers?.get?.("server-timing") ?? null };
+  };
+  const label = async (tok) => {
+    const r = await api("POST", `/api/v3/repos/${R}/issues/${target.number}/labels`, tok, ["a1"], forced);
+    return { status: r.status, timing: r.headers?.["server-timing"] ?? null };
+  };
+  const p = { agentRate: adm?.agentRate ?? null, agentWaitMs: adm?.agentWaitMs ?? null,
+    agentPush: await probePush(app, `refs/heads/claude/a1-${RUN}-probe`), adminPush: await probePush(admin, `refs/heads/a1h-${RUN}-probe`),
+    agentRest: await label(app), adminRest: await label(admin) };
+  const checks = {
+    rate: typeof p.agentRate === "number" && typeof p.agentWaitMs === "number",
+    agentPush: p.agentPush.result === "full" && advertMark(p.agentPush.timing),
+    agentRest: p.agentRest.status === 429 && advertMark(p.agentRest.timing),
+    adminPush: p.adminPush.result !== "full" && !advertMark(p.adminPush.timing),
+    adminRest: p.adminRest.status !== 429 && !advertMark(p.adminRest.timing),
+  };
+  writeRow(OUT, { step: "advert probe", ...p, checks });
+  if (!Object.values(checks).every(Boolean)) {
+    log(`advert probe failed ${JSON.stringify(checks)}; exiting before load, not counted`);
+    process.exit(5);
+  }
+  log(`advert probe ok: agentRate ${p.agentRate}, agentWaitMs ${p.agentWaitMs}`);
 }
 // The host guard's hold (`--hold-file`): no load until the guard has judged the leader's host. Fails closed.
 const HOLD_WAIT_MS = 300_000;
@@ -1522,6 +1583,7 @@ const v = {
     max: Math.round(loopDelay.max / 1e6) },
   ...(admissionSeen.length ? { admission: admissionSeen } : {}),
   leaderChanges,
+  api429, flip1: flip1Seen,
   ...(Object.keys(tierStages).length ? { apiTierBatch: Object.fromEntries(Object.entries(tierStages).map(([k, xs]) => [k, ps(xs)])) } : {}),
   ...(pushMarks.timed ? { pushTiming: { ...pushMarks, stages: Object.fromEntries(Object.entries(pushStages).map(([k, xs]) => [k, ps(xs)])) } } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),

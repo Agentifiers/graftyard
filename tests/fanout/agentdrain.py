@@ -25,7 +25,9 @@ SOFT, SHARE = 100_000, 0.5
 
 def cuts(tag):
     rows = set()
-    for line in lzma.open(f'{RAW}/tsave-{tag}.jsonl.xz', 'rt'):
+    # A row's own tsave is plain jsonl until it is committed as .xz (b033.sh reads it in place).
+    xz = f'{RAW}/tsave-{tag}.jsonl.xz'
+    for line in lzma.open(xz, 'rt') if os.path.exists(xz) else open(f'{RAW}/tsave-{tag}.jsonl'):
         d = json.loads(line)
         if 'rows' not in d or str(d.get('site')) != str(d.get('leader')):
             continue
