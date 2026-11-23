@@ -8,7 +8,8 @@ A learner's `/raft` call to the leader (`Trace::RaftCall`, kind 33, caller 192 a
 (`ReadIndexRes`, acks). CPU is priced by the row's plain-slice fit, as `flushslice.py` does: `a + b` a call and `k` an
 answer KB. Learner regions follow `place_learners`' round-robin over LEARNERS (busiest first, ties by region order):
 B0-33 guarded rows ran enam:2000,weur:1000,apac:1000 and B0-32 rows enam:4000,weur:2000,apac:2000 [inference from
-`crates/types/src/placement.rs` and the drivers]. Run from the repository root.
+`crates/types/src/placement.rs` and the drivers]; five are enam:1000,weur:2000,apac:2000
+and three enam:1000,weur:1000,apac:1000. Run from the repository root.
 """
 import collections, os, sys
 
@@ -19,7 +20,7 @@ tags, sys.argv = sys.argv[1:], ['heavyturns.py']
 g = {'__file__': os.path.join(here, 'heavyturns.py')}
 exec(src, g)
 M23 = (1 << 23) - 1
-PLACE = {4: ['enam', 'weur', 'apac', 'enam'], 8: ['enam', 'weur', 'apac', 'enam', 'weur', 'apac', 'enam', 'enam']}
+PLACE = {3: ['enam', 'weur', 'apac'], 4: ['enam', 'weur', 'apac', 'enam'], 5: ['weur', 'apac', 'enam', 'weur', 'apac'], 8: ['enam', 'weur', 'apac', 'enam', 'weur', 'apac', 'enam', 'enam']}
 
 
 def lsq(x, y):
