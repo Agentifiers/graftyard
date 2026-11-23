@@ -32,6 +32,12 @@ CALLS = int(ARGS[0]) if ARGS else 30
 DROP = "--drop-token" in sys.argv
 
 
+def member() -> str:
+    """The member's PAT from $M3_STATE/m3-tokens.txt, as tests/am1/hosted/lib.mjs reads it."""
+    with open(os.path.join(os.environ["M3_STATE"], "m3-tokens.txt")) as f:
+        return dict(line.split(" ", 1) for line in f.read().strip().split("\n"))["member"].strip()
+
+
 class Mem:
     def __init__(self):
         self.t = None
@@ -99,17 +105,27 @@ async def session(out: dict, store: Mem, transport: Dropper) -> None:
     async with httpx2.AsyncClient(auth=auth, timeout=60, transport=transport) as http:
         async with Client(streamable_http_client(MCP + "/", http_client=http), mode="2026-07-28") as c:
             out["protocol"] = c.protocol_version
-            ok, lat, errs = 0, [], []
-            for _ in range(CALLS):
-                s = time.time()
-                try:
-                    await c.list_tools()
-                    ok += 1
-                except Exception as e:  # noqa: BLE001 -- the row records every failure
-                    errs.append(str(e)[:160])
-                lat.append(int((time.time() - s) * 1000))
-            lat.sort()
-            out.update(calls=CALLS, ok=ok, clientP50=lat[len(lat) // 2], errors=errs[:3])
+            # list_issues through graft-mcp, interleaved with the same REST read straight to the edge (M0-WP15's method).
+            ok, lat, direct, errs = 0, [], [], []
+            args = {"owner": "m3org", "repo": "j4", "per_page": 5}
+            hdrs = {"authorization": f"token {member()}", "accept": "application/vnd.graftyard.agent+json", "user-agent": "am2-direct"}
+            async with httpx2.AsyncClient(timeout=60) as plain:
+                for _ in range(CALLS):
+                    s = time.time()
+                    try:
+                        r = await c.call_tool("list_issues", args)
+                        if r.is_error:
+                            errs.append(str(r.content)[:160])
+                        else:
+                            ok += 1
+                    except Exception as e:  # noqa: BLE001 -- the row records every failure
+                        errs.append(str(e)[:160])
+                    lat.append(int((time.time() - s) * 1000))
+                    s = time.time()
+                    await plain.get(f"{os.environ['GRAFT_EDGE']}/api/v3/repos/m3org/j4/issues?per_page=5", headers=hdrs)
+                    direct.append(int((time.time() - s) * 1000))
+            cp, dp = sorted(lat)[len(lat) // 2], sorted(direct)[len(direct) // 2]
+            out.update(calls=CALLS, ok=ok, clientP50=cp, directP50=dp, overheadP50=cp - dp, errors=errs[:3])
 
 
 async def main() -> None:

@@ -1,5 +1,7 @@
 // L0-08 hosted and A43 with the official TypeScript SDK clients, unmodified, against graft-mcp:
 //   node tests/am2/hosted/ts-client.mjs v2|v1 [calls] [--drop-token]
+// Each call is `list_issues` on m3org/j4, interleaved with the same REST read sent straight to the edge with the member's
+// PAT; the tool overhead is the p50 through graft-mcp minus the direct p50 (M0-WP15's method, `tests/m0/results/m0-wp15.md`).
 // `@modelcontextprotocol/client` 2.4.0 (pin 2026-07-28) or `@modelcontextprotocol/sdk` 1.32.2 (2025-11-25), from
 // tests/m0/wp15/node_modules in the main checkout. The SDK's own auth() does RFC 9728 discovery, RFC 8414, CIMD, PKCE S256,
 // RFC 8707 `resource`, and the RFC 9207 iss check; this file supplies only token storage and the browser step.
@@ -9,7 +11,8 @@
 // Prints one JSON line.
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { MCP, cimd, consent, redirectOf, settingsGrants } from "./mcp.mjs";
+import { EDGE } from "../../am1/hosted/lib.mjs";
+import { MCP, MEMBER, cimd, consent, redirectOf, settingsGrants } from "./mcp.mjs";
 
 // M0-WP15's harness modules, in the main checkout (GRAFT_MAIN_CHECKOUT, as lib.mjs reads it).
 const main = process.env.GRAFT_MAIN_CHECKOUT ?? `${homedir()}/workspace/repo`;
@@ -102,17 +105,22 @@ try {
   out.authMs = Date.now() - t0;
   out.protocol = which === "v2" ? client.getNegotiatedProtocolVersion?.() : transport.protocolVersion ?? "2025-11-25";
   let ok = 0;
-  const lat = [], errors = [];
+  const lat = [], direct = [], errors = [];
+  const p50 = (a) => a.sort((x, y) => x - y)[Math.floor(a.length / 2)];
   for (let i = 0; i < CALLS; i++) {
     const s = Date.now();
     try {
-      const r = await client.listTools();
-      if (r.tools) ok++;
+      const r = await client.callTool({ name: "list_issues", arguments: { owner: "m3org", repo: "j4", per_page: 5 } });
+      if (!r.isError) ok++; else errors.push(JSON.stringify(r.content).slice(0, 160));
     } catch (e) { errors.push(String(e).slice(0, 160)); }
     lat.push(Date.now() - s);
+    const d = Date.now();
+    await (await fetch(`${EDGE}/api/v3/repos/m3org/j4/issues?per_page=5`, { headers: { authorization: `token ${MEMBER}`,
+      accept: "application/vnd.graftyard.agent+json", "user-agent": "am2-direct" } })).text();
+    direct.push(Date.now() - d);
   }
-  lat.sort((a, b) => a - b);
-  Object.assign(out, { calls: CALLS, ok, clientP50: lat[Math.floor(lat.length / 2)], errors: errors.slice(0, 3) });
+  const clientP50 = p50(lat), directP50 = p50(direct);
+  Object.assign(out, { calls: CALLS, ok, clientP50, directP50, overheadP50: clientP50 - directP50, errors: errors.slice(0, 3) });
   await client.close();
 } catch (e) {
   out.error = String(e).slice(0, 300);

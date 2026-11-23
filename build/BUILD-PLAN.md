@@ -1497,6 +1497,9 @@ The hosted half needs:
   `call` with the static toolsets, `ToolError` with `retry_after_s` and the rate fields, the trust view, writes on the
   scoped token, and the lease and feed tools. A second hosted day for L0-08's 30-call cell and the tool-overhead p50
   runs once WP2a merges.
+  - **Built (code only, branch `am2-wp2a`).** The door in both lanes, 20 tools in six toolsets, the trust view, and
+    `ToolError`. The four SDK clients each passed 30 of 30 calls locally, and plant90 catches 23 of 23
+    (`tests/am2/results/am2-wp2a.md`).
 - **WP2b: the tools that need new edge reads.** `coordination.overlaps` and `provenance.why` with their edge reads. The
   edge read's design goes to the lead before any edge change, and is checked with B0-34's work on the edge's
   cold-isolate write path (F112).
