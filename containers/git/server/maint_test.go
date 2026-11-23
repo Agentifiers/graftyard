@@ -7,16 +7,32 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// resetMaint gives a test its own maintenance hold state and constants, and gives the next test a clean one.
-func resetMaint(t *testing.T, hold, deferMax time.Duration) {
+// resetMaint gives a test its own maintenance hold state and constants, and gives the next test a clean one. The
+// hold's clock stands still until the test steps it (the returned func), so no sleep decides whether a hold lapsed.
+func resetMaint(t *testing.T, hold, deferMax time.Duration) (step func(time.Duration)) {
 	t.Helper()
-	oldHold, oldDefer := yieldHold, maintDeferMax
+	oldHold, oldDefer, oldClock := yieldHold, maintDeferMax, maintClock
+	var mu sync.Mutex
+	at := time.Now()
+	maintClock = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return at
+	}
+	step = func(d time.Duration) {
+		mu.Lock()
+		at = at.Add(d)
+		mu.Unlock()
+	}
 	clear := func() {
 		maint.Lock()
 		maint.until, maint.firstHeld, maint.cancel, maint.overdue = time.Time{}, time.Time{}, nil, false
@@ -29,9 +45,27 @@ func resetMaint(t *testing.T, hold, deferMax time.Duration) {
 	clear()
 	yieldHold, maintDeferMax = hold, deferMax
 	t.Cleanup(func() {
-		yieldHold, maintDeferMax = oldHold, oldDefer
+		yieldHold, maintDeferMax, maintClock = oldHold, oldDefer, oldClock
 		clear()
 	})
+	return step
+}
+
+// sleeping waits until the planted repack's own `sleep secs` child runs, so a stop is tested on git with a child
+// below it: git's command line names the alias too, and a stop sent before git forks reaches no child.
+func sleeping(t *testing.T, secs string) {
+	t.Helper()
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		ents, _ := os.ReadDir("/proc")
+		for _, e := range ents {
+			b, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+			if args := strings.Split(string(b), "\x00"); err == nil && len(args) > 1 &&
+				filepath.Base(args[0]) == "sleep" && args[1] == secs {
+				return
+			}
+		}
+	}
+	t.Fatalf("the planted repack's sleep %s never ran", secs)
 }
 
 func holdMaint(t *testing.T, url string) bool {
@@ -72,7 +106,7 @@ func refsRepack(t *testing.T, url, tip string) bool {
 // median 3.3 to 12.6 s a minute (tests/am1/results/b034-mt18.md).
 func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	s := serve(t)
-	resetMaint(t, 1500*time.Millisecond, time.Hour)
+	step := resetMaint(t, 1500*time.Millisecond, time.Hour)
 	call(t, s, "POST", "/init?net=7")
 	wt := t.TempDir()
 	run(t, wt, "", "init", "-q", "-b", "main")
@@ -100,7 +134,7 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	ended := make(chan error, 8)
 	old := runRepack
 	runRepack = func(ctx context.Context, rp string) error {
-		alias := fmt.Sprintf("alias.slowrepack=!sleep %d && git repack -d -q --geometric=2 --write-midx", delay)
+		alias := fmt.Sprintf("alias.slowrepack=!sleep %d.%d && git repack -d -q --geometric=2 --write-midx", delay, 1)
 		_, err := gitMaint(ctx, rp, []string{derivedEnv}, nil, "-c", alias, "slowrepack")
 		ended <- err
 		return err
@@ -135,7 +169,7 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	if !refsRepack(t, s.URL, prev) {
 		t.Fatal("no repack started past repackAt")
 	}
-	time.Sleep(200 * time.Millisecond)
+	sleeping(t, "30.1")
 	if !holdMaint(t, s.URL) {
 		t.Fatal("/maint/hold did not stop the running repack")
 	}
@@ -146,13 +180,13 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	if refsRepack(t, s.URL, prev) {
 		t.Fatal("a repack started while moved load held maintenance")
 	}
-	time.Sleep(time.Second)
+	step(time.Second)
 	holdMaint(t, s.URL)
-	time.Sleep(time.Second)
+	step(time.Second)
 	if refsRepack(t, s.URL, prev) {
 		t.Fatal("a repack started inside a renewed hold, past the first hold's end")
 	}
-	time.Sleep(yieldHold + 200*time.Millisecond)
+	step(yieldHold)
 	// Client CPU above FANOUT_UP starts none either.
 	cpuSamples.Lock()
 	cpuSamples.last = []float64{0.9, 0.9, 0.9}
@@ -167,26 +201,33 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	if !refsRepack(t, s.URL, prev) {
 		t.Fatal("no repack once the hold ended")
 	}
-	time.Sleep(200 * time.Millisecond)
+	sleeping(t, "30.1")
 	if !holdMaint(t, s.URL) {
 		t.Fatal("the second hold did not stop the repack")
 	}
 	frees("the second hold")
 	fsckOK("after the second stop")
 
-	// 3. The deferral bound: the first stop was about 5 s ago. Past maintDeferMax, the next repack starts through a
-	// live hold and moved load does not stop it, so a long outage still gets its repack. Client CPU above FANOUT_UP
-	// delays it at most another yieldHold, so with 2 + 1.5 s gone it no longer does.
-	maintDeferMax = 2 * time.Second
-	delay = 1
+	// 3. The deferral bound: the first stop was 3.5 s ago on the hold's clock, past a 3 s maintDeferMax. The next
+	// repack starts through a live hold and moved load does not stop it, so a long outage still gets its repack.
+	// Client CPU above FANOUT_UP delays it at most another yieldHold: at 3.5 s it still does, at 5 s no longer.
+	maintDeferMax = 3 * time.Second
+	delay = 0
 	holdMaint(t, s.URL)
+	cpuSamples.Lock()
+	cpuSamples.last = []float64{0.9, 0.9, 0.9}
+	cpuSamples.Unlock()
+	if refsRepack(t, s.URL, prev) {
+		t.Fatal("client CPU did not delay the overdue repack inside maintDeferMax plus one yieldHold")
+	}
+	step(yieldHold)
+	holdMaint(t, s.URL) // a live hold, which no longer holds a start past maintDeferMax
 	cpuSamples.Lock()
 	cpuSamples.last = []float64{0.9, 0.9, 0.9}
 	cpuSamples.Unlock()
 	if !refsRepack(t, s.URL, prev) {
 		t.Fatal("no repack once maintenance had been deferred maintDeferMax")
 	}
-	time.Sleep(200 * time.Millisecond)
 	if holdMaint(t, s.URL) {
 		t.Fatal("moved load stopped the repack that ran past maintDeferMax")
 	}
@@ -205,7 +246,8 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 		t.Fatalf("%d unkept packs after the overdue repack: it did not roll the tail", n)
 	}
 	st := maintStats()
-	if st["stops"] != 2 || st["max_unkept_held"].(int) <= repackAt || st["longest_hold_s"].(float64) < 2.4 { // the first hold renewed after 1 s: 1 + 1.5 s
+	// The longest hold is the first, renewed 1 s in: 1 + 1.5 s on the hold's clock.
+	if st["stops"] != 2 || st["max_unkept_held"].(int) <= repackAt || st["longest_hold_s"].(float64) != 2.5 {
 		t.Fatalf("/procs maint: %v", st)
 	}
 }
@@ -214,7 +256,7 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 // and once the hold ends the same roll answers its pack.
 func TestAHeldRollAnswers503(t *testing.T) {
 	s := serve(t)
-	resetMaint(t, 500*time.Millisecond, time.Hour)
+	step := resetMaint(t, 500*time.Millisecond, time.Hour)
 	call(t, s, "POST", "/init?net=7")
 	wt := t.TempDir()
 	run(t, wt, "", "init", "-q", "-b", "main")
@@ -235,7 +277,7 @@ func TestAHeldRollAnswers503(t *testing.T) {
 	if code, body := roll(); code != 503 || !strings.Contains(body, "maint-held") {
 		t.Fatalf("a roll while held: %d %.100s", code, body)
 	}
-	time.Sleep(700 * time.Millisecond)
+	step(500 * time.Millisecond)
 	if code, body := roll(); code != 200 {
 		t.Fatalf("a roll after the hold: %d %.100s", code, body)
 	}
