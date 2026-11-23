@@ -47,13 +47,16 @@ echo "start $(date -u +%FT%TZ) $(git rev-parse --short HEAD) guard wants a $WANT
 python3 tests/fanout/edgever.py "${EDGE_LOG:?}" >> $L 2>&1
 # The GHES invariant (AGENTS.md) before any load: plain-PAT REST and GraphQL reads against the edge, diffed with the
 # baseline BYTEDIFF_BASE took on an earlier edge (`tests/am1/hosted/bytediff.py`; the lead's ruling of 2026-11-23). Any
-# difference stops the set before its first placement. BYTEDIFF_BASE= (empty) skips it.
-BD_BASE=${BYTEDIFF_BASE-tests/fanout/raw/bytediff-m2b-pb}
+# difference stops the set before its first placement. BYTEDIFF_BASE= (empty) skips it. A REST or GraphQL read the
+# edge shed (`unavailable`) is excused as load; one on a write or git's protocol is a difference. Each run's row status
+# carries the diff's summary and every `UNAVAILABLE` line, so a reviewer sees what was skipped.
+BD_BASE=${BYTEDIFF_BASE-tests/fanout/raw/bytediff-m2b-pb} BD=/tmp/bytediff-$P
 if [ -n "$BD_BASE" ]; then
-  BD=/tmp/bytediff-$P; rm -rf $BD
-  BYTEDIFF_OWNER=m3org BYTEDIFF_REPOS="j4 b034-mono" BYTEDIFF_TOKENS=$M3_STATE/m3-tokens.txt \
-    python3 tests/am1/hosted/bytediff.py run $BD 1 > $BD.log 2>&1
+  rm -rf $BD
+  export BYTEDIFF_OWNER=m3org BYTEDIFF_REPOS="j4 b034-mono" BYTEDIFF_TOKENS=$M3_STATE/m3-tokens.txt
+  python3 tests/am1/hosted/bytediff.py run $BD 1 > $BD.log 2>&1
   python3 tests/am1/hosted/bytediff.py diff $BD_BASE $BD > $BD.diff 2>&1; bd=$?
+  grep "^UNAVAILABLE" $BD.diff >> $L
   echo "$(date -u +%FT%TZ) bytediff against $BD_BASE: $(tail -1 $BD.diff)" >> $L
   [ $bd = 0 ] || { echo "$(date -u +%FT%TZ) BYTEDIFF: a plain-PAT reply differs ($BD.diff), set stopped before load" >> $L
     echo "ROW${P}DONE" >> $L; exit 1; }
@@ -72,6 +75,8 @@ for R in A B C; do
   python3 -c "import sys; sys.exit(0 if float('$DAY') < float('${DAY_STOP:-33}') else 1)" \
     || { echo "$(date -u +%FT%TZ) run $R: graft-m2b at \$$DAY today, set stopped" >> $L; break; }
   echo "$(date -u +%FT%TZ) run $R row starts (graft-m2b \$$DAY today)" >> $L
+  [ -n "$BD_BASE" ] && { echo "bytediff before load, against $BD_BASE: $(tail -1 $BD.diff)"; grep "^UNAVAILABLE" $BD.diff; } \
+    >> tests/fanout/raw/rows-$P$R.status
   # a1 waits before load until the guard writes HOLD (`--hold-file`): `go` starts the load, `stop` (or no file within
   # a1's HOLD_WAIT_MS) ends a1 before load with exit 4, so no row loads on a host the guard did not keep.
   HOLD=/tmp/guard-$P$R.hold; rm -f $HOLD
