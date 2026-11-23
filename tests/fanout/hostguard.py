@@ -28,6 +28,9 @@ GUARD_S = 60
 # heavy-turn join, the ones whose loaded leader paid 2.4 to 3.5 ms an event applied against 1.2 to 1.6
 # (`tests/am1/results/b033-pga.md`, "The host guard"). It reads object f0, the leader a1's setup names on these rows.
 LINE_MS = 28.4
+# GUARD_LINE_MS overrides it for one set: B0-32's set m3fk2 ran at 40, since whether 28.4 is too strict for B0-32 at 30
+# to 40 ms is unmeasured (`decisions/OPEN-QUESTIONS.md`, A44).
+LINE_MS = float(os.environ.get("GUARD_LINE_MS", LINE_MS))
 MIN_COMMITS = 30
 # The task phase's pace: about 1.2 to 1.6 s between commits on every run, so RUN commits within RUN_GAP_MS each.
 RUN, RUN_GAP_MS = 5, 5_000
