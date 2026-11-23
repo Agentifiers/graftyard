@@ -11,6 +11,8 @@ RUNS = {  # tag: (load start ISO, leader site, seconds of site-0 leadership to u
     'm3fhs1-b0-32': ('2026-11-21T03:54:39Z', 96),
     # B0-32 m3fsf1 (stage-first measurement): 90 s from this start is 09:03:51Z, the burst's first big cut.
     'm3fsf1-b0-32': ('2026-11-23T09:02:21Z', 96),
+    # B0-32 m3fsf2 (stage-first rerun after cw-link-drop): 90 s from this start is 09:44:11Z, the burst's first second.
+    'm3fsf2-b0-32': ('2026-11-23T09:42:41Z', 96),
     'qlA': ('2026-11-22T16:24:36Z', 300), 'qlB': ('2026-11-22T17:09:28Z', 300), 'qlC': ('2026-11-22T17:52:14Z', 300),
     'pfA': ('2026-11-23T01:04:05Z', 296),
     'pgA': ('2026-11-23T02:20:20Z', 229)}
