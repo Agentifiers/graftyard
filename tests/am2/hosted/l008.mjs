@@ -177,6 +177,14 @@ if (want("lf6")) {
     return r.body;
   };
   const scoped = (body) => api("POST", `/api/v3/applications/${id}/token/scoped`, null, { target: "m3org", repositories: ["j4"], ...body }, { authorization: good });
+  // The `finally` below is skipped when the process dies (m3fa2e's executor restart left the test secret on the
+  // record), so each run first puts the registered record back and reads it: one secret, or it refuses to start.
+  const secrets = async () => (await bed({ chain: put.chain, read: { app: record.id } })).value?.app?.client_secrets;
+  const found = await secrets();
+  await must(put.chain, put.cmd);
+  const restored = await secrets();
+  log(`lf6: the record held ${found} client secrets, ${restored} after the restore`);
+  if (restored !== 1) throw new Error(`lf6: the graftyard-mcp record holds ${restored} client secrets after the restore, not 1`);
   await must(put.chain, { ...put.cmd, op: { PutApp: { record: withTest } } });
   try {
     const member = await ghu(tokens.member), admin = await ghu(tokens.admin);

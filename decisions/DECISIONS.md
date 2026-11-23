@@ -8352,6 +8352,15 @@ AM2-WP3's.
 - `workers/mcp/tests/a7.rs`: L0-08's local checks, 100 of 100 where counted.
 - `crates/api/gh/validate.py` passes the `token/scoped` replies against GHES 3.22: 5 checked, 0 failed.
 - `tests/m0carried/plant86.py`: 20 of 20 caught.
+- Hosted, m3fa2 (2026-11-23, `tests/am2/results/am2-wp1.md`, "Hosted, auth-only day m3fa2"): LF-6 and L0-08's auth
+  cells pass, and no SDK client retries a code (A43), so the code-use flip is not met.
+
+**Finding (m3fa2): two deploy facts the beds cannot see.** `workers/mcp/tests` and the edgebed call the edge's code
+directly, not through a deployed Worker, so neither of these can fail there. The next hosted day should not relearn them.
+- **`global_fetch_strictly_public`.** graft-mcp's CIMD fetch of a client id on the account's own `workers.dev` answers
+  Cloudflare's error 1042 without it, so `workers/mcp/deploy.mjs` sets it.
+- **`User-Agent`.** The edge refuses a request with no `User-Agent` with 403, as GHES does, and a service binding
+  sends none, so every graft-mcp call to the edge sets one (`workers/mcp/src/worker.rs`).
 
 **Flip.**
 - **Code use.** If L0-08 hosted shows a real client retrying a code redemption, change the rule. As built, the retry
