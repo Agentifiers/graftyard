@@ -6,7 +6,7 @@
 # third placement is re-placed too, the set stops without loading; that is not a fail (orchestrator, after m3fsf2).
 # Each placement's repository is retired and purged after its row, loaded or not. A pass on this row reads kept hosts
 # only (`decisions/OPEN-QUESTIONS.md`, A44).
-#   TAG=<prefix> RUN_FROM=<site day start, ISO> [RUN_STOP_USD=3] [STOP_USD=180] [FROM=A|B|C] bash tests/fanout/guardrow-m3f.sh
+#   TAG=<prefix> RUN_FROM=<site day start, ISO> [RUN_STOP_USD=3] [STOP_USD=180] [FROM=A|B|C] [GUARD_LINE_MS=28.4] bash tests/fanout/guardrow-m3f.sh
 #   -> tests/fanout/raw/guardrow-<prefix>.log; placements are <prefix>A, <prefix>B, <prefix>C, each with
 #      rows-m3f.sh's tests/fanout/raw/rows-<prefix><R>.status.
 # Run it with the install's env loaded (the account variables and TOOLS_TOKEN_FILE), as rows-m3f.sh needs, from a
@@ -24,7 +24,7 @@ export PURGE_LOG=tests/fanout/raw/purge-$P.log
 # than two re-places in all.
 FROM=${FROM:-A}
 log() { echo "$(date -u +%FT%TZ) $*" >> "$L"; }
-log "start $(git rev-parse --short HEAD), run stop \$$RUN_STOP_USD on graft-m3f from $RUN_FROM"
+log "start $(git rev-parse --short HEAD), run stop \$$RUN_STOP_USD on graft-m3f from $RUN_FROM, guard line ${GUARD_LINE_MS:-28.4} ms"
 # A site day resets every member, so the install's finished networks are retired again first, as before every m3f
 # row. Its log goes to an untracked file: rows.sh refuses a tree with a changed tracked file.
 RETIRE_LOG=tests/fanout/raw/reretire-graft-m3f-$P.log bash tests/fanout/reretire.sh tests/fanout/reretire/graft-m3f.txt \
