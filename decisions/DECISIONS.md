@@ -9236,7 +9236,9 @@ with `Retry-After`.
 ### `merge-front`: a REST merge's identity reads run alone, outside their key's batch, and it guesses its repository at any age or from the link entry, 2026-11-23
 
 **Status.** Built on branch `b029-mfront` from main `4040b083`. Edge only, so it ships on an edge day. The lead cleared
-the design, the build and a three-run B0-29 set on graft-m3f (A45). Not yet measured hosted.
+the design, the build and a three-run B0-29 set on graft-m3f (A45). Measured hosted on that set (2026-11-23,
+`tests/am1/results/b029-m3fmf.md`): `merge:only` median p99 1,663 ms, pooled 1,406, against 2 s, with 0 merges without a
+guess and `rcwait` 0 on every merge, so B0-29 is met and A45 is answered.
 
 **Decision.**
 - **Reads alone.** A REST merge (`Ctx::leader_reads`, `PUT pulls/{n}/merge`) reads its write-class identity answers on
