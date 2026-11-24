@@ -78,6 +78,13 @@ replies: its 503s are the F65 member sheds every graphql writer met.
   refusals.** That is over 10%, and the first time on a fully passing run. It is a trigger, not a gate line, and it is
   recorded as `decisions/OPEN-QUESTIONS.md` A50 (`edge-refusal-bound`). On the first reading it was 33 of 33. The edge's
   refused writes had `budgetMs` p50 215 ms and advert `waitMs` p50 466 ms.
+- **A50's reading 3, its settle reading (the lead's ruling of 2026-11-24, after this run): 1 of 31 judged windows (3%),
+  not met.** Each refusing window's advert p50 against the commit p50 of agent writes sent in that window. 2 windows
+  were excluded for fewer than 10 sent: the 60 s adverts at 10:06:00Z and 10:06:10Z, with 3 and 4 sent. The one over is
+  10:09:00Z, 2,392 against 1,735 ms over 104 sent. The advert/commit median is 0.50. Sent writes are a survivor sample:
+  only those whose budget passed the advert. Reading 2, budget against the refusing advert's own wait, is 0 of 2,042
+  by construction. The advert was 1.31 times the cut reading at the median, so the 5 flips above came from the cut
+  reading under-stating the wait [inference].
 - **R2b:** push half 8,741 against erDA's 8,369, and drain half 107.7 against erBA's 78.7. Neither is flipped.
 - **Flip 3:** 2 refusing windows with the leader's agent lane empty.
 - **Flip 4:** 124 fail-opens against 2,040 refused, under half.
