@@ -14,6 +14,8 @@ use worker::*;
 mod logread;
 
 const N: u64 = 200;
+const BIG_SHORT: u64 = 1_000;
+const BIG_LONG: u64 = 200;
 
 fn int(v: &SqlStorageValue) -> u64 {
     match v {
@@ -109,6 +111,33 @@ impl DurableObject for M {
                     })?;
                 }
                 Response::ok(format!("read={n} drop={}", drop(&sql)))
+            }
+            // The page bound (`logread::PAGE_BYTES`): 1,000 rows of 1,500 B and then 200 of 300,000 B, as a leader's
+            // log of short entries and then inline packs (B0-33 g3A and g4B); `/pages` walks them in the next request.
+            "/seedbig" => {
+                sql.exec("DELETE FROM log", None)?;
+                for i in 1..=BIG_SHORT + BIG_LONG {
+                    let n = if i <= BIG_SHORT { 1_500 } else { 300_000 };
+                    sql.exec("INSERT INTO log VALUES (?, ?)", vec![(i as i64).into(), SqlStorageValue::Blob(vec![i as u8; n])])?;
+                }
+                Response::ok("seeded")
+            }
+            // Every row once, in order, and how much the isolate's wasm memory grew over the walk: main's pages, sized by
+            // the page before, fetched the 184 long rows after the short ones in one page of about 55 MB.
+            "/pages" => {
+                let mem0 = core::arch::wasm32::memory_size::<0>() as u64 * 65_536;
+                let (mut n, mut next, mut bytes) = (0u64, 1u64, 0u64);
+                for r in logread::log_after(&sql, "row", 0) {
+                    let r = r?;
+                    if int(&r[0]) != next {
+                        break;
+                    }
+                    bytes += blob(&r[1]).map_or(0, |b| b.len() as u64);
+                    n += 1;
+                    next += 1;
+                }
+                let grew = core::arch::wasm32::memory_size::<0>() as u64 * 65_536 - mem0;
+                Response::ok(format!("rows={n} bytes={bytes} grew_mb={}", grew >> 20))
             }
             "/drop" => Response::ok(drop(&sql)),
             _ => Response::error("not found", 404),

@@ -9577,3 +9577,44 @@ misses over 5 s were, and 3 more were site b composing past the frozen chain [me
   misses over 5 s are more than mt20b's 1 and mt14's 9, with the extra ones on the last site of the order.
 - **A is not enough** if the home's post-restart `warming` window stays over 60 s with no base built. Then the install
   itself is slow under post-kill load: price an install at the container's start.
+
+### `log-page`: a stored-log walk sizes each page by its rows' lengths before it fetches them, 2026-11-24
+
+**Status.** Ruled by the lead on 2026-11-24 from `tests/am1/results/archive-memory.md`. Built on branch
+`leader-logpage` from main `dac2348e`: `workers/site/src/logread.rs` (`log_after`, `page_through`, `page_high`),
+`workers/site/src/member.rs` (`memSplit.logPageHigh`), and `workers/site/src/snap.rs` (`load_meta`). Site script only,
+so it ships on a site day. Not hosted yet.
+
+**Decision.** `log_after` reads each page's `idx, length(row)` first, up to its row count (8, doubling to 1,024 while a
+page reads under 2 MiB), and fetches `cols` only for the longest prefix whose stored bytes stay within `PAGE_BYTES` (4
+MiB), at least one row. It reads that query to its end, as before, so a walk that stops early leaves no statement open.
+`snap::load_meta`, the one alarm step that collected stored rows outside it (500 whole rows in one `rows()` call), now
+walks `log_after`. memSplit reports `logPageHigh`: the isolate's largest fetched page in stored row bytes.
+
+**Why.** Pages were sized by the page before. After 512 short rows, the next query fetched 512 rows of inline packs,
+about 55 to 66 MB, in one collected `Vec`. On B0-33 g3A and g4B that page came from the leader's archive step
+(promote-ahead's `plan`) and from the home shard's `/entries?from=16` rehydrate read. g4B's leader stood at 114.8
+MiB, and its isolate reset with that `/entries` page in flight. In local workerd the same row shape grows wasm memory by
+52 MiB on main and by 4 MiB with this change.
+
+**What it beat.**
+- **Capping bytes per alarm step, or deferring archive while loaded.** Either bounds only the archive. The same page
+  shape is in `/entries`, a follower's catch-up and the change feed's `log_rows`, and g4B's reset was an `/entries` page.
+- **Streaming the archive in chunks.** The archive object is already built a range at a time (`ARCHIVE_RANGE_MAX`); its
+  memory was the walk's page, not the object.
+- **A smaller row cap (for example 32 rows).** It still lets 32 rows of `ENTRY_MAX` (48 MB) through, and it costs short
+  logs many more queries.
+
+**Evidence.** `tests/am1/results/archive-memory.md`:
+- the page replay over g3A's and g4B's row sizes;
+- the bed (`tests/auditlock/bed/run.sh`, `/pages`): 52 MiB and FAIL on main's `logread.rs`, 4 MiB and PASS here;
+- tests `a_page_holds_its_budget_not_its_row_count` and `a_long_first_row_is_a_page_alone`;
+- plants `tests/m0carried/plant112.py`, 4 of 4 caught, plus two walk-loop plants that fail the bed.
+
+**Flip.**
+- **Raise `PAGE_BYTES` or go back to row-sized pages** if a walk's extra lengths query costs more than it saves: a
+  hosted leader whose `/entries` or archive-step CPU rises more than 20% per entry read on a row of short entries,
+  with `logPageHigh` far under 4 MiB.
+- **Not enough** if a hosted B0-33 leader still passes 100 MiB with `logPageHigh` at or under 4,194,304. Then the
+  memory is elsewhere: read `memSplit` and the alarm-step scan lines for the climb, and count what several walks in one
+  turn hold.

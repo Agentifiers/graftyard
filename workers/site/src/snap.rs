@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use worker::*;
 
 use crate::family::Repo;
-use crate::host::{Host, blob, i, rows};
+use crate::host::{Host, blob, i, int, rows};
 use crate::{SiteEnv, now_ms};
 
 /// Rows one read of a snapshot batch takes [guess]. The member yields between reads, so a Raft input waits at most
@@ -252,11 +252,17 @@ fn load_meta(h: &Rc<Host<Repo>>, sql: &SqlStorage) -> Result<bool> {
     let tiers = fold.tiers();
     let name = c.join.me.do_name.to_string();
     drop(core);
-    let q = "SELECT row FROM log WHERE idx > ? AND idx <= ? ORDER BY idx";
-    crate::alarm_steps::note_scan(sql, &name, "snap", from.0, target.0.min(from.0 + META_BATCH), None);
-    for r in rows(sql, q, vec![i(from.0), i(target.0.min(from.0 + META_BATCH))])? {
+    let to = target.0.min(from.0 + META_BATCH);
+    crate::alarm_steps::note_scan(sql, &name, "snap", from.0, to, None);
+    // A page of stored rows at a time (`crate::logread::PAGE_BYTES`), not all `META_BATCH` at once: 500 rows of inline
+    // packs are tens of MB.
+    for r in crate::logread::log_after(sql, "row", from.0) {
+        let r = r?;
+        if int(&r[0])? as u64 > to {
+            break;
+        }
         let e: raft::LogEntry<git::repo::RepoEvent> =
-            raft::codec::from_bytes(blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?;
+            raft::codec::from_bytes(blob(&r[1])?).map_err(|e| Error::RustError(e.to_string()))?;
         graftyard_fold::apply(&tiers, &mut m, Tier::Metadata, &e)
             .map_err(|x| Error::RustError(format!("metadata load at {:?}: {x}", e.index)))?;
     }

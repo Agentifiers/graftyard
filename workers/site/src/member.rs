@@ -2449,6 +2449,8 @@ impl<F: Family> Routes<F> {
                 "memoIsolateBytes": crate::tier::memo_isolate_bytes(),
                 "caches": crate::family::cache_bytes() },
             "log": core.as_ref().map(|c| c.m.log_bytes()),
+            // The largest page of stored rows one log walk fetched in this isolate (`crate::logread::PAGE_BYTES`).
+            "logPageHigh": crate::logread::page_high(),
             "held": held.iter().map(|h| h.2).sum::<usize>(),
             "inFlight": {
                 "calls": self.host.call_bytes.get(),
