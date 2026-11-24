@@ -10163,6 +10163,12 @@ memSplit `arrivals` `{rows, bytes}`, priced at 509 B a row, the wasm32 count [in
 mean], so a reading can subtract it. Rows keep `arrival=mem`: `arrival=sql` would bring back write-cuts' bare `exec` per
 `/commit`. Test `host::tests::the_arrival_bytes_follow_the_ring`; `tests/m0carried/plant153.py`, 7 of 7.
 
+**Addendum, 2026-11-24 (`lm1-stats-bytes`).** Test-faults memSplit also reports `stats` `{samples, trace,
+elections}`, the host's `Stats` arrays by capacity, which `heapLive` includes. A native replay of ln's leader counts
+gives 3.06 MiB of samples, against the census's 3 MiB estimate, and a full trace ring of 3.0 MiB on every voter
+(`tests/am1/results/archive-memory.md`, "The census of the leader's uncounted heap"). Test
+`host::tests::the_stats_bytes_are_the_heap_the_sample_arrays_hold`; `tests/m0carried/plant154.py`, 9 of 9.
+
 ### `archive-scan`: the archive alarm keeps its `SUM(length(row))` scan, with no running sum, 2026-11-24
 
 **Status.** Priced at $0 by LM-1 on 2026-11-24 from raws already kept; nothing built.

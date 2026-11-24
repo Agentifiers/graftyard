@@ -452,6 +452,20 @@ send), about OUTCOME_KEEP at ln's rate. Each member's live bytes by dropping it:
     over the row, and 52,883 and 79,245 from the followers. So the leader's ring was full, and the followers' rings were
     nearly full or full, so at most a small part of it is leader-only.
   - About 5 MiB stays unattributed.
+- **The `Stats` arrays, counted (2026-11-24, `lm1-stats-bytes`, $0).** Test-faults memSplit now reports `stats`
+  `{samples, trace, elections}`: each sample array's capacity times its element size (`host::Stats::sample_bytes`).
+  `host::tests::the_stats_bytes_are_the_heap_the_sample_arrays_hold` holds the count within 4 KiB of what the counting
+  allocator sees, both filled and after `reset`; `tests/m0carried/plant154.py` catches 9 of 9. Native replay of ln's
+  leader counts since a1's reset (`raw/a1-ln/a1-b0-33-mwuqsbkc.jsonl`, `leader`: `commitMs` 77,284, the queue and its
+  two splits 73,364 each, `admittedBytes` 77,286, 2,684 rounds, applies and confirms, every `append:` and `deps:` key
+  at its `n`, and the call times bounded by the trace's 19,890 call rows):
+  - `samples` **3.06 MiB** (3,212,928 B), with the allocator's live count 3,215,136 B beside it [measured, native;
+    `Vec` grows the same way on wasm32, so the capacities match [inference]]. The 3 MiB estimate holds.
+  - `trace` **3.0 MiB** when full (TRACE_MAX 60,000 rows in a 65,536-row `VecDeque`). The leader's ring was full on
+    ln and the followers' nearly so, so it adds nothing leader-only.
+  - So the leader-only part of the 8.1 MiB is about 3.1 MiB of sample arrays, and **about 5.0 MiB stays unattributed**.
+  - Not counted by the replay: capacity left from before a1's `reset`, which `clear` keeps, so the hosted figure can
+    read higher. The next test-faults site day gives the hosted value.
 
 **3. What per-call cost tracks** (F115) [measured, native and ln's leader logs]. The native sim's per-command decide,
 apply and replicate time did not move with either candidate:
