@@ -1359,6 +1359,9 @@ pub struct Host<F: Family> {
     /// Distinct bytes of read answers still streaming: a shared answer once, however many reads stream it
     /// (`crate::member::ANSWER_BYTES_MAX`).
     pub answers: Rc<RefCell<Answers>>,
+    /// The body bytes of requests this member is handling and of the answers they built, with their peaks
+    /// (`crate::openbytes`, `/stats` `memSplit` `open`).
+    pub open_bytes: Rc<crate::openbytes::OpenBytes>,
     #[cfg(feature = "test-faults")]
     down_until: Cell<u64>,
     /// Statements of inputs whose transaction has not run yet, in input order. Every flush runs all of them, so
@@ -2116,6 +2119,7 @@ impl<F: Family> Host<F> {
             clock: RefCell::new(crate::clock::Clock::default()),
             call_bytes: Rc::new(Cell::new(0)),
             answers: Rc::new(RefCell::new(Answers::default())),
+            open_bytes: Rc::default(),
             #[cfg(feature = "test-faults")]
             down_until: Cell::new(0),
             queue: RefCell::new(Vec::new()),

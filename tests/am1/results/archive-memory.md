@@ -195,7 +195,7 @@ from `raw/leaderlogs-lpB.json.xz` (start plus wall):
   count, which edge refusal's bound limits [inference].
 - **The counter memSplit lacks:** the request bytes the member holds open, meaning the sum of open request and answer
   body lengths, with its peak since the last `/stats` reset, beside the open count's peak. It would show whether a new
-  high-water mark is concurrency or one large buffer. It is not built.
+  high-water mark is concurrency or one large buffer. Now built: "The open-bytes counter" below.
 
 **B0-33's lines on lpB, for the record** [measured, `raw/rows-lpB.status`; read under the 4040b083 rulings]:
 - human commit stage p99 2,641 ms (n 137, 19 over 2 s);
@@ -208,6 +208,51 @@ from `raw/leaderlogs-lpB.json.xz` (start plus wall):
   while refusing 101.2 against 114.2.
 
 The B0-33 verdict and R2b belong to edge refusal's set.
+
+## The open-bytes counter (built, 2026-11-24, not hosted)
+
+Branch `open-bytes` from main `6d1e47d5`. Site script only, so it rides the next site day; no hosted run is scheduled
+for it (the lead). `DECISIONS.md`, `open-bytes`.
+
+**What it counts.** `workers/site/src/openbytes.rs`. Every request a joined member handles (`Member::fetch`, around
+`Routes::fetch`) takes a hold that counts one open request and its body's `content-length`. When the handler returns
+`Ok`, the hold adds the answer's body length while the handler still owns it. The hold drops by any path: answered,
+errored, or the handler's future dropped when the caller went away. `/stats` `memSplit` gains:
+
+```
+"open": { "bytes": <held now>, "high": <peak bytes>, "requests": <open now>, "requestsHigh": <peak open> }
+```
+
+Both peaks hold across plain samples and restart from what is held now at `/stats?reset=1`, the same reset as the
+other `/stats` counters. memguard copies `memSplit` whole from `/stats?summary=1`, so its samples carry `open` with no
+change to `tests/fanout/memguard.mjs`.
+
+**What it does not count.**
+- An answer that streams after its handler returns (a read's `held_body`): `inFlight.answers` counts it, once per
+  shared answer, and the counter counts that answer as 0 so the two never add the same bytes.
+- A request body with no `content-length` counts as 0. Member-to-member calls send a `FixedLengthStream`, which
+  carries one [inference: not read on a hosted member yet], and the edge's `/commit` bodies are arrays.
+- The JSON tree or the decoded command a handler builds from its body. The body length is its lower bound; if
+  `open.high` stays far under the next wasm step, those trees or the allocator are the suspects.
+- Alarm turns and `/join` before a member joined: neither goes through `Routes::fetch`'s wrap.
+
+**Tests** (`openbytes::tests`):
+- `a_request_releases_its_bytes_however_it_ends`: an answered request holds body plus answer at once (peak 6,000)
+  and releases both; an erred request releases; a pending handler holds 3,000 and one open request until its future
+  is dropped, then releases.
+- `the_peaks_hold_until_a_reset_and_restart_from_what_is_held`: two open requests peak at 16,000 bytes and 2 open;
+  three plain samples after one ends keep both peaks; a reset restarts them at the 4,000 still held, not 0; the peak
+  outlives the request that set it.
+
+**Plants** (`tests/m0carried/plant120.py`): 11 of 11 caught. An ended request keeps its bytes; an ended request stays
+open; an erring handler leaks its hold; a dropped future leaks its hold; a sample resets the byte peak; a sample
+resets the open peak; a reset zeroes the byte peak; a reset leaves the peaks alone; an answer does not raise the peak;
+a new request does not raise the open peak; the answer is not counted.
+
+**How to read it on the next row.** Beside each memguard sample's leader `wasmMemMb`: when a step of 2 MiB or more
+comes with `open.high` rising by a similar amount, the step is request buffers at that concurrency (lpB's first 61
+MiB, by the invocation read). When `open.high` stays flat across a step, the memory is a single large buffer the
+counter does not see, or allocator growth, and `logPageHigh` and the turn's own logs come next.
 
 ## Replay script
 

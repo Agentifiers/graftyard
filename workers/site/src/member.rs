@@ -270,6 +270,14 @@ impl Drop for InFlight {
     }
 }
 
+/// An answer's body bytes held in the isolate when its handler returns. A stream is `inFlight.answers`'s.
+fn answer_len(r: &Response) -> usize {
+    match r.body() {
+        worker::ResponseBody::Body(b) => b.len(),
+        _ => 0,
+    }
+}
+
 /// How much of an answer's body one pull of its stream yields.
 const BODY_CHUNK: usize = 64 * 1024;
 
@@ -565,7 +573,9 @@ impl DurableObject for Member {
                 Unjoined::Refuse => Response::error("member not joined", 409),
             };
         };
-        each!(&h, x => Routes { host: x.clone() }.fetch(req, url).await)
+        // Every request a joined member handles holds its body and its answer's bytes in `open_bytes` until it ends.
+        let body = req.headers().get("content-length").ok().flatten().and_then(|v| v.parse().ok()).unwrap_or(0);
+        each!(&h, x => crate::openbytes::held(&x.open_bytes, body, answer_len, Routes { host: x.clone() }.fetch(req, url)).await)
     }
 
     async fn alarm(&self) -> Result<Response> {
@@ -2444,6 +2454,7 @@ impl<F: Family> Routes<F> {
         let (memo_rows, memo_bytes) = core.as_ref().map_or((0, 0), |c| F::memo(&c.m.group_fold().fold));
         let held = self.host.callers.borrow_mut().held_stats(false);
         let (stmts, stmt_bytes) = self.host.queued();
+        let open = self.host.open_bytes.sample();
         json!({
             "fold": { "rows": rows, "rowBytes": row_bytes, "memoRows": memo_rows, "memoBytes": memo_bytes,
                 "memoIsolateBytes": crate::tier::memo_isolate_bytes(),
@@ -2451,6 +2462,9 @@ impl<F: Family> Routes<F> {
             "log": core.as_ref().map(|c| c.m.log_bytes()),
             // The largest page of stored rows one log walk fetched in this isolate (`crate::logread::PAGE_BYTES`).
             "logPageHigh": crate::logread::page_high(),
+            // Request and answer body bytes held by handlers now, their peak, and the requests open now and at most,
+            // both peaks since the last `/stats?reset=1` (`crate::openbytes`).
+            "open": { "bytes": open.bytes, "high": open.high, "requests": open.open, "requestsHigh": open.open_high },
             "held": held.iter().map(|h| h.2).sum::<usize>(),
             "inFlight": {
                 "calls": self.host.call_bytes.get(),
@@ -2556,6 +2570,7 @@ impl<F: Family> Routes<F> {
             }
             if reset {
                 s.reset();
+                self.host.open_bytes.reset();
             }
             return Response::from_json(&v);
         }
@@ -2636,6 +2651,7 @@ impl<F: Family> Routes<F> {
         v["leaderRefused"] = json!(s.leader_refused);
         if reset {
             s.reset();
+            self.host.open_bytes.reset();
         }
         Response::from_json(&v)
     }
