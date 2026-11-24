@@ -254,6 +254,61 @@ comes with `open.high` rising by a similar amount, the step is request buffers a
 MiB, by the invocation read). When `open.high` stays flat across a step, the memory is a single large buffer the
 counter does not see, or allocator growth, and `logPageHigh` and the turn's own logs come next.
 
+## The open-bytes read on B0-33 clA (2026-11-24, $0) [measured]
+
+Edge refusal's closing B0-33 run clA (graft-m2b, main `daa4dcc2` with open-bytes on its site day, repo 131414, a1
+`mwuiu47v`, load 10:06:13Z for 300 s; raws `raw/memguard-clA.jsonl.xz` and `raw/a1-cl/`, branch `b033-closing`
+`f1d19e10`). Memguard's 2 s samples carry `memSplit.open`.
+
+**open.high does not explain the leader's climb.**
+- Leader site 0 peaked at 89.1 MiB against memguard's 120, with no reset on any member. `open.high` peaked at
+  4.20 MiB and `requestsHigh` at 498. memSplit's counted in-flight parts peaked at 2.7 MiB; `logPageHigh` 4.18 MB.
+- Leader MiB against `open.high` reads r 0.99, but both are high-water marks rising together. Against `open.bytes`
+  (held now) it reads 0.45.
+- Of the leader's 73.6 MiB of steps of 1.5 MiB or more, 16.6 MiB came with `open.high` rising 0.5 MiB or more, and
+  25.6 MiB with `requestsHigh` rising.
+- `open.high` stopped rising at 10:08:48 and `requestsHigh` at 10:09:02. Memory climbed on to 10:10:34: +6.4 MiB at
+  10:09:14 with 75 requests open and +4.7 MiB at 10:10:34 with 45, neither a new peak.
+- Followers: site 2 peaked at 59.4 MiB (`open.high` 3.54 MiB, `requestsHigh` 35), site 1 at 31.9 (3.71 MiB, 4).
+
+**What the climb does follow** [measured, cause inference]. In the first 34 s of load the stored log (`memSplit.log`)
+filled from 1.5 to 8.0 MB, and memory rose about 6.5 MiB per log MB on the leader, 5.2 on site 2 and 1.5 on site 1.
+After that the log held at about 8 MB while the archive ran, yet the leader added 35 MiB more, site 2 20 MiB (its dump
+caches 2.3 to 5.2 MB) and site 1 14 MiB. So the growth is in heap memSplit does not count, and it follows entries
+passing through the log and the leader's traffic (43,000 `/commit`, 20,000 `/raft`, 10,000 `/outcome`), not request
+bodies held open. wasm memory never shrinks, so allocator fragmentation under that churn fits the shape; a live owner
+memSplit misses fits it too. Nothing measured tells them apart: "The heap counter" below does.
+
+## The heap counter (built, 2026-11-24, not hosted)
+
+Branch `heap-count` from main `05ea366d`. Site script only, in the normal build as well as test-faults, so it rides the
+next site day. `DECISIONS.md`, `heap-count`.
+
+**What it counts.** `workers/site/src/heapcount.rs` wraps the system allocator as the site's `#[global_allocator]`.
+Every allocation adds its size to the live count and raises the peak; every free subtracts; a reallocation moves the
+count by the difference between the old and new sizes. `/stats` `memSplit` gains `heapLive` (bytes live now) and
+`heapPeak` (the most live at once since the isolate started, never reset, as `wasmMemMb` is not). memguard copies
+`memSplit` whole, so its samples carry both with no harness change.
+
+**How to read it.** On a row longer than 8 minutes, plot each member's `heapLive` against `wasmMemMb` over time:
+- `heapLive` tracking `wasmMemMb` up: the bytes are live, so a leak or an owner memSplit does not count. Which owner
+  comes next, from the parts of memSplit that move with it.
+- `heapLive` flat or falling under a rising `wasmMemMb`, with `heapPeak` well under it: the allocator holds freed pages
+  it cannot reuse, so fragmentation. The fix is then the allocation pattern or the allocator, not an owner.
+- `heapPeak` near `wasmMemMb` with `heapLive` far below: one moment's live peak sized the memory, and the rest is free.
+
+**Cost.** A site isolate runs one thread, so on wasm32 the counts are plain statics: two adds and a compare per
+allocation. Native bench, `--release`, 2,000 entries of two pushes and one issue command each on real members (about
+24.9 million allocations): plain system allocator 2,111 to 2,245 ms over 5 runs, counted 2,169 to 2,249 ms; the
+difference is inside the run-to-run spread [measured, local; the native build counts per thread, so it pays a
+thread-local lookup the wasm build does not].
+
+**Tests** (`heapcount::tests`):
+- `live_bytes_follow_allocations_reallocations_and_frees`: a 3 MiB block counts 3; grown by realloc to 8 counts 8, not
+  11; shrunk to 2 counts 2; a zeroed 5 MiB beside it counts 7; both freed count 0.
+- `the_peak_holds_across_reads_and_rises_past_itself`: a freed 16 MiB block leaves the peak at its height through three
+  reads; 20 MiB live at once raises it past 16.
+
 ## Replay script
 
 The page-rule replay is a few lines over the row sizes; it is not committed. It took per-index sizes from `culag`'s
