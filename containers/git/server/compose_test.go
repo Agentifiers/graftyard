@@ -523,10 +523,14 @@ func TestComposedMissesDoNotQueueBehindTheLock(t *testing.T) {
 		return resp, cancel
 	}
 	resp, cancel := stall("")
+	http.Post(s.URL+"/refs?net=7", "", strings.NewReader(tip+" refs/heads/x\n"))
 	wrote := make(chan time.Duration, 1)
 	t0 := time.Now()
+	// An additive writer takes the lock shared (lock-split), so it holds no reader up; a rename between file and
+	// directory (refs/heads/x to refs/heads/x/y) takes it alone, as a deleter does, and waits behind the stalled answer.
 	go func() {
-		http.Post(s.URL+"/refs?net=7", "", strings.NewReader(tip+" refs/heads/x\n"))
+		zero := strings.Repeat("0", 40)
+		http.Post(s.URL+"/refs?net=7", "", strings.NewReader(zero+" refs/heads/x\n"+tip+" refs/heads/x/y\n"))
 		wrote <- time.Since(t0)
 	}()
 	time.Sleep(200 * time.Millisecond)
@@ -546,8 +550,10 @@ func TestComposedMissesDoNotQueueBehindTheLock(t *testing.T) {
 	resp.Body.Close()
 	time.Sleep(100 * time.Millisecond)
 	t0 = time.Now()
+	// The rename back, refs/heads/x/y to refs/heads/x, takes the lock alone too.
 	go func() {
-		http.Post(s.URL+"/refs?net=7", "", strings.NewReader(tip+" refs/heads/y\n"))
+		zero := strings.Repeat("0", 40)
+		http.Post(s.URL+"/refs?net=7", "", strings.NewReader(zero+" refs/heads/x/y\n"+tip+" refs/heads/x\n"))
 		wrote <- time.Since(t0)
 	}()
 	var lockFree time.Duration

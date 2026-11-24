@@ -94,6 +94,14 @@ python3 scripts/check_plants.py
 | `scripts/costs_report.py` | Regenerates `research/costs.md` from the cost scripts |
 | `scripts/census.py` | Counts GitHub wire surfaces into `research/surfaces.json` |
 
+### Planted bugs
+
+Each `tests/**/plant.py` plants one mutant at a time, runs the tests that guard it, and restores the file byte for byte. Plants do not run in CI; run the ones whose code a change touches. Every plant follows the same rules:
+
+- Each test run goes through `timeout -k 10 600` (longer only for a bed that builds a Worker), so a mutant that leaves a test looping is killed with its whole process group. A run the timeout ended counts as caught, since the suite did not pass.
+- Builds go to `CARGO_TARGET_DIR`, which defaults to a directory under `target/`, inside the repository and git-ignored.
+- A mutant whose code a later change replaced is planted on the replacement rule, or dropped with a one-line reason in the plant file.
+
 ## How the design was produced
 
 A multi-agent design run wrote the design from 2026-10-23 to 2026-10-27. Research agents wrote `research/`. Arena rounds pitted competing designs against each other and folded the strongest ideas of the losers into the winner, and adversarial reviews and implementability walks closed the gaps they found (`decisions/DECISIONS.md`). `history/README.md` explains the record.
