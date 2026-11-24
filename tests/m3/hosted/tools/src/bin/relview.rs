@@ -63,6 +63,18 @@ fn main() {
         "rolled": f.rolled.iter().map(|(s, r)| (format!("{s:?}"), json!(r.0.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>()))).collect::<serde_json::Map<_, _>>(),
         "uploads": f.uploads.keys().map(|r| r.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>()).collect::<Vec<_>>(),
         "enabled": f.enabled.len(),
+        // BM-5: the keys in force, and the latest signed genesis or `Keys` entry's bytes for `release entry --keys`.
+        "keys": f.keys.as_ref().map(|k| json!({
+            "generation": k.generation,
+            "customer": k.customer.hex(),
+            "vendor": k.vendor.map(|x| x.hex()),
+            "release": k.release.hex(),
+            "drain": k.drain.hex(),
+            "executor": k.executor.hex(),
+        })),
+        "keys_entry": entries.iter().rev().map(|(b, _)| b).find(|b| {
+            matches!(SignedEntry::decode(b).map(|e| e.body), Ok(ReleaseEntry::Genesis(_) | ReleaseEntry::Keys(_)))
+        }).map(|b| b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
         "entries": shown,
     });
     println!("{out}");

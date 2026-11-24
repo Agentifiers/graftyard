@@ -1,0 +1,8 @@
+2026-11-24T05:38:51Z
+stand-ins: a throwaway vendor key (Keys.vendor) and a throwaway R2 token scoped to graft-m4a-releases (the vendor's release-bucket token)
+{"ops_schedules":[]}
+{"deploy":true,"errors":[]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T05:39:19.871892Z","versions":["ac4cd9a5 100"]}
+{"revoke":"graft-m4a-bm5-deploy","ok":true,"errors":[]}
+{"revoke": "graft-m4a-bm5-vendor", "found": false}
+token files shredded

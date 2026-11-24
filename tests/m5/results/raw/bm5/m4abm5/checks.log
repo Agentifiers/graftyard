@@ -1,0 +1,53 @@
+2026-11-24T05:37:41Z
+stand-ins: a throwaway vendor key (Keys.vendor) and a throwaway R2 token scoped to graft-m4a-releases (the vendor's release-bucket token)
+{"count":354,"current":null,"drained":[],"site_release":{"0":"e23f69e9","1":"e23f69e9","2":"1a0f0e50"},"rolled":{"Edge":"e23f69e9","Front":"8ee79012","Mcp":"8ee79012","Ops":"e23f69e9","Site(SiteId(0))":"e23f69e9","Site(SiteId(1))":"e23f69e9","Site(SiteId(2))":"1a0f0e50","Workflows":"e23f69e9"},"keys":{"customer":"031923da25f100f1e0586087cd86b749be1ae6d26a75f4fa8cc6112f2dd882bd","drain":"477de5269050c38534d965f1a4d95c17f2f0fe1a4089bfa51c0b598d8c67c70b","executor":"d387253b7e8b191191dfd4508252587bf37f0dcad90ed180e2b8b42d85aaef1b","generation":4,"release":"dbde3befb57425850c8dc215410af552b1a23eede0ecc7c42dd2299076f3893f","vendor":null}}
+== entries since setup
+{"index":315,"at":"2026-11-24T05:10:40Z","kind":"Keys","sigs":["031923"],"entry":"Keys"}
+{"index":316,"at":"2026-11-24T05:13:03Z","kind":"ReleaseUploaded","sigs":["d38725"],"entry":"ReleaseUploaded"}
+{"index":317,"at":"2026-11-24T05:13:08Z","kind":"Intent","sigs":["a0aa16"],"entry":"SiteDay { target: Site(SiteId(0)), release: ReleaseId([65, 147, 3, 228, 128, 34, 20, 119, 203, 218, 2, 251, 40, 119, 80,"}
+{"index":318,"at":"2026-11-24T05:13:34Z","kind":"SiteMode","sigs":["477de5"],"entry":"SiteMode"}
+{"index":319,"at":"2026-11-24T05:13:36Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 0"}
+{"index":320,"at":"2026-11-24T05:15:36Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 1"}
+{"index":321,"at":"2026-11-24T05:17:36Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 2"}
+{"index":322,"at":"2026-11-24T05:19:34Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 3"}
+{"index":323,"at":"2026-11-24T05:19:37Z","kind":"SiteRelease","sigs":["d38725"],"entry":"SiteRelease"}
+{"index":324,"at":"2026-11-24T05:19:38Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 4"}
+{"index":325,"at":"2026-11-24T05:19:39Z","kind":"SiteMode","sigs":["477de5"],"entry":"SiteMode"}
+{"index":326,"at":"2026-11-24T05:19:40Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 5"}
+{"index":327,"at":"2026-11-24T05:21:33Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 6"}
+{"index":328,"at":"2026-11-24T05:21:33Z","kind":"IntentDone","sigs":["d38725"],"entry":"IntentDone"}
+{"index":329,"at":"2026-11-24T05:21:41Z","kind":"Intent","sigs":["a0aa16"],"entry":"SiteDay { target: Site(SiteId(1)), release: ReleaseId([65, 147, 3, 228, 128, 34, 20, 119, 203, 218, 2, 251, 40, 119, 80,"}
+{"index":330,"at":"2026-11-24T05:22:36Z","kind":"SiteMode","sigs":["477de5"],"entry":"SiteMode"}
+{"index":331,"at":"2026-11-24T05:22:38Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 0"}
+{"index":332,"at":"2026-11-24T05:24:37Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 1"}
+{"index":333,"at":"2026-11-24T05:26:35Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 2"}
+{"index":334,"at":"2026-11-24T05:27:06Z","kind":"Halt","sigs":["031923"],"entry":"Halt"}
+{"index":335,"at":"2026-11-24T05:27:08Z","kind":"Keys","sigs":["031923"],"entry":"Keys"}
+{"index":336,"at":"2026-11-24T05:27:10Z","kind":"Abort","sigs":["031923"],"entry":"Abort"}
+{"index":337,"at":"2026-11-24T05:27:35Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 0"}
+{"index":338,"at":"2026-11-24T05:27:39Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 1"}
+{"index":339,"at":"2026-11-24T05:27:41Z","kind":"SiteMode","sigs":["477de5"],"entry":"SiteMode"}
+{"index":340,"at":"2026-11-24T05:27:42Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 2"}
+{"index":341,"at":"2026-11-24T05:27:44Z","kind":"IntentDone","sigs":["d38725"],"entry":"IntentDone"}
+{"index":342,"at":"2026-11-24T05:28:00Z","kind":"Intent","sigs":["031923"],"entry":"SiteDay { target: Site(SiteId(0)), release: ReleaseId([226, 63, 105, 233, 182, 7, 52, 132, 208, 146, 95, 132, 207, 100, "}
+{"index":343,"at":"2026-11-24T05:28:32Z","kind":"SiteMode","sigs":["477de5"],"entry":"SiteMode"}
+{"index":344,"at":"2026-11-24T05:28:33Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 0"}
+{"index":345,"at":"2026-11-24T05:29:36Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 1"}
+{"index":346,"at":"2026-11-24T05:31:32Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 2"}
+{"index":347,"at":"2026-11-24T05:33:33Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 3"}
+{"index":348,"at":"2026-11-24T05:33:36Z","kind":"SiteRelease","sigs":["d38725"],"entry":"SiteRelease"}
+{"index":349,"at":"2026-11-24T05:33:37Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 4"}
+{"index":350,"at":"2026-11-24T05:33:38Z","kind":"SiteMode","sigs":["477de5"],"entry":"SiteMode"}
+{"index":351,"at":"2026-11-24T05:33:39Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 5"}
+{"index":352,"at":"2026-11-24T05:35:33Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 6"}
+{"index":353,"at":"2026-11-24T05:35:34Z","kind":"IntentDone","sigs":["d38725"],"entry":"IntentDone"}
+== deployments
+{"script":"graft-m4a-site-a","version":"75bdd60d","percentage":100,"tag":"e23f69e9"}
+{"script":"graft-m4a-site-b","version":"627ed36c","percentage":100,"tag":"e23f69e9"}
+{"script":"graft-m4a-site-c","version":"54bbb423","percentage":100,"tag":"1a0f0e50"}
+{"script":"graft-m4a-edge","version":"eef95142","percentage":100,"tag":"e23f69e9"}
+{"script":"graft-m4a-edge","version":"f4e193b9","percentage":0,"tag":"63644eb6"}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T05:07:47.508802Z","versions":["f33cf37d 100"]}
+== tokens
+[{"name":"graft-m4a-bm5-deploy","status":"active"}]
+spend since setup: $0.02

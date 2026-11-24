@@ -1,0 +1,4 @@
+2026-11-24T05:10:11Z
+stand-ins: a throwaway vendor key (Keys.vendor) and a throwaway R2 token scoped to graft-m4a-releases (the vendor's release-bucket token)
+keys-vendor: {"digest":"2c3e49b18622ed686a3910388a9c844f6cec5b7f0fb69514c9e8f387a738d707","index":1048,"status":201} 
+{"count":316,"keys":{"generation":3,"vendor":"a0aa16b7984a"}}
