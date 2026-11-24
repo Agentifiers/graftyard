@@ -1407,6 +1407,10 @@ It also carries BM-5's unreadable format "commits nothing and moves A's groups".
 - A real N was read at every step: what c runs through 100%, and the `Rollback`'s release on the first day (R44's fix shown hosted).
 - The first day breached `GATE_APPLY_LAG` at 215 bp against that N and ran the pre-signed `Rollback` to `IntentDone`, likely by chance after the full-site reset (R46).
 - 10% passed on the override only, and slow-apply was not run (install cap).
+**Check row 4 (2026-11-24, main `05aace32`):**
+- The 10% step was judged on the real floor with a 12 min dwell and passed on all 8 reads: R38's 10% case is settled.
+- 1% passed on the override only, so R38's 1% case stays open.
+- Slow-apply (R11) was not run within the $8 stop.
 
 ### M5-WP5. The change feed, the export endpoints, and the vault
 
