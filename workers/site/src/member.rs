@@ -87,9 +87,6 @@ const RTT_SAMPLES: usize = 20;
 pub const HEAVY_READS: u32 = 16;
 /// The `retryAfterMs` of a shed whole-tier read: about one cached dump's service time.
 const OVERLOAD_RETRY_MS: u64 = 250;
-/// BF-14 arrivals kept in memory (`Host::arrivals_mem`): a one-minute B0-02 run at 330/s, twice over.
-#[cfg(feature = "test-faults")]
-const ARRIVALS_MEM_MAX: usize = 40_000;
 /// Reads of any kind a member serves at once, counted from arrival until the answer's last piece is taken
 /// [guess]: on B0-29 the apac leader, granted about 600 reads in one input, ran out of memory one second later, and
 /// probes of 1,000 or more narrow reads at once moved an idle group's leader on `CommitErrors`
@@ -1545,12 +1542,7 @@ impl<F: Family> Routes<F> {
                 // `arrival=mem` or `arrival=sql`: where BF-14's arrival rows go (`Host::arrivals_mem`).
                 #[cfg(feature = "test-faults")]
                 if let Ok(a) = crate::registry::query(&url, "arrival") {
-                    let mut m = self.host.arrivals_mem.borrow_mut();
-                    match (a == "mem", m.is_some()) {
-                        (true, false) => *m = Some(std::collections::VecDeque::new()),
-                        (false, _) => *m = None,
-                        _ => {}
-                    }
+                    self.host.arrivals_mem.borrow_mut().set_mem(a == "mem");
                 }
                 // `entry=max`, `entry=soft`, or `entry=<bytes>`: where the leader stops filling an entry
                 // (`Host::entry_soft`).
@@ -1835,14 +1827,10 @@ impl<F: Family> Routes<F> {
         };
         // A bare `exec` here is a write outside the entry's transaction, and the output gate holds every later fetch,
         // the leader's AppendEntries included, until it is durable (`tests/m0/results/carried-6.md`).
-        if let Some(mem) = self.host.arrivals_mem.borrow_mut().as_mut() {
-            if mem.len() >= ARRIVALS_MEM_MAX {
-                mem.pop_front();
-            }
-            mem.push_back(json!({
-                "rid": rid, "at": now_ms(), "role": role, "fault": receipt.map(Receipt::name), "answer": answer,
-            }));
-        } else {
+        let row = json!({
+            "rid": rid, "at": now_ms(), "role": role, "fault": receipt.map(Receipt::name), "answer": answer,
+        });
+        if self.host.arrivals_mem.borrow_mut().keep(row).is_some() {
             let _ = self.host.state.storage().sql().exec(
                 "INSERT INTO arrival (rid, at, role, fault, answer) VALUES (?, ?, ?, ?, ?)",
                 vec![
@@ -1871,7 +1859,7 @@ impl<F: Family> Routes<F> {
     /// BF-14's arrivals since `since` (epoch ms), at most 20,000.
     #[cfg(feature = "test-faults")]
     fn arrivals(&self, since: u64) -> Result<Response> {
-        if let Some(mem) = self.host.arrivals_mem.borrow().as_ref() {
+        if let Some(mem) = self.host.arrivals_mem.borrow().rows() {
             let rows: Vec<&Value> = mem.iter().filter(|r| r["at"].as_u64().unwrap_or(0) >= since).collect();
             return Response::from_json(&rows);
         }
@@ -2606,7 +2594,8 @@ impl<F: Family> Routes<F> {
         let (stmts, stmt_bytes) = self.host.queued();
         let open = self.host.open_bytes.sample();
         let (heap_live, heap_peak) = crate::heapcount::sample();
-        json!({
+        #[allow(unused_mut)]
+        let mut v = json!({
             // The isolate's live heap bytes and their peak since it started, beside `wasmMemMb` (`crate::heapcount`).
             "heapLive": heap_live,
             "heapPeak": heap_peak,
@@ -2632,7 +2621,15 @@ impl<F: Family> Routes<F> {
                 "admittedBytes": core.as_ref().map(|c| c.m.admitted_bytes()
                     + c.admitted.values().filter_map(|(_, _, k)| k.as_ref()).map(raft::Record::encoded_len).sum::<usize>()),
             },
-        })
+        });
+        // Test installs: BF-14's in-memory arrival rows and their live heap at the measured bytes a row, which
+        // `heapLive` includes, so a reading from an `arrival=mem` row can take them out (`host::Arrivals`).
+        #[cfg(feature = "test-faults")]
+        {
+            let (rows, bytes) = self.host.arrivals_mem.borrow().bytes();
+            v["arrivals"] = json!({ "rows": rows, "bytes": bytes });
+        }
+        v
     }
 
     fn stats(&self, reset: bool, summary: bool, #[allow(unused)] high: bool, peers: bool) -> Result<Response> {
@@ -2718,7 +2715,7 @@ impl<F: Family> Routes<F> {
                 // starts the next one from now, so each 2 s sample shows the peak of the seconds since the one before.
                 v["memHigh"] = json!(s.mem_high);
                 // Where BF-14's arrival rows go (`?arrival=`), so a harness sees what each sample ran with.
-                v["arrival"] = json!(if self.host.arrivals_mem.borrow().is_some() { "mem" } else { "sql" });
+                v["arrival"] = json!(if self.host.arrivals_mem.borrow().is_mem() { "mem" } else { "sql" });
                 if high {
                     s.mem_high = Default::default();
                 }
@@ -2799,7 +2796,7 @@ impl<F: Family> Routes<F> {
         #[cfg(feature = "test-faults")]
         {
             v["body"] = json!(if self.host.array_body.get() { "array" } else { "stream" });
-            v["arrival"] = json!(if self.host.arrivals_mem.borrow().is_some() { "mem" } else { "sql" });
+            v["arrival"] = json!(if self.host.arrivals_mem.borrow().is_mem() { "mem" } else { "sql" });
             v["entrySoft"] = json!(self.host.entry_soft.get());
         }
         v["dumpBuilds"] = json!(crate::family::dump_builds());

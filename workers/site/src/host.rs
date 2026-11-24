@@ -929,6 +929,58 @@ pub fn read_query_code(body: &serde_json::Value) -> u64 {
     name.and_then(|k| READ_QUERIES.iter().position(|q| *q == k)).map_or(0, |i| i as u64 + 1)
 }
 
+/// BF-14 arrivals kept in memory (`Host::arrivals_mem`): a one-minute B0-02 run at 330/s, twice over.
+#[cfg(any(test, feature = "test-faults"))]
+pub const ARRIVALS_MEM_MAX: usize = 40_000;
+/// The live heap one arrival row holds, as `serde_json::Value` with `receipt_fault`'s five keys and a 26-character
+/// request id [measured, a wasm32 counting allocator, `tests/am1/results/archive-memory.md`, "The census of the
+/// leader's uncounted heap"]: 40,000 rows held 19.4 MiB.
+#[cfg(any(test, feature = "test-faults"))]
+pub const ARRIVAL_ROW_BYTES: usize = 509;
+
+/// Test installs: BF-14's `arrival` rows kept in memory (`/stats?arrival=mem`), oldest dropped past ARRIVALS_MEM_MAX,
+/// or none kept (`arrival=sql`, the rows go to SQLite). Only the member that receives `/commit`s fills it, so on B0-33
+/// up to 19.4 MiB of a leader's live heap is this ring, which memSplit's `arrivals` reports.
+#[cfg(any(test, feature = "test-faults"))]
+#[derive(Default)]
+pub struct Arrivals(Option<VecDeque<Value>>);
+
+#[cfg(any(test, feature = "test-faults"))]
+impl Arrivals {
+    /// `arrival=mem` keeps rows from now, and keeps any it holds; `arrival=sql` drops them all.
+    pub fn set_mem(&mut self, mem: bool) {
+        match (mem, self.0.is_some()) {
+            (true, false) => self.0 = Some(VecDeque::new()),
+            (false, _) => self.0 = None,
+            _ => {}
+        }
+    }
+
+    pub fn is_mem(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Keeps `row` when in memory; gives it back otherwise, for the caller to write to SQLite.
+    pub fn keep(&mut self, row: Value) -> Option<Value> {
+        let Some(mem) = self.0.as_mut() else { return Some(row) };
+        if mem.len() >= ARRIVALS_MEM_MAX {
+            mem.pop_front();
+        }
+        mem.push_back(row);
+        None
+    }
+
+    pub fn rows(&self) -> Option<&VecDeque<Value>> {
+        self.0.as_ref()
+    }
+
+    /// The rows held and their live heap, priced at ARRIVAL_ROW_BYTES a row [inference: rows times the measured mean].
+    pub fn bytes(&self) -> (usize, usize) {
+        let n = self.0.as_ref().map_or(0, VecDeque::len);
+        (n, n * ARRIVAL_ROW_BYTES)
+    }
+}
+
 /// F74: every request this host's handler takes, numbered in arrival order, and how many are open in it.
 #[cfg(any(test, feature = "test-faults"))]
 #[derive(Default)]
@@ -1435,7 +1487,7 @@ pub struct Host<F: Family> {
     /// written to SQLite (`/stats?arrival=mem`), so no write a production member does not make sits before the
     /// leader's next AppendEntries. `/arrivals` serves them either way. A reset object writes rows again.
     #[cfg(feature = "test-faults")]
-    pub arrivals_mem: RefCell<Option<VecDeque<Value>>>,
+    pub arrivals_mem: RefCell<Arrivals>,
     /// Test installs, B0-02's cap A/B (`tests/m0/results/carried-7.md`): where the leader stops filling an entry
     /// (`/stats?entry=max` for ENTRY_MAX, `entry=soft` for ENTRY_SOFT, `entry=<bytes>`). A reset object caps at
     /// ENTRY_SOFT again.
@@ -2200,7 +2252,7 @@ impl<F: Family> Host<F> {
             #[cfg(feature = "test-faults")]
             array_body: Cell::new(false),
             #[cfg(feature = "test-faults")]
-            arrivals_mem: RefCell::new(None),
+            arrivals_mem: RefCell::new(Arrivals::default()),
             #[cfg(feature = "test-faults")]
             entry_soft: Cell::new(raft::ENTRY_SOFT),
             #[cfg(feature = "test-faults")]
@@ -4684,6 +4736,33 @@ fn log_take(rows: impl Iterator<Item = Result<(Value, usize)>>, n: usize, cap: u
 
 #[cfg(test)]
 mod tests {
+    /// memSplit's `arrivals`: the rows BF-14's ring holds and their bytes follow the ring as it fills, stop at its cap
+    /// while it drops its oldest, keep its rows across another `arrival=mem`, and fall to 0 when `arrival=sql` clears it.
+    #[test]
+    fn the_arrival_bytes_follow_the_ring() {
+        use super::{ARRIVAL_ROW_BYTES, ARRIVALS_MEM_MAX, Arrivals};
+        let row = |i: usize| serde_json::json!({ "rid": format!("r{i}"), "at": i, "role": "leader", "answer": "done" });
+        let mut a = Arrivals::default();
+        assert_eq!(a.keep(row(0)), Some(row(0)), "sql mode keeps nothing and hands the row back");
+        assert_eq!(a.bytes(), (0, 0));
+        a.set_mem(true);
+        assert!(a.is_mem());
+        for i in 0..3 {
+            assert_eq!(a.keep(row(i)), None);
+        }
+        assert_eq!(a.bytes(), (3, 3 * ARRIVAL_ROW_BYTES));
+        a.set_mem(true);
+        assert_eq!(a.bytes(), (3, 3 * ARRIVAL_ROW_BYTES), "a second arrival=mem keeps the rows");
+        for i in 3..ARRIVALS_MEM_MAX + 7 {
+            a.keep(row(i));
+        }
+        assert_eq!(a.bytes(), (ARRIVALS_MEM_MAX, ARRIVALS_MEM_MAX * ARRIVAL_ROW_BYTES), "the ring stops at its cap");
+        assert_eq!(a.rows().unwrap().front(), Some(&row(7)), "a full ring drops its oldest row");
+        a.set_mem(false);
+        assert_eq!(a.bytes(), (0, 0), "arrival=sql clears the ring");
+        assert!(!a.is_mem() && a.rows().is_none());
+    }
+
     /// user-demote: `/stats`' `demoted` counts each write DEMOTE_PER_MIN reclassed, per actor, and nothing for a write
     /// admitted under the edge's own class, Agent included; `reset` clears it.
     #[test]
