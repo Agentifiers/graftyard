@@ -8347,6 +8347,8 @@ carries `location` (https://developers.cloudflare.com/api/resources/r2/subresour
   the key's public half among `AppRecord.keys`, the secret's hash among `client_secrets`. `graft-mcp` binds
   `MCP_CLIENT_SECRET_0`/`_1` and reads the slot from its own view (`MEMBER_<n>`/`REGISTRY_<n>` as `graft-front` binds
   them); a view not yet held answers 503, not a guessed slot.
+  No script reads `McpAppKey` or `InsightsAppKey` yet: nothing loads either App's private key, so only `graft-ops`'
+  probe uses their slots, and BF-46's rows for those two are probe and switch only, with no live reader to measure.
 - **`SecretsWrapKey`: probe, switch.** The switch names the slot new values wrap under, which `graft-ops` read from the
   `SECRETS_WRAP_KEY_CURRENT` variable, a redeploy. The probe parses the new slot's key and its slot number. Both slots
   still unwrap; each owner admin's `rewrap-secrets` moves the old values, and only then is the old slot cleared. Until a

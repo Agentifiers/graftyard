@@ -6,7 +6,10 @@
 // slots' public halves from Secrets Store) and takes the active slot from the `Release` view; the edge deploy's
 // `--ssh <file>` JSON is only its fallback while no site answers. The private keys never touch disk outside a 0700
 // temporary folder that is removed before exit. Usage:
-//   node deploy/ssh-front/hostkeys.mjs <store id> <slot A|B> <public JSON>
+//   node deploy/ssh-front/hostkeys.mjs <store id> <slot A|B> <public JSON> --sites <sites.json>
+// `--sites` names the install's site scripts. The secret names carry no install prefix, and test installs share one
+// account and store, so before drawing a key the script refuses when any other script binds the slot's secret
+// (workers/site/sshguard.mjs, `refuseForeignHostKey`; decisions/OPEN-QUESTIONS.md, R60).
 // Rotation, with no new script version: write the idle slot with this script (every graft-sshd announces it within a
 // minute, and the edge lists it), keep the public JSON for the next edge deploy, then commit the customer's
 // `Rotate { SshHostKeys, slot }`. graft-ops probes every active site's `/ssh_slots` for the slot's 3 keys, waits
@@ -17,9 +20,17 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { cfApi, refuseForeignHostKey } from "../../workers/site/sshguard.mjs";
 
-const [store, slot, out] = process.argv.slice(2);
-if (!store || !["A", "B"].includes(slot) || !out) throw new Error("usage: hostkeys.mjs <store id> <A|B> <public JSON>");
+const args = process.argv.slice(2);
+const si = args.indexOf("--sites");
+const sitesPath = si >= 0 ? args.splice(si, 2)[1] : null;
+const [store, slot, out] = args;
+if (!store || !["A", "B"].includes(slot) || !out || !sitesPath) {
+  throw new Error("usage: hostkeys.mjs <store id> <A|B> <public JSON> --sites <sites.json>");
+}
+const siteScripts = JSON.parse(readFileSync(sitesPath, "utf8")).map((s) => s.script);
+await refuseForeignHostKey(cfApi, process.env.CLOUDFLARE_ACCOUNT_ID, { store, secret: `SSH_HOST_KEY_${slot}`, siteScripts });
 const KEYS = [["ed25519", []], ["ecdsa", ["-b", "256"]], ["rsa", ["-b", "3072"]]];
 
 const dir = mkdtempSync(join(tmpdir(), "hostkeys-"));

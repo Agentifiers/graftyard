@@ -45,7 +45,30 @@ export async function refuseSshOff(flags, { edge = null, siteScripts }, api = cf
   }
 }
 
-async function cfApi(path) {
+// The host-key guard (deploy/ssh-front/hostkeys.mjs; decisions/OPEN-QUESTIONS.md, R60). `SSH_HOST_KEY_A`/`_B` carry no
+// install prefix, and test installs share one account and one store, so a write meant for one install can replace
+// another's host keys. Throws when any script outside `siteScripts` binds `secret` of `store`; an API error throws too,
+// since the guard cannot tell. `api(path)` is a parsed Cloudflare API GET relative to `/client/v4/`.
+export async function refuseForeignHostKey(api, account, { store, secret, siteScripts }) {
+  let holders;
+  try {
+    const scripts = (await api(`accounts/${account}/workers/scripts`)).result.map((s) => s.id);
+    const bound = await Promise.all(scripts.map(async (s) => {
+      const bindings = (await api(`accounts/${account}/workers/scripts/${s}/settings`)).result?.bindings ?? [];
+      return bindings.some((b) => b.type === "secrets_store_secret" && b.store_id === store && b.secret_name === secret) ? s : null;
+    }));
+    holders = bound.filter(Boolean);
+  } catch (e) {
+    throw new Error(`cannot list which scripts bind ${secret} (${e.message}); nothing written`);
+  }
+  const ours = new Set(siteScripts);
+  const foreign = holders.filter((s) => !ours.has(s));
+  if (foreign.length) {
+    throw new Error(`${secret} is bound by another install's scripts (${foreign.join(", ")}); nothing written`);
+  }
+}
+
+export async function cfApi(path) {
   const r = await fetch(`https://api.cloudflare.com/client/v4/${path}`, {
     headers: { authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` },
   });
