@@ -182,16 +182,16 @@ test("a group that never held the lost site is Done at once and expires no one",
   assert.equal(env.EXPIRE.status.size, 0);
 });
 
-test("a group with no leader to follow asks the next live voter, never the lost one", async () => {
+test("a group whose leader does not answer asks the next live voter, never the lost one", async () => {
   const cfg = { normal: P([V(0), V(1), V(2)], 1) };
   const asked = [];
   const env = { sites: SITES, EXPIRE: workflow([]) };
   env.MEMBER_0 = ns(async () => assert.fail("the lost member was asked"));
   let n = 0;
-  // Site 1 knows no leader yet, then site 2 resets, then site 1 leads.
+  // Site 1 names site 2 as leader; site 2 resets; site 1 then leads.
   env.MEMBER_1 = ns(async () => {
     asked.push(1);
-    if (n++ === 0) return ok({ error: { notLeader: { term: 5, leader: null, config: { index: 3, config: cfg } } } });
+    if (n++ === 0) return ok({ error: { notLeader: { term: 5, leader: 2, config: { index: 3, config: cfg } } } });
     return ok({ step: "Done", ok: { step: "Done" }, config: [3, cfg] });
   });
   env.MEMBER_2 = ns(async () => {
@@ -233,4 +233,28 @@ test("graft-ops' handler starts a coordinator once and reads its status", async 
   assert.deepEqual(env.MOVE.status.get("01JC0000000000000000000004").params, spec);
   assert.deepEqual(await (await handle(new Request(url), env)).json(), { status: "running" });
   assert.equal((await handle(new Request("https://workflows/move/x"), env)).status, 404);
+});
+
+// Every system chain's home, and so its leader, is the lost site: its followers on B and C keep naming that leader
+// once their promise lapses, and only a campaign elects one of them. The instance asks the member it reached to
+// campaign, never routes to the lost leader, and then steps on the elected one.
+test("a group whose leader was on the lost site asks a live voter to campaign, then steps on it", async () => {
+  const cfg = { normal: P([V(0), V(1), V(2)], 0) };
+  const asked = [];
+  let led = false;
+  const env = { sites: SITES, EXPIRE: workflow([]) };
+  env.MEMBER_0 = ns(async () => assert.fail("the lost member was asked"));
+  env.MEMBER_1 = ns(async (name, url) => {
+    asked.push(`1${url.slice(url.lastIndexOf("/"))}`);
+    if (url.endsWith("/campaign")) {
+      led = true;
+      return ok({ verdict: "started" });
+    }
+    if (!led) return ok({ error: { notLeader: { term: 3, leader: 0, config: { index: 3, config: cfg } } } });
+    return ok({ step: "Done", ok: { step: "Done" }, config: [3, cfg] });
+  });
+  const event = { instanceId: "g3", payload: { from: 0, to: 3, dead: true, chain: "tokens:7", row: { site: 1, do_name: "tokens:7#1#f1" } } };
+  const out = await group(env, event, new Step());
+  assert.deepEqual(asked, ["1/move", "1/campaign", "1/move"]);
+  assert.equal(out.asks, 2);
 });
