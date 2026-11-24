@@ -35,16 +35,20 @@ MUTANTS = [
      '\tmu.Lock()\n\tdefer mu.Unlock()\n\tdst := filepath.Join(rp, "graft", "validated-"+sum)',
      '\t_ = mu\n\tdst := filepath.Join(rp, "graft", "validated-"+sum)', GOT),
     ('go: the sweep deletes a running validate\'s young quarantine', GO,
-     'time.Since(st.ModTime()) > time.Hour', 'time.Since(st.ModTime()) >= 0', GOT),
-    ('go: validate holds the shared lock but ingest takes it shared too', GO,
-     '\tl := lock(net)\n\tl.Lock()\n\tif name, ok, err := adopt(rp, want); ok {',
-     '\tl := lock(net)\n\tl.RLock()\n\tif name, ok, err := adopt(rp, want); ok {', GOT),
+     '\tfor _, d := range append(append(inc, left...), gone...) {\n\t\tif st, err := os.Stat(d); err == nil && time.Since(st.ModTime()) > time.Hour {',
+     '\tfor _, d := range append(append(inc, left...), gone...) {\n\t\tif st, err := os.Stat(d); err == nil && time.Since(st.ModTime()) >= 0 {', GOT),
+    # lock-split: ingest now shares the network lock with validates on purpose; additive writers exclude one another
+    # through the writer lock instead, so the mutant drops that.
+    ('go: two additive writers of one network run at once (writeLock skips the writer lock)', GO,
+     '\twl, l := writer(net), lock(net)\n\twl.Lock()\n\tl.RLock()\n\treturn time.Since(w0).Milliseconds(), func() {\n\t\tl.RUnlock()\n\t\twl.Unlock()',
+     '\twl, l := writer(net), lock(net)\n\t_ = wl\n\tl.RLock()\n\treturn time.Since(w0).Milliseconds(), func() {\n\t\tl.RUnlock()',
+     ['go', 'TestLockWait|TestConcurrent']),
     ('go: a validate waiting for the lock is not counted in queue_depth', GO,
-     '\tvalidating.Add(1) // waiting or running: the queue\n\tdefer validating.Add(-1)\n\tl := lock(net)\n\tl.RLock()\n\tdefer l.RUnlock()\n',
-     '\tl := lock(net)\n\tl.RLock()\n\tdefer l.RUnlock()\n\tvalidating.Add(1)\n\tdefer validating.Add(-1)\n', GOT),
+     '\tl := lock(net)\n\tw0 := time.Now()\n\tl.RLock()\n\tlockWaitMs := time.Since(w0).Milliseconds()\n\tdefer l.RUnlock()\n',
+     '\tl := lock(net)\n\tw0 := time.Now()\n\tvalidating.Add(-1)\n\tl.RLock()\n\tvalidating.Add(1)\n\tlockWaitMs := time.Since(w0).Milliseconds()\n\tdefer l.RUnlock()\n', GOT),
     ('go: a finished validate stays in queue_depth', GO,
-     '\tvalidating.Add(1) // waiting or running: the queue\n\tdefer validating.Add(-1)\n',
-     '\tvalidating.Add(1) // waiting or running: the queue\n', GOT),
+     '\t\tvalidating.Add(1) // waiting for admission or running: the queue\n\t\tdefer validating.Add(-1)\n',
+     '\t\tvalidating.Add(1) // waiting for admission or running: the queue\n', GOT),
     ('catch-up: a request is served by a catch-up that started before it arrived', MC,
      '        if self.1.ok.get() > arrived {', '        if self.1.ok.get() >= arrived {', CATCH),
     ('catch-up: a success is not recorded, so every request runs its own', MC,
@@ -75,16 +79,16 @@ MUTANTS = [
      '    /// Metadata, in the push\'s entry: one row per ref, deleted when the ref\'s pull request closes.\n    PathSet(crate::agent::PathSet),\n    // Format 32.15 (`REPO_FORMAT_FANOUT`): tag 39.\n    /// Core. The k both warm sites hold for the network (`crate::shard::fanout`), committed by the network group\'s\n    /// leader in an entry of its own with no request, only when k changes. Its core `fanout` row is what a shard\'s\n    /// `ranges` read answers.\n    Fanout {\n        k: u8,\n    },\n',
      '    // Format 32.15 (`REPO_FORMAT_FANOUT`): tag 39.\n    Fanout {\n        k: u8,\n    },\n    /// Metadata, in the push\'s entry: one row per ref, deleted when the ref\'s pull request closes.\n    PathSet(crate::agent::PathSet),\n', WIRE),
     ('site: the ranges read leaves out k', FAM,
-     '                "fanout": fold.fanout_k(),\n', '', SITE),
+     '            "fanout": fold.fanout_k(),\n', '', SITE),
     ('site: this release does not read 32.15', FAM,
-     '            git::repo::REPO_FORMAT_FANOUT,\n        ]', '        ]', SITE),
+     '            git::repo::REPO_FORMAT_FANOUT,\n            git::lifecycle::', '            git::lifecycle::', SITE),
     ('site: a follower answers a report without the notLeader shape', 'workers/site/src/fanout.rs',
      'json!({ "error": crate::host::call_error_json(&graftyard_raft::CallError::NotLeader(nl)) })',
      'json!({ "error": "not leader", "term": nl.term.0 })', SITE),
     # lm1-rerun2: whole-tier reads packed into one JSON string.
     ('site: a packed rows read still answers the Value tree', FAM,
-     '            if q.get("packed").and_then(Value::as_bool) == Some(true) {\n                return rows.packed();\n            }\n',
-     '', SITE),
+     '    let bytes: std::rc::Rc<[u8]> = serde_json::to_vec(&rows.packed()).unwrap_or_else(|_| b"null".to_vec()).into();',
+     '    let bytes: std::rc::Rc<[u8]> = serde_json::to_vec(&rows).unwrap_or_else(|_| b"null".to_vec()).into();', SITE),
     ('edge: the tier read stops asking for packed rows', 'workers/edge/src/api.rs',
      'json!({ "q": { "rows": rows, "ranges": true, "packed": true } })',
      'json!({ "q": { "rows": rows, "ranges": true } })', EDGE),
@@ -105,17 +109,19 @@ MUTANTS = [
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
-           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', '/home/user/workspace/repo/.worktrees/target-rows'))
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')))
+# A hang counts as caught (README, "Planted bugs").
+LIMIT = ['timeout', '-k', '10', '600']
 
 
 def run(t):
     if t[0] == 'node':
-        r = subprocess.run(t, cwd=ROOT, capture_output=True, text=True, timeout=120)
+        r = subprocess.run([*LIMIT, *t], cwd=ROOT, capture_output=True, text=True)
         out = r.stdout + r.stderr
         return r.returncode, out, 'SyntaxError' in out
     if t[0] == 'go':
-        r = subprocess.run(['go', 'test', '-count=1', '-run', t[1], '.'], cwd=os.path.join(ROOT, 'containers/git/server'),
-                           capture_output=True, text=True, timeout=600)
+        r = subprocess.run([*LIMIT, 'go', 'test', '-count=1', '-run', t[1], '.'],
+                           cwd=os.path.join(ROOT, 'containers/git/server'), capture_output=True, text=True)
         out = r.stdout + r.stderr
         return r.returncode, out, 'build failed' in out or 'syntax error' in out or 'undefined:' in out
     _, _, pkg, kind, name, *rest = t
@@ -123,7 +129,7 @@ def run(t):
         args = ['cargo', 'test', '-q', '-p', pkg, '--lib', name]
     else:
         args = ['cargo', 'test', '-q', '-p', pkg, '--test', name] + [f for f in rest if f]
-    r = subprocess.run(args, cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=1200)
+    r = subprocess.run([*LIMIT, *args], cwd=ROOT, env=ENV, capture_output=True, text=True)
     out = r.stdout + r.stderr
     return r.returncode, out, 'error[E' in out or 'could not compile' in out
 
@@ -149,6 +155,8 @@ def main():
         elif code != 0:
             caught += 1
             fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ') or l.startswith('--- FAIL')]
+            if code == 124:
+                fails = ['(timed out)', *fails]
             print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]')
         else:
             print(f'{i:2} MISSED  {name}')
