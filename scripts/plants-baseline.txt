@@ -2,13 +2,6 @@
 # `file: name` per line. This file only shrinks: fix a plant's anchors on its own branch and delete its lines, and
 # scripts/check_plants.py fails on a line added here, on new drift, and on a listed mutant that matches again.
 # Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
-tests/fanout/plant.py: go: the sweep deletes a running validate's young quarantine
-tests/fanout/plant.py: go: validate holds the shared lock but ingest takes it shared too
-tests/fanout/plant.py: go: a validate waiting for the lock is not counted in queue_depth
-tests/fanout/plant.py: go: a finished validate stays in queue_depth
-tests/fanout/plant.py: site: the ranges read leaves out k
-tests/fanout/plant.py: site: this release does not read 32.15
-tests/fanout/plant.py: site: a packed rows read still answers the Value tree
 tests/m4/wp4/plant.py: repo-purge: a member that has not applied the tombstone is purged
 tests/m4/wp4/plant.py: repo-purge: an unanswered member counts as retired
 tests/m4/wp4/plant.py: trigger-stream: the cursor settles past an unfinished event (only retries count)
