@@ -2,45 +2,6 @@
 # `file: name` per line. This file only shrinks: fix a plant's anchors on its own branch and delete its lines, and
 # scripts/check_plants.py fails on a line added here, on new drift, and on a listed mutant that matches again.
 # Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
-tests/lm1mem/plant.py: damping: keyed without the term, so a new term's report is dropped
-tests/lm1mem/plant.py: cap: a plain read on a follower is shed instead of answering NotLeader
-tests/lm1mem/plant.py: cap: narrow reads are never capped (heavy only, as before)
-tests/lm1mem/plant.py: cap: READS_MAX is off by one
-tests/lm1mem/plant.py: follower: HEAVY_READS does not hold on a follower
-tests/lm1mem/plant.py: follower: a follower serves a read it may not (no NotLeader gate)
-tests/lm1mem/plant.py: follower: the NotLeader gate runs after the caps, so a capped follower is retried, not left
-tests/lm1mem/plant.py: lookup: the cached leader is asked as a follower first
-tests/lm1mem/plant.py: lookup: no rotation, every caller hits the same follower
-tests/lm1mem/plant.py: round 4: a read the members shed falls back to the leader
-tests/lm1mem/plant.py: round 4: a member that did not answer counts as declining, so the read goes to the leader
-tests/lm1mem/plant.py: round 4: a 5xx counts as declining
-tests/lm1mem/plant.py: round 4: learners are not asked
-tests/lm1mem/plant.py: round 4: followers before learners
-tests/lm1mem/plant.py: shared: answers keyed by nothing, so another query gets the first answer
-tests/lm1mem/plant.py: rebuilds: a valid cached dump still waits for the next slot
-tests/lm1mem/plant.py: cache: a hit is served without comparing its key, so an applied entry is not in the next read
-tests/lm1mem/plant.py: cache: the key is a constant
-tests/lm1mem/plant.py: round 6: a busy git cache refuses an agent push as an unpacker error
-tests/lm1mem/plant.py: round 6: no refusal at once past 8 per slot
-tests/lm1mem/plant.py: learner: HEAVY_READS still holds on a learner
-tests/lm1mem/plant.py: learner: READS_MAX does not hold on a learner
-tests/lm1mem/plant.py: dump: every read builds its own copy
-tests/lm1mem/plant.py: dump: the cache keeps the bytes of another repository
-tests/lm1mem/plant.py: dump: a narrow rows read is answered with the dump
-tests/lm1mem/plant.py: host: the shared dump is skipped, so every grant serializes its own
-tests/lm1mem/plant.py: round 7: validate spools its pack under the network lock
-tests/lm1mem/plant.py: round 7: POST /refs reads its body under the lock
-tests/lm1mem/plant.py: round 7: the repack holds the network lock alone again
-tests/lm1mem/plant.py: round 7: a merge waits for any catch-up in flight before it tries (2 s merge tails)
-tests/lm1mem/plant.py: round 7: a merge that misses catches up at once, racing the catch-up in flight
-tests/lm1mem/plant.py: merge-p99: a merge's rows read is spaced as a dump rebuild again
-tests/lm1mem/plant.py: merge-p99: a whole-tier dump is no longer spaced
-tests/lm1mem/plant.py: round 18c: the failed copy is ignored, so nothing stops upload-pack
-tests/lm1mem/plant.py: pool-warm: a pool warm starts no stopped shard
-tests/lm1mem/plant.py: promote-stream: a first entry over PROMOTE_MAX is cut to nothing
-tests/lm1mem/plant.py: promote-stream: an entry over PROMOTE_MAX takes the next entries with it
-tests/lm1mem/plant.py: connected-after: the last ref page starts the repack though the check follows (main's order)
-tests/lm1mem/plant.py: connected-after: no rehydrate's last ref page starts the repack
 tests/am1/wp1/plant.py: agent lane starves humans: Agent cut before Human and MergeQueue
 tests/am1/wp1/plant.py: AGENT_SHARE not enforced: the bucket never empties
 tests/am1/wp1/plant.py: AGENT_WAIT never expires agents
