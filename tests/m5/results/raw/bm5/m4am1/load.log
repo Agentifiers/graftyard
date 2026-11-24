@@ -1,0 +1,10 @@
+2026-11-24T15:12:23Z load: up to 3000 mints, 24 at a time; ops ["c24d1836 1","e8626037 99"]; spend $0.01
+2026-11-24T15:12:35Z mints 100: {"201":99,"503":1}; {"count":449,"current":{"state":"Running { step: 0 }","next":0},"pointer":0}
+2026-11-24T15:12:45Z mints 200: {"201":100}; {"count":449,"current":{"state":"Running { step: 0 }","next":0},"pointer":0}
+2026-11-24T15:12:54Z mints 300: {"201":100}; {"count":449,"current":{"state":"Running { step: 0 }","next":0},"pointer":0}
+2026-11-24T15:13:04Z mints 400: {"201":98,"503":2}; {"count":449,"current":{"state":"Running { step: 0 }","next":0},"pointer":0}
+2026-11-24T15:13:15Z mints 500: {"201":98,"503":2}; {"count":449,"current":{"state":"Running { step: 0 }","next":0},"pointer":0}
+2026-11-24T15:13:23Z mints 600: {"201":99,"503":1}; {"count":449,"current":{"state":"Running { step: 0 }","next":0},"pointer":0}
+2026-11-24T15:13:31Z mints 700: {"201":97,"503":3}; {"count":450,"current":{"state":"Undoing","next":0},"pointer":1}
+2026-11-24T15:13:31Z OpsPointer committed
+2026-11-24T15:13:31Z DONE

@@ -1,0 +1,11 @@
+2026-11-24T14:15:00Z
+{"script":"graft-m4a-site-a","version":"169cd766","percentage":100,"tag":"23-2f379da83"}
+{"script":"graft-m4a-site-b","version":"89586bfb","percentage":100,"tag":"22-4c6729de8"}
+{"script":"graft-m4a-site-c","version":"969d360b","percentage":100,"tag":"22-4c6729de8"}
+{"script":"graft-m4a-edge","version":"eef95142","percentage":100,"tag":"e23f69e9"}
+{"script":"graft-m4a-edge","version":"f4e193b9","percentage":0,"tag":"63644eb6"}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T13:21:08.774522Z","versions":["ac4cd9a5 100"]}
+{"count":442,"current":null,"drained":[],"site_release":{"0":"2f379da8","1":"4c6729de","2":"4c6729de"}}
+cat: tests/m5/results/raw/bm5/m4am1/setup.iso: No such file or directory
+jq: error (at <stdin>:1): Cannot index array with string ("prefix_usd")
+spend since setup: $

@@ -1,0 +1,18 @@
+2026-11-24T15:18:07Z
+{"count":452,"current":null,"rolled":{"Edge":"e23f69e9","Front":"2310a9a4","Mcp":"2310a9a4","Ops":"7def7980","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"}}
+{"index":442,"at":"2026-11-24T15:08:28Z","kind":"ReleaseUploaded","sigs":["d38725"],"entry":"ReleaseUploaded"}
+{"index":443,"at":"2026-11-24T15:08:34Z","kind":"Intent","sigs":["031923"],"entry":"OpsRoll { release: ReleaseId([125, 239, 121, 128, 194, 135, 212, 251, 210, 193, 99, 116, 2"}
+{"index":444,"at":"2026-11-24T15:10:25Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 0"}
+{"index":445,"at":"2026-11-24T15:10:30Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 1"}
+{"index":446,"at":"2026-11-24T15:10:31Z","kind":"IntentDone","sigs":["d38725"],"entry":"IntentDone"}
+{"index":447,"at":"2026-11-24T15:11:24Z","kind":"ReleaseUploaded","sigs":["d38725"],"entry":"ReleaseUploaded"}
+{"index":448,"at":"2026-11-24T15:11:30Z","kind":"Intent","sigs":["031923"],"entry":"OpsRoll { release: ReleaseId([91, 200, 132, 20, 157, 173, 186, 181, 253, 205, 15, 192, 221"}
+{"index":449,"at":"2026-11-24T15:13:55Z","kind":"OpsPointer","sigs":["031923"],"entry":"OpsPointer"}
+{"index":450,"at":"2026-11-24T15:16:52Z","kind":"IntentStep","sigs":["d38725"],"entry":"step 0"}
+{"index":451,"at":"2026-11-24T15:16:54Z","kind":"IntentDone","sigs":["d38725"],"entry":"IntentDone"}
+ops ["e8626037 100","c24d1836 0"]
+{"needle": "mint undo", "lines": 1}
+{"at": "15:13:56", "isolate": "06329970-0d82-48e7-8952-51c8b3724482", "msg": "mint undo: OpsPointer committed"}
+{"needle": "MINT_ERROR_RATIO", "lines": 1}
+{"at": "15:13:54", "isolate": "06329970-0d82-48e7-8952-51c8b3724482", "msg": "graft-ops mint errors past MINT_ERROR_RATIO: submitting the pre-signed OpsPointer"}
+{"needle": "graft-ops did not mint", "lines": 0}
