@@ -120,14 +120,74 @@ MB on g3A and g4B.
     rounds, 0 wasm traps.
   No edge or container code changed, and the edge does not link `graftyard-site`, so edgeboot and `go test` do not apply.
 
-## Hosted check (planned, graft-m2b)
+## Hosted check: lpB on graft-m2b, 2026-11-24 [measured]
 
-One test-faults site day from this branch once merged, then one B0-33-shaped row at a $10 stop. Read:
+**Result: the fix holds hosted.** Under B0-33's load the leader peaked at 81.6 MiB against memguard's 120 (g3A 124.8,
+g4B 114.8 then a reset). `memSplit.logPageHigh` stayed at or under 4 MiB on every member. No archive scan, up to
+81.3 MB, moved the leader's memory by more than 7 MiB, and no wasm instance reset.
 
-- leader memory from memguard;
-- `memSplit.logPageHigh` (expect ≤ 4,194,304);
-- the alarm-step scan lines past 49 MB;
-- whether any climb of more than 20 MiB lines up with a scan or a long `/entries`.
+**What ran.**
+- Site day -lp from main `11f1a69a` with test-faults. Sites a `4106c848`, b `eb468b3f`, c `f01f850f`; edge
+  `d6e527d3` at 100%. Shard image `sha256:85914041…`, the same as -g3, since containers are unchanged.
+- `tests/fanout/guardrow.sh`, TAG=lp, GUARD_WANT=fast, RUN_STOP $10, DAY_STOP $20.
+  - The first try stopped before load on the bytediff gate. All 36 differing replies differed only in
+    `x-graft-colo` (DFW against the -pb baseline's LAX). `bytediff.py` now masks that value as it masks `etag`'s, and a
+    planted body change still differs. That fix is `58181608` on branch `lp-hosted`.
+- lpA ended before load. At start, a1's installation-token call (`ghs`) answered 503, so the guard never got a verdict
+  and the run failed closed. It cost $0.05 and ran on repo 131409.
+- **lpB** was kept on repo 131410 (a1 `mwu7dw9c`). hostguard read 26.0 ms of leader CPU a setup commit against the
+  28.4 line. Load ran 300 s from 04:43:24.149Z, with 5,000 agents, leader site 0 at term 2. Harness outage 1 s (0.3%),
+  so the run is valid. It cost $2.71. graft-m2b's day went from $3.31 before load to $6.07 after the sweep, and the
+  sweep found no shard container running.
+
+**Memory** (`raw/memguard-lpB.jsonl`, site 0, the leader throughout):
+
+| | lpB | g4B (main `dac2348e`) | g3A (main `5bed46af`) |
+|---|---|---|---|
+| Leader peak | **81.6 MiB** at 04:48:39Z | 114.8, then a reset | 124.8, stopped by memguard |
+| `logPageHigh`, max over the load, sites 0 / 1 / 2 | **4,191,755 / 4,173,122 / 4,183,360** bytes (limit 4,194,304) | not counted | not counted |
+| Followers' peak | 78.4 / 55.1 MiB | | |
+| Wasm resets ("Promise will never complete", "previous WASM") | **0** | 1, 41 calls lost | |
+
+The leader's peak memSplit at 81.6 MiB: log 7.96 MB, caches 0, memo 0, nothing in flight. The memory climbs steadily
+with the load, not in steps. Every sample-to-sample step is under 7 MiB: 15.7 to 21.3, 61.3 to 67.9, 67.9 to 74.9 and
+74.9 to 81.6. mrB and msA, on older code, peaked at 82 to 96 MiB the same way.
+
+**The archive turns against memory** (`raw/leaderlogs-lpB.json.xz`). Memguard figures are the last sample within 6 s
+before each scan line and the highest within 6 s after it, on memguard's clock:
+
+| Scan line (Cloudflare clock) | Stored range | Bytes scanned | Leader MiB before / after |
+|---|---|---|---|
+| 04:42:47.412 | 2..=971 | 1.4 MB | 12.6 / 12.6 |
+| 04:43:50.546 | 2..=1156 | 8.3 MB | 38.7 / 42.2 |
+| 04:44:50.702 | 2..=1281 | 18.4 MB | 58.8 / 58.8 |
+| 04:45:50.744 | 2..=1454 | 48.8 MB | 67.9 / 67.9 (the 61.3 to 67.9 step is at 04:45:50.403 on memguard's clock) |
+| 04:46:51.348 | 2..=1628 | **81.3 MB** | 74.9 / 74.9 |
+
+On g3A, a 49 MB scan came with 74 to 107 MiB; on g4B, a 68.4 MB scan with 59.8 to 114.8. Here an 81.3 MB scan moved
+nothing. The scans themselves still grow with the log, about 10 to 30 MB a minute. That is CPU, not memory, and is the
+B0-29 merge-front note's subject, not this fix's.
+
+The leader never climbed past 100 MiB, so the per-invocation split the lead asked for in that case was not needed.
+
+**Open: a longer run.** The leader's memory still climbs steadily, 7 MiB at load start to 81.6 MiB at 04:48:39Z over
+the 300 s, with no archive-sized jump. memSplit's counted parts are flat (log about 8 MB; caches, memo and in-flight
+bytes 0 at the peak), so the growth is in memory memSplit does not name. At about 15 MiB a minute, the leader would
+reach memguard's 120 MiB around minute 8 of a load like this one, and the 128 MB isolate limit soon after, if the climb
+continues. This row cannot say whether it levels off. A run longer than 300 s, or the per-invocation split taken over
+this row's leader logs, would settle it [inference].
+
+**B0-33's lines on lpB, for the record** [measured, `raw/rows-lpB.status`; read under the 4040b083 rulings]:
+- human commit stage p99 2,641 ms (n 137, 19 over 2 s);
+- merge commit stage p99 2,406 ms (n 31, 4 over 2 s);
+- agent-class ok 104.3 a second, against 110 (99 at 90%);
+- leader changes 0;
+- `suspect` that started an election 0 (8 refused reports, LAX 6 and SJC 2);
+- refusal shape: 386 Human 503s, all `F65 member shed` with Retry-After;
+- edge refusal's R2b flip read FLIPPED on both halves: agent ok pushes 7,336 against erDA's 8,369, and agent cut/s
+  while refusing 101.2 against 114.2.
+
+The B0-33 verdict and R2b belong to edge refusal's set.
 
 ## Replay script
 
