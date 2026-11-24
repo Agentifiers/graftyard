@@ -1,0 +1,9 @@
+2026-11-24T21:38:02Z
+a915d4b5
+{"decoder":"9de56e83b4f4","current_at":1795555714848,"owed":0,"unserved":0,"unserved_alarm":0,"packs":0,"pages":0,"objects":400,"decoder_at":1795555559786,"halted":[],"gone":["repo:65609","repo:65610"],"chains":3194,"chain":null}
+now 1795556282113
+halt lines: 0
+wasm traps: 0
+{"decoder":null,"halted":[],"lag_s":"1","lifeboat_pass":{"edge_chains":[],"feed_error":null,"gone":[],"halted":[],"more":false,"objects":100,"owed":0,"packs":0,"pages":0,"probes":0,"stale":false,"unserved":0,"unserved_alarm":0}}
+{"decoder":null,"halted":[],"lag_s":"1","lifeboat_pass":{"edge_chains":[],"feed_error":null,"gone":[],"halted":[],"more":false,"objects":100,"owed":0,"packs":0,"pages":0,"probes":0,"stale":false,"unserved":0,"unserved_alarm":0}}
+2026-11-24T21:38:02Z

@@ -1,0 +1,9 @@
+2026-11-24T21:12:59Z
+a915d4b5
+2026-11-24T21:13:37.595Z created m3org/bf53-s1 = repo:65631
+2026-11-24T21:14:42.576Z archived: {"leader":0,"truncatedTo":19,"archiveSteps":5,"s":19}
+exit 0
+{"step":"pull request","status":200,"out":{"createPullRequest":{"pullRequest":{"number":1,"title":"bf53 lifeboat pr"}}}}
+{"step":"cap","s":3,"caps":[[1024,65536],[1024,65536],[1024,65536]],"leader":0,"truncatedTo":0,"archiveSteps":0,"alarms":[]}
+{"step":"archived","done":{"leader":0,"truncatedTo":19,"archiveSteps":5,"s":19},"uncap":[null,null,null],"members":[{"site":0,"truncatedTo":19,"archiveSteps":5},{"site":1,"truncatedTo":19,"archiveSteps":0},{"site":2,"truncatedTo":19,"archiveSteps":0}],"commits":[[0,"leader",24],[1,"follower",24],[2,"follower",24]]}
+2026-11-24T21:14:42Z

@@ -1,0 +1,8 @@
+2026-11-24T21:15:27Z
+a915d4b5
+LifeboatAdd lifeboat.bf53.test key 534b1943b1cdf984cfd15bff6cc9fb747514c41cce0aadb9cb065942538e6eb3: {"digest":"911f00ff2adf026631b7cc5a61aa6e75903191c9c664df0720e003354af47bbd","index":698,"status":201}
+wrote ~/.graft-m3f/bf53/boat/lifeboat.json and ~/.graft-m3f/bf53/boat/lifeboat.key (0600)
+local CA and certificate for lifeboat.bf53.test
+wrote ~/.graft-m3f/bf53/boat/config.capnp (0600): serve it with `workerd serve ~/.graft-m3f/bf53/boat/config.capnp --experimental`
+trustBrowserCas lines: 1
+2026-11-24T21:15:28Z
