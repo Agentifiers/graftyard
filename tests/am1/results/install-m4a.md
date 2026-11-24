@@ -223,8 +223,11 @@ gets its `ReleaseUploaded`. `release roll w4` signs a `FrontRoll` and an `McpRol
 for the `FrontRoll` and an `McpPointer` to w3 for the `McpRoll`. The customer then signs `Abort { intent, target: w4 }`
 for each before its first step deploys. An `Abort` to the intent's own release deploys w4 at 100% (front) or w4 at
 100% with nothing kept (mcp, since `deployed` then keeps w4), and `IntentDone` records `rolled` as w4. So w4 is N
-for the row's `McpRoll`, as an `ops` test confirmed in memory [inference from a scratch test on R47's branch,
-removed]. This differs from the lead's suggestion (redeploying w3's bundles as N with no roll): a hand deploy
+for the row's `McpRoll` (`crates/release/src/tests/group/errors.rs`,
+`an_abort_to_the_intents_own_release_records_that_release_as_n`, which fails if an `Abort` does not record its
+target). Accepted by the lead over the hand redeploy, on one condition: before each `Abort` is posted, the intent
+must still be at step 0 with nothing deployed (relview's `next` 0 and the script's deployment unchanged). If either
+has stepped, stop and tell the lead. This differs from the lead's suggestion (redeploying w3's bundles as N with no roll): a hand deploy
 creates new version ids that the group never recorded, so `rolled` would still name w3's deleted versions, and the
 next roll's 1% split would fail. The `McpPointer` to w3 in the `McpRoll`'s undo list is never used, because the
 `Abort` ends that intent first.

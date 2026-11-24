@@ -174,3 +174,48 @@ fn a_bad_graft_mcp_at_1pct_is_judged_on_its_5xx_and_swapped_back_by_its_pointer(
     assert!(matches!(o.roll(2), ops::Roll::Next { intent: Intent::OpsRoll { .. }, .. }));
     assert_eq!(gate::roll_versions(&o.g.f), None);
 }
+
+/// How a fresh install replaces an N whose versions were deleted (`tests/am1/results/install-m4a.md`, "Before the next
+/// `FrontRoll` or `McpRoll` here"): a release w4 with only `front/` and `mcp/` is rolled, and the customer signs
+/// `Abort { target: w4 }` for each intent before its first step. Each returns to w4 at 100%, and the group records w4
+/// as the release each script runs, so w4 is N for the next roll and its 1% split names w4's versions, not the deleted
+/// ones.
+#[test]
+fn an_abort_to_the_intents_own_release_records_that_release_as_n() {
+    let mut o = Ops::new(G::new());
+    o.deps.insert(Script::Mcp, Deployment { split: vec![(OLD, 100)], created: T0 });
+    o.deps.insert(Script::Front, Deployment { split: vec![(OLD, 100)], created: T0 });
+    upload(&mut o, 1, &[Script::Mcp, Script::Front]);
+    o.roll_all(1);
+    // Release 1's versions are gone: the scripts were deleted and redeployed by hand as another version.
+    let hand = VersionId([0x77; 16]);
+    for s in [Script::Mcp, Script::Front] {
+        o.deps.insert(s, Deployment { split: vec![(hand, 100)], created: o.g.at });
+    }
+    upload(&mut o, 4, &[Script::Mcp, Script::Front]);
+    for kind in ["FrontRoll", "McpRoll"] {
+        let ops::Roll::Next { intent, .. } = o.roll(4) else { panic!("no {kind}") };
+        assert_eq!(intent.kind(), kind);
+        let c = o.g.f.current.as_deref().unwrap();
+        assert_eq!(c.next, 0, "{kind}: the Abort goes in before step 0 commits");
+        let deployed = o.deployed.len();
+        let b = o.g.entry(ReleaseEntry::Abort { intent: c.intent.id, target: rel(4).0 }, &[&CUSTOMER]);
+        o.g.ok(b);
+        o.finish();
+        assert_eq!(o.deployed.len(), deployed + 1, "{kind}: one deploy, the return to w4");
+    }
+    let (m4, f4) = (vid(4, 0), vid(4, 1));
+    assert_eq!(o.deps[&Script::Mcp].split, vec![(m4, 100)]);
+    assert_eq!(o.deps[&Script::Front].split, vec![(f4, 100)]);
+    for s in [Script::Mcp, Script::Front] {
+        assert_eq!(ops::running(&o.g.f, s), Some(rel(4).0), "{s:?} runs w4");
+    }
+    assert_eq!(ops::next_roll(&o.g.f, rel(4).0), ops::Roll::Done);
+    // The next release's McpRoll keeps w4 as N: its undo pins w4, and its 1% split is w5 beside w4.
+    upload(&mut o, 5, &[Script::Mcp]);
+    let ops::Roll::Next { intent: Intent::McpRoll { .. }, undo } = o.roll(5) else { panic!("no McpRoll") };
+    assert_eq!(undo, vec![ReleaseEntry::McpPointer { pin: rel(4).0 }]);
+    assert_eq!(gate::roll_versions(&o.g.f), Some((Script::Mcp, vid(5, 0), Some(m4))));
+    o.act();
+    assert_eq!(o.deps[&Script::Mcp].split, vec![(vid(5, 0), 1), (m4, 99)]);
+}
