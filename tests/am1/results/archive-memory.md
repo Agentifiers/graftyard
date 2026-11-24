@@ -309,6 +309,89 @@ thread-local lookup the wasm build does not].
 - `the_peak_holds_across_reads_and_rises_past_itself`: a freed 16 MiB block leaves the peak at its height through three
   reads; 20 MiB live at once raises it past 16.
 
+## The heap reading on B0-33 ln (2026-11-24) [measured]
+
+The lead's 15-minute row (`tests/am1/results/b033-ln.md`): lnA on graft-m2b, main `801d63ad` with heap-count on its
+site day, repo 131418, a1 `mwuqsbkc`, load 900 s from 13:46:21Z, leader site 0 throughout, 0 leader changes, harness
+outage 1 s (0.1%), run $6.24. Raws `raw/memguard-lnA.jsonl.xz`, `raw/leaderlogs-lnA.json.xz`, `raw/a1-ln/`. Every line
+below is recorded, not gated.
+
+**Caveat on rate.** ln's leader ran 73,369 commands at 81.5 a second and 185 inbound requests a second, against clA's 117
+and 274 over its 300 s; commit p50 and p99 626 and 2,416 ms against 797 and 2,670. The plateau below is at ln's rate.
+Its wasm peak matched clA's: 90.9 against 89.1 MiB.
+
+**1. heapLive against wasmMemMb: no leak, and no fragmentation that keeps growing.** Every member's live heap stops
+rising within the first minutes of load, and its wasm memory plateaus 16 to 32 MiB above the live peak.
+
+| Member | wasmMemMb, last rise | heapPeak | heapLive in load | heapLive after load | wasm − heapPeak |
+|---|---|---|---|---|---|
+| site 0, leader | 14 → 90.9, 13:51:16 | 58.8 | 31 → 36 to 45, no trend after minute 3 | 39.8 | 32.1 |
+| site 1 | 8 → 63.3, 13:50:25 | 47.0 | 14 to 18, flat | 17.8 | 16.3 |
+| site 2 | 8.8 → 73.6, 13:55:52 | 46.3 | 14 to 18, flat | 17.8 | 27.3 |
+
+- r(wasmMemMb, heapLive) is 0.99 on every member, from the shared first-minute ramp. Past it, heapLive is flat and
+  wasm memory only steps.
+- Steps of 1.5 MiB or more in wasm memory with heapPeak rising under 0.5 MiB, which is the allocator taking new pages
+  while it holds free ones: 21.9 of the leader's 72.4 MiB of steps, 10.6 of site 1's 55.3, and 28.6 of site 2's 64.8.
+  Site 2's last two steps (+4.8 MiB at 13:52:12, +5.3 at 13:55:52) came at heapPeak 44.4 with heapLive 17.7.
+- The other way too: the leader's heapPeak rose from 55.2 to 58.8 MiB after 13:51 with no wasm growth, inside pages it
+  already held.
+- So wasm memory is the live peak plus 16 to 32 MiB of allocator slack, and the live peak stops rising once the load
+  is steady.
+- **An uncounted owner on the leader.** After load the leader holds 39.8 MiB live against each follower's 17.8. memSplit
+  counts the leader's log at 7.9 MB and nothing else; each follower has the same log plus 5.9 MB of dump caches. So about
+  22 MiB of live heap that only the leader holds is uncounted. It is stable, not growing: a budget item, not a leak.
+
+**2. The climb levels off.** The leader held 90.9 MiB for the last 10 of the 15 load minutes, site 1 63.3 for the last
+11, site 2 73.6 for the last 5.5. memguard's 120 was never reached, and no member reset.
+
+**3. log-page's "not enough" flip: not flipped.** Leader peak 90.9 MiB, under 100; `logPageHigh` 4,193,555 (leader),
+4,095,042 and about 4.19 MB, all at or under 4,194,304.
+
+**4. open-bytes' bound flip: not flipped.** `open.high` 4.40 MiB on the leader (`requestsHigh` 339), 3.82 and 3.98 on
+the followers, against the 30 MiB line. Only 1 of the leader's 17 steps of 2 MiB or more came with `open.high` rising
+1 MiB or more.
+
+**5. The archive turns** (`raw/leaderlogs-lnA.json.xz`: 171,573 events, 0 full chunks; memguard figures are the last
+sample before each line and the highest within 6 s after it).
+
+| Scan line (Cloudflare clock) | Stored range | Bytes scanned | Turn CPU / wall | Leader MiB, heapLive, heapPeak before → after |
+|---|---|---|---|---|
+| 13:45:55.338 | 2..=944 | 1.4 MB | 16 / 80 ms | 12.6, 9.8, 10.2 → 13.1, 10.1, 10.4 |
+| 13:46:55.549 | 2..=1105 | 9.7 MB | 18 / 54 ms | 53.7, 32.5, 39.4 → 60.2, 29.9, 39.5 |
+| 13:47:55.637 | 2..=1272 | 43.8 MB | 22 / 591 ms | 66.5, 30.0, 43.7 → 66.5, 30.3, 43.7 |
+| 13:48:55.910 | 2..=1407 | 68.1 MB | 111 / 162 ms | 72.6, 34.7, 49.5 → 72.6, 33.7, 49.5 |
+| 13:54:43.613 | 2..=2426 | **246.5 MB** | 61 / 872 ms | 90.9, 40.8, 58.7 → 90.9, 40.8, 58.7 |
+
+- **No scan moved the live heap.** heapLive moved by at most 2.6 MiB across any scan (13:46:55, during the load's first
+  minute), and the 246.5 MB scan moved nothing. The scan stays an aggregate: `length()` reads no content
+  (`decisions/DECISIONS.md`, "`archive-scan`").
+- **The 68.1 MB scan started the row's one promotion**, `Promoted { from: 17, to: 1078 }` at 13:54:43, which took 347.5 s
+  (13:48:55 to 13:54:43) and committed in 296 ms. 66 `shard warm … no answer in 25 s` lines on site 2 from 13:47:03 to
+  14:02:05 sit beside it. No `Archived` committed in the row, so no truncation ran: 900 s at ln's rate stores about
+  250 MB, and the drain was still in its first promotion. Whether a truncated tail frees live heap is still not
+  observed [inference: the 30-minute row would reach it, if the promotion takes as long].
+- **archive-scan's flip: not flipped.** Scan-line turns took 16 to 111 ms CPU with no trend in the scanned bytes (1.4 to
+  246.5 MB), 228 ms in all, 0.06% of the leader's load CPU, against the 1% line.
+
+**6. heap-count's CPU flip: not flipped, but the leader's CPU per invocation rises through the row** [measured, cause
+inference].
+- First 300 s on the same shape: ln's leader 1.67 ms an invocation (73,681 invocations, 123.0 s) against lpB's 1.36
+  (85,408, 116.1 s, main `11f1a69a`, no heap-count) and clA's rate. By route: `/commit` 1.47 against 1.24 ms, `/raft`
+  1.10 against 1.24, `/outcome` 0.38 against 0.29, `/entries` 5.57 against 4.66. `/raft`, the route with the most
+  allocation per byte, is cheaper on ln, and the others are within run-to-run spread for different builds, hosts and
+  rates; ln's site day also carries agent-rows-cache's policy rule and the other merges since `11f1a69a`. There is no
+  sign of a per-allocation cost near 1%.
+- Over the 900 s the leader's CPU per invocation climbed from 1.01 ms in the first load minute to 2.95 in the last three,
+  while its invocations fell from 18,739 to about 7,700 a minute: `/commit` 1.34 → 2.72 ms and `/raft` 0.99 → 2.18 in
+  3-minute bins. That is work per call growing with the stored log or the open-PR set, not the counter, which costs the
+  same per allocation throughout. The leader used 362.5 s of CPU over the 900 s, 40.3% of a thread (lpB: 38.7% over its 300 s). Not chased here.
+
+**Verdicts (recorded, not gated).** heapLive plateaus on every member (no leak, no growing fragmentation; about 22 MiB of
+stable uncounted live heap on the leader); the climb levels off at 90.9 MiB; log-page, open-bytes, archive-scan and
+heap-count's flips all hold. No 30-minute row (the lead, 2026-11-24). Next, at $0: a native leader sim's allocation
+census of the leader's uncounted live heap.
+
 ## Replay script
 
 The page-rule replay is a few lines over the row sizes; it is not committed. It took per-index sizes from `culag`'s
