@@ -26,6 +26,7 @@ pub mod glob;
 pub mod group_move;
 mod identity;
 mod ids;
+pub mod lifeboat;
 mod names;
 pub mod oidc;
 mod org;
@@ -77,7 +78,7 @@ pub use tokens::{
     OpaqueToken, RedrawExhausted, RepoScope, SHARDS_PER_FAMILY, SIGN_IN_LINK_TTL, ScopeSet, SshKeyRow, TOKEN_SHARDS,
     TokenError, TokenFields, TokenKind, TokenRow, TokensCmd, TokensErr, TokensEvent, TokensFold, TokensMore, TokensOp,
     TokensRead, TokensScratch, VerifyingKeyRow, WriteScope, code_hash, draw_device_code, draw_secret, draw_secret_on,
-    family_of, fingerprint_shard, jti_shard, shard_of_hash, token_shard,
+    family_of, fingerprint_shard, jti_shard, lifeboat_shard, shard_of_hash, token_shard,
 };
 
 use graftyard_raft::Format;
@@ -123,3 +124,7 @@ pub const TOKENS_FORMAT_V3: Format = Format { family: 0x11, version: 3 };
 /// AM2-WP1: `StoreWith` of a `ghu_` from `token/scoped`, which may carry `repos` and an MCP grant's `grant` and
 /// `write` (`TokenFields::fits_at`). Read and enabled on the same terms as version 2.
 pub const TOKENS_FORMAT_V4: Format = Format { family: 0x11, version: 4 };
+/// M6-WP3's `lifeboat-revoke`: `StoreLifeboat`, whose entry revokes every earlier lifeboat token of the account with
+/// `TokensEvent::LifeboatRevoked`. Read and enabled on the same terms as version 2; the lifeboat token route answers
+/// 503 until it is enabled.
+pub const TOKENS_FORMAT_V5: Format = Format { family: 0x11, version: 5 };

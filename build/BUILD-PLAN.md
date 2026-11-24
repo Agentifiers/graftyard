@@ -1705,6 +1705,8 @@ BF-51 and BF-52 are built as unit tests: `crates/git/tests/push.rs`, the `bf52_*
 
 **Depends on.** M5-WP3, M5-WP5.
 
+**Status (2026-11-24).** The pure half is built and tested at $0 on branch `lifeboat-pure` (`decisions/DECISIONS.md`, "`lifeboat-learner`"): the importer that feeds each chain's learner, lifeboat mode in the member host, signed tail, snapshot, and pack pulls on the edge, `lifeboat_seen` and the 7-day page, the puller, `LifeboatStatus`, `graft-blob`, and DNS-01 against a stub. Then Tokens V5 (0x11.5, `decisions/DECISIONS.md`, "`lifeboat-revoke`"): enroll's revocation of the developer's earlier lifeboat tokens and `POST /api/graftyard/v1/lifeboat/tokens`, 503 until 0x11.5 is enabled. Still to build: the daily `LifeboatDecoder`, the CLI, and the workerd bundle with its bed. Real ACME waits for the operator's validation-zone account (`decisions/OPEN-QUESTIONS.md`, R50).
+
 **Acceptance.**
 
 | Row | Measurement | Pass | Fail |

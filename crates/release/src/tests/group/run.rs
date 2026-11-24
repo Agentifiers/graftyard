@@ -673,3 +673,37 @@ fn a_killed_graft_ops_reruns_a_rotate_step_and_commits_each_step_once() {
     assert_eq!(steps, [0, 1, 2, 3, -1], "each step once, in order, then one IntentDone");
     assert_eq!(f.g.f.slot(SecretName::MintWrapKey), 1);
 }
+
+/// The 7-day silence alarm: `graft-ops` pages for a registered lifeboat heard neither by its `LifeboatAdd` nor by a
+/// `LifeboatDecoder` for more than `LIFEBOAT_SILENT`, once a run, and moves nothing for it. A decoder entry, or the
+/// lifeboat's removal, ends the page.
+#[test]
+fn a_lifeboat_silent_for_seven_days_pages_and_a_decoder_or_removal_clears_it() {
+    let mut f = Fake::new(G::new());
+    let lb = [11u8; 32];
+    let host = "lb.acme.example";
+    let b = f.g.entry(ReleaseEntry::LifeboatAdd { host: host.into(), key: public_key(&lb) }, &[&CUSTOMER]);
+    f.g.ok(b);
+    assert_eq!(f.g.f.lifeboat_seen.get(host), Some(&f.g.at));
+    let silent = ops::LIFEBOAT_SILENT;
+    let run = |f: &mut Fake| {
+        f.pages.clear();
+        block_on(ops::run(f, Dwell::default()));
+        f.pages.iter().filter(|p| p.contains("lifeboat")).count()
+    };
+    let added = f.g.at;
+    f.g.at = Timestamp(added.0 + silent);
+    assert_eq!(run(&mut f), 0, "exactly 7 days is not yet silent");
+    f.g.at = Timestamp(added.0 + silent + 1);
+    assert_eq!(run(&mut f), 1, "past 7 days pages, once a run");
+    super::ops::upload_all(&mut f.g, 1);
+    let b = f.g.entry(ReleaseEntry::LifeboatDecoder { host: host.into(), release: rel(1).0 }, &[&lb]);
+    f.g.ok(b);
+    assert_eq!(run(&mut f), 0, "a decoder entry resets the clock");
+    f.g.at = Timestamp(f.g.at.0 + silent + 1);
+    assert_eq!(run(&mut f), 1);
+    let b = f.g.entry(ReleaseEntry::LifeboatRemove { host: host.into() }, &[&CUSTOMER]);
+    f.g.ok(b);
+    assert!(f.g.f.lifeboat_seen.is_empty());
+    assert_eq!(run(&mut f), 0, "a removed lifeboat never pages");
+}

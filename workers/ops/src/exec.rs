@@ -655,10 +655,16 @@ fn dwell(env: &Env) -> Dwell {
     let rotate_published = ms("OPS_ROTATE_PUBLISHED_MS").unwrap_or(d.rotate_published);
     #[cfg(not(feature = "test-faults"))]
     let rotate_published = d.rotate_published;
+    // BF-53 on a test install: the lifeboat silence alarm's bound, read only by a test-faults build.
+    #[cfg(feature = "test-faults")]
+    let lifeboat_silent = ms("OPS_LIFEBOAT_SILENT_MS").unwrap_or(d.lifeboat_silent);
+    #[cfg(not(feature = "test-faults"))]
+    let lifeboat_silent = d.lifeboat_silent;
     Dwell {
         step: ms("STEP_DWELL_MS").unwrap_or(d.step),
         first_day: ms("FIRST_DAY_MS").unwrap_or(d.first_day),
         rotate_published,
+        lifeboat_silent,
     }
 }
 

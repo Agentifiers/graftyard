@@ -9933,3 +9933,106 @@ equal.
   2 GiB.
 - **Build it** if a Durable Object's SQLite turns out to read overflow pages for `length()`: hosted scan CPU rising
   with the scanned MB.
+
+### `lifeboat-learner`: the lifeboat serves each chain from a learner its own importer feeds, and signs its tail pulls with its key, 2026-11-24
+
+**Status.** M6-WP3's pure half, ruled by the lead on 2026-11-24 from the M6-WP3 plan and spike. Built on branch
+`lifeboat-pure` from main `3bf43a16`: `crates/raft/src/import.rs` and `tests/import.rs`; `crates/identity/src/lifeboat.rs`;
+`crates/git/src/export.rs` (`Route::lifeboat_may`) and `workers/edge/src/export.rs` (`lifeboat_claims`);
+`crates/release` (`ReleaseFold::lifeboat_seen`, `ops::silent_lifeboats`) and `workers/ops/src/exec.rs`;
+`workers/site/src/member.rs` (`lifeboat_route`); the new `lifeboat/` crate (`puller`, `status`, `blob`, `acme`). The
+workerd bundle and its bed are the next branch, and Tokens V5 is the next commit ("`lifeboat-revoke`"). Not hosted.
+
+**Decision.**
+- **The copy is learners.** Each chain on the lifeboat is a learner (slot 15) of the site script's own member classes,
+  run under `GRAFTYARD_LIFEBOAT=1`. A local importer (`graftyard_raft::import::Importer`) steps committed rows into it
+  as AppendEntries from `IMPORTER`, an address no placement names, with `commit` at the last row. So the member's own
+  `verify`, apply, and fold build every tier, and an install from the importer covers an archived range. The chain's
+  `PlacementRecord`, which no export object carries, is rebuilt from entry 1.
+- **The importer checks the chain itself.** A member checks `prev` against its own digest only above its commit; at or
+  below it is a `debug_assert`. The importer checks each row's index and `prev` before the member sees it, and a
+  mismatch, a row that differs from one held, or a `verify` refusal halts the chain (`Halt`). Nothing is skipped.
+- **Lifeboat mode in the member host.** Every `/read` is the stale path (`read_stale`), never read-index, since the
+  importer answers no `ReadIndex`. Every write and leadership route answers 503. Only the importer's `/raft` and the
+  observation routes pass (`lifeboat_route`).
+- **Signed pulls.** A lifeboat sends `X-Graftyard-Lifeboat`, `-At`, and `-Sig` (Ed25519 under its `LifeboatAdd` key,
+  over a domain tag, the host, the time, the method, and the path with its query, each length-prefixed). The edge
+  checks the time within `CLOCK_SKEW` and the key in its cached `Release` view, and serves entries, snapshots, and
+  packs as an install-scoped export. Batches and token revocation are refused.
+- **The 7-day alarm.** `ReleaseFold::lifeboat_seen` holds each registered lifeboat's last `LifeboatAdd` or
+  `LifeboatDecoder` time. `graft-ops` pages once a run for one silent more than `LIFEBOAT_SILENT` (7 days), lowered on
+  test-faults by `OPS_LIFEBOAT_SILENT_MS`.
+- **Sources.** The puller takes the R2 feed while it moved within `FEED_STALE_MS` (60 s [guess]), and the edge for
+  every known chain once it is stale. It pulls a chain whose feed rows start past its next index from the edge, never
+  stitched.
+
+**Why.** The spike showed a learner fed only committed rows by a non-member ends with the group's fold and commit
+exactly, across a leader change in the rows, a restart from its own storage, and an install. It refuses an unreadable
+row at its index on every retry, and never campaigns. Reusing the member classes means the lifeboat decodes with the
+same code as the sites, which is what `formats:enable` waiting on every lifeboat relies on.
+
+**What it beat.**
+- **A separate lifeboat fold.** That is a second decoder of every family to keep in step with the sites, and the
+  two-release rule would have nothing to hold it to.
+- **An export token on the lifeboat.** That adds a second credential to revoke, and DESIGN already gives the lifeboat
+  key this job.
+- **Letting the member's own check guard `prev` at or below commit.** In a release build that check is gone.
+
+**Evidence.**
+- `crates/raft/tests/import.rs`, 7 tests.
+- `a_lifeboat_member_reads_its_own_fold_and_refuses_every_write` (site).
+- `crates/identity/src/lifeboat.rs` tests and `a_lifeboat_request_takes_only_tail_snapshot_and_pack_routes`.
+- `a_lifeboat_silent_for_seven_days_pages_and_a_decoder_or_removal_clears_it`.
+- `lifeboat/tests/puller.rs` and `blob.rs`, the latter crashing before every call with names durable or not.
+- `tests/m0carried/plant119.py`, 13 of 13 caught.
+
+**Flip.**
+- **Back to a separate decoder** if a site member class cannot run in workerd off Cloudflare: the bundle's bed fails
+  on a binding the classes need and workerd lacks.
+- **A chain listing endpoint** if a drill shows a chain created while the feed was stale must reach the lifeboat
+  before the feed returns (`decisions/OPEN-QUESTIONS.md`, R51).
+- **Raise `FEED_STALE_MS`** if BF-53's feed, running, ever reads older than 60 s while healthy, so the lifeboat turns
+  to the edge with nothing wrong.
+
+**ACME.** DNS-01 is built against a stub (`lifeboat/src/acme.rs`). Real ACME is owed until the operator creates the
+validation-zone account (`decisions/OPEN-QUESTIONS.md`, R50); BF-53 uses a local CA.
+
+### `lifeboat-revoke`: each lifeboat enroll revokes the developer's earlier lifeboat tokens, in Tokens 0x11.5, 2026-11-24
+
+**Status.** M6-WP3, ruled by the lead on 2026-11-24 (option (ii-a)). Built as its own commit on branch `lifeboat-pure`,
+after the pure half: `crates/identity/src/tokens.rs` (`lifeboat_shard`, `TokensEvent::LifeboatRevoked`, wire tag 12 and record byte 13,
+and `StoreLifeboat`'s rule), `crates/identity/src/lib.rs` (`TOKENS_FORMAT_V5`), `workers/site/src/family.rs` (reads
+0x11.5), and `workers/edge/src/lifeboat.rs` (`POST /api/graftyard/v1/lifeboat/tokens`). Not hosted.
+
+**Decision.**
+- **One shard per developer.** The edge draws the token's secret until its hash lands on `lifeboat_shard(account)`
+  (`draw_secret_on`, about 3,072 draws), and the leader refuses a `StoreLifeboat` on any other shard (`WrongShard`).
+- **One entry.** `StoreLifeboat` emits `LifeboatRevoked { hash }` for every lifeboat row of the account on that shard,
+  then `LifeboatRead`. Applying `LifeboatRevoked` removes the row, so the fold blob, a member restored from storage, and
+  a fold rebuilt from the log refuse the earlier token alike. A follower refuses a `LifeboatRevoked` of a row it does not
+  hold.
+- **The edge as the operator** (ruling B). It authenticates the developer's own token, checks the host in its `Release`
+  view, then commits as the operator. Only the operator may submit `StoreLifeboat`.
+- **Format.** Tokens 0x11.5, the next free Tokens version on main `3bf43a16` (0x11.1 to 0x11.4 are taken). It follows the
+  two-release path that 0x11.2 to 0x11.4 took: the site reads it from this release, and the edge sends it only once
+  `FormatsEnable` (the test edge's `FORMATS_ENABLED`, `17.5`) enabled it. Until then the route answers 503, and a
+  member of the release before answers `Unsupported`.
+
+**Why.** A developer's leaked lifeboat token must stop working at their next enroll, and that rule must survive a
+snapshot rebuild of the shard, which a rule kept outside the log would not.
+
+**What it beat.**
+- **(ii-b), a revocation the edge keeps in memory or a cache.** It is lost on a snapshot rebuild, the case that matters most.
+- **(ii-c), a per-host token with no revocation.** It defers the same format change.
+
+**Evidence.**
+- `crates/identity/tests/lifeboat.rs`: after three enrolls the first two tokens are refused, the newest reads, and a
+  neighbour's token on the same shard is kept, on the leader's fold, after every member restores from storage, on the
+  fold blob, and on a fold rebuilt from the log. A token off the account's shard is refused `WrongShard`, a developer's
+  own credential is refused `Forbidden`, and a 0x11.4 member answers `Unsupported`.
+- `tests/m0carried/plant180.py`, 3 of 3 caught: no `LifeboatRevoked` emitted, a `LifeboatRevoked` that removes
+  nothing, and a revocation that takes every lifeboat row of the shard.
+- `crates/git/tests/wire_tags.golden`: `TokensEvent` 12 `LifeboatRevoked` (event byte 13 in `Record`).
+
+**Flip.** A developer enrolled on two lifeboats at once needs both tokens live. That needs a per-host revocation, which
+is a new Tokens format.

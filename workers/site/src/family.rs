@@ -1769,9 +1769,10 @@ impl Family for Tokens {
     type Fold = id::TokensFold;
     type C = id::TokensCmd;
 
-    /// Format 3 is the `Audit` cursor's, as for `Names`. Format 4 is `token/scoped`'s narrowed `ghu_` (AM2-WP1).
+    /// Format 3 is the `Audit` cursor's, as for `Names`. Format 4 is `token/scoped`'s narrowed `ghu_` (AM2-WP1), and 5
+    /// the lifeboat enroll that revokes the account's earlier lifeboat tokens (M6-WP3).
     fn reads() -> Vec<Format> {
-        vec![id::TOKENS_FORMAT, id::TOKENS_FORMAT_V2, id::TOKENS_FORMAT_V3, id::TOKENS_FORMAT_V4]
+        vec![id::TOKENS_FORMAT, id::TOKENS_FORMAT_V2, id::TOKENS_FORMAT_V3, id::TOKENS_FORMAT_V4, id::TOKENS_FORMAT_V5]
     }
     /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`).
     fn fold_alarm_ms(leading: bool) -> Option<i64> {

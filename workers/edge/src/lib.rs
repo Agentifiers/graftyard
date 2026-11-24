@@ -60,6 +60,7 @@ mod hooks;
 mod hosted;
 mod ident;
 mod keys;
+mod lifeboat;
 mod mcp;
 mod oidc;
 mod precreate;
@@ -4322,6 +4323,10 @@ async fn serve(
     }
     if path == usertok::TOKENS_PATH {
         let r = usertok::create_fine_grained(&c, &mut req).await?;
+        return agents::respond(&c, r);
+    }
+    if path == lifeboat::TOKENS_PATH {
+        let r = lifeboat::mint(&c, &mut req).await?;
         return agents::respond(&c, r);
     }
     if let Some(r) = oidc::route(&c, &mut req, &path).await? {

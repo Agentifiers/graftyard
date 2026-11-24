@@ -1242,7 +1242,7 @@ pub enum TokensEvent { Stored { hash: [u8; 32], kind: TokenKind, account: Accoun
                        VerifyingKey { kid: Kid, key: Ed25519Public, retired: Option<Timestamp> },
                        Code { hash: [u8; 32], kind: CodeKind, client: Option<ClientId>, scopes: ScopeSet,
                               account: Option<AccountId>, expires: Timestamp },
-                       CodeApproved { hash: [u8; 32], account: AccountId }, CodeUsed { hash: [u8; 32] } }
+                       CodeApproved { hash: [u8; 32], account: AccountId }, CodeUsed { hash: [u8; 32] }, LifeboatRevoked { hash: [u8; 32] } }
 pub enum CodeKind { Device { user_code: [u8; 32], interval: u8 }, User { device_code: [u8; 32] },
                     Authorization { redirect: Url, pkce: Option<Digest> }, SignInLink }
 /// 1,024 shards per install or front account, on `Tri`. `account_shard` holds the account's `Account` row.
@@ -1341,11 +1341,11 @@ pub const IDENTITY_BUDGET_PER_ISOLATE: u32 = 50;   // group reads per second; co
 pub struct ChangeBatch { pub minute: u64, pub seq: u32, pub chains: Vec<(ChainId, Index)> }
 pub struct ExportObject { pub batch: ChangeBatch, pub entries: Vec<(ChainId, Index /* first */, Vec<Bytes>)> }
 pub struct ExportCursor { pub chain: ChainId, pub index: Index }   // FeedState { last: Option<(minute, seq)>, cursors }
-/// Export endpoints. The edge serves them under an `ExportClaims` token, or for a lifeboat's tail pulls a request
-/// signed by the host's `LifeboatAdd` key. Entries and snapshots come from a follower or learner, or from archive
-/// objects for archived indexes, never from the leader. Bodies are `application/octet-stream` frames, each a 4-byte
-/// length, the stored bytes, and their SHA-256. Pages follow GitHub's `Link` header with `rel="next"`. A bad cursor is
-/// 422, a range past retention 410, and a chain outside the token's scope 404, as a chain with no group is. - `GET
+/// Export endpoints, under an `ExportClaims` token, or for a lifeboat's entry, snapshot, and pack pulls a request its
+/// `LifeboatAdd` key signed (`X-Graftyard-Lifeboat-*`: host, time within 60 s, method, path). Entries and snapshots
+/// come from a follower or learner, or archive objects, never the leader. Bodies are octet-stream frames, each a 4-byte
+/// length, the stored bytes, and their SHA-256. Pages follow GitHub's `Link` with `rel="next"`. A bad cursor
+/// is 422, a range past retention 410, and a chain outside the token's scope 404, as a chain with no group is. - `GET
 /// export/batches?after=<minute>.<seq>`: up to 100 `ExportObject`s or 8 MiB, `Install` tokens only. - `GET
 /// export/chains/{chain}/entries?from=<index>&limit=<n>`: stored `LogEntry` bytes, at most 1,000 or 8 MiB a page
 /// [guess]. - `GET export/chains/{chain}/snapshots?at=<index>`: the newest snapshot at or below `at`, as a member
@@ -1361,12 +1361,12 @@ pub struct ExportClaims { pub install: InstallId, pub scope: Scope, pub holder: 
                           pub jti: Ulid, pub iat: Timestamp, pub exp: Timestamp /* <= 400 days [guess] */ }
 /// A `lifeboat:read` token is an `OpaqueToken` of kind `Pat` (`ghp_`), so gh and git accept it. Its only claim is the
 /// account in its `TokensEvent::LifeboatRead` row, and it has no expiry. The main edge refuses it, because no `Stored`
-/// row holds its hash. `POST /api/graftyard/v1/lifeboat/tokens` with `{"host": "<lifeboat host>"}`, authenticated by
-/// the developer's own token, commits the row, revokes that developer's previous one for the host, and returns
-/// `{"token": "..."}` once. `graftyard lifeboat enroll` calls it.
-/// Served in `/api/v3/meta` and the `X-Graftyard-Lifeboat-Lag` header. The host reports `decoder` to the `Release`
-/// group by signing `LifeboatDecoder` with its key and sending it to `POST /api/graftyard/v1/release/entries`, when
-/// its decoder changes and at least daily, and that daily entry is what the 7-day silence alarm watches.
+/// row holds its hash. `POST /api/graftyard/v1/lifeboat/tokens` (`{"host": ...}`, the developer's own token, verified
+/// by the edge, which commits `StoreLifeboat` as the operator: one group write, no Cloudflare API call; 503 until Tokens
+/// 0x11.5) revokes the developer's earlier lifeboat tokens in the same entry (`LifeboatRevoked`) on
+/// `lifeboat_shard(account)`, which the secret is drawn onto, and returns the token once. Served in `/api/v3/meta` and
+/// the lag header. The host signs `LifeboatDecoder` with its key to `POST /api/graftyard/v1/release/entries` at each
+/// decoder change and at least daily, and that daily entry is what the 7-day silence alarm watches.
 pub struct LifeboatStatus { pub decoder: ReleaseId, pub cursor_age: Duration }
 ```
 
@@ -1787,7 +1787,7 @@ The lifeboat runs on the same `localDisk` storage and `localDocker` engine, and 
   | Export token | Customer | `graftyard vault token` signs new `ExportClaims` offline | Never. It goes to the vault Worker's secret under the vault-account token | No `Rotate`. The old `jti` is revoked after the vault's next pull succeeds |
   | Lifeboat validation-zone DNS token and R2 read token | Customer | New tokens in those accounts | Never. They go to the lifeboat host | No `Rotate` |
 
-  The customer, vendor, release-signing, drain, executor, agents executor, and ring keys rotate by a new `Keys` entry. A new drain or executor private key goes into the inactive slot first, and `graft-ops` switches when the `Keys` that names it commits. A ring key's new public key enters `Keys` before its site switches to it. A lifeboat key rotates by `LifeboatRemove` and `graftyard lifeboat init`, and a developer's `lifeboat:read` token by re-running `enroll`, which revokes the old one.
+  The customer, vendor, release-signing, drain, executor, agents executor, and ring keys rotate by a new `Keys` entry. A new drain or executor private key goes into the inactive slot first, and `graft-ops` switches when the `Keys` that names it commits. A ring key's new public key enters `Keys` before its site switches to it. A lifeboat key rotates by `LifeboatRemove` and `graftyard lifeboat init`, and a developer's `lifeboat:read` token by re-running `enroll`, which revokes every earlier one that developer holds.
 - **Vault.** `graftyard vault init` creates the vault Worker in the vault account from the `vault/` folder of a release whose `release.json` verifies under `Keys.release` (`crates/release`, `check_vault`), under a vault-account token that the customer holds, and gives it an install-scoped export token (Shape, "Lifeboat feed", `ExportClaims`). The Worker pulls `export/batches`, then each moved chain's entries and the packs and snapshots they name, from the install's edge over HTTPS, and writes them to R2 under bucket lock rules of 35 days on `feed/`, `entries/`, `snapshot/`, and `pack/`, create-only, each pack and snapshot checked against its entry's checksum before it exists; R2 checks a lock rule before `If-None-Match`, so a create-only put to a held key returns 409 `ObjectLockedByBucketPolicy`, not 412 [doc: Cloudflare R2 bucket locks, Notes; measured, vh1], and either refusal is judged by a HEAD of the key's size and stored SHA-256, never taken as stored; its cursors live in an unlocked `state/vault`, written compare-and-swap. A chain first carried past index 1 is filled from the entries endpoint, or from a snapshot once the range is archived (`decisions/DECISIONS.md`, `vault-worker`). It deletes a pack no sooner than `RESTORE_WINDOW` after the install's GC deletes it, counted from the first probe that finds it gone; a 410 is never a GC. The export covers every `ChainId`, including `Release`, `Names`, `Tokens`, `Identity`, and user-owned repositories. Managed tenants keep per-org tokens for their own exports. A vault is required for managed, BYOC, and self-hosted. `graftyard vault upgrade --release R` verifies R's release signature on the operator's machine and deploys R's vault Worker under the same vault-account token, keeping its bindings and secret, because no install token reaches the vault account. The lock stops a bad vault release, not a holder of the vault-account token, who can remove the rules and then delete every object [doc: Cloudflare R2 bucket locks].
 - **Whole-install restore.** From the vault after an account compromise or destructive deploy, or from a lifeboat export after a Cloudflare-wide data loss:
   1. Name a cutoff minute, chosen by the operator before the compromise, or the source cursor after a Cloudflare-wide loss. Create a new install account and sites from the signed artifact, with a customer-signed genesis that names the restore source and the cutoff.

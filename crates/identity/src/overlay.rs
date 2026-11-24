@@ -27,6 +27,12 @@ impl<'a, K: Ord + Clone, V> Overlay<'a, K, V> {
     pub(crate) fn delete(&mut self, k: K) {
         self.over.insert(k, None);
     }
+
+    /// Every row the view holds: the fold's, as earlier events of the entry left them.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&K, &V)> {
+        let base = self.base.iter().filter(|(k, _)| !self.over.contains_key(*k));
+        base.chain(self.over.iter().filter_map(|(k, v)| v.as_ref().map(|v| (k, v))))
+    }
 }
 
 /// The writes one event makes, shared by a fold's `apply` and its scratch's, so the two never diverge.

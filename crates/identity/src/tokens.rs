@@ -26,7 +26,7 @@ use crate::compat::tail_serde;
 use crate::credential::{CredentialRefusal, IdentityDep, OrgId, Own, check_credential, credential_chains, encode_cred};
 use crate::enc;
 use crate::overlay::{Overlay, SetOverlay, Table};
-use crate::{TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3, TOKENS_FORMAT_V4};
+use crate::{TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3, TOKENS_FORMAT_V4, TOKENS_FORMAT_V5};
 
 /// 1,024 shards per home family.
 pub const SHARDS_PER_FAMILY: u16 = 1024;
@@ -318,6 +318,12 @@ pub fn jti_shard(jti: &Jti) -> TokenShard {
     shard_of_digest(b"graftyard/jti/", &jti.0.0.to_be_bytes())
 }
 
+/// The shard every `lifeboat:read` token of `account` lives on: `POST /api/graftyard/v1/lifeboat/tokens` draws the
+/// secret onto it (`draw_secret_on`), so one entry there revokes every earlier one (Tokens 0x11.5).
+pub fn lifeboat_shard(account: AccountId) -> TokenShard {
+    shard_of_digest(b"graftyard/lifeboat/", &account.0.0.to_be_bytes())
+}
+
 /// The hash a code row is keyed by: SHA-256 of the code's text under its own tag, never the code. Codes are not
 /// tokens, so they hash under another tag than `OpaqueToken::hash`.
 pub fn code_hash(code: &[u8]) -> [u8; 32] {
@@ -532,6 +538,11 @@ pub enum TokensEvent {
     AuditCursor {
         through: Index,
     },
+    /// Tokens 0x11.5: an earlier `lifeboat:read` token of the account, revoked by its next enroll in the same entry.
+    /// The row goes, so the lifeboat refuses the token from the fold, its blob, and a rebuild alike.
+    LifeboatRevoked {
+        hash: [u8; 32],
+    },
 }
 
 fn token_fields(e: &mut Enc, f: &TokenFields) {
@@ -579,7 +590,8 @@ fn code_kind(e: &mut Enc, k: &CodeKind) {
 }
 
 /// Tags 0 and 1 are Milestone 1's and keep their bytes. The rest follow the design's declaration order from 2, with
-/// `StoredWith`, the design's `Stored` with fields, after them at 11, and `AuditCursor` at 12. 10 is unused.
+/// `StoredWith`, the design's `Stored` with fields, after them at 11, `AuditCursor` at 12, and `LifeboatRevoked` at
+/// 13. 10 is unused.
 impl Record for TokensEvent {
     fn encode(&self, out: &mut Vec<u8>) {
         let mut e = Enc(out);
@@ -643,6 +655,10 @@ impl Record for TokensEvent {
             TokensEvent::AuditCursor { through } => {
                 e.u8(12);
                 e.u64(through.0);
+            }
+            TokensEvent::LifeboatRevoked { hash } => {
+                e.u8(13);
+                e.0.extend_from_slice(hash);
             }
             TokensEvent::StoredWith { hash, kind, account, scopes, expires, fields } => {
                 e.u8(11);
@@ -842,6 +858,7 @@ fn write(ev: &TokensEvent, t: &mut impl Table<[u8; 32], TokenRow>, m: &mut impl 
         }
         TokensEvent::JtiRevoked { jti, exp } => m.jtis().put(*jti, *exp),
         TokensEvent::LifeboatRead { hash, account } => m.lifeboat().put(*hash, *account),
+        TokensEvent::LifeboatRevoked { hash } => m.lifeboat().del(hash),
         TokensEvent::VerifyingKey { kid, key, retired } => {
             m.verifying().put(*kid, VerifyingKeyRow { key: *key, retired: *retired })
         }
@@ -904,6 +921,7 @@ fn shard_of_event(ev: &TokensEvent) -> Option<TokenShard> {
         TokensEvent::Stored { hash, .. }
         | TokensEvent::StoredWith { hash, .. }
         | TokensEvent::LifeboatRead { hash, .. }
+        | TokensEvent::LifeboatRevoked { hash }
         | TokensEvent::Code { hash, .. } => Some(shard_of_hash(hash)),
         TokensEvent::SshKey { fingerprint, .. } | TokensEvent::SshKeyRemoved { fingerprint } => {
             Some(fingerprint_shard(fingerprint))
@@ -942,6 +960,9 @@ impl Scratch for TokensScratch<'_> {
                 None => Ok(()),
             },
             TokensEvent::Code { hash, .. } if self.more.codes.get(hash).is_some() => Err("code stored twice".into()),
+            TokensEvent::LifeboatRevoked { hash } if self.more.lifeboat.get(hash).is_none() => {
+                Err("revocation of a lifeboat token not held".into())
+            }
             TokensEvent::CodeApproved { hash, .. } => match self.code(hash, now) {
                 Some(c) if c.approved.is_none() && !c.used => Ok(()),
                 _ => Err("approval of a missing, lapsed, approved, or used code".into()),
@@ -1065,7 +1086,8 @@ pub enum TokensOp {
         key: Ed25519Public,
         retired: Option<Timestamp>,
     },
-    /// A `lifeboat:read` token's hash. Only `graftyard lifeboat enroll`, through the operator, submits it.
+    /// A `lifeboat:read` token's hash, on `lifeboat_shard(account)`. The edge submits it as the operator once it has
+    /// verified the developer's own token; its entry revokes every earlier lifeboat token of the account (0x11.5).
     StoreLifeboat {
         hash: [u8; 32],
         account: AccountId,
@@ -1407,7 +1429,20 @@ impl TokensCmd {
                 if s.lifeboat(hash).is_some() || s.token(hash).is_some() {
                     return Err(TokensErr::Exists);
                 }
-                done(smallvec![TokensEvent::LifeboatRead { hash: *hash, account: *account }])
+                // On any other shard this enroll would not see the account's earlier tokens to revoke them.
+                let want = lifeboat_shard(*account);
+                if shard_of_hash(hash) != want {
+                    return Err(TokensErr::WrongShard { want });
+                }
+                let mut evs: SmallVec<[TokensEvent; 4]> = s
+                    .more
+                    .lifeboat
+                    .entries()
+                    .filter(|(_, a)| *a == account)
+                    .map(|(h, _)| TokensEvent::LifeboatRevoked { hash: *h })
+                    .collect();
+                evs.push(TokensEvent::LifeboatRead { hash: *hash, account: *account });
+                done(evs)
             }
             TokensOp::PutCode { hash, kind, client, scopes, account } => {
                 // A device flow's pair comes only from `PutDeviceCode`; a sign-in link names its account.
@@ -1538,6 +1573,7 @@ impl Command for TokensCmd {
         match self.op {
             TokensOp::Store { .. } | TokensOp::Revoke { .. } => TOKENS_FORMAT,
             TokensOp::AuditCursor { .. } => TOKENS_FORMAT_V3,
+            TokensOp::StoreLifeboat { .. } => TOKENS_FORMAT_V5,
             _ if self.scoped() => TOKENS_FORMAT_V4,
             _ => TOKENS_FORMAT_V2,
         }

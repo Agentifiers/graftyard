@@ -1,0 +1,17 @@
+[package]
+name = "graftyard-lifeboat"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The lifeboat's pure half (`design/DESIGN.md`, "Install operations", Lifeboat; Shape, "Lifeboat feed";
+# `build/BUILD-PLAN.md`, M6-WP3): which source the copy pulls from, its published lag, `graft-blob`'s write and scrub
+# rules over a filesystem trait, and the DNS-01 renewal schedule. The workerd bundle that hosts them is separate.
+[dependencies]
+graftyard-git = { path = "../crates/git" }
+graftyard-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true

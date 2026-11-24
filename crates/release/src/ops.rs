@@ -51,12 +51,35 @@ pub struct Dwell {
     /// A `MintWrapKey` `Rotate`'s wait between publish and switch: `ROTATE_PUBLISHED_FOR`, lowered only by a
     /// test-faults `graft-ops` (`OPS_ROTATE_PUBLISHED_MS`).
     pub rotate_published: u64,
+    /// How long a registered lifeboat may send no `LifeboatDecoder` before `graft-ops` pages: `LIFEBOAT_SILENT`,
+    /// lowered only by a test-faults `graft-ops` (`OPS_LIFEBOAT_SILENT_MS`), so BF-53 reads the alarm in hours.
+    pub lifeboat_silent: u64,
 }
 
 impl Default for Dwell {
     fn default() -> Dwell {
-        Dwell { step: STEP_DWELL, first_day: FIRST_DAY, rotate_published: ROTATE_PUBLISHED_FOR }
+        Dwell {
+            step: STEP_DWELL,
+            first_day: FIRST_DAY,
+            rotate_published: ROTATE_PUBLISHED_FOR,
+            lifeboat_silent: LIFEBOAT_SILENT,
+        }
     }
+}
+
+/// A lifeboat sends a `LifeboatDecoder` when its decoder changes and at least daily; one silent this long pages
+/// (`design/DESIGN.md`, "Install operations", Lifeboat: "an alarm fires when a registered lifeboat has sent no
+/// `LifeboatDecoder` for 7 days").
+pub const LIFEBOAT_SILENT: u64 = 7 * 24 * 3_600_000;
+
+/// The registered lifeboats heard from neither by their `LifeboatAdd` nor by a `LifeboatDecoder` for more than
+/// `silent` ms at `now`, by host. A removed lifeboat is not registered, so it never pages.
+pub fn silent_lifeboats(fold: &ReleaseFold, now: Timestamp, silent: u64) -> Vec<Box<str>> {
+    fold.lifeboats
+        .keys()
+        .filter(|h| fold.lifeboat_seen.get(*h).is_none_or(|t| now.0.saturating_sub(t.0) > silent))
+        .cloned()
+        .collect()
 }
 
 /// A script's deployment: each version and its percentage, a version at 0% included.
@@ -1052,7 +1075,7 @@ pub const RUN_MAX: usize = 32;
 pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
     let mut log = Vec::new();
     let mut uploads = true;
-    for _ in 0..RUN_MAX {
+    for pass in 0..RUN_MAX {
         let fold = match e.view().await {
             Ok(f) => f,
             Err(x) => {
@@ -1060,6 +1083,14 @@ pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
                 break;
             }
         };
+        // Once a run, beside whatever else it does: a silent lifeboat moves nothing, so it only pages.
+        if pass == 0 {
+            for h in silent_lifeboats(&fold, e.now(), dwell.lifeboat_silent) {
+                let why = format!("lifeboat {h} has sent no LifeboatDecoder for {} ms", dwell.lifeboat_silent);
+                e.page(&why);
+                log.push(Ran::Paged(why.into()));
+            }
+        }
         if uploads {
             match upload_step(e, &fold).await {
                 Ok(None) => uploads = false,
