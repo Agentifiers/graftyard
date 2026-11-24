@@ -176,10 +176,16 @@ impl Cf {
         Ok((versions, d["created_on"].as_str().unwrap_or("").to_string()))
     }
 
-    /// A version's annotations (`workers/tag` and `workers/message`).
-    pub fn version_tag(&self, script: &str, version: &str) -> Res<Option<String>> {
+    /// One version as the versions API reads it: its `annotations`, and its `resources` (bindings, without a secret's
+    /// value, and `script_runtime`).
+    pub fn version(&self, script: &str, version: &str) -> Res<Value> {
         let v = self.call("GET", &format!("/workers/scripts/{script}/versions/{version}"), &[], None)?;
-        Ok(v["result"]["annotations"]["workers/tag"].as_str().map(String::from))
+        Ok(v["result"].clone())
+    }
+
+    /// A version's `workers/tag` annotation.
+    pub fn version_tag(&self, script: &str, version: &str) -> Res<Option<String>> {
+        Ok(self.version(script, version)?["annotations"]["workers/tag"].as_str().map(String::from))
     }
 
     /// A percentage deployment of `versions`, whose percentages sum to 100.

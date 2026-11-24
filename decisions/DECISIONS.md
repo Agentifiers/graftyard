@@ -8227,7 +8227,8 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
 - **`vault init --release D --release-key K`** verifies before any API call and deploys with the release id as the
   version's `workers/tag`. **`vault upgrade`** verifies first, refuses a script with no deployment, does nothing when
   that release already serves 100%, and otherwise uploads a version with `keep_bindings` (`r2_bucket`, `plain_text`,
-  `secret_text`), so the bucket, the URL and `EXPORT_TOKEN` stay, then deploys it at 100%.
+  `secret_text`), so the bucket, the URL and `EXPORT_TOKEN` stay, then deploys it at 100%. Since R57 it sends the
+  deployed version's bucket and URL and keeps only `EXPORT_TOKEN` ("`deployed-bindings`").
 - **Create-only puts.** Every locked object stores its SHA-256 as custom metadata. A put refused by its precondition
   (412) or by a lock rule (409 `ObjectLockedByBucketPolicy`) is judged by a HEAD: the same size and digest is "already
   stored" and the pass moves on; another object, or a refusal with nothing at the key, fails the pass. A pack is HEADed
@@ -10636,6 +10637,10 @@ for longer than one `MINT_RESEND_MS` after its errors crossed the line (count ac
   `bindings` (`ops::upload_metadata`), with its compatibility date, flags, limits and container map as before.
 - Only `secret_text` stays in `keep_bindings` (`ops::KEPT_BINDINGS`): a read returns no secret's value, so the upload
   cannot send one. A Secrets Store binding carries only its store and name, so it is sent like any other.
+- `graftyard vault upgrade` uploads the same way (branch `vault-deployed-bindings`): `ops::upload_metadata` of the
+  deployment's highest-percentage version, so its bucket, `GRAFTYARD_URL` and runtime are the deployed version's and
+  only `EXPORT_TOKEN` is kept. `graftyard runners upgrade` already sends its bindings from its spec and keeps only
+  `secret_text`.
 
 **Why.** `keep_bindings` keeps "from previous_upload", and an inherited binding defaults to "the most recently uploaded
 version, which may not be the deployed version" (https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/create
@@ -10663,7 +10668,10 @@ version, which may not be the deployed version" (https://developers.cloudflare.c
 **Evidence.** `crates/release/src/tests/group/run.rs`,
 `r57_an_upload_takes_the_deployed_version_s_bindings_not_the_newest_upload_s`: N at 99%, N+1 at 1%, and a newer
 undeployed version with a stray `FORCE_FORMAT` and another `FORMATS_ENABLED`; the upload takes N's vars, bucket and
-limits, sends no secret, and keeps only `secret_text`. `tests/m0carried/plant212.py`: 4 of 4 caught.
+limits, sends no secret, and keeps only `secret_text`. `tests/m0carried/plant212.py`: 4 of 4 caught. `cli/src/vault.rs`
+`upgrade_deploys_a_verified_release_keeping_the_bindings_then_leaves_it` and `cli/src/release.rs`
+`release_roll_upgrades_the_vault_under_its_own_token_once_the_code_intents_are_done`: the vault upload sends the
+deployed bucket and URL, no secret, the deployed compatibility date, and keeps only `secret_text`; plant88 #27 and #28.
 
 **Flip.** A hosted upload whose `secret_text` came from an undeployed version (move secrets to Secrets Store, or to the
 beta endpoint's `inherit`), or a binding type a read returns in a form an upload refuses (keep that type).

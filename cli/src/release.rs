@@ -719,8 +719,8 @@ mod tests {
         assert!(step(Some(&vs), &same).unwrap_err().contains("install's token"));
         let acct = VaultStep { account: &t.account, ..vs };
         assert!(step(Some(&acct), &none).unwrap_err().contains("install's account"));
-        // Under its own token: N is served, so it uploads R's vault/ keeping the bindings and deploys it; then R is
-        // served and the step leaves it.
+        // Under its own token: N is served, so it uploads R's vault/ with N's bindings, keeping only the secret, and
+        // deploys it; then R is served and the step leaves it.
         let state = Arc::new(Mutex::new(false));
         let auth = Arc::new(Mutex::new(Vec::new()));
         let (st, au, rh) = (state.clone(), auth.clone(), rhex.clone());
@@ -732,9 +732,11 @@ mod tests {
             match (s.line.split(' ').next().unwrap(), p.as_str()) {
                 ("GET", "/accounts/vaultacct/workers/scripts/graft-vault/deployments") => ok(json!({ "deployments": [{
                     "versions": [{ "version_id": v, "percentage": 100 }], "created_on": "2026-11-23T00:00:00Z" }] })),
-                ("GET", "/accounts/vaultacct/workers/scripts/graft-vault/versions/old") => {
-                    ok(json!({ "annotations": { "workers/tag": "aa" } }))
-                }
+                ("GET", "/accounts/vaultacct/workers/scripts/graft-vault/versions/old") => ok(json!({
+                    "annotations": { "workers/tag": "aa" },
+                    "resources": { "bindings": [{ "type": "r2_bucket", "name": "VAULT", "bucket_name": "vb" },
+                                                { "type": "secret_text", "name": "EXPORT_TOKEN" }] },
+                })),
                 ("GET", "/accounts/vaultacct/workers/scripts/graft-vault/versions/new") => {
                     ok(json!({ "annotations": { "workers/tag": rh } }))
                 }
@@ -755,7 +757,8 @@ mod tests {
         }
         let upload = calls.iter().find(|s| s.line.starts_with("POST") && s.line.contains("/versions ")).unwrap();
         let text = String::from_utf8_lossy(&upload.body);
-        assert!(text.contains(r#""keep_bindings":["r2_bucket","plain_text","secret_text"]"#), "{text:.300}");
+        assert!(text.contains(r#""keep_bindings":["secret_text"]"#), "{text:.300}");
+        assert!(text.contains(r#""bindings":[{"bucket_name":"vb","name":"VAULT","type":"r2_bucket"}]"#), "{text:.300}");
         assert!(text.contains(&rhex) && text.contains("filename=\"entry.js\""));
         assert!(
             auth.lock().unwrap().iter().all(|a| a.as_deref() == Some("Bearer vault-token")),

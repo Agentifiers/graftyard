@@ -4,7 +4,7 @@
 //! `init` deploys the vault Worker in its own account, under `CLOUDFLARE_VAULT_API_TOKEN`, creates its bucket if
 //! needed, and preserves existing object-lock rules while locking the export prefixes for 35 days. It mints an
 //! install-scoped export token with the customer key and uploads it only as the Worker's `EXPORT_TOKEN` secret.
-//! `upgrade` uploads a later release's vault Worker as a new version that keeps every binding, tagged with the
+//! `upgrade` uploads a later release's vault Worker as a new version configured as the deployed one, tagged with the
 //! release id, and deploys it at 100%; a release already deployed is left alone. Both take a release folder
 //! (`release.json`, `release.sig`, and the files it lists) and deploy only its `vault/` modules, after
 //! `graftyard_release::ops::check_vault` verified `release.json` under the release key and found every `vault/` file
@@ -212,7 +212,9 @@ pub(crate) fn serving(cf: &Cf, script: &str) -> Res<Option<String>> {
 
 /// Verifies first, so a refused release makes no API call; then skips a release the deployment already serves at
 /// 100%, and otherwise uploads it as a version that keeps the deployed bindings (`VAULT`, `GRAFTYARD_URL`, and the
-/// `EXPORT_TOKEN` secret, which no install token could set) and deploys it at 100%.
+/// `EXPORT_TOKEN` secret, which no install token could set) and deploys it at 100%. The bindings and runtime settings
+/// are read from the deployed version and sent (`ops::upload_metadata`), since `keep_bindings` would take them from the
+/// newest upload, deployed or not; only the secret is kept (R57, DECISIONS "`deployed-bindings`").
 pub(crate) fn upgrade_with(cf: &Cf, a: &UpgradeArgs) -> Res<()> {
     let artifact = verified(&a.release)?;
     let release = hex(&artifact.release.0);
@@ -224,12 +226,9 @@ pub(crate) fn upgrade_with(cf: &Cf, a: &UpgradeArgs) -> Res<()> {
         println!("  {}: release {release} already serves 100%", a.script);
         return Ok(());
     }
-    let meta = json!({
-        "main_module": "entry.js",
-        "compatibility_date": COMPAT_DATE,
-        "keep_bindings": ["r2_bucket", "plain_text", "secret_text"],
-        "annotations": { "workers/tag": release, "workers/message": "graftyard vault upgrade" },
-    });
+    let (live, _) = versions.iter().max_by(|x, y| x.1.total_cmp(&y.1)).ok_or("a deployment with no versions")?;
+    let mut meta = ops::upload_metadata(&cf.version(a.script, live)?, "entry.js", &release);
+    meta["annotations"]["workers/message"] = json!("graftyard vault upgrade");
     let new = cf.upload_version(a.script, &meta, &modules(&artifact)?)?;
     cf.deploy_versions(a.script, &[(&new, 100)], &format!("graftyard vault upgrade {release}"))?;
     println!("  {}: release {release} uploaded as {new} and deployed at 100%", a.script);
@@ -407,6 +406,15 @@ mod tests {
     }
 
     type Log = Arc<Mutex<Vec<(String, String, Vec<u8>)>>>;
+
+    /// The deployed vault version's bindings, as the versions API reads them: the secret without its value.
+    fn old_bindings() -> Value {
+        json!([
+            { "type": "r2_bucket", "name": "VAULT", "bucket_name": "graft-vault-a" },
+            { "type": "plain_text", "name": "GRAFTYARD_URL", "text": "https://edge.example" },
+            { "type": "secret_text", "name": "EXPORT_TOKEN" },
+        ])
+    }
 
     const AT: Timestamp = Timestamp(1_800_000_000_123);
 
@@ -653,8 +661,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// `upgrade` uploads the verified release as a version that keeps every binding, tagged with the release id, and
-    /// deploys it at 100%; run again once it serves 100%, it changes nothing.
+    /// `upgrade` uploads the verified release as a version configured as the deployed one, tagged with the release id,
+    /// and deploys it at 100%; run again once it serves 100%, it changes nothing. The deployed version's bindings and
+    /// runtime are sent and only the secret is kept, so a newer upload that was never deployed sets none of them (R57).
     #[test]
     fn upgrade_deploys_a_verified_release_keeping_the_bindings_then_leaves_it() {
         let (dir, _) = setup("upgrade");
@@ -663,7 +672,7 @@ mod tests {
         let state = Arc::new(Mutex::new(false));
         let log = Log::default();
         let (st, lg, rid2) = (state.clone(), log.clone(), rid.clone());
-        let (url, _rx) = serve(8, move |s| {
+        let (url, _rx) = serve(9, move |s| {
             let (m, p) = (s.line.split(' ').next().unwrap_or("").to_string(), path(s));
             lg.lock().unwrap().push((m.clone(), p.clone(), s.body.clone()));
             let ok = |r: Value| (200, json!({ "success": true, "result": r }).to_string());
@@ -674,9 +683,10 @@ mod tests {
                 ("GET", "/workers/scripts/graft-vault/versions/new") => {
                     ok(json!({ "annotations": { "workers/tag": rid2 } }))
                 }
-                ("GET", "/workers/scripts/graft-vault/versions/old") => {
-                    ok(json!({ "annotations": { "workers/tag": "aa" } }))
-                }
+                ("GET", "/workers/scripts/graft-vault/versions/old") => ok(json!({
+                    "annotations": { "workers/tag": "aa" },
+                    "resources": { "bindings": old_bindings(), "script_runtime": { "compatibility_date": "2026-09-01" } },
+                })),
                 ("POST", "/workers/scripts/graft-vault/versions") => ok(json!({ "id": "new" })),
                 ("POST", "/workers/scripts/graft-vault/deployments") => {
                     *st.lock().unwrap() = true;
@@ -699,8 +709,10 @@ mod tests {
         assert_eq!(uploads.len(), 1, "the second run uploads nothing");
         let meta = metadata(&uploads[0].2);
         assert_eq!(meta["annotations"]["workers/tag"], json!(rid));
-        assert_eq!(meta["keep_bindings"], json!(["r2_bucket", "plain_text", "secret_text"]));
-        assert!(meta.get("bindings").is_none(), "an upgrade sets no binding, the export token above all");
+        assert_eq!(meta["keep_bindings"], json!(["secret_text"]), "only the export token is kept");
+        let sent = old_bindings().as_array().unwrap()[..2].to_vec();
+        assert_eq!(meta["bindings"], json!(sent), "the deployed version's bucket and URL, and no secret");
+        assert_eq!(meta["compatibility_date"], json!("2026-09-01"), "the deployed version's runtime");
         let deploys: Vec<_> =
             log.iter().filter(|(m, p, _)| m == "POST" && p == "/workers/scripts/graft-vault/deployments").collect();
         assert_eq!(deploys.len(), 1);
