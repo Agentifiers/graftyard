@@ -202,6 +202,7 @@ impl Harness {
             protected: Vec::new(),
             changed: Vec::new(),
             leases: false,
+            test_format: false,
         };
         match self.repo_cmd(RepoCmd::Push(push)).unwrap().out {
             RepoOut::Push(out) => assert!(out.refs.iter().all(|(_, r)| *r == graftyard_git::repo::RefOutcome::Ok)),

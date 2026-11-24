@@ -10358,3 +10358,41 @@ glob in `decide` (at most `PATHS_MAX` paths), and nothing when the policy adds n
   200 ms, or `ctx_read` is on more than 25% of `gate_iso` pushes.
 
 Leases, a `Session` link and the policy's `extra_paths` stay `decide`'s: it checks them on its own read.
+
+### `release-seq`: a site member's `ReleaseTag` comes from its version's tag, `<seq>-<release id>`, seq being the release's place in the `Release` group's uploads, 2026-11-24
+
+**Status.** Built on branch `bm5-format` from main `dc880f1d` for BM-5's unreadable-format clause. Not hosted.
+
+**Decision.** `graft-ops` tags every version of a release `<seq>-<release id>` (`ops::version_tag`). Seq is the
+release's place in the group's uploads, from 1, kept in the fold as `Upload::seq`; it is not on the wire, since every
+member applies the same uploads in the same order. A site member reads its `VERSION` binding's tag once per isolate at
+restore (`host.rs`, `this_release`) and takes `ReleaseTag { id, seq }` from it, so `classify_refusals`'s
+`r.release.seq < mine.seq` now tells an older refuser from a same-release one hosted. A tag that names no seq (a
+wrangler deploy, a version uploaded before this change, junk) runs as the constant `RELEASE`, the oldest, and logs it
+once per isolate. `parse_version_tag` takes only a seq of 1 to 10 digits and a 64-character lowercase hex id.
+
+**Why.** Every site build reported one constant `RELEASE`, so a hosted N+1 leader classed N's `verify` refusals as
+same-release: `OwnDefect` or `cannot_follow`, never `NoLead`, and A's groups could not move (BM-5 survey, 2026-11-24).
+A release's place in the group is fixed once (a second `ReleaseUploaded` for it is refused), so every version of it,
+on every site and at any upload time, carries one seq, and a rollback deploys the older release's own versions with
+their lower seq.
+
+**What it beat.**
+- **`VERSION.timestamp` as seq** (vetoed by the lead). A secret, variable, binding or container change makes a new
+  version of the same release, so an R9 version made after R10's upload would outrank R10, and each site's day uploads
+  at its own time.
+- **A `Release` view read at restore.** It puts a member read on every restore's path and fails with the view.
+
+**Evidence.**
+- `crates/release/src/tests/group/run.rs`, `bm5_a_release_s_seq_is_its_place_in_the_group_not_its_upload_time`:
+  every site and pinned script of R1 carries `1-<R1>`, of R2 `2-<R2>`; R1's tag computed after R2's upload still
+  parses below R2; nine malformed tags parse as `None`.
+- `workers/site/src/host.rs`, `a_member_s_release_is_its_version_tag_s_and_any_other_tag_is_the_oldest`.
+- `crates/git/tests/push.rs`, `bm5_an_unreadable_format_from_a_newer_site_commits_nothing_and_moves_the_group`:
+  A on seq 12 reads `REPO_FORMAT_TEST`, B and C on seq 9 refuse it; nothing in that format is committed anywhere,
+  A raises `NoLead`, the group moves off A and commits on its new leader. With B and C on seq 12 too, A keeps leading
+  (`OwnDefect`).
+- `tests/m0carried/plant210.py`: 6 of 6 caught.
+
+**Flip.** Take seq from the view or a signed field if a release ever ships to a site without a `ReleaseUploaded`
+(a lifeboat or restore path), or if Cloudflare drops or truncates `workers/tag` (100 bytes today).

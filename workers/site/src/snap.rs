@@ -476,7 +476,7 @@ fn begin(
     // A live-row check holding this tier's snapshot mark gives it up to the real snapshot (`crate::live`).
     crate::live::yield_to_snapshot(h, sql, t)?;
     let mut s = store.clone();
-    let job = SnapshotJob::begin(&mut s, schema(t), chain, crate::host::RELEASE.id, git::repo::REPO_FORMAT_V1)
+    let job = SnapshotJob::begin(&mut s, schema(t), chain, crate::host::cached_release().id, git::repo::REPO_FORMAT_V1)
         .map_err(|e| Error::RustError(e.to_string()))?;
     let digest = job.want(&*s);
     let mut stmts = Vec::new();
@@ -862,6 +862,7 @@ pub async fn bench_load(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
             protected: Vec::new(),
             changed: Vec::new(),
             leases: false,
+            test_format: false,
         };
         let at = now_ms();
         match h.input(|m, t| m.commit(t, rid, git::repo::RepoCmd::Push(push))) {

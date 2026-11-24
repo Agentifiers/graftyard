@@ -172,6 +172,8 @@ pub struct StandIn {
     identity: Identity,
     pub unsupported: u64,
     boots: u64,
+    /// Every alarm a member raised, with its site.
+    pub alarms: Vec<(SiteId, graftyard_raft::Alarm)>,
 }
 
 fn record() -> PlacementRecord {
@@ -217,6 +219,7 @@ impl StandIn {
             identity: Identity::new(seed, repo),
             unsupported: 0,
             boots: now.0,
+            alarms: Vec::new(),
         };
         let mut rows = rows;
         rows.resize_with(SITES.len(), MemberRows::default);
@@ -308,6 +311,47 @@ impl StandIn {
         self.identity.tokens.apply(&TokensEvent::JtiRevoked { jti, exp });
     }
 
+    /// Restarts `site`'s member from its disk on `release` reading `reads`, as a site day's new version does
+    /// (`MemberConfig::release` is the version's tag, `workers/site`'s `this_release`).
+    pub fn restart_on(&mut self, site: SiteId, release: ReleaseTag, reads: &[Format]) {
+        let mut cfg = config(self.chain, site, reads);
+        cfg.release = release;
+        self.boots += 1;
+        let (m, ready) = Member::restore(cfg, self.disks[Self::i(site)].clone(), self.now, self.boots).expect("Tri");
+        self.members[Self::i(site)] = m;
+        self.inbox.retain(|e| e.to != site);
+        self.absorb(site, ready);
+        self.settle();
+    }
+
+    /// Admits `push` on `site`'s member, settles, and answers its outcome: an unresolved ticket, or the call error.
+    pub fn commit_on(&mut self, site: SiteId, rid: RequestId, push: Push) -> CommitReply {
+        match self.on(site, |m, now| m.commit(now, rid, push)) {
+            Err(e) => CommitReply::Error((&e).into()),
+            Ok(a) => {
+                self.settle();
+                match self.tickets.get(&a.ticket) {
+                    Some(o) => CommitReply::Done(o.clone()),
+                    None => CommitReply::Admitted(a.ticket.into()),
+                }
+            }
+        }
+    }
+
+    /// The site that leads in the highest term, if any.
+    pub fn leader(&self) -> Option<SiteId> {
+        SITES
+            .iter()
+            .filter(|s| self.members[Self::i(**s)].role() == Role::Leader)
+            .max_by_key(|s| self.members[Self::i(**s)].term())
+            .copied()
+    }
+
+    /// `site`'s member.
+    pub fn member(&self, site: SiteId) -> &Member<Push> {
+        &self.members[Self::i(site)]
+    }
+
     /// Admits a command on the leader and returns its ticket without settling, so it waits for the next entry.
     pub fn admit(&mut self, rid: RequestId, push: Push) -> Option<Ticket> {
         self.ensure_leader();
@@ -364,6 +408,7 @@ impl StandIn {
                 }
             }
             self.deps.extend(out.deps.drain(..).map(|d| (s, d)));
+            self.alarms.extend(out.alarms.drain(..).map(|a| (s, a)));
             let Some(ack) = out.self_ack.take() else { break };
             let now = self.now;
             let ready = self.members[Self::i(s)].self_ack(now, ack);

@@ -17,8 +17,8 @@ struct Fake {
     deps: BTreeMap<Script, Deployment>,
     gate: Gate,
     bucket: Vec<RawBundle>,
-    /// Versions uploaded by (release, script), as the versions API lists them by tag.
-    tags: BTreeMap<([u8; 32], Script), VersionId>,
+    /// Versions uploaded by (tag, script), as the versions API lists them by tag.
+    tags: BTreeMap<(String, Script), VersionId>,
     uploads: Vec<Script>,
     deploys: Vec<(Script, Split)>,
     pages: Vec<String>,
@@ -181,13 +181,13 @@ impl Exec for Fake {
             .cloned())
     }
 
-    async fn tagged(&mut self, release: ReleaseId, scripts: &[Script]) -> Result<BTreeMap<Script, VersionId>, String> {
-        Ok(scripts.iter().filter_map(|s| Some((*s, *self.tags.get(&(release.0, *s))?))).collect())
+    async fn tagged(&mut self, tag: &str, scripts: &[Script]) -> Result<BTreeMap<Script, VersionId>, String> {
+        Ok(scripts.iter().filter_map(|s| Some((*s, *self.tags.get(&(tag.to_string(), *s))?))).collect())
     }
 
-    async fn upload(&mut self, s: Script, release: ReleaseId, _modules: &[(String, Vec<u8>)]) -> Result<(), String> {
+    async fn upload(&mut self, s: Script, tag: &str, _modules: &[(String, Vec<u8>)]) -> Result<(), String> {
         self.next_v += 1;
-        self.tags.insert((release.0, s), VersionId([self.next_v; 16]));
+        self.tags.insert((tag.to_string(), s), VersionId([self.next_v; 16]));
         self.uploads.push(s);
         Ok(())
     }
@@ -293,6 +293,53 @@ fn cron_runs_upload_the_bundle_and_run_every_intent_to_done() {
     assert_eq!(f.cron(1), vec![Ran::Idle]);
 }
 
+/// BM-5's `ReleaseTag`: every version of a release carries `<seq>-<release id>`, seq being the release's place in the
+/// group's uploads. R1 is 1 and R2 is 2 on every script and every site, and a version made later for R1 (as a secret's
+/// site day makes one) still names seq 1: the order is the group's, not the version's upload time. A tag in any other
+/// shape names no release and never panics.
+#[test]
+fn bm5_a_release_s_seq_is_its_place_in_the_group_not_its_upload_time() {
+    let mut f = Fake::new(G::new());
+    let b1 = raw("t1", 3, &RELEASE);
+    let r1 = release_of(&b1);
+    f.bucket.push(b1);
+    f.cron(10);
+    let b2 = raw("t2", 4, &RELEASE);
+    let r2 = release_of(&b2);
+    f.bucket.push(b2);
+    f.cron(10);
+    let hex = |r: &ReleaseId| crate::types::hex(&r.0);
+    let (t1, t2) = (format!("1-{}", hex(&r1)), format!("2-{}", hex(&r2)));
+    assert_eq!(ops::version_tag(&f.g.f, &r1), t1);
+    assert_eq!(ops::version_tag(&f.g.f, &r2), t2);
+    // Each site's version and every pinned script's carry the release's one tag.
+    for s in [Script::Site(SiteId(0)), Script::Site(SiteId(1)), Script::Site(SiteId(2)), Script::Edge, Script::Ops] {
+        assert_eq!(f.tags.get(&(t1.clone(), s)), ops::version(&f.g.f, &r1, s).as_ref(), "{s:?} under R1");
+        assert_eq!(f.tags.get(&(t2.clone(), s)), ops::version(&f.g.f, &r2, s).as_ref(), "{s:?} under R2");
+    }
+    // A version uploaded for R1 after R2's upload: its tag is still R1's, so it ranks below R2.
+    let (s1, _) = ops::parse_version_tag(&ops::version_tag(&f.g.f, &r1)).unwrap();
+    let (s2, _) = ops::parse_version_tag(&t2).unwrap();
+    assert!(s1 < s2, "R1 re-uploaded after R2 must rank below R2");
+    assert_eq!(ops::parse_version_tag(&t1), Some((1, r1)));
+    // A release not yet uploaded takes the next place.
+    assert_eq!(ops::version_tag(&f.g.f, &ReleaseId([7; 32])), format!("3-{}", hex(&ReleaseId([7; 32]))));
+    // Tags that name no release: a bare id (an upload before this change), a wrangler tag, seq 0, a short id, junk.
+    for bad in [
+        hex(&r1),
+        "v1.0.1".to_string(),
+        format!("0-{}", hex(&r1)),
+        format!("-{}", hex(&r1)),
+        format!("1-{}", &hex(&r1)[..63]),
+        format!("1-{}", hex(&r1).to_uppercase()),
+        format!("99999999999-{}", hex(&r1)),
+        "1-".to_string(),
+        String::new(),
+    ] {
+        assert_eq!(ops::parse_version_tag(&bad), None, "{bad:?}");
+    }
+}
+
 /// A bundle signed by a key that is not `Keys.release` never uploads, and the run still drives the current intent.
 #[test]
 fn a_bundle_that_does_not_verify_uploads_nothing() {
@@ -366,8 +413,8 @@ fn an_edge_breach_with_the_api_down_commits_the_pointer_undo_and_deploys_later()
     assert!(matches!(f.g.f.current.as_deref().unwrap().intent.intent, Intent::EdgeRoll { .. }));
     // The 1% step deploys, then the API goes down and the gate breaches.
     block_on(ops::run(&mut f, Dwell { step: HOUR, first_day: HOUR, ..Dwell::default() }));
-    let e1 = f.tags[&(r1.0, Script::Edge)];
-    let e2 = f.tags[&(r2.0, Script::Edge)];
+    let e1 = ops::version(&f.g.f, &r1, Script::Edge).unwrap();
+    let e2 = ops::version(&f.g.f, &r2, Script::Edge).unwrap();
     assert_eq!(f.deps[&Script::Edge].split, vec![(e2, 1), (e1, 99)]);
     f.api_down = true;
     f.gate = Gate::Breach("GATE_EXCEPTIONS".into());
