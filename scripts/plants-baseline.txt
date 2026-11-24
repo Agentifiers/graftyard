@@ -3,10 +3,6 @@
 # scripts/check_plants.py fails on a line added here, on new drift, and on a listed mutant that matches again.
 # Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
 tests/am1/hosted/plant.py: commits reachable from existing refs reported as new
-tests/am1/pool/plant.py: ledger: leases never expire
-tests/am1/pool/plant.py: ledger: the heartbeat does not run the ledger (m21: torn-down leases never lapse)
-tests/am1/pool/plant.py: ledger: the heartbeat marks the time but drops nothing
-tests/am1/pool/plant.py: ledger: no heartbeat is armed while leases are held
 tests/am1/rest/plant.py: archive: no slack, so the log is cut to exactly the cap
 tests/am1/rest/plant.py: archive: a promotion takes an entry over PROMOTE_MAX
 tests/am1/rest/plant.py: archive: recorded while held in one bucket

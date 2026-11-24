@@ -23,7 +23,8 @@ MUTANTS = [
      '.chain(slots.iter().copied()).collect();',
      '.take(0).chain(slots.iter().copied()).collect();', TESTS),
     ('ledger: leases never expire', SH,
-     '        self.leases.retain(|l| now.0 < l.at.0 + LOAD_STALE.as_millis() as u64);', '', TESTS),
+     '        self.idle.extend(lapsed);\n        self.leases.retain(|l| now.0 < l.at.0 + stale);\n',
+     '        self.idle.extend(lapsed);\n', TESTS),
     ('ledger: an ask does not renew the asker\'s lease', SH,
      '            self.leases.push(PoolLease { network, owner, slots: slots.clone(), at: now });',
      '            self.leases.push(PoolLease { network, owner, slots: slots.clone(), at: mine.map_or(now, |l| l.at) });', TESTS),
@@ -36,13 +37,13 @@ MUTANTS = [
      '        let held = mine.as_ref().map_or(Vec::new(), |l| l.slots.clone());',
      '        let held = mine.as_ref().map_or((0..want.min(FANOUT_MAX - 1) as u16).collect(), |l| l.slots.clone());', TESTS),
     ('ledger: the heartbeat does not run the ledger (m21: torn-down leases never lapse)', SH,
-     '    pub fn beat(&mut self, now: Timestamp) {\n        self.settle(now);\n        self.seen = Some(now);\n    }',
-     '    pub fn beat(&mut self, now: Timestamp) {\n        let _ = now;\n    }', TESTS),
+     '    pub fn beat(&mut self, now: Timestamp) -> Vec<u16> {\n        self.settle(now);\n        self.seen = Some(now);\n',
+     '    pub fn beat(&mut self, now: Timestamp) -> Vec<u16> {\n        let _ = now;\n', TESTS),
     ('ledger: the heartbeat marks the time but drops nothing', SH,
-     '    pub fn beat(&mut self, now: Timestamp) {\n        self.settle(now);\n        self.seen = Some(now);\n    }',
-     '    pub fn beat(&mut self, now: Timestamp) {\n        self.seen = Some(now);\n    }', TESTS),
+     '    pub fn beat(&mut self, now: Timestamp) -> Vec<u16> {\n        self.settle(now);\n        self.seen = Some(now);\n',
+     '    pub fn beat(&mut self, now: Timestamp) -> Vec<u16> {\n        self.seen = Some(now);\n', TESTS),
     ('ledger: no heartbeat is armed while leases are held', SH,
-     '        (!self.leases.is_empty()).then(|| Timestamp(now.0 + LEDGER_BEAT.as_millis() as u64))',
+     '        (!self.leases.is_empty() || !self.idle.is_empty()).then(|| Timestamp(now.0 + LEDGER_BEAT.as_millis() as u64))',
      '        let _ = now;\n        None', TESTS),
     ('ledger: the heartbeat runs past LEDGER_GAP, so a quiet ledger reads as down', SH,
      'pub const LEDGER_BEAT: Duration = Duration::from_secs(45);', 'pub const LEDGER_BEAT: Duration = Duration::from_secs(120);', TESTS),
@@ -62,8 +63,10 @@ MUTANTS = [
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
-           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target')),
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
            CARGO_INCREMENTAL='0')
+# A hang counts as caught (README, "Planted bugs").
+LIMIT = ['timeout', '-k', '10', '600']
 only = sys.argv[1:] and set(int(x) for x in sys.argv[1:])
 for n, (name, path, old, new, args) in enumerate(MUTANTS):
     if only and n not in only:
@@ -76,12 +79,14 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
         continue
     try:
         open(f, 'w').write(text.replace(old, new))
-        r = subprocess.run(['cargo', 'test', '--no-run', *args], cwd=ROOT, env=env, capture_output=True, text=True)
+        r = subprocess.run([*LIMIT, 'cargo', 'test', '--no-run', *args], cwd=ROOT, env=env, capture_output=True, text=True)
         if r.returncode != 0:
             print(f'{n} DID NOT COMPILE: {name}\n{r.stderr[-1500:]}', flush=True)
             continue
-        r = subprocess.run(['cargo', 'test', *args], cwd=ROOT, env=env, capture_output=True, text=True)
+        r = subprocess.run([*LIMIT, 'cargo', 'test', *args], cwd=ROOT, env=env, capture_output=True, text=True)
         failed = [l.split()[1] for l in r.stdout.splitlines() if l.startswith('test ') and l.endswith('FAILED')]
+        if r.returncode == 124:
+            failed = ['(timed out)', *failed]
         print(f'{n} {"CAUGHT" if r.returncode != 0 else "MISSED"}: {name}' + (f' ({", ".join(failed)})' if failed else ''),
               flush=True)
     finally:
