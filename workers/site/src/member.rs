@@ -554,6 +554,12 @@ impl DurableObject for Member {
         }
         let Some(h) = self.hosts.borrow().as_ref().map(Hosted::clone) else {
             use crate::retire::Unjoined;
+            // M6-WP1's drained-site probe calls an unjoined member's `/ping` (`crate::replace::PROBE_MEMBER`): under
+            // BM-1's site fault it fails as a joined member's calls do, so a faulted site reads silent, not healthy.
+            #[cfg(feature = "test-faults")]
+            if url.path() == "/ping" && crate::faults::site_fault(&self.env, None, false).await.is_some() {
+                return Response::error("member class failing (injected site fault)", 503);
+            }
             return match crate::retire::unjoined(&req.method(), url.path(), cfg!(feature = "test-faults")) {
                 Unjoined::Ping => Response::empty(),
                 Unjoined::Status => Response::from_json(
@@ -1563,6 +1569,49 @@ impl<F: Family> Routes<F> {
                 crate::retire::wipe(&self.host.state, now_ms(), false).await?;
                 host::abort(&self.host.state, "graftyard member purged");
                 Response::from_json(&json!({ "retired": true }))
+            }
+            // M6-WP1's `deleteAll()` after 35 days (`crate::replace`): `{"since": ms, "by": {"site", "do_name"}}` from
+            // the Workflows script's expiry instance, `since` the move that removed this member and `by` the member that
+            // replaced it. It wipes only once `DELETE_AFTER` has passed and this member is removed: by its own committed
+            // config, by F113's `superseded`, or by `by`'s committed config, which names `by` and not this member (a
+            // member on a lost site never commits the config that drops it).
+            (Method::Post, "/expire") => {
+                let b: Value = req.json().await?;
+                let since = b["since"].as_u64().ok_or_else(|| err("/expire needs since"))?;
+                let by_site = site_field(&b["by"], "site", "/expire")?;
+                let by_name = b["by"]["do_name"].as_str().ok_or_else(|| err("/expire needs by.do_name"))?.to_owned();
+                let (chain, me, own) = {
+                    let core = self.host.core.borrow();
+                    let c = core.as_ref().ok_or_else(|| err("not joined"))?;
+                    let own = self.host.superseded.borrow().is_some()
+                        || removed(c.m.committed_config().map(|c| &c.1), &c.join.me.do_name);
+                    (c.join.chain, c.join.me.clone(), own)
+                };
+                let removed = own
+                    || {
+                        let site = SiteEnv::read(&self.host.env)?;
+                        let ask = async {
+                            let mut r = site
+                                .member(&self.host.env, by_site, &by_name)?
+                                .fetch_with_str("https://member/status")
+                                .await?;
+                            r.json::<Value>().await
+                        };
+                        let row = RegistryRow {
+                            chain,
+                            do_name: by_name.clone().into(),
+                            generation: 0,
+                            sites: Default::default(),
+                        };
+                        matches!(within(graftyard_lookup::CALL, ask).await, Some(Ok(st)) if superseded_by(chain, &me, &row, &st).is_some())
+                    };
+                if !removed || !crate::replace::expired(since, now_ms()) {
+                    return Response::from_json(&json!({ "removed": removed, "wiped": false }));
+                }
+                self.host.dying.set(true);
+                crate::retire::wipe(&self.host.state, now_ms(), false).await?;
+                host::abort(&self.host.state, "graftyard removed member expired");
+                Response::from_json(&json!({ "removed": true, "wiped": true }))
             }
             #[cfg(feature = "test-faults")]
             _ => self.test_route(req, url).await,
@@ -3274,8 +3323,19 @@ impl<F: Family> Routes<F> {
     /// asks again after each step, so a step lost with its leader is planned again from the next leader's config.
     /// The new member's placement is checked by `Placement::new` against the joined members' round trips.
     async fn move_step(&self, body: Value) -> Result<Response> {
-        use graftyard_identity::group_move::{MoveStep, next_step};
-        let to: PlacementRecord = serde_json::from_value(body["to"].clone())?;
+        use graftyard_identity::group_move::{MoveStep, next_step, replace_plan, replace_target};
+        // `ReplaceMember`'s and `RestorePlacement`'s ask (`workers/workflows`): `{"replace": {"lost", "spare"},
+        // "started", "dead"}` plans from the committed config instead of a target record (`replace_plan`): `lost` is
+        // the site the group leaves, `spare` the one it moves to.
+        let replace = match body.get("replace") {
+            Some(r) => Some((site_field(r, "lost", "/move")?, site_field(r, "spare", "/move")?)),
+            None => None,
+        };
+        let (started, dead) = (body["started"].as_bool().unwrap_or(false), body["dead"].as_bool().unwrap_or(false));
+        let to: Option<PlacementRecord> = match replace {
+            Some(_) => None,
+            None => Some(serde_json::from_value(body["to"].clone())?),
+        };
         let (chain, record, me, cfg, c_owner, c_genesis) = {
             let core = self.host.core.borrow();
             let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
@@ -3293,7 +3353,16 @@ impl<F: Family> Routes<F> {
         };
         let Some((based_on, cfg)) = cfg else { return self.reply(json!({ "error": "no committed config" })) };
         let based_on = based_on.0;
-        let step = next_step(&cfg, me, &to);
+        let (to, step) = match (replace, to) {
+            (Some((lost, spare)), _) => {
+                (replace_target(&cfg, lost, spare), replace_plan(&cfg, me, lost, spare, started, dead))
+            }
+            (None, Some(to)) => {
+                let step = next_step(&cfg, me, &to);
+                (to, step)
+            }
+            (None, None) => return self.reply(json!({ "error": "/move needs to or replace" })),
+        };
         let label = format!("{step:?}");
         let t0 = now_ms();
         let site = SiteEnv::read(&self.host.env)?;
@@ -3379,6 +3448,45 @@ impl<F: Family> Routes<F> {
             }
             (MoveStep::Leave, raft::GroupConfig::Joint { new, .. }) => {
                 self.change(raft::GroupConfig::Normal(new.clone()), based_on).await.map(|i| json!({ "configIndex": i }))
+            }
+            // A `*2w` group's lost Full member goes out first: its `Joint` would need both Full members. Only once every
+            // voter the `Degraded` config needs is caught up (`voters_ready`), as a re-placement's.
+            (MoveStep::Degrade { lost }, raft::GroupConfig::Normal(p)) => match self.voters_ready(p, me, lost).await? {
+                Ok(ready) => {
+                    self.change(degraded(ready, p.clone(), lost), based_on).await.map(|i| json!({ "configIndex": i }))
+                }
+                Err(behind) => Err(format!("a voter the degraded config needs is behind: {behind}")),
+            },
+            // Under `Degraded { lost }`: a new member on the spare in the lost member's slot and kind, then `Normal`.
+            (MoveStep::Restore { add }, raft::GroupConfig::Degraded { placement: p, lost }) => {
+                let old = p.voters().iter().find(|m| m.site == *lost).cloned().ok_or_else(|| err("no member there"))?;
+                let new = MemberRef::new(chain, add, old.kind, old.slot, p.next_generation());
+                let peers: Vec<MemberRef> = p.voters().iter().filter(|m| m.site != *lost).cloned().collect();
+                let join = Join {
+                    chain,
+                    me: new.clone(),
+                    record: record.clone(),
+                    peers,
+                    owner: c_owner,
+                    genesis: c_genesis.clone(),
+                    #[cfg(feature = "test-faults")]
+                    no_claim: false,
+                };
+                let (status, rows) = self.post_member(&new, "/join", &serde_json::to_value(&join)?).await?;
+                if status != 200 {
+                    return self.reply(json!({ "step": label, "error": format!("join answered {status}: {rows}") }));
+                }
+                rtt.extend(serde_json::from_value::<Vec<(SiteId, Rtt)>>(rows).unwrap_or_default());
+                let voters: arrayvec::ArrayVec<MemberRef, 3> =
+                    voters_of(p).into_iter().map(|m| if m.site == *lost { new.clone() } else { m }).collect();
+                let home = if p.home() == *lost { add } else { p.home() };
+                match checked(voters, home, &rtt) {
+                    Ok(np) => self
+                        .change(raft::GroupConfig::Normal(Box::new(np)), based_on)
+                        .await
+                        .map(|i| json!({ "configIndex": i, "joined": new.do_name })),
+                    Err(e) => Err(e),
+                }
             }
             (MoveStep::Home { home }, raft::GroupConfig::Normal(p)) => match checked(voters_of(p), home, &rtt) {
                 Ok(np) => self

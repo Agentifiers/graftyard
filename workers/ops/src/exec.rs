@@ -36,7 +36,7 @@
 //!   (`decisions/DECISIONS.md`, "`rotate-probe`"): `DeployToken` lists the install's scripts, `ReadToken` reads one
 //!   site bucket's `location`, and `MintWrapKey`'s steps commit and retire its `VerifyingKey` rows on `TokenShard(0)`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use graftyard_lookup::{Bindings, Hooks, commit_hedged, now_ms, view, within};
 use graftyard_release::ops::{self, Deployment, Dwell, Exec, Gate, Ran, RawBundle, Signer, Split, Submit};
@@ -412,16 +412,35 @@ impl Exec for Live<'_> {
     }
 
     /// Each voter site's verdict (`graftyard_release::gate::verdict`) from the other voter sites' `site_health`
-    /// objects, over `DRAIN_WINDOW` and `UNDRAIN_AFTER`. An observer that does not answer reports nothing, so its
-    /// targets get no verdict: a drain needs both other sites.
+    /// objects, over `DRAIN_WINDOW` and `UNDRAIN_AFTER`, with `silent` and `recovered` (`gate::loss`) over `ZERO_ACKS`
+    /// and the recovery window from their per-minute rollups. An observer that does not answer reports nothing, so its
+    /// targets get no verdict: a drain, a replace and an undrain each need both other sites. The `DRAIN_WINDOW` read
+    /// also names the lost and replaced sites (`?probe=`), so every surviving site probes them and the recovery window
+    /// has calls to judge (`workers/site/src/replace.rs`).
     async fn health(&mut self, fold: &ReleaseFold) -> BTreeMap<u8, gate::Verdict> {
         let Some(g) = fold.genesis.as_ref() else { return BTreeMap::new() };
         let voters: Vec<SiteId> = g.sites.iter().filter(|s| !s.spare).map(|s| s.id).collect();
         let now = now_ms();
-        let (mut fast, mut slow) = (Vec::new(), Vec::new());
+        // Only a lost or replaced site: one drained automatically still holds followers that are called, and healthy
+        // pings to an unjoined member would dilute their misses.
+        let probe: BTreeSet<u8> = fold.lost.iter().chain(fold.replaced.keys()).copied().collect();
+        let probe = probe.iter().map(u8::to_string).collect::<Vec<_>>().join(",");
+        let recover = recover_window(self.env);
+        let (mut fast, mut slow, mut zero, mut back) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for o in &voters {
-            for (window, out) in [(gate::DRAIN_WINDOW, &mut fast), (gate::UNDRAIN_AFTER, &mut slow)] {
-                let path = format!("https://registry/site_health?since={}", now.saturating_sub(window));
+            for (k, (window, out)) in [
+                (gate::DRAIN_WINDOW, &mut fast),
+                (gate::UNDRAIN_AFTER, &mut slow),
+                (graftyard_release::ZERO_ACKS, &mut zero),
+                (recover, &mut back),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut path = format!("https://registry/site_health?since={}", now.saturating_sub(window));
+                if k == 0 {
+                    path.push_str(&format!("&probe={probe}"));
+                }
                 let Ok(stub) = self.bindings().registry(*o, "site_health") else { continue };
                 let Some(Ok(mut r)) = within(VIEW_CALL, stub.fetch_with_str(&path)).await else { continue };
                 let Ok(rows) = r.json::<Vec<(u8, u64, u64)>>().await else { continue };
@@ -433,13 +452,10 @@ impl Exec for Live<'_> {
                 }));
             }
         }
-        // `silent` and `recovered` (`gate::loss`) stay false here: `site_health` keeps only `UNDRAIN_AFTER` of buckets,
-        // so a `ZERO_ACKS` or `RECOVER_AFTER` read would judge 15 minutes as 24 h. The 24 h per-minute rollups that
-        // feed `loss` ship with M6-WP1's hosted glue. Until then only a customer-signed `SiteLost` replaces a site, and
-        // a lost site's drain holds until an operator undrains it.
         let limited = gate::lead_limited(fold);
-        let v = gate::verdict(&voters, &fast, &slow, limited);
-        if v.values().any(|x| x.burning) {
+        let mut v = gate::verdict(&voters, &fast, &slow, limited);
+        gate::loss(&mut v, &voters, &zero, &back);
+        if v.values().any(|x| x.burning || x.silent || x.recovered) {
             console_log!("graft-ops health: {v:?} from {fast:?}");
         }
         // A drained site's calm judged while a day holds a voter to the lead limit (`calm-one`): its slow reports.
@@ -717,6 +733,18 @@ impl Exec for Live<'_> {
         console_log!("graft-ops move {} started: {spec:?}", intent.0);
         Ok(())
     }
+}
+
+/// The recovery window a lost or replaced site must stay under `UNDRAIN_BURN` for: `RECOVER_AFTER`, or on a
+/// test-faults build `OPS_RECOVER_MS`, for a hosted row whose lines do not measure its length (BF-50's recovery half,
+/// recorded as a deviation in `tests/m6/results/m6-wp1.md`).
+fn recover_window(env: &Env) -> u64 {
+    #[cfg(feature = "test-faults")]
+    if let Some(ms) = env.var("OPS_RECOVER_MS").ok().and_then(|v| v.to_string().parse().ok()) {
+        return ms;
+    }
+    let _ = env;
+    gate::RECOVER_AFTER
 }
 
 /// The dwells: the design's, or a test install's `STEP_DWELL_MS` and `FIRST_DAY_MS`.

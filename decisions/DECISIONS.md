@@ -10237,3 +10237,32 @@ past `reset`.
 
 **Flip.** A hosted run on this build where a Human writer under `DEMOTE_PER_MIN` (by a1's own per-token minute) is
 counted in `demoted`. That would mean the leader counts writes the edge did not send for that actor.
+
+### `replace-glue`: the Workflows coordinator per intent, a group instance per chain, the survivors probe a drained site, and removed members wipe 35 days after their move, 2026-11-24
+
+**Decision.** M6-WP1's hosted glue (`tests/m6/results/m6-wp1.md`, "The hosted glue"):
+- **The Workflows script** (`workers/workflows`) is plain JS, since workers-rs 0.8.7 has no Workflows bindings. Its coordinator, created under the intent's id, reads every registry shard on each surviving voter site one step at a time, starts one group instance per chain by `createBatch`, refills the spare single-copy first, then polls the groups, at most 200 a step.
+- **A group instance** asks its leader `/move` with `{"replace": {lost, spare}, started, dead}`, and the leader plans by `group_move::replace_plan`. A group that never held the lost site is `Done` before any step. A dead site's replace uses `replace_step`; a restore moves by `next_step` toward `replace_target`, so a `*2w` group goes back by `Joint` and never degrades.
+- **The drained-site probe.** `graft-ops`' `DRAIN_WINDOW` read of each `site_health` object names the lost and replaced sites, not those drained automatically, whose followers are still called. The object then pings the unjoined `probe#0` member on each every 2 s from its alarm for 15 minutes after the last read that named it, and counts each answer as a member call.
+- **The rollups.** `site_health` adds a per-minute table kept for `ZERO_ACKS` plus an hour. Reads longer than `UNDRAIN_AFTER` sum it, and `Live::health` now calls `gate::loss`.
+- **`deleteAll()`.** Each group instance that removed a member starts an expiry instance. It sleeps 35 days, then asks that member `/expire`, naming its replacement, until the member wipes. The member wipes only if its own config, F113's `superseded`, or the replacement's committed config says it is removed.
+
+**Why.** BF-50 needs every group moved without a list in `graft-ops`, and a replaced site needs calls to it before `gate::loss` can read it recovered: nothing else calls a site that holds no members. The 10 s buckets hold 15 minutes, so a 24 h read from them would judge 15 minutes as a day. A member on a lost site never commits the config that drops it, so only its replacement's config can say it was removed.
+
+**What it beat.**
+- **Workflows in Rust,** which workers-rs does not support.
+- **One poll over every group per step,** which at 3,100 groups would pass the 10,000-subrequest default within a few polls. A cursor over complete groups looks at each once after it finishes.
+- **The probe calling a real group's members,** which would touch group storage and read a recovered site as healthy before its members are.
+- **A daily sweep of every member for `/expire`,** which would wake every live member to find the few removed ones.
+- **Timing `deleteAll()` from when a member first finds itself removed,** which a member on a lost site never does.
+
+**Evidence.**
+- `workers/workflows/tests/move.test.mjs`, 9 tests: every chain at its highest generation with the single-copy refill first, a replayed start step creating nothing twice, a group following `notLeader` to Done and starting its expiry, a group passing over the lost member, and the expiry's 35 days.
+- `crates/identity/tests/group_move.rs`: `replace_plan` leaves a group that never held the site alone, and a restore moves a `*2w` Full member back by `Joint`.
+- `graftyard_git::sweep`'s `refill_runs_copy_single_copy_packs_first_and_resume_from_their_cursor`, and the site's `gatecount` and `replace` tests.
+- `tests/m0carried/plant130.py`, 8 mutants, all caught.
+
+**Flip.**
+- **Back the coordinator out for per-group Workflows started by `graft-ops`** if one coordinator cannot finish an install's groups within its step limits on graft-m6a (as `replace-member` says).
+- **Drop the probe** if BF-50 shows a recovered site's own traffic reaching `MIN_CALLS` in every recovery window without it, or if its 43,200 pings a day per prober show on the survivors' registry objects.
+- **Sweep removed members instead** if an expiry instance's 35-day sleep is lost or retained past Workflows' limits on a hosted install.

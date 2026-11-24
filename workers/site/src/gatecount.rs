@@ -9,7 +9,8 @@
 //!   version that answered, thrown calls, and answers with no version (`graftyard_release::gate::ScriptErrors`).
 //!   Object `errors`, on each key's home site (`gate::errors_sites`), or the next one while the home does not answer.
 //! - **`SiteHealth`.** Per target site, this site's member-to-member calls and those that missed `CALL_DEADLINE` or
-//!   failed (`HealthLog`). Object `site_health`, one per site, so the sick site never judges itself.
+//!   failed (`HealthLog`). Object `site_health`, one per site, so the sick site never judges itself. It keeps 10 s
+//!   buckets for `UNDRAIN_AFTER` and per-minute rollups for `HEALTH_KEEP_MS`, which `ZERO_ACKS` and `RECOVER_AFTER` read.
 //!
 //! Each isolate flushes at most every `FLUSH_MS`, only what it counted. The objects keep one SQLite row per bucket
 //! (a minute per version for the gate, `HEALTH_BUCKET_MS` per target for health), so an object reset loses nothing
@@ -93,6 +94,10 @@ fn flush_due(env: &Env) {
 
 /// Health buckets' width.
 pub const HEALTH_BUCKET_MS: u64 = 10_000;
+/// The per-minute rollups (`site_health_min`) are kept this long: `ZERO_ACKS` and `RECOVER_AFTER`, both 24 h, plus an
+/// hour so a read that starts late still sees its whole window (M6-WP1, `graftyard_release::gate::loss`). One row per
+/// target a minute, so about 4,300 rows for three targets.
+pub const HEALTH_KEEP_MS: u64 = graftyard_release::ZERO_ACKS + 3_600_000;
 /// Gate rows are kept this long: a whole site day, each of its three gated steps starved for twice `STEP_DWELL`, then
 /// `FIRST_DAY`, because `graft-ops` reads N's rows from the intent's start at 100% and on the first day.
 const GATE_KEEP_MS: u64 = 6 * graftyard_release::ops::STEP_DWELL + graftyard_release::ops::FIRST_DAY;
@@ -170,24 +175,35 @@ pub fn route(
         return Ok(serde_json::to_value(sum(q("key").unwrap_or_default(), since)?)?);
     }
     sql.exec("CREATE TABLE IF NOT EXISTS site_health (bucket INTEGER NOT NULL, target INTEGER NOT NULL, calls INTEGER NOT NULL, missed INTEGER NOT NULL, PRIMARY KEY (bucket, target)) WITHOUT ROWID", None)?;
+    sql.exec("CREATE TABLE IF NOT EXISTS site_health_min (minute INTEGER NOT NULL, target INTEGER NOT NULL, calls INTEGER NOT NULL, missed INTEGER NOT NULL, PRIMARY KEY (minute, target)) WITHOUT ROWID", None)?;
     if let Some(b) = put {
         let bucket = (now / HEALTH_BUCKET_MS * HEALTH_BUCKET_MS) as i64;
+        let minute = (now / 60_000 * 60_000) as i64;
         for c in b["counts"].as_array().into_iter().flatten() {
             let n = |i: usize| c[i].as_i64().unwrap_or(0);
-            sql.exec(
-                "INSERT INTO site_health (bucket, target, calls, missed) VALUES (?, ?, ?, ?)
-                 ON CONFLICT (bucket, target) DO UPDATE SET calls = calls + excluded.calls, missed = missed + excluded.missed",
-                vec![bucket.into(), n(0).into(), n(1).into(), n(2).into()],
-            )?;
+            for (table, key, at) in [("site_health", "bucket", bucket), ("site_health_min", "minute", minute)] {
+                sql.exec(
+                    &format!(
+                        "INSERT INTO {table} ({key}, target, calls, missed) VALUES (?, ?, ?, ?)
+                         ON CONFLICT ({key}, target) DO UPDATE SET calls = calls + excluded.calls, missed = missed + excluded.missed"
+                    ),
+                    vec![at.into(), n(0).into(), n(1).into(), n(2).into()],
+                )?;
+            }
         }
         let keep = now.saturating_sub(graftyard_release::gate::UNDRAIN_AFTER + HEALTH_BUCKET_MS) as i64;
         sql.exec("DELETE FROM site_health WHERE bucket < ?", vec![keep.into()])?;
+        sql.exec(
+            "DELETE FROM site_health_min WHERE minute < ?",
+            vec![(now.saturating_sub(HEALTH_KEEP_MS) as i64).into()],
+        )?;
         return Ok(json!({}));
     }
-    let from = since / HEALTH_BUCKET_MS as i64 * HEALTH_BUCKET_MS as i64;
+    let (table, key, width) = health_table(now, since);
+    let from = since / width * width;
     let rows = crate::host::rows(
         sql,
-        "SELECT target, SUM(calls), SUM(missed) FROM site_health WHERE bucket >= ? GROUP BY target",
+        &format!("SELECT target, SUM(calls), SUM(missed) FROM {table} WHERE {key} >= ? GROUP BY target"),
         vec![from.into()],
     )?;
     let out: Vec<serde_json::Value> = rows
@@ -197,9 +213,38 @@ pub fn route(
     Ok(json!(out))
 }
 
+/// The table a `site_health` read sums: the 10 s buckets for a window they still hold (`UNDRAIN_AFTER`), the
+/// per-minute rollups for a longer one, `ZERO_ACKS` and `RECOVER_AFTER`'s. With its key column and width (ms).
+fn health_table(now: u64, since: i64) -> (&'static str, &'static str, i64) {
+    if now.saturating_sub(since.max(0) as u64) > graftyard_release::gate::UNDRAIN_AFTER {
+        ("site_health_min", "minute", 60_000)
+    } else {
+        ("site_health", "bucket", HEALTH_BUCKET_MS as i64)
+    }
+}
+
 async fn put(env: &Env, site: &crate::SiteEnv, object: &str, body: &serde_json::Value) -> worker::Result<()> {
     let mut init = worker::RequestInit::new();
     init.with_method(worker::Method::Put).with_body(Some(body.to_string().into()));
     let req = worker::Request::new_with_init(&format!("https://registry/{object}"), &init)?;
     site.registry(env, site.id, object)?.fetch_with_request(req).await.map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use graftyard_release::gate::{RECOVER_AFTER, UNDRAIN_AFTER};
+
+    /// The 10 s buckets hold `UNDRAIN_AFTER` and no more, so a `ZERO_ACKS` or recovery read from them would sum 15
+    /// minutes and call it 24 h. A window up to `UNDRAIN_AFTER` reads the buckets; anything longer, the rollups.
+    #[test]
+    fn a_day_long_health_read_sums_the_minute_rollups() {
+        let now = 1_800_000_000_000u64;
+        let at = |ago: u64| (now - ago) as i64;
+        assert_eq!(health_table(now, at(5 * 60_000)).0, "site_health");
+        assert_eq!(health_table(now, at(UNDRAIN_AFTER)).0, "site_health");
+        assert_eq!(health_table(now, at(UNDRAIN_AFTER + 1)).0, "site_health_min");
+        assert_eq!(health_table(now, at(RECOVER_AFTER)).0, "site_health_min");
+        assert!(HEALTH_KEEP_MS > graftyard_release::ZERO_ACKS.max(RECOVER_AFTER), "the rollups outlive both windows");
+    }
 }

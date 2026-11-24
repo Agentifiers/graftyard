@@ -18,7 +18,7 @@ SW_T = (['cargo', 'test', '-q', '-p', 'graftyard-git', '--lib', '--', 'a_refill_
 
 MUTANTS = [
     ("multi-copy packs first", SW,
-     "    single.extend(rest);\n    single\n", "    rest.extend(single);\n    rest\n", SW_T),
+     "    single.extend(rest);\n    single\n", "    let mut rest = rest;\n    rest.extend(single);\n    rest\n", SW_T),
     ("the lost bucket is a fill source", SW,
      "        let mut views: Vec<BucketView> = views.iter().filter(|v| v.site != lost).cloned().collect();\n",
      "        let mut views: Vec<BucketView> = views.to_vec();\n", SW_T),

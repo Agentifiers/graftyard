@@ -5,7 +5,8 @@
 //! is not in.
 
 use graftyard_identity::group_move::{
-    MoveStep, TransferGate, WARM_BEFORE_TRANSFER, WarmWait, holds, next_step, replace_step, transfer_gate, warm_site,
+    MoveStep, TransferGate, WARM_BEFORE_TRANSFER, WarmWait, holds, next_step, replace_plan, replace_step,
+    transfer_gate, warm_site,
 };
 use graftyard_identity::{NAMES_FORMAT, NamesCmd, NamesFold, NamesOp, NamesRead};
 use graftyard_raft::{
@@ -664,4 +665,50 @@ fn a_group_is_replaced_while_any_half_of_its_config_holds_the_lost_site() {
     assert!(holds(&GroupConfig::Degraded { placement: p([0, 1, 2]), lost: s(0) }, s(0)), "mid-replace");
     assert!(holds(&GroupConfig::Joint { old: p([0, 1, 2]), new: p([3, 1, 2]) }, s(0)), "the old half");
     assert!(holds(&GroupConfig::Joint { old: p([3, 1, 2]), new: p([0, 1, 2]) }, s(0)), "the new half");
+}
+
+/// `replace_plan`, the hosted ask: a group that never had a voter on the lost site is `Done` before any step, with its
+/// leader left where it is (here off its home, which `next_step`'s identity target would transfer). A group that does
+/// hold it takes the same steps as `replace_step`, and once started the steps after `Leave` still run.
+#[test]
+fn a_replace_leaves_a_group_that_never_held_the_lost_site_alone() {
+    let mut g = G::new();
+    g.write(1);
+    g.perform(MoveStep::Transfer { to: SiteId(1) }, &record([0, 1, 2], 0));
+    let (cfg, l) = (g.cfg(), g.leader());
+    assert_eq!(l, SiteId(1));
+    assert_eq!(replace_plan(&cfg, l, SiteId(4), SiteId(5), false, true), MoveStep::Done, "never held site 4");
+    assert_eq!(
+        replace_step(&cfg, l, SiteId(4), SiteId(5)),
+        MoveStep::Transfer { to: SiteId(0) },
+        "the identity target"
+    );
+    assert_eq!(
+        replace_plan(&cfg, l, SiteId(2), SiteId(3), false, true),
+        MoveStep::Swap { add: SiteId(3), drop: SiteId(2) }
+    );
+    let steps = g.move_to(&record([0, 1, 3], 0), |c, l, _| replace_plan(c, l, SiteId(2), SiteId(3), true, true));
+    assert_eq!(voters(&g.cfg()), vec![0, 1, 3], "{steps:?}");
+    g.assert_all_kept(&[0, 1, 3]);
+}
+
+/// A `RestorePlacement` moves a `*2w` group's Full member off a live spare: both Full members answer, so the move is a
+/// one-site `Joint` and the group never drops to one content copy by `Degraded`, as a dead site's replace does.
+#[test]
+fn a_restore_moves_a_2w_full_member_back_by_joint_without_degrading() {
+    let rec = PlacementRecord { name: PlacementName::Us2w, ..record([0, 3, 2], 0) };
+    let mut g = G::on_record(rec);
+    g.write(1);
+    let (from, to) = (SiteId(3), SiteId(1));
+    assert_eq!(
+        replace_plan(&g.cfg(), SiteId(0), from, to, false, true),
+        MoveStep::Degrade { lost: from },
+        "a dead site"
+    );
+    let steps = g.move_to(&record([0, 1, 2], 0), |c, l, _| replace_plan(c, l, from, to, true, false));
+    assert_eq!(steps, vec![MoveStep::Swap { add: to, drop: from }, MoveStep::Leave]);
+    let GroupConfig::Normal(p) = g.cfg() else { panic!() };
+    let kinds: Vec<(u8, MemberKind)> = p.voters().iter().map(|m| (m.site.0, m.kind)).collect();
+    assert_eq!(kinds, vec![(0, MemberKind::Full), (1, MemberKind::Full), (2, MemberKind::Witness)]);
+    g.assert_all_kept(&[0, 1]);
 }
