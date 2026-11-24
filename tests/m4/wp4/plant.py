@@ -5,7 +5,8 @@ byte. Each line prints CAUGHT with the failing tests, MISSED, or DID NOT COMPILE
     python3 tests/m4/wp4/plant.py          # every mutant
     python3 tests/m4/wp4/plant.py 0 3      # by number
 
-`$CARGO_TARGET_DIR` defaults to `../target-m4a`.
+`$CARGO_TARGET_DIR` defaults to `target/plants`. Each run goes through `timeout -k 10 600`, and a run it ended counts as
+caught (README, "Planted bugs").
 """
 import os, subprocess, sys
 
@@ -265,11 +266,11 @@ MUTANTS = [
      '            (Tried::Done, _) => {}', '            (Tried::Done, _) => carried.push(c),', PR),
     # ---- repo-purge: a deleted repository's purge (crates/git/src/purge.rs)
     ('repo-purge: a member that has not applied the tombstone is purged', PU,
-     '            Status::NotJoined | Status::Joined { purgeable: true, changing: false } => {}',
-     '            Status::NotJoined | Status::Joined { changing: false, .. } => {}', PG),
+     '                Status::Joined { purgeable: false, .. } => {\n                    return Err(Refused::NoTombstone { chain, member: member.clone() });\n                }\n',
+     '', PG),
     ('repo-purge: an unanswered member counts as retired', PU,
-     '            Status::NotJoined | Status::Joined { purgeable: true, changing: false } => {}',
-     '            Status::NotJoined | Status::Unanswered | Status::Joined { purgeable: true, changing: false } => {}', PG),
+     '                Status::Unanswered => return Err(Refused::Unanswered { chain, member: member.clone() }),\n',
+     '                Status::Unanswered => {}\n', PG),
     ('repo-purge: early is not needed inside the retention', PU,
      '    if f.now < until && !f.early {', '    if f.now < until && f.early {', PG),
     ('repo-purge: an appended, uncommitted config is not a change', PU,
@@ -308,17 +309,17 @@ MUTANTS = [
      '        Ok(p)\n    }\n\n    /// The one-voter', ['-p', 'graftyard-types', '--lib', 'placement::']),
     # ---- trigger-stream: 99 and up ----
     ('trigger-stream: the cursor settles past an unfinished event (only retries count)', TR,
-     "        low_water(self.queued.iter().chain(self.running.values()).chain(self.retry.iter().map(|(_, c)| c)), self.reached)",
-     "        low_water(self.retry.iter().map(|(_, c)| c), self.reached)", PR),
+     '            self.queued.iter().chain(self.running.values()).chain(self.retry.iter().map(|(_, c)| c)),\n            self.reached,',
+     '            self.retry.iter().map(|(_, c)| c),\n            self.reached,', PR),
     ('trigger-stream: an item to be tried again does not hold the cursor', TR,
-     "        low_water(self.queued.iter().chain(self.running.values()).chain(self.retry.iter().map(|(_, c)| c)), self.reached)",
-     "        low_water(self.queued.iter().chain(self.running.values()), self.reached)", PR),
+     '            self.queued.iter().chain(self.running.values()).chain(self.retry.iter().map(|(_, c)| c)),\n            self.reached,',
+     '            self.queued.iter().chain(self.running.values()),\n            self.reached,', PR),
     ('trigger-stream: no cap on items at once', TR,
      '        while self.running.len() < self.cap {', '        while self.running.len() < usize::MAX {', PR),
     ('trigger-stream: an item tried again is dropped instead (main\'s 4-ask rule)', TR,
      '        self.retry.extend(again.into_iter().map(|c| (now + RETRY_MS, c)));', '        let _ = again;', PR),
     ('trigger-stream: the turn is first come, first served (main\'s line)', 'crates/git/src/prsync.rs',
-     '                if self.cause == MergeCause::Dispatch { l.dispatch.push_back(t) } else { l.other.push_back(t) }',
+     '                if self.cause == MergeCause::Dispatch {\n                    l.dispatch.push_back(t)\n                } else {\n                    l.other.push_back(t)\n                }',
      '                l.other.push_back(t);', ['-p', 'graftyard-git', '--test', 'agent_load']),
     ('trigger-stream: dispatch is never bounded, so pushes and GETs starve', 'crates/git/src/prsync.rs',
      '            let dispatch_next = !l.dispatch.is_empty() && (l.other.is_empty() || l.streak < DISPATCH_STREAK_MAX);',
@@ -475,15 +476,15 @@ MUTANTS = [
      '                    if now() + wait >= end {', '                    if false {', LK),
     # ---- alarm-steps (B0-35 m60's 2,288 ms alarm): each slow alarm step names itself, 162 and up ----
     ('a step of exactly ALARM_STEP_LOG_MS is left out', 'workers/site/src/alarm_steps.rs',
-     '        if ms >= ALARM_STEP_LOG_MS {', '        if ms > ALARM_STEP_LOG_MS {', ['-p', 'graftyard-site', '--lib', 'alarm_steps::']),
+     'filter(|s| s.1 >= ALARM_STEP_LOG_MS)', 'filter(|s| s.1 > ALARM_STEP_LOG_MS)', ['-p', 'graftyard-site', '--lib', 'alarm_steps::']),
     ('a step is timed from the alarm\'s start, not the step before', 'workers/site/src/alarm_steps.rs',
      '        self.at = now;\n', '', ['-p', 'graftyard-site', '--lib', 'alarm_steps::']),
     ('a quick alarm logs an empty line', 'workers/site/src/alarm_steps.rs',
-     '        if self.slow.is_empty() {\n            return None;\n        }\n', '', ['-p', 'graftyard-site', '--lib', 'alarm_steps::']),
+     '        if slow.is_empty() {\n            return None;\n        }\n', '', ['-p', 'graftyard-site', '--lib', 'alarm_steps::']),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
-           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '..', 'target-m4a')),
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
            CARGO_INCREMENTAL='0')
 only = sys.argv[1:] and set(int(x) for x in sys.argv[1:])
 for n, (name, path, old, new, args) in enumerate(MUTANTS):
@@ -497,7 +498,7 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
     try:
         cmd = ['node', '--test', 'workers/runners/tests/*.test.mjs'] if args is NODE else \
             ['cargo', 'test', '-j', '3', *args, '--no-fail-fast']
-        r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+        r = subprocess.run(['timeout', '-k', '10', '600', *cmd], cwd=ROOT, env=env, capture_output=True, text=True)
         out = r.stdout + r.stderr
         failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')} |
                         {l[2:].strip() for l in out.splitlines() if l.startswith('✖ ') and 'failing' not in l})
@@ -505,6 +506,8 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
             verdict = 'DID NOT COMPILE'
         else:
             verdict = 'CAUGHT' if r.returncode != 0 else 'MISSED'
+        if r.returncode == 124:
+            failed = ['(timed out)', *failed]
         print(f'{n:2} {verdict:8} {name}: {", ".join(failed)}', flush=True)
     finally:
         open(f, 'wb').write(orig)
