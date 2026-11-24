@@ -1290,6 +1290,7 @@ fn the_edge_prechecks_signers_against_its_cached_keys() {
 
 // ---- graft-ops, the executor (M5-WP3) ----
 
+mod agents;
 mod errors;
 mod ops;
 mod replace;

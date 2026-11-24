@@ -11,6 +11,7 @@
 //! Each signature covers every byte before the count, so it covers the domain tag, `Bound`, and the body. The entry's
 //! digest, which the next entry's `Bound.prev` names, is SHA-256 of the whole stored form, signatures included.
 
+pub mod agents;
 mod codec;
 pub mod gate;
 mod group;

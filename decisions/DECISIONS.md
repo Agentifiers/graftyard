@@ -10536,3 +10536,31 @@ counted, throws ignored, N's errors summed in, no resend gap, counts kept across
 
 **Flip.** A hosted `OpsRoll` swapped back with a healthy N+1 (raise the bound), or one where a bad N+1 served mints
 for longer than one `MINT_RESEND_MS` after its errors crossed the line (count across isolates, as `gate-errors` does).
+
+#### `agents-view`: the agents account reads every committed `Release` entry and replays the group's own check (2026-11-24)
+
+**Status.** Code-only, not deployed (AM3-WP1's first slice). `graftyard_release::agents` and the edge's `GET /api/graftyard/v1/release/entries` ship on the next edge day; no agents account exists yet.
+
+**Decision.**
+- `GET release/entries?after=&per_page=` answers every committed entry after index `after`, in index order, each `{index, entry, at}`: the stored bytes in base64 and the time of the entry it committed in. A `Link` `rel="next"` names the next page while more remain. Any `Release` member answers from what it applied (`/view`), with no read-index round.
+- Only an App JWT of the install's `graftyard-agent` reads it: the App whose `AgentApp` row on the install's own chain is `GraftyardRun` and whose slug is `graftyard-agent`, verified against its record on that chain. Any other JWT or token answers 401.
+- `AgentsReleaseView` replays the entries through `ReleaseFold::check` and `apply` against the `AgentsAnchor`. So another install's entry is `WrongInstall`, a `Keys` not signed by the latest accepted customer key is `UnknownKey` or `WrongSigner`, and the `Keys` chain starts at a genesis the anchored customer key signed. It takes an entry only at the next index; a page that skips one is refused, and one whose entries it holds adds nothing, so it never moves to a lower index. A refused entry stops the page and keeps the view as it was, with the entries taken before it.
+- `controller_override` sets the `graft-controller` override only while `Pointers.controller` is `Some`.
+
+**Why.**
+- The group's `prev` digest and its `Keys` and intent rules read every entry, so a view that checks entries as the group did needs every entry. A feed filtered to the agents' kinds could not be verified, only trusted. The AGENT-LAYER comment listed the agents' kinds as what the feed serves; it now says the feed serves every entry and why.
+- `at` is the group's own time of each entry, which `check` reads for `not_after`; without it the agents view would refuse an intent the group accepted.
+- The entries are signed bytes with no secret, so serving all of them to the agents account exposes nothing new.
+
+**Beat.**
+- A filtered feed of the agents' kinds, which the view could not check against `prev` or the `Keys` chain.
+- A new check written for the agents view, which could drift from the group's.
+
+**Evidence.**
+- `crates/release/src/tests/group/agents.rs`, 3 tests. LF-8's three refusals, 100 of 100 each against a controller-pinned history: 50 entries bound to another install and 50 install-2 geneses offered to a cold view, `WrongInstall`; 100 next-generation `Keys` signed by the vendor, executor, agents executor, a stranger, or a new customer key alone, `UnknownKey` or `WrongSigner`; the group's valid next entry offered 1 to 7 indexes ahead, refused, and accepted at its own index as the control. A view read 3 at a time equals the group's fold. A behind member's pages, and an older history with other bytes at held indexes, add nothing. A refused refresh keeps the view and its pin. The override is set only while the pointer is.
+- `tests/m0carried/plant220.py`: 7 mutants, all caught (each LF-8 refusal removed, out-of-order taken, a held entry replayed, a refused refresh dropping the view, the override set with no pointer).
+- `tests/edgeboot/run.sh` now also sends the GET: 401 with no JWT, and 0 wasm traps, on the test-faults and product builds.
+
+**Flip.**
+- An install whose `Release` history outgrows a cold agents isolate's first read. Then serve the agents view a checkpoint the customer key signs, as the base would need for its own isolates.
+- A need to hide an entry kind from the agents account. Then the view needs a signed digest chain over the filtered feed.

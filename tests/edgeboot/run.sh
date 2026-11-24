@@ -34,7 +34,8 @@ ok=1
 # takes a cold resolve with no guess.
 hdr=(-H 'git-protocol: version=2')
 [ -z "${PRODUCT:-}" ] && hdr+=(-H "x-bed-token: edgeboot-bed" -H "x-graft-link: 7,3")
-for p in "/api/v3/repos/o/r" "/o/r.git/info/refs?service=git-upload-pack" "/o/r.git/git-upload-pack"; do
+for p in "/api/v3/repos/o/r" "/api/graftyard/v1/release/entries?after=0" "/o/r.git/info/refs?service=git-upload-pack" \
+  "/o/r.git/git-upload-pack"; do
   m=GET; [ "${p##*/}" = git-upload-pack ] && m=POST
   c=$(curl -s -m 30 -X $m -D "$B/h" -o "$B/body" -w '%{http_code}' "${hdr[@]}" "http://127.0.0.1:$P$p")
   st=$(grep -i '^server-timing' "$B/h" | tr -d '\r')

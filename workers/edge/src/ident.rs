@@ -7,8 +7,8 @@
 
 use graftyard_identity::stateless::{self, AccessTokenRequest, Grant, InstallationClaims, TokenRequestError};
 use graftyard_identity::{
-    Access, AppId, AppRecord, AuthzFold, AuthzRead, InstallationId, NameKey, PermissionSet, Principal, RepoName,
-    RepoScope, TokensFold, name_shard,
+    Access, AgentKind, AppId, AppRecord, AuthzFold, AuthzRead, InstallationId, NameKey, PermissionSet, Principal,
+    RepoName, RepoScope, TokensFold, name_shard,
 };
 use graftyard_raft::Format;
 use graftyard_types::{AccountId, ChainId, DbId, RepoId, TokenShard};
@@ -228,6 +228,26 @@ async fn app_record(c: &Ctx<'_>, app: AppId) -> std::result::Result<Option<(Acco
     let Some(owner) = v["app"].as_i64().map(|o| AccountId(DbId(o))) else { return Ok(None) };
     let a = authz_of(c, owner).await.map_err(unavailable)?;
     Ok(a.and_then(|a| a.app(app).cloned()).map(|r| (owner, r)))
+}
+
+/// The caller of `GET release/entries`: an App JWT of the install's `graftyard-agent`, the App whose `AgentApp` row on
+/// the install's own chain is `GraftyardRun` and whose slug is `graftyard-agent`, verified against its record. Both rows
+/// are on that one chain, because a `GraftyardRun` row needs the install to own the App (`AuthzErr::NotOwnApp`), so one
+/// fresh read of the install's `Authz` fold checks the caller. Neither a third App's JWT nor `graftyard-workspace`'s
+/// passes. `Err` is the reply: 401 for no JWT or one that fails, 503 when the fold could not be read.
+pub(crate) async fn graftyard_agent(c: &Ctx<'_>, req: &Request) -> std::result::Result<AppId, Reply> {
+    let no = |m: &str| Reply::error(401, m, "graftyard/release-entries");
+    let jwt = crate::token_of(req).ok().flatten().ok_or_else(|| no("Requires an App JWT of graftyard-agent"))?;
+    let app = graftyard_identity::appauth::claimed_app(&jwt).ok_or_else(|| no("no App in iss"))?;
+    let install = authz_of(c, graftyard_identity::install_account()).await.map_err(|e| crate::api::unavailable(&e))?;
+    let rec = install
+        .as_ref()
+        .filter(|a| a.agent_app(app).is_some_and(|r| r.kind == AgentKind::GraftyardRun))
+        .and_then(|a| a.app(app))
+        .filter(|r| r.slug.as_str() == "graftyard-agent")
+        .ok_or_else(|| no("only the install's graftyard-agent reads release entries"))?;
+    graftyard_identity::appauth::verify_app_jwt(&jwt, rec, now()).map_err(|e| no(&e.to_string()))?;
+    Ok(app)
 }
 
 /// `GET` and `PATCH /app/hook/config` (`design/SHARED.md`, "Identity and tokens"): the App JWT verified against the
