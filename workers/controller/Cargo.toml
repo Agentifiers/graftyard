@@ -1,0 +1,28 @@
+[package]
+name = "graftyard-controller"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# `graft-controller` (`design/AGENT-LAYER.md`, Shape, "Controller"; journey A3 steps 2 and 3; `build/BUILD-PLAN.md`,
+# AM3-WP1): the GitHub App backend in the agents account, reached only through `graft-agents-front` over a `fetch()`
+# service binding. This first slice is the webhook intake. The intake rules are plain Rust (`lib.rs`), tested natively
+# (`tests/intake.rs`); `worker` is the Workers host.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# LF-7's bad N+1 (`build/BUILD-PLAN.md`, AM3-WP1), test installs only: every webhook whose signature holds answers 500,
+# with the version header still set, so `graft-agents-front`'s `ControllerPointer` pin has a bad version to swap back
+# from. A build, not a variable, because only the code may differ between N and N+1. `node deploy.mjs --bad` builds
+# with it; a product build never does.
+test-bad = []
+
+[dependencies]
+# `sealed::hmac_sha256`, the `X-Hub-Signature-256` MAC the install's event pipeline signs with.
+graftyard-identity = { path = "../../crates/identity" }
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker.workspace = true

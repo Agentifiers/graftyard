@@ -257,6 +257,8 @@ pub fn rewrap(src: &WrapKeySource, w: &Wrapped, nonce: [u8; 12]) -> Result<Wrapp
 }
 
 #[cfg(target_arch = "wasm32")]
+mod agents;
+#[cfg(target_arch = "wasm32")]
 mod exec;
 #[cfg(target_arch = "wasm32")]
 mod worker_main;

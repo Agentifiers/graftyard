@@ -727,6 +727,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "graftyard-agents-front"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "futures-util",
+ "graftyard-identity",
+ "graftyard-release",
+ "graftyard-types",
+ "rsa",
+ "serde_json",
+ "sha2",
+ "smallvec",
+ "worker",
+]
+
+[[package]]
 name = "graftyard-api"
 version = "0.1.0"
 dependencies = [
@@ -744,6 +760,15 @@ dependencies = [
  "serde_json",
  "sha2",
  "smallvec",
+]
+
+[[package]]
+name = "graftyard-controller"
+version = "0.1.0"
+dependencies = [
+ "graftyard-identity",
+ "serde_json",
+ "worker",
 ]
 
 [[package]]
@@ -952,6 +977,7 @@ dependencies = [
 name = "graftyard-release"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "ed25519-dalek",
  "futures-executor",
  "graftyard-types",

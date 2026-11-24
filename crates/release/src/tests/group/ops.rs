@@ -23,6 +23,8 @@ pub(super) struct Ops {
     /// The intents `release roll` submitted, in order.
     pub(super) rolled: Vec<Intent>,
     pub(super) next_id: u8,
+    /// The account this `graft-ops` runs in.
+    pub(super) account: ops::Account,
 }
 
 pub(super) const OLD: VersionId = VersionId([0xee; 16]);
@@ -51,11 +53,13 @@ impl Ops {
             deployed: Vec::new(),
             rolled: Vec::new(),
             next_id: 100,
+            account: ops::Account::Install,
         }
     }
 
     pub(super) fn world(&self) -> World {
         World {
+            account: self.account,
             now: self.g.at,
             deployments: self.deps.clone(),
             gate: self.gate.clone(),
@@ -577,15 +581,27 @@ fn graft_ops_uploads_only_a_verified_bundle_and_each_script_once() {
     let (rec, sig, files) = bundle(&RELEASE);
     // Signed by another key, a file the record does not list, and a listed file missing: each refused.
     let (orec, osig, _) = bundle(&OTHER);
-    assert!(matches!(ops::check_bundle(&g.f, &orec, osig, &files, &scripts), Err(Refusal::BadRecord(_))));
+    assert!(matches!(
+        ops::check_bundle(&g.f, &orec, osig, &files, &scripts, ops::Account::Install),
+        Err(Refusal::BadRecord(_))
+    ));
     let mut extra = files.clone();
     extra.push(("edge/evil.js".into(), b"x".to_vec()));
-    assert!(matches!(ops::check_bundle(&g.f, &rec, sig, &extra, &scripts), Err(Refusal::BadRecord(_))));
+    assert!(matches!(
+        ops::check_bundle(&g.f, &rec, sig, &extra, &scripts, ops::Account::Install),
+        Err(Refusal::BadRecord(_))
+    ));
     let mut changed = files.clone();
     changed[3].1 = b"edge, changed".to_vec();
-    assert!(matches!(ops::check_bundle(&g.f, &rec, sig, &changed, &scripts), Err(Refusal::BadRecord(_))));
-    assert!(matches!(ops::check_bundle(&g.f, &rec, sig, &files[..4], &scripts), Err(Refusal::BadRecord(_))));
-    let c = ops::check_bundle(&g.f, &rec, sig, &files, &scripts).unwrap();
+    assert!(matches!(
+        ops::check_bundle(&g.f, &rec, sig, &changed, &scripts, ops::Account::Install),
+        Err(Refusal::BadRecord(_))
+    ));
+    assert!(matches!(
+        ops::check_bundle(&g.f, &rec, sig, &files[..4], &scripts, ops::Account::Install),
+        Err(Refusal::BadRecord(_))
+    ));
+    let c = ops::check_bundle(&g.f, &rec, sig, &files, &scripts, ops::Account::Install).unwrap();
     // Every genesis site (the spare included) uploads the one site bundle; the edge and graft-ops their own.
     let want: Vec<Script> = (0..4).map(|s| Script::Site(SiteId(s))).chain([Script::Edge, Script::Ops]).collect();
     assert_eq!(c.scripts.keys().copied().collect::<Vec<_>>(), want);
@@ -620,7 +636,7 @@ fn graft_ops_uploads_only_a_verified_bundle_and_each_script_once() {
 fn release_roll_skips_a_script_the_release_leaves_unchanged() {
     let mut o = Ops::new(G::new());
     let (rec, sig, files) = bundle(&RELEASE);
-    let c = ops::check_bundle(&o.g.f, &rec, sig, &files, &[Script::Edge, Script::Ops]).unwrap();
+    let c = ops::check_bundle(&o.g.f, &rec, sig, &files, &[Script::Edge, Script::Ops], ops::Account::Install).unwrap();
     let versions: BTreeMap<Script, VersionId> =
         c.scripts.keys().enumerate().map(|(i, s)| (*s, vid(4, i as u8))).collect();
     let UploadStep::Commit(u) = ops::upload_next(&o.g.f, &c, &versions) else { panic!() };
@@ -636,7 +652,8 @@ fn release_roll_skips_a_script_the_release_leaves_unchanged() {
         .collect();
     let rec5 = format!(r#"{{"label":"r5","files":[{}]}}"#, listed.join(",")).into_bytes();
     let sig5 = sign_record(&RELEASE, &rec5);
-    let c5 = ops::check_bundle(&o.g.f, &rec5, sig5, &files5, &[Script::Edge, Script::Ops]).unwrap();
+    let c5 =
+        ops::check_bundle(&o.g.f, &rec5, sig5, &files5, &[Script::Edge, Script::Ops], ops::Account::Install).unwrap();
     let v5: BTreeMap<Script, VersionId> = c5.scripts.keys().enumerate().map(|(i, s)| (*s, vid(5, i as u8))).collect();
     let UploadStep::Commit(u) = ops::upload_next(&o.g.f, &c5, &v5) else { panic!() };
     let b = o.g.entry(ReleaseEntry::ReleaseUploaded(u), &[&EXECUTOR]);
@@ -733,7 +750,15 @@ fn bf47_the_vault_step_follows_the_code_intents_and_does_not_wait_for_container_
     let listed: Vec<String> = files.iter().map(|(n, b)| format!(r#"{{"name":"{n}","sha256":"{}"}}"#, sha(b))).collect();
     let img = format!(r#"{{"name":"git","digest":"sha256:{}"}}"#, "ab".repeat(32));
     let rec = format!(r#"{{"label":"r4v","files":[{}],"images":[{img}]}}"#, listed.join(",")).into_bytes();
-    let c = ops::check_bundle(&o.g.f, &rec, sign_record(&RELEASE, &rec), &files, &[Script::Edge, Script::Ops]).unwrap();
+    let c = ops::check_bundle(
+        &o.g.f,
+        &rec,
+        sign_record(&RELEASE, &rec),
+        &files,
+        &[Script::Edge, Script::Ops],
+        ops::Account::Install,
+    )
+    .unwrap();
     assert!(!c.scripts.keys().any(|s| crate::ops::folder(*s) == ops::VAULT_FOLDER), "no script deploys vault/");
     let r = c.release;
     assert!(!ops::vault_due(&o.g.f, r), "no ReleaseUploaded yet");
@@ -793,8 +818,15 @@ fn bf47_the_vault_step_follows_the_code_intents_and_does_not_wait_for_container_
     let listed6: Vec<String> =
         files6.iter().map(|(n, b)| format!(r#"{{"name":"{n}","sha256":"{}"}}"#, sha(b))).collect();
     let rec6 = format!(r#"{{"label":"r6v","files":[{}]}}"#, listed6.join(",")).into_bytes();
-    let c6 =
-        ops::check_bundle(&o.g.f, &rec6, sign_record(&RELEASE, &rec6), &files6, &[Script::Edge, Script::Ops]).unwrap();
+    let c6 = ops::check_bundle(
+        &o.g.f,
+        &rec6,
+        sign_record(&RELEASE, &rec6),
+        &files6,
+        &[Script::Edge, Script::Ops],
+        ops::Account::Install,
+    )
+    .unwrap();
     let t6: BTreeMap<Script, VersionId> = c6.scripts.keys().enumerate().map(|(i, s)| (*s, vid(7, i as u8))).collect();
     let UploadStep::Commit(u) = ops::upload_next(&o.g.f, &c6, &t6) else { panic!() };
     let b = o.g.entry(ReleaseEntry::ReleaseUploaded(u), &[&EXECUTOR]);

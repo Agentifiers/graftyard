@@ -129,6 +129,34 @@ pub fn verify_app_jwt(jwt: &str, record: &AppRecord, now: Timestamp) -> Result<A
     Ok(record.id)
 }
 
+/// A first-party App's private key from Secrets Store: PEM, PKCS#8 (`graftyard apps init` and `graftyard agents
+/// init` write that) or PKCS#1 (GitHub's App key form).
+pub fn app_key(pem: &str) -> Result<rsa::RsaPrivateKey, String> {
+    use base64::engine::general_purpose::STANDARD;
+    use rsa::pkcs1::DecodeRsaPrivateKey as _;
+    use rsa::pkcs8::DecodePrivateKey as _;
+    let body: String = pem.lines().map(str::trim).filter(|l| !l.starts_with("-----")).collect();
+    let der = STANDARD.decode(body).map_err(|e| format!("not a PEM key: {e}"))?;
+    rsa::RsaPrivateKey::from_pkcs8_der(&der)
+        .or_else(|_| rsa::RsaPrivateKey::from_pkcs1_der(&der))
+        .map_err(|e| format!("not an RSA private key: {e}"))
+}
+
+/// An App JWT for `app` at `now`, as GitHub's guidance asks: `iat` 60 s back for clock skew and `exp` 9 minutes on,
+/// so the window is under `APP_JWT_MAX_LIFETIME_S` and `verify_app_jwt` takes it. `graft-agents-front` and the agents
+/// `graft-ops` sign their `GET release/entries` reads with it (`design/AGENT-LAYER.md`, Shape, "Controller").
+/// PKCS#1 v1.5 signing needs no randomness, so it runs in a Worker.
+pub fn sign_app_jwt(key: &rsa::RsaPrivateKey, app: AppId, now: Timestamp) -> String {
+    use rsa::pkcs1v15::SigningKey;
+    use rsa::signature::{SignatureEncoding as _, Signer as _};
+    let now_s = now.0 / 1000;
+    let head = B64.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let claims = B64.encode(format!(r#"{{"iat":{},"exp":{},"iss":{}}}"#, now_s - 60, now_s + 540, app.0.0));
+    let signed = format!("{head}.{claims}");
+    let sig = SigningKey::<Sha256>::new(key.clone()).sign(signed.as_bytes()).to_vec();
+    format!("{signed}.{}", B64.encode(sig))
+}
+
 /// SHA-256 of a client secret: the only form a record holds.
 pub fn secret_hash(secret: &str) -> SecretHash {
     SecretHash(sha2::Sha256::digest(secret.as_bytes()).into())
@@ -139,4 +167,91 @@ pub fn client_secret_ok(secrets: &[SecretHash], secret: &str) -> bool {
     let h = secret_hash(secret);
     // Every hash is compared, so the time does not say which one matched.
     secrets.iter().fold(false, |ok, s| ok | (s.0 == h.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::engine::general_purpose::STANDARD;
+    use rsa::pkcs1::EncodeRsaPrivateKey as _;
+    use rsa::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
+    use smallvec::smallvec;
+
+    use super::*;
+    use crate::apps::{AppKey, ClientId, PermissionSet, RsaPublic, Slug};
+
+    /// A key from a seeded generator, as `oidc`'s tests make one, so no key file is kept.
+    fn key(seed: u64) -> rsa::RsaPrivateKey {
+        struct R(u64);
+        impl rsa::rand_core::RngCore for R {
+            fn next_u32(&mut self) -> u32 {
+                self.next_u64() as u32
+            }
+            fn next_u64(&mut self) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0
+            }
+            fn fill_bytes(&mut self, d: &mut [u8]) {
+                d.iter_mut().for_each(|b| *b = self.next_u64() as u8);
+            }
+            fn try_fill_bytes(&mut self, d: &mut [u8]) -> Result<(), rsa::rand_core::Error> {
+                self.fill_bytes(d);
+                Ok(())
+            }
+        }
+        impl rsa::rand_core::CryptoRng for R {}
+        rsa::RsaPrivateKey::new(&mut R(seed), 1024).expect("a key")
+    }
+
+    fn record(id: i64, k: &rsa::RsaPrivateKey) -> AppRecord {
+        let der = k.to_public_key().to_public_key_der().unwrap();
+        AppRecord {
+            id: AppId(graftyard_types::DbId(id)),
+            slug: Slug::parse("graftyard-agent").unwrap(),
+            name: "graftyard-agent".into(),
+            client: ClientId::for_app(AppId(graftyard_types::DbId(id))),
+            keys: smallvec![AppKey {
+                id: graftyard_types::DbId(1),
+                public: RsaPublic(der.as_bytes().into()),
+                created: Timestamp(0)
+            }],
+            permissions: PermissionSet(Default::default()),
+            events: smallvec![],
+            webhook: None,
+            webhook_secret: None,
+            client_secrets: smallvec![],
+            callbacks: smallvec![],
+            public: true,
+        }
+    }
+
+    /// The agents account's reader signs with the key `agents init` stored, in either PEM form, and the edge's own
+    /// check takes the JWT for exactly that App, from 60 s before `now` until 9 minutes after it.
+    #[test]
+    fn a_signed_app_jwt_verifies_for_its_own_app_and_window_only() {
+        let k = key(0x9e37_79b9_7f4a_7c15);
+        let now = Timestamp(1_800_000_000_000);
+        // PEM by hand: this crate builds `rsa` without its `pem` feature.
+        let pem = |label: &str, der: &[u8]| {
+            let b = STANDARD.encode(der);
+            let lines: Vec<&str> = b.as_bytes().chunks(64).map(|c| std::str::from_utf8(c).unwrap()).collect();
+            format!("-----BEGIN {label}-----\n{}\n-----END {label}-----\n", lines.join("\n"))
+        };
+        for pem in [
+            pem("PRIVATE KEY", k.to_pkcs8_der().unwrap().as_bytes()),
+            pem("RSA PRIVATE KEY", k.to_pkcs1_der().unwrap().as_bytes()),
+        ] {
+            assert_eq!(app_key(&pem).unwrap(), k);
+        }
+        assert!(app_key("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----").is_err());
+        let rec = record(327_680, &k);
+        let jwt = sign_app_jwt(&k, rec.id, now);
+        assert_eq!(claimed_app(&jwt), Some(rec.id));
+        assert_eq!(verify_app_jwt(&jwt, &rec, now), Ok(rec.id));
+        assert_eq!(verify_app_jwt(&jwt, &rec, Timestamp(now.0 + 539_000)), Ok(rec.id));
+        assert_eq!(verify_app_jwt(&jwt, &rec, Timestamp(now.0 + 540_000)), Err(AppJwtError::Expired));
+        assert_eq!(verify_app_jwt(&jwt, &record(393_216, &k), now), Err(AppJwtError::Issuer));
+        assert_eq!(verify_app_jwt(&jwt, &record(327_680, &key(7)), now), Err(AppJwtError::Signature));
+    }
 }

@@ -10763,13 +10763,14 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
   - Any live state to `Cancelled` on the cancel delivery.
   - A non-writer's title or body edit pauses a `Queued` or `Running` task, as the host's pause does. Only a writer's reassignment queues it again, and moves `snapshot` to that entry's index.
   - `Draft`, `Done`, `Failed`, and `Cancelled` are final and take no event. A refused step changes nothing.
+- An org whose login is over 32 characters, so that `<org>-agents` would pass GHES's 39-character limit, has no fork workspace (`NoWorkspaceOrg`) and runs `InRepo` only (the lead's ruling on OPEN-QUESTIONS A51, 2026-11-24).
 - `TaskState::api` is the `PATCH` state each sends, by the table in "Tasks and the activity feed": `Paused` is `waiting_for_user`, `Draft` and `Done` are `completed`, and `Cancelled` sends none, because only the cancel endpoint sets it and `PATCH` refuses it (`TaskErr::HostState`). A controller state is final exactly when the base state it sends is.
 
 **Why.**
 - The base already holds the task's durable record; the controller's state only decides its next call, so a pure step with no format keeps it testable and adds no failure domain.
 - `Draft { pr }` is final because the table maps it to `completed`, a final base state. Review and merge then go through the PR, not the task.
 
-**Beat.** Storing the controller's `Task` as fields on `AgentTask`, which would put Sandbox ids and budgets on the base's group for a component the base does not run.
+**Beat.** Storing the controller's `Task` as fields on `AgentTask`, which would put Sandbox ids and budgets on the base's group for a component the base does not run. For long org logins, a hash-suffixed workspace org name, a second naming rule every lookup of the agents org computes and no user can predict.
 
 **Evidence.**
 - `crates/git/tests/controller.rs`, 5 tests: the prefix and both workspaces, and the 32 and 33 character org logins on either side of the 39-character limit (OPEN-QUESTIONS A51); each budget limit at and past it; every forward step and every refused one; each final state refusing every event; the pause and its resume, with the snapshot moved; and the `api` map with no `cancelled` or `timed_out`.
@@ -10777,4 +10778,27 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **Flip.**
 - The controller needs a step this model refuses, such as resuming a failed task. Then add the event here first, with its base `PATCH`.
-- A design choice for long org logins (A51). Then `workspace` follows it.
+- A customer whose org login is over 32 characters needs fork mode. Then a naming rule for its workspace org goes in the design first, and `workspace` follows it.
+
+#### `agents-ops`: the agents account's `graft-ops` is the install's executor under `Account::Agents` (2026-11-24)
+
+**Status.** Code-only (AM3-WP1); not deployed. LF-7 is its hosted row, on the runner account standing in as the agents account (`FRAME.md`, "Operator decision, 2026-11-24, AM1 closed and the runner account stands in as the agents account").
+
+**Decision.**
+- One executor, `graftyard_release::ops::run`, with an `Account` the host names. `Account::Agents` runs only the intents `group::agents_intent` names (`ControllerRoll`; a `Rotate` of an agents secret pages until it is built), uploads only `AgentsFront` and `Controller` from a bundle, drains and replaces no site, and pages for no lifeboat. `Account::Install` sits idle while a `ControllerRoll` is current. Since the group holds one intent in flight, each account's `graft-ops` waits out the other's.
+- The agents host (`workers/ops/src/agents.rs`) is the `graft-ops` script with `GRAFTYARD_HOST` set. It reads an `AgentsReleaseView` of `GET release/entries` under a `graftyard-agent` App JWT, kept by the isolate across runs, submits through `POST release/entries`, and signs with `AGENTS_EXECUTOR_KEY`. Its versions and deployments calls are the install's own (`exec::Api`) under the agents account's deploy token.
+- `release roll` signs `ControllerRoll` last, after `McpRoll`, for a release that uploaded a `Controller` version, with a `ControllerPointer` to N as its undo, as for every pinned script.
+
+**Why.**
+- The roll, its undo, and its `Abort` are the same steps for every pinned script, and the group already checks the agents key's entries, so a second executor would repeat `steps` and `next` for one script.
+- Reading over HTTPS and committing through the edge keeps the agents account off the install's Durable Object bindings, which another account cannot bind.
+
+**Beat.** A separate crate for the agents executor, which would copy `ops::next`'s pinned-roll rules and drift from them.
+
+**Evidence.**
+- `crates/release/src/tests/group/run.rs`: `the_agents_graft_ops_runs_controller_rolls_alone_under_the_agents_key` (uploads only the two agents scripts of a bundle that also holds site and edge files, every entry under `Keys.agents_executor`, 1% then 100% with N at 0%, no drain with a burning site, the install idle on a `ControllerRoll` and the agents one idle on an `EdgeRoll`) and `lf7_a_controller_breach_with_the_api_down_commits_the_pointer_and_deploys_later` (LF-7's in-memory half: the pin lands with the API down, an `AgentsReleaseView` of the feed carries it, the return to N waits for the API).
+- `tests/m0carried/plant226.py`: 5 mutants, all caught.
+
+**Flip.**
+- An agents release that must ship in the same bundle as an install release, so one `ReleaseUploaded` names both accounts' scripts. Then the group's upload rule changes first.
+- OPEN-QUESTIONS A52's `graft-agents-front` roll: it joins this executor's `ControllerRoll` steps.
