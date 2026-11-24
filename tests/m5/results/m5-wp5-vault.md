@@ -267,5 +267,121 @@ not the install's.
 
 1. **Hosted:** done on a stand-in vault account (vh1, above). A customer-owned vault account, and the export `jti`
    revoked against the vault, remain.
-2. BF-47's hosted row; its local half (the vault step of `release roll`) is built.
+2. BF-47 passed hosted on stand-ins (2026-11-24, "BF-47 hosted" below). A real vault account and a real Workflows
+   script remain for its rerun.
 3. **Per-org pull caps** (R39 (a)).
+
+## BF-47 hosted (2026-11-24, graft-m4a): pass, on two stand-ins
+
+Gate line (`build/BUILD-PLAN.md`, M5-WP5): `release roll` end to end, including `SiteDay { Workflows }` and
+`graftyard vault upgrade`. Pass: the order is as in DESIGN's Release roll, and the vault is upgraded with no install
+token. Fail: any other order, or an install token used.
+
+**Result: pass (done line 01:50:19Z, the roll's `{"roll": "done"}`; torn down by 02:00Z).** One `graftyard release
+roll R9`, rerun after each `IntentDone` by the driver's loop, signed every intent with the customer key. graft-ops
+executed every step, and the vault step ran from `release roll` itself under the vault's own token.
+
+**Stand-ins, as ruled.**
+- **The vault account is the runner account** (`FRAME.md`, "Operator decision, 2026-11-23, the runner account stands
+  in as BF-47's vault account"). It also holds `graft-runners`, so this vault is not isolated from Actions runners as a
+  production vault account is.
+- **`graft-m4a-workflows` is a minimal Worker, not Workflows**: a fetch handler that answers its version metadata, with
+  no cron, queue, Durable Object, container or bucket. It tests the roll's order, not Workflows. R8's and R9's
+  `workflows/` hold that script and its marker.
+- **No export edge day, and no export bucket.** The plan's step 1 edge day that binds `EXPORT` was dropped, with the
+  lead's approval before 00:05Z. With no export feed behind it, the vault's pulls failed for the whole row
+  (`vault pass failed: batches: 404` ×34 and `503` ×15 in its logs), which the lead ruled outside BF-47's lines.
+
+**Builds.** Site, edge and ops from main `05aace32` (test-faults), the vault and the CLI from the same tree. Both
+edgeboot builds passed on it with 0 traps. Bundles, each signed by m4a's release key:
+- R8 `47a4ac5c…`: `formats.txt` (R6's 27 formats, including 65000.1), `site/`, `workflows/`, `edge/`, `ops/`, `vault/`.
+- R9 `e23f69e9…`: R8 plus a marker in each folder, so nothing is skipped as unchanged.
+
+**Row 47a, setup (00:58:26Z to 00:59Z, $0.00).**
+- The vault token `graft-m4a-bf47-vault` (`52570767…`): Workers Scripts Write and Workers R2 Storage Write, on the
+  runner account only. The runner's own token minted it, and it is never the runner's or the install's.
+- `graft-m4a-workflows` was deployed with R8's `workflows/` (`ebb2f6e4`).
+- `vault init` under the vault token: bucket `graft-m4a-vault-standin` in ENAM, the four 35-day lock rules, the
+  script at R8 (`bac66742`, `workers/tag` `47a4ac5c…`), `EXPORT_TOKEN` and the pull cron.
+
+**Row 47b, the roll (00:59:51Z to 01:50:19Z, $0.05).**
+- graft-m4a-ops `53485950`: the test-faults build of `05aace32` with `GATE=pass`, 60 s dwells and `OPS_SCRIPTS`
+  naming the three sites, `workflows`, `edge` and `ops`. This is a test-install deploy outside the measured path. Its
+  deploy token `graft-m4a-bf47-deploy` was minted and PATCHed into `graft-m4a-ops-deploy-token`.
+- R9 was put into `graft-m4a-releases/r9/`.
+- The deploy's Cron Trigger fired neither after the deploy nor after one re-PUT. A reset (a yearly cron, then `*/1`)
+  at 01:06:31Z made it fire (`raw/bf47/m4abf47/notes.txt`).
+
+**The order, from the group's entries** (`raw/bf47/m4abf47/checks.log`). Each `Intent` is signed `031923…` (the
+customer); every other entry is signed by the executor key `d38725…`, except the drain-key `SiteMode`s, signed
+`477de5…`.
+
+| Index | Time | Entry |
+| --- | --- | --- |
+| 221 | 01:07:20Z | `ReleaseUploaded` R9 |
+| 222 | 01:08:30Z | `SiteDay { Site(0), R9 }`, 1 undo; drain 223, `SiteRelease` 228, undrain 230, `IntentDone` 233 at 01:16:40Z |
+| 234 | 01:16:43Z | `SiteDay { Site(1), R9 }`, 1 undo; `SiteRelease` 240, `IntentDone` 245 at 01:25:39Z |
+| 246 | 01:25:58Z | `SiteDay { Site(2), R9 }`, 1 undo; `SiteRelease` 252, `IntentDone` 257 at 01:34:41Z |
+| 258 | 01:35:12Z | `SiteDay { Workflows, R9 }`, no undo (no N recorded), no drain; `IntentDone` 263 at 01:40:43Z |
+| 264 | 01:41:21Z | `EdgeRoll { R9 }`, 1 undo (`EdgePointer` to e4); `IntentDone` 269 at 01:46:37Z |
+| 270 | 01:47:30Z | `OpsRoll { R9 }`, no undo (no Ops release recorded); `IntentDone` 273 at 01:49:38Z |
+| — | 01:50:12Z | the vault step: `{"vault": "upgraded"}`, R9 uploaded to `graft-m4a-vault-standin` as `7612b32d` at 100% |
+| — | 01:50:19Z | the next run: `{"vault": "at"}`, then `{"roll": "done"}` |
+
+That is DESIGN's Release roll order: each member site's `SiteDay`, then `SiteDay { Workflows }`, `EdgeRoll`,
+`OpsRoll`, then the vault step. `FrontRoll` and `McpRoll` were skipped because R9 names neither script, and no
+`ContainerDay` was due because R9 names no image. Before the last `IntentDone` the vault step stayed silent on every
+run. After the roll, `site_release` and `rolled` are R9 for all six scripts, and every script's deployed version is
+tagged `e23f69e9…`: sites a `75bdd60d`, b `627ed36c`, c `4600b130`, edge `eef95142` (with e4's `f4e193b9` at 0%), ops
+`c7079529`, Workflows stand-in `347df6b3`, whose fetch answered marker `bf47-r9`.
+
+**The vault's `workers/tag`:** `47a4ac5c…` (R8, `vault init`) before; `e23f69e9…` (R9, message `graftyard vault
+upgrade`) after.
+
+**Which token wrote on the vault account** (its audit log, `GET /logs/audit`, every non-read from setup to the checks):
+
+| Time | Action | Token |
+| --- | --- | --- |
+| 00:58:53Z | Create Token (the vault token) | `6ca3ce49…`, the runner's own token (the operator's mint, not the roll) |
+| 00:58:53Z | `TOKEN_CREATE` (its account-settings record) | none named |
+| 00:58:58Z | Create Bucket | `52570767…`, the vault token |
+| 00:58:58Z | Set Bucket Lock Rules | `52570767…` |
+| 00:58:59Z | Upload Worker | `52570767…` |
+| 00:59:00Z | Update Worker Script Schedules | `52570767…` |
+| 01:50:36Z | Upload Version (the roll's vault step) | `52570767…` |
+| 01:50:37Z | Create Worker Deployment (the roll's vault step) | `52570767…` |
+
+Every write by `vault init` and by `release roll`'s vault step names the vault token. None names the install token
+(`cd2328dc…`), which cannot reach the runner account at all (403 on a read there at the plan's check, 2026-11-23
+13:15Z). The audit log's times are
+the API's; the orb's clock read the upgrade at 01:50:12Z.
+
+**The negative probe (the fail line), 01:57:54Z** (`raw/bf47/m4abf47/probe.log`). `release roll R9`, with the API and
+the edge pointed at a local recorder that answers every request 599:
+- `CLOUDFLARE_VAULT_API_TOKEN` set to the install's token: refused, "CLOUDFLARE_VAULT_API_TOKEN is the install's
+  token: the vault upgrades only under its own", exit 1, **0 requests**.
+- `--vault-account` set to the install's own account, under the vault token: refused, "--vault-account is the
+  install's account …: the vault lives in its own account", exit 1, **0 requests**.
+
+**Teardown (01:59:20Z to 01:59:57Z, `teardown.log`, `lists.log`).**
+- graft-ops parked on R9's build: `8734edc8`, the test-faults build of `05aace32` with `exec-ck-pending.json`
+  (`GATE=pending`, `OPS_STEP_MIN_ENTRIES` 50, 60 s dwells, no slots, `OPS_SCRIPTS` the three sites), schedules `[]`.
+  Its deploy token was revoked.
+- The vault, in the operator's order: lock rules PUT empty, GET `rules: []`, bucket emptied (0 objects: the pulls
+  stored nothing), bucket deleted, `EXPORT_TOKEN` deleted, script deleted, vault token revoked.
+- `graft-m4a-workflows` deleted; token files shredded.
+- The parked graft-ops kept running Idle passes after its schedules went to `[]` (the last seen at 02:07:35Z), the same
+  tail M4-WP4 saw. A reset at 02:08Z (a yearly cron, then `[]`) left GET `schedules: []`.
+- Lists. Runner account: buckets `[]`, scripts `["graft-runners"]` only, tokens only the runner's own, the vault
+  bucket's lock answering 404 (no bucket). Install account: no `graft-m4a-workflows`, no `graft-m4a-bf47` token,
+  graft-ops schedules `[]`. The group holds 274 entries, nothing current, every slot 0.
+- Left on R9, as ruled: sites a, b and c, the edge, and graft-ops. Their `RELEASES` bucket keeps `r9/`.
+
+**Spend.** 47a $0.00, 47b $0.05 (graft-m4a, `tests/fanout/acctcost.py`, from 00:58:26Z). Runner side: about 60 vault
+invocations and a few R2 and API calls, inside the plan's included use [inference: $0].
+
+**Verdict: pass.** The order is DESIGN's Release roll, and the vault was upgraded by `release roll` under the vault's
+own token with no install token, which the probe refused before any request. Both stand-ins hold: the vault account is
+the runner account, not isolated from `graft-runners`, and `graft-m4a-workflows` is a minimal Worker that tests the
+order, not Workflows. The export edge day was dropped by ruling, so the vault's pulls failed throughout, which is
+outside BF-47's lines.

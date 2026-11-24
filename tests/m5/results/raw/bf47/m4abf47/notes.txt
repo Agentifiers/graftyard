@@ -1,0 +1,3 @@
+01:01:34 ops cron re-PUT after the ops deploy (no scheduled run since 00:58:28Z, as in BF-46 and BF-7)
+01:06:06 still no scheduled run; reset with a yearly cron, then */1
+02:08:02 ops Idle runs still firing at 02:07:35Z after the park; schedules reset with a yearly cron, then [] (GET: [])

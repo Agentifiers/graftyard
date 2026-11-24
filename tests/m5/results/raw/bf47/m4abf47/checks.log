@@ -1,0 +1,84 @@
+2026-11-24T01:58:08Z
+stand-ins: the vault account is the runner account (not isolated from graft-runners); graft-m4a-workflows is a minimal Worker, not Workflows
+== the group's entries since setup
+{"count":274,"current":null,"drained":[],"slots":{"DeployToken":{"slot":0,"switched":1795480526860},"MintWrapKey":{"slot":0,"switched":1795481368373},"ReadToken":{"slot":0,"switched":1795480590257}}}
+{"at":1795482440814,"entry":"ReleaseUploaded","index":221,"kind":"ReleaseUploaded","sigs":["d38725"]}
+{"at":1795482510826,"entry":"SiteDay { target: Site(SiteId(0)), release: ReleaseId([226, 63, 105, 233, 182, 7, 52, 132, 208, 146, 95, 132, 207, 100, 224, 141, 130, 22, 203, 163, 107, 175, 27, 164, 178, 245, 10, 162, 206, 45, 24, 62]) } id 01M85HH095B4CD7T02TWD2ZH7N","index":222,"kind":"Intent","sigs":["031923"]}
+{"at":1795482547733,"entry":"SiteMode","index":223,"kind":"SiteMode","sigs":["477de5"]}
+{"at":1795482548944,"entry":"step 0","index":224,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795482668877,"entry":"step 1","index":225,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795482788956,"entry":"step 2","index":226,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795482877654,"entry":"step 3","index":227,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795482882352,"entry":"SiteRelease","index":228,"kind":"SiteRelease","sigs":["d38725"]}
+{"at":1795482884204,"entry":"step 4","index":229,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795482886083,"entry":"SiteMode","index":230,"kind":"SiteMode","sigs":["477de5"]}
+{"at":1795482887892,"entry":"step 5","index":231,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795482998641,"entry":"step 6","index":232,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483000563,"entry":"IntentDone","index":233,"kind":"IntentDone","sigs":["d38725"]}
+{"at":1795483003083,"entry":"SiteDay { target: Site(SiteId(1)), release: ReleaseId([226, 63, 105, 233, 182, 7, 52, 132, 208, 146, 95, 132, 207, 100, 224, 141, 130, 22, 203, 163, 107, 175, 27, 164, 178, 245, 10, 162, 206, 45, 24, 62]) } id 01M85J00FT4M8A32RDTQ8XVH3F","index":234,"kind":"Intent","sigs":["031923"]}
+{"at":1795483055726,"entry":"SiteMode","index":235,"kind":"SiteMode","sigs":["477de5"]}
+{"at":1795483056829,"entry":"step 0","index":236,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483176898,"entry":"step 1","index":237,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483295001,"entry":"step 2","index":238,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483418687,"entry":"step 3","index":239,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483423788,"entry":"SiteRelease","index":240,"kind":"SiteRelease","sigs":["d38725"]}
+{"at":1795483425860,"entry":"step 4","index":241,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483427925,"entry":"SiteMode","index":242,"kind":"SiteMode","sigs":["477de5"]}
+{"at":1795483429990,"entry":"step 5","index":243,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483536675,"entry":"step 6","index":244,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483539593,"entry":"IntentDone","index":245,"kind":"IntentDone","sigs":["d38725"]}
+{"at":1795483558218,"entry":"SiteDay { target: Site(SiteId(2)), release: ReleaseId([226, 63, 105, 233, 182, 7, 52, 132, 208, 146, 95, 132, 207, 100, 224, 141, 130, 22, 203, 163, 107, 175, 27, 164, 178, 245, 10, 162, 206, 45, 24, 62]) } id 01M85JGYQ74JAABPWAG44N6P7R","index":246,"kind":"Intent","sigs":["031923"]}
+{"at":1795483594758,"entry":"SiteMode","index":247,"kind":"SiteMode","sigs":["477de5"]}
+{"at":1795483595852,"entry":"step 0","index":248,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483714028,"entry":"step 1","index":249,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483836228,"entry":"step 2","index":250,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483956267,"entry":"step 3","index":251,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483960560,"entry":"SiteRelease","index":252,"kind":"SiteRelease","sigs":["d38725"]}
+{"at":1795483962343,"entry":"step 4","index":253,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795483964136,"entry":"SiteMode","index":254,"kind":"SiteMode","sigs":["477de5"]}
+{"at":1795483965892,"entry":"step 5","index":255,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484078675,"entry":"step 6","index":256,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484081145,"entry":"IntentDone","index":257,"kind":"IntentDone","sigs":["d38725"]}
+{"at":1795484112159,"entry":"SiteDay { target: Workflows, release: ReleaseId([226, 63, 105, 233, 182, 7, 52, 132, 208, 146, 95, 132, 207, 100, 224, 141, 130, 22, 203, 163, 107, 175, 27, 164, 178, 245, 10, 162, 206, 45, 24, 62]) } id 01M85K1VXCPBKZ92705NZ0Z74F","index":258,"kind":"Intent","sigs":["031923"]}
+{"at":1795484196958,"entry":"step 0","index":259,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484317607,"entry":"step 1","index":260,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484437164,"entry":"step 2","index":261,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484441479,"entry":"step 3","index":262,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484443268,"entry":"IntentDone","index":263,"kind":"IntentDone","sigs":["d38725"]}
+{"at":1795484481793,"entry":"EdgeRoll { release: ReleaseId([226, 63, 105, 233, 182, 7, 52, 132, 208, 146, 95, 132, 207, 100, 224, 141, 130, 22, 203, 163, 107, 175, 27, 164, 178, 245, 10, 162, 206, 45, 24, 62]) } id 01M85KD4QKQ2KF1V36PPEXKDEB","index":264,"kind":"Intent","sigs":["031923"]}
+{"at":1795484556282,"entry":"step 0","index":265,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484675931,"entry":"step 1","index":266,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484794060,"entry":"step 2","index":267,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484796476,"entry":"step 3","index":268,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484797369,"entry":"IntentDone","index":269,"kind":"IntentDone","sigs":["d38725"]}
+{"at":1795484850813,"entry":"OpsRoll { release: ReleaseId([226, 63, 105, 233, 182, 7, 52, 132, 208, 146, 95, 132, 207, 100, 224, 141, 130, 22, 203, 163, 107, 175, 27, 164, 178, 245, 10, 162, 206, 45, 24, 62]) } id 01M85KRD4DVE5T75PZCE77F1VW","index":270,"kind":"Intent","sigs":["031923"]}
+{"at":1795484974571,"entry":"step 0","index":271,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484976882,"entry":"step 1","index":272,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795484978065,"entry":"IntentDone","index":273,"kind":"IntentDone","sigs":["d38725"]}
+== the vault's deployed version
+{"script":"graft-m4a-vault-standin","version":"7612b32d","percentage":100,"tag":"e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e","message":"graftyard vault upgrade"}
+== the Workflows stand-in
+{"script":"graft-m4a-workflows","version":"347df6b3","percentage":100,"tag":"e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e","message":"graft-ops upload"}
+{"standin":"workflows","marker":"bf47-r9","version":"347df6b3-85b8-47ae-bf22-8e38083fef56","tag":"e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e"}
+== the edge and graft-ops
+{"script":"graft-m4a-edge","version":"eef95142","percentage":100,"tag":"e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e","message":"graft-ops upload"}
+{"script":"graft-m4a-edge","version":"f4e193b9","percentage":0,"tag":"63644eb66afa24e7cdb9b8f367b67627f779561cd4744cde868d128c6e336161","message":"graft-ops upload"}
+{"script":"graft-m4a-ops","version":"c7079529","percentage":100,"tag":"e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e","message":"graft-ops upload"}
+{"script":"graft-m4a-site-a","version":"75bdd60d","percentage":100,"tag":"e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e","message":"graft-ops upload"}
+{"script":"graft-m4a-site-b","version":"627ed36c","percentage":100,"tag":"e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e","message":"graft-ops upload"}
+{"script":"graft-m4a-site-c","version":"4600b130","percentage":100,"tag":"e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e","message":"graft-ops upload"}
+== tokens: the install's, the vault's, the runner's own
+{"install_token":"cd2328dcc0abc426070bd4c4761bc0ee"}
+{"vault_token":"525707677f350d3b6ef5fcfa9ca586d9"}
+{"runner_token":"6ca3ce4940789bded1d41ca53a305fa5"}
+== every write on the runner account since setup, from its audit log, with the token that made it
+{"time": "2026-11-24T00:58:53.216Z", "what": "Create Token", "result": "success", "resource": "tokens/None None", "token": "6ca3ce4940789bded1d41ca53a305fa5", "token_name": "weathered-term-c67f", "context": "api_token"}
+{"time": "2026-11-24T00:58:53Z", "what": "TOKEN_CREATE", "result": "success", "resource": "account/settings <runner-account>", "token": null, "token_name": null, "context": "api"}
+{"time": "2026-11-24T00:58:58.079Z", "what": "Create Bucket", "result": "success", "resource": "r2/buckets None", "token": "525707677f350d3b6ef5fcfa9ca586d9", "token_name": "graft-m4a-bf47-vault", "context": "api_token"}
+{"time": "2026-11-24T00:58:58.916Z", "what": "Set Bucket Lock Rules", "result": "success", "resource": "r2/buckets.lock graft-m4a-vault-standin", "token": "525707677f350d3b6ef5fcfa9ca586d9", "token_name": "graft-m4a-bf47-vault", "context": "api_token"}
+{"time": "2026-11-24T00:58:59.402Z", "what": "Upload Worker", "result": "success", "resource": "workers/scripts graft-m4a-vault-standin", "token": "525707677f350d3b6ef5fcfa9ca586d9", "token_name": "graft-m4a-bf47-vault", "context": "api_token"}
+{"time": "2026-11-24T00:59:00.002Z", "what": "Update Worker Script Schedules (Cron Triggers)", "result": "success", "resource": "workers/scripts.schedules graft-m4a-vault-standin", "token": "525707677f350d3b6ef5fcfa9ca586d9", "token_name": "graft-m4a-bf47-vault", "context": "api_token"}
+{"time": "2026-11-24T01:50:36.776Z", "what": "Upload Version", "result": "success", "resource": "workers/scripts.versions graft-m4a-vault-standin", "token": "525707677f350d3b6ef5fcfa9ca586d9", "token_name": "graft-m4a-bf47-vault", "context": "api_token"}
+{"time": "2026-11-24T01:50:37.34Z", "what": "Create Worker Deployment", "result": "success", "resource": "workers/scripts.deployments graft-m4a-vault-standin", "token": "525707677f350d3b6ef5fcfa9ca586d9", "token_name": "graft-m4a-bf47-vault", "context": "api_token"}
+{"writes": 8, "reads": 15, "by_token": [["6ca3ce4940789bded1d41ca53a305fa5", "weathered-term-c67f", 1], [null, null, 1], ["525707677f350d3b6ef5fcfa9ca586d9", "graft-m4a-bf47-vault", 6]]}
+row 47b spend so far: $0.05; 47a and 47b: $0.05

@@ -1,0 +1,9 @@
+2026-11-24T01:57:54Z
+stand-ins: the vault account is the runner account (not isolated from graft-runners); graft-m4a-workflows is a minimal Worker, not Workflows
+{"count":274,"current":null,"site_release":{"0":"e23f69e9","1":"e23f69e9","2":"e23f69e9"},"rolled":{"Edge":"e23f69e9","Ops":"e23f69e9","Site(SiteId(0))":"e23f69e9","Site(SiteId(1))":"e23f69e9","Site(SiteId(2))":"e23f69e9","Workflows":"e23f69e9"}}
+fail line 1: CLOUDFLARE_VAULT_API_TOKEN set to the install's token (CLOUDFLARE_API_TOKEN), the API and the edge a local recorder
+graftyard: CLOUDFLARE_VAULT_API_TOKEN is the install's token: the vault upgrades only under its own
+exit 1; requests the recorder saw: 0
+fail line 2: --vault-account the install's own account, under the vault's token
+graftyard: --vault-account is the install's account <install-account>: the vault lives in its own account
+exit 1; requests the recorder saw: 0
