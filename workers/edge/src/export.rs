@@ -4,7 +4,8 @@
 //!
 //! - **Auth.** An `ExportClaims` bearer token, verified against the customer key of the `Release` view's `Keys` (the
 //!   trust anchor's before any `Keys` entry) and refused once its `jti`'s `JtiRevoked` row is read, through the same
-//!   READ_CACHE as `ghs_` (`ident::jti_revoked`). Anything else is 401.
+//!   READ_CACHE as `ghs_` (`ident::jti_revoked`); or a registered lifeboat's signed tail, snapshot, or pack pull
+//!   (`lifeboat_claims`), which is install-scoped. Anything else is 401.
 //! - **Scope.** `in_scope` runs before any read: an org token's repository chain or pack is checked against the
 //!   repository's owner from `RepoOwner`, and the feed needs an install token.
 //! - **Reads.** Batches list the `EXPORT` bucket after the cursor. Entries come from a learner or follower
@@ -19,6 +20,7 @@ use graftyard_git::export::{self, ArchiveRows, ExportError, ExportReply, Prefetc
 use graftyard_git::host::R2;
 use graftyard_git::{Bucket, R2Key};
 use graftyard_identity::export_token::{self, ExportClaims};
+use graftyard_identity::lifeboat;
 use graftyard_types::{AccountId, ChainId, Index, PlacementRecord, RepoId};
 use graftyard_wire::Reply;
 use sha2::{Digest as _, Sha256};
@@ -37,7 +39,13 @@ pub async fn route(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Option<
         Ok(r) => r,
         Err(e) => return refused(c, &e).map(Some),
     };
-    let claims = match Box::pin(claims(c, req, !matches!(route, Route::RevokeToken))).await? {
+    let signed = req.headers().has(lifeboat::HOST_HEADER)?;
+    let claims = if signed {
+        Ok(lifeboat_claims(c, req, &url, &route).await?)
+    } else {
+        Box::pin(claims(c, req, !matches!(route, Route::RevokeToken))).await?
+    };
+    let claims = match claims {
         Ok(Some(claims)) => claims,
         Ok(None) => return crate::agents::respond(c, Reply::error(401, "Bad credentials", "rest")).map(Some),
         // The token verified and its `jti` row did not answer: retry, as for any read whose group is down.
@@ -54,6 +62,35 @@ pub async fn route(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Option<
         Err(Fail::Unavailable(why)) => return crate::agents::respond(c, crate::api::unavailable(&why)).map(Some),
     };
     Ok(Some(answer))
+}
+
+/// A lifeboat's signed tail, snapshot, or pack pull (`graftyard_identity::lifeboat`): an install-scoped claim once its
+/// signature verifies under the key the `Release` view registered for its host, and `None` for any other route or a
+/// request that does not verify. Nothing to revoke: a removed lifeboat leaves the view.
+async fn lifeboat_claims(c: &Ctx<'_>, req: &Request, url: &Url, route: &Route) -> Result<Option<ExportClaims>> {
+    if !route.lifeboat_may() {
+        return Ok(None);
+    }
+    let Some(anchor) = c.anchor else { return Ok(None) };
+    Box::pin(graftyard_lookup::view::ensure(&c.bindings(), &anchor, Some(c.ctx))).await;
+    let h = req.headers();
+    let (host, at, sig) = (h.get(lifeboat::HOST_HEADER)?, h.get(lifeboat::AT_HEADER)?, h.get(lifeboat::SIG_HEADER)?);
+    let path = match url.query() {
+        Some(q) => format!("{}?{q}", url.path()),
+        None => url.path().to_owned(),
+    };
+    let now = crate::now();
+    let registered = |host: &str| graftyard_lookup::view::with(|r| r.fold.lifeboats.get(host).copied());
+    let ok = lifeboat::verify(host.as_deref(), at.as_deref(), sig.as_deref(), "GET", &path, now, registered);
+    let Ok(host) = ok else { return Ok(None) };
+    Ok(Some(ExportClaims {
+        install: anchor.install,
+        scope: graftyard_release::Scope::Install,
+        holder: format!("lifeboat:{host}").into(),
+        jti: graftyard_types::Ulid(0),
+        iat: now,
+        exp: now,
+    }))
 }
 
 /// The token's claims once it verifies and its `jti` is not revoked; `None` otherwise, and `Err` when the `jti` row did

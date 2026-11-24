@@ -1143,6 +1143,36 @@ fn stale_until<F: Family>(h: &Host<F>) -> Option<graftyard_types::Timestamp> {
     graftyard_lookup::view::stale_until(chain, owner)
 }
 
+/// The lifeboat's bundle runs this script's member classes off Cloudflare with `GRAFTYARD_LIFEBOAT=1`
+/// (`decisions/DECISIONS.md`, "`lifeboat-learner`"). Each member is a learner whose only peer is the lifeboat's
+/// importer (`graftyard_raft::import`), which no placement names, so a read-index read there would wait out
+/// CAMPAIGN_DEADLINE for an answer that never comes: every read is the member's own fold (`stale()`), and every write
+/// or leadership route answers 503, as GitHub answers a write it cannot take.
+fn lifeboat_mode(env: &Env) -> bool {
+    env.var("GRAFTYARD_LIFEBOAT").is_ok_and(|v| v.to_string() == "1")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lifeboat {
+    /// Answered by `read_stale`, never by `read`, whose read-index path asks the leader.
+    Stale,
+    /// 503: the lifeboat is read-only.
+    Refuse,
+    /// The importer's `/raft`, the copy's own housekeeping, and the observation routes.
+    Pass,
+}
+
+fn lifeboat_route(path: &str) -> Lifeboat {
+    match path {
+        "/read" => Lifeboat::Stale,
+        "/raft" | "/status" | "/stats" | "/ping" | "/rtt" | "/log" | "/audit" | "/trace" | "/faults" | "/isolate"
+        | "/deps_log" | "/elections" | "/arrivals" | "/retire" | "/purge_retire" | "/reset" | "/abort" => {
+            Lifeboat::Pass
+        }
+        _ => Lifeboat::Refuse,
+    }
+}
+
 /// The member's routes for one command family.
 struct Routes<F: Family> {
     host: Rc<Host<F>>,
@@ -1217,6 +1247,20 @@ impl<F: Family> Routes<F> {
                     Delay::from(Duration::from_millis(hang)).await;
                 }
                 return Response::error("member class failing (injected site fault)", 503);
+            }
+        }
+        if lifeboat_mode(&self.host.env) {
+            match lifeboat_route(url.path()) {
+                Lifeboat::Pass => {}
+                Lifeboat::Stale => {
+                    let body: Value = req.json().await?;
+                    let q = match body.get("q") {
+                        Some(q) => q.clone(),
+                        None => json!({ "key": body.get("key").and_then(Value::as_str).unwrap_or_default() }),
+                    };
+                    return self.read_stale(&q, graftyard_types::Timestamp(now_ms()));
+                }
+                Lifeboat::Refuse => return Response::error("the lifeboat is read-only", 503),
             }
         }
         match (req.method(), url.path()) {
@@ -3620,6 +3664,39 @@ async fn repo_owner_row(env: &Env, repo: graftyard_types::RepoId) -> std::result
 
 #[cfg(test)]
 mod tests {
+    /// A lifeboat member never asks for a read index and takes no write: `/read` is the stale path, every write and
+    /// leadership route is refused, and only the importer's `/raft` and the observation routes pass.
+    #[test]
+    fn a_lifeboat_member_reads_its_own_fold_and_refuses_every_write() {
+        use super::{Lifeboat, lifeboat_route};
+        assert_eq!(lifeboat_route("/read"), Lifeboat::Stale);
+        for p in [
+            "/commit",
+            "/commit_many",
+            "/outcome",
+            "/outcome_by_request",
+            "/campaign",
+            "/suspect",
+            "/transfer",
+            "/reconfigure",
+            "/replace",
+            "/place",
+            "/move",
+            "/learners",
+            "/record",
+            "/probe_vote",
+            "/read_bench",
+            "/sever",
+            "/join",
+            "/anything-new",
+        ] {
+            assert_eq!(lifeboat_route(p), Lifeboat::Refuse, "{p}");
+        }
+        for p in ["/raft", "/status", "/stats", "/ping", "/trace"] {
+            assert_eq!(lifeboat_route(p), Lifeboat::Pass, "{p}");
+        }
+    }
+
     /// `b032-shed` A: only a read-index read failing `NotLeader` naming none, on a member that forgot its leader, is
     /// shed with the report; one naming a leader, one on a member that forgot none, and a plain read stay `notLeader`.
     #[test]

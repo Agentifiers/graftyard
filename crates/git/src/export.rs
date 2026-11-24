@@ -504,6 +504,13 @@ impl Route {
     }
 
     /// The chain the route reads, which the token's scope must cover. A pack's chain is its network's.
+    /// Whether a request signed by a registered lifeboat's key may take this route: its tail, snapshot, and pack
+    /// pulls, as an install-scoped export would. Never the feed's listing, which it reads from the export bucket with
+    /// its own read-only token, and never a token revocation (`graftyard_identity::lifeboat`).
+    pub fn lifeboat_may(&self) -> bool {
+        matches!(self, Route::Entries { .. } | Route::Snapshots { .. } | Route::Pack { .. })
+    }
+
     pub fn chain(&self) -> Option<ChainId> {
         match self {
             Route::Entries { chain, .. } | Route::Snapshots { chain, .. } => Some(*chain),

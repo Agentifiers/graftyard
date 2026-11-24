@@ -738,6 +738,11 @@ pub struct Ready<C: Command, R> {
 }
 
 impl<C: Command, R> Ready<C, R> {
+    /// The outputs before `persist` releases them, to read and not to send.
+    pub fn out(&self) -> &Out<C> {
+        &self.out
+    }
+
     /// Hands every write to `store`, in order, and only then returns the reply and the outputs. The host may send
     /// `Out::early` as soon as it has them; everything else waits until the writes are durable, and `Out::self_ack`
     /// goes back to `Member::self_ack` then.

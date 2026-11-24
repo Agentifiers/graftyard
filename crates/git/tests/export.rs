@@ -391,3 +391,18 @@ fn a_chain_whose_leader_never_reports_still_reaches_the_feed_exactly_once() {
     }
     assert_eq!(pulled, inst.logs, "every chain, led or not, exactly once");
 }
+
+/// A lifeboat's signed request takes its tail, snapshot, and pack pulls only: never the feed listing, which it reads
+/// from the export bucket, and never a token revocation.
+#[test]
+fn a_lifeboat_request_takes_only_tail_snapshot_and_pack_routes() {
+    let q = |p: &[(&str, &str)]| p.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+    let may = |m: &str, path: &str, query: Vec<(String, String)>| Route::parse(m, path, &query).unwrap().lifeboat_may();
+    let base = "/api/graftyard/v1/export";
+    assert!(may("GET", &format!("{base}/chains/repo:5/entries"), q(&[("from", "1"), ("limit", "10")])));
+    assert!(may("GET", &format!("{base}/chains/repo:5/snapshots"), q(&[("at", "9")])));
+    let pack = format!("{base}/packs/{}", graftyard_git::pack::PackId(Ulid(0x0190_0000_0000_0000_0000_0000_0000_0001)));
+    assert!(may("GET", &pack, q(&[("network", "5")])));
+    assert!(!may("GET", &format!("{base}/batches"), q(&[])));
+    assert!(!may("DELETE", &format!("{base}/token"), q(&[])));
+}

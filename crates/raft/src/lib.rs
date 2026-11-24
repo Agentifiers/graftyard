@@ -16,6 +16,7 @@ pub mod codec;
 mod edge;
 mod encode;
 mod fold;
+pub mod import;
 mod member;
 mod outcome;
 mod quorum;

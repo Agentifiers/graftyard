@@ -26,6 +26,7 @@ pub mod glob;
 pub mod group_move;
 mod identity;
 mod ids;
+pub mod lifeboat;
 mod names;
 pub mod oidc;
 mod org;

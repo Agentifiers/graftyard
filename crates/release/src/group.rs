@@ -198,6 +198,10 @@ pub struct ReleaseFold {
     pub containers: BTreeMap<u8, ReleaseId>,
     /// The release each registered lifeboat's decoder reports (`LifeboatDecoder`), which `FormatsEnable` waits for.
     pub lifeboat_release: BTreeMap<Box<str>, ReleaseId>,
+    /// When each registered lifeboat was last heard: its `LifeboatAdd`'s entry time, then each `LifeboatDecoder`'s.
+    /// `graft-ops` pages for one silent past `LIFEBOAT_SILENT` (`ops::silent_lifeboats`). A fold field only, rebuilt
+    /// from the log as every field is, so it adds no record format.
+    pub lifeboat_seen: BTreeMap<Box<str>, Timestamp>,
     /// Each rotated secret's active slot and the time its `Rotate`'s switch step committed; a secret missing here
     /// reads slot 0 (`slot`).
     pub slots: BTreeMap<SecretName, (u8, Timestamp)>,
@@ -958,13 +962,16 @@ impl ReleaseFold {
             }
             ReleaseEntry::StaleMode { scope, until } => self.stale.push((scope, until)),
             ReleaseEntry::LifeboatAdd { host, key } => {
+                self.lifeboat_seen.insert(host.clone(), at);
                 self.lifeboats.insert(host, key);
             }
             ReleaseEntry::LifeboatRemove { host } => {
                 self.lifeboats.remove(&host);
                 self.lifeboat_release.remove(&host);
+                self.lifeboat_seen.remove(&host);
             }
             ReleaseEntry::LifeboatDecoder { host, release } => {
+                self.lifeboat_seen.insert(host.clone(), at);
                 self.lifeboat_release.insert(host, release);
             }
             ReleaseEntry::RepoRestore { .. } | ReleaseEntry::RepoReset { .. } => {}
