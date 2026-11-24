@@ -1,0 +1,6 @@
+2026-11-24T15:36:45Z
+73d81cd2
+graft-ops from 73d81cd2, {"gate":null,"scripts":["front","mcp","site/0","site/1","site/2"],"test_faults":true,"cron":"* * * * *","step_dwell_ms":60000,"first_day_ms":300000,"step_min_entries":null}
+Current Version ID: 99c67ce1-159f-47bd-9ebd-b1fe50dac25d
+{"script":"graft-m4a-ops","created_on":"2026-11-24T15:37:38.064739Z","versions":["99c67ce1 100"]}
+{"schedules":["* * * * *"]}

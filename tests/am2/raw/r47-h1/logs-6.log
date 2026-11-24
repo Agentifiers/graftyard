@@ -1,0 +1,6 @@
+2026-11-24T16:01:08Z
+73d81cd2
+{"at": 1795535960535, "msg": "graft-ops gate mcp: N+1 Answers { answers: 13, fivexx: 0 } thrown 0 N Some(Answers { answers: 1151, fivexx: 0 }) (whole Some(Answers { answers: 36239, fivexx: 0 })) from 3 sites -> Starved(13)"}
+{"at": 1795535964820, "msg": "graft-ops gate mcp: N+1 Answers { answers: 17, fivexx: 0 } thrown 0 N Some(Answers { answers: 1580, fivexx: 0 }) (whole Some(Answers { answers: 36668, fivexx: 0 })) from 3 sites -> Starved(17)"}
+{"at": 1795535966388, "msg": "graft-ops Committed(\"IntentStep\")"}
+{"at": 1795536012316, "msg": "graft-ops gate mcp: N+1 Answers { answers: 2339, fivexx: 0 } thrown 0 N Some(Answers { answers: 2130, fivexx: 0 }) (whole Some(Answers { answers: 37218, fivexx: 0 })) from 3 sites -> Pass"}

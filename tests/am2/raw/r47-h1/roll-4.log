@@ -1,0 +1,5 @@
+2026-11-24T15:50:42Z
+73d81cd2
+release roll: intent 01M874173FAMYQFEVC6GNYQAJK McpRoll { release: ReleaseId([170, 179, 72, 120, 161, 188, 144, 135, 177, 164, 43, 64, 34, 162, 11, 178, 69, 41, 140, 30, 141, 199, 31, 79, 124, 188, 255, 238, 55, 133, 18, 78]) }, 1 undo(s)
+{"answer":{"digest":"21b93ca93d519558bacde27fce8108235f46b837b205893175c2ac5b79ccb82c","index":1251,"status":201},"intent":"01M874173FAMYQFEVC6GNYQAJK"}
+{"count":460,"current":{"intent":"McpRoll { release: ReleaseId([170, 179, 72, 120, 161, 188, 144, 135, 177, 164, 43, 64, 34, 162, 11, 178, 69, 41, 140, 30, 141, 199, 31, 79, 124, 188, 255, 238, 55, 133, 18, 78]) }","next":0,"since":1795535453899,"state":"Running { step: 0 }"}}

@@ -1,0 +1,6 @@
+2026-11-24T16:04:26Z
+73d81cd2
+{"script":"graft-m4a-front","created_on":"2026-11-24T15:46:16.002833Z","versions":["6b4eaa23 100"]}
+{"script":"graft-m4a-mcp","created_on":"2026-11-24T15:59:22.861037Z","versions":["1b49bb13 100","ec65cb08 0"]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T15:37:38.064739Z","versions":["99c67ce1 100"]}
+{"count":467,"current":null,"rolled":{"Edge":"e23f69e9","Front":"b48fa157","Mcp":"4d6e33f1","Ops":"7def7980","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"},"entries":[{"at":1795535536560,"entry":"McpRoll { release: ReleaseId([77, 110, 51, 241, 80, 89, 98, 196, 219, 248, 85, 63, 211, 114, 147, 94, 29, 198, 220, 234, 119, 148, 149, 210, 182, 53, 130, 199, 38, 26, 135, 38]) } id 01M8743RCYDCG6M30DQ80WTWRS","index":463,"kind":"Intent","sigs":["031923"]},{"at":1795535958694,"entry":"step 0","index":464,"kind":"IntentStep","sigs":["d38725"]},{"at":1795536081479,"entry":"step 1","index":465,"kind":"IntentStep","sigs":["d38725"]},{"at":1795536085569,"entry":"IntentDone","index":466,"kind":"IntentDone","sigs":["d38725"]}]}

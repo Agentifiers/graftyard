@@ -1,0 +1,6 @@
+2026-11-24T15:51:34Z
+73d81cd2
+{"script":"graft-m4a-front","created_on":"2026-11-24T15:46:16.002833Z","versions":["6b4eaa23 100"]}
+{"script":"graft-m4a-mcp","created_on":"2026-11-24T15:51:16.548336Z","versions":["ec65cb08 100"]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T15:37:38.064739Z","versions":["99c67ce1 100"]}
+{"count":463,"current":null,"rolled":{"Edge":"e23f69e9","Front":"b48fa157","Mcp":"aab34878","Ops":"7def7980","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"},"entries":[{"at":1795535453899,"entry":"McpRoll { release: ReleaseId([170, 179, 72, 120, 161, 188, 144, 135, 177, 164, 43, 64, 34, 162, 11, 178, 69, 41, 140, 30, 141, 199, 31, 79, 124, 188, 255, 238, 55, 133, 18, 78]) } id 01M874173FAMYQFEVC6GNYQAJK","index":459,"kind":"Intent","sigs":["031923"]},{"at":1795535458635,"entry":"Abort","index":460,"kind":"Abort","sigs":["031923"]},{"at":1795535479589,"entry":"step 0","index":461,"kind":"IntentStep","sigs":["d38725"]},{"at":1795535482474,"entry":"IntentDone","index":462,"kind":"IntentDone","sigs":["d38725"]}]}

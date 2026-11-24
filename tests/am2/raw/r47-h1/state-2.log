@@ -1,0 +1,18 @@
+2026-11-24T16:02:23Z
+73d81cd2
+{"count":467,"current":null,"drained":[],"site_release":{"0":"2f379da8","1":"4c6729de","2":"4c6729de"},"rolled":{"Edge":"e23f69e9","Front":"b48fa157","Mcp":"4d6e33f1","Ops":"7def7980","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"}}
+{"script":"graft-m4a-edge","created_on":"2026-11-24T15:18:57.154358Z","versions":["eef95142 100","f4e193b9 0"]}
+{"graft-m4a-edge":[]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T15:37:38.064739Z","versions":["99c67ce1 100"]}
+{"graft-m4a-ops":["* * * * *"]}
+{"script":"graft-m4a-site-a","created_on":"2026-11-24T13:02:19.230406Z","versions":["169cd766 100"]}
+{"graft-m4a-site-a":[]}
+{"script":"graft-m4a-site-b","created_on":"2026-11-24T12:44:23.441059Z","versions":["89586bfb 100"]}
+{"graft-m4a-site-b":[]}
+{"script":"graft-m4a-site-c","created_on":"2026-11-24T12:52:26.280885Z","versions":["969d360b 100"]}
+{"graft-m4a-site-c":[]}
+{"script":"graft-m4a-front","created_on":"2026-11-24T15:46:16.002833Z","versions":["6b4eaa23 100"]}
+{"graft-m4a-front":[]}
+{"script":"graft-m4a-mcp","created_on":"2026-11-24T15:59:22.861037Z","versions":["1b49bb13 100","ec65cb08 0"]}
+{"graft-m4a-mcp":[]}
+install day: {"prefix_usd":17.98}

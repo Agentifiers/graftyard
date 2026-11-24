@@ -1,0 +1,9 @@
+2026-11-24T15:34:30Z
+73d81cd2
+   Compiling thiserror v2.0.21
+env.MCP_HOST ("mcp.m4a.graftyard.dev")                                       Environment Variable         
+  m4a.graftyard.dev (custom domain)
+  mcp.m4a.graftyard.dev (custom domain)
+Current Version ID: 245ab5c4-3992-4c33-ba1a-b77833efa456
+✨ Success! Uploaded secret FRONT_TOKEN
+{"script":"graft-m4a-front","created_on":"2026-11-24T15:35:34.480656Z","versions":["88809dbe 100"]}

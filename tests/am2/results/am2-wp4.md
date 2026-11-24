@@ -110,3 +110,42 @@ Teardown from 09:57:48Z: sampler stopped; ops cron reset (a yearly cron, then `[
 universal packs; after: the same, plus one advanced pack for `mcp.m4a` in `pending_deletion`. End sweep 10:01:45Z: no
 shard container running. Ops schedules read `[]`, but Idle runs kept firing after the reset (last seen 10:02:13Z), as
 on M4-WP4's rows. Cost: the row $0.04 (09:06Z to 10:02Z); graft-m4a's UTC day $16.97 [measured, `acctcost.py`].
+
+### Hosted, the McpRoll 100%-hold row h1 on graft-m4a (2026-11-24)
+
+Cleared by the lead after R47 closed in code (option B, `9c68b456`): one clean `McpRoll` whose 100% step holds
+`STEP_DWELL` and commits on a gate judged against N's whole-intent counts ($6 row stop; stop if the install's UTC day
+would pass $35). From main `73d81cd2`, on B0-02's handback (15:22Z). Driver `tests/am2/hosted/r47-day.sh` with
+`N1=clean` (w5 is main's mcp build plus a marker module) and `BUNDLES`; logs in `tests/am2/raw/r47-h1/`. Start sweep
+15:31:51Z, done line 16:05:59Z (end sweep). **Pass.**
+
+| Check | Result |
+| --- | --- |
+| 1% step judged and committed | `Starved(0)` to `Starved(261)` over the 5 min `FIRST_DAY` (N+1 0 5xx, N up to 35,434 answers, 0 5xx); step 0 committed at entry 464, 15:59:18Z, under the R38 pool rule [measured] |
+| 100% step holds `STEP_DWELL` | split w5 `1b49bb13` 100 / w4m `ec65cb08` 0 took effect 15:59:22.9Z; first judge 16:00:12Z (inside the 60 s dwell, no commit); step 1 committed at entry 465, 16:01:21.5Z, 118.6 s after the split [measured] |
+| Judged against N's whole-intent counts | both 100% judges read `Pass`: N+1 2,339 then 7,349 answers, 0 5xx, against N `whole` 37,218 answers, 0 5xx (N's own step window 2,130, frozen once N served 0%) [measured, Workers Logs `graft-ops gate mcp`] |
+| Done | `IntentDone` entry 466, 16:01:28Z; count 467, no intent current, `rolled.Mcp` = w5 `4d6e33f1…` |
+| Clients | sampler (4 clients through `mcp.m4a.graftyard.dev`, 15:53Z to 16:04Z): 144,134 answers, all 200; after the 100% split 31,339, all from `1b49bb13` [measured, `mcp.jsonl.gz`] |
+| R57 | before the roll, the newest uploaded version's plain-text and JSON vars equal the deployed version's for `graft-m4a-mcp`, `-front` and `-ops`, and the `graft-ops` uploads for w4 (front `6b4eaa23`, mcp `d0129006`) and w5 (mcp `1b49bb13`) carry the same vars; no re-upload needed [measured] |
+
+Setup:
+
+1. Token `graft-m4a-r47-deploy` (`fef39c6a…`) minted 15:32:34Z and PATCHed into `graft-m4a-ops-deploy-token`;
+   secrets `graft-m4a-MCP_CLIENT_SECRET_A` and `-MCP_SEAL_KEY_A` made fresh. `graft-m4a-mcp` `08228ea2`,
+   `graft-m4a-front` `88809dbe` (after `FRONT_TOKEN`), domains `m4a` and `mcp.m4a.graftyard.dev`. No site day: the
+   sites keep `/errors` from row r1's day and B0-02's.
+2. `graft-m4a-ops` `99c67ce1` from `73d81cd2` (`exec-hold.json`: `GATE` unset, `OPS_SCRIPTS` sites plus front and
+   mcp, 60 s dwells, `FIRST_DAY` 300,000 ms, 1-minute cron, which fired only after two yearly-then-minute resets, R52).
+   Bundles w4 (`b48fa157…`, front and mcp, `r47h1-w4/`), w5 (`4d6e33f1…`, clean mcp with marker, `r47h1-w5/`), and
+   w4m (`aab34878…`, mcp with marker, `r47h1-w4m/`). Main's mcp build matched r1's w4 files, so `release roll w4`
+   signed no `McpRoll`; w4m is Mcp's N instead.
+3. N: `FrontRoll` to w4 (entry 455), step-0 check passed (front still `88809dbe`), `Abort` to w4, `IntentDone` at
+   count 458 (front `6b4eaa23`). `McpRoll` to w4m (`01M874173FAMYQFEVC6GNYQAJK`), step-0 check passed (mcp still
+   `08228ea2`), `Abort` to w4m, done at count 463 (mcp `ec65cb08`).
+4. The row: w5 `McpRoll` `01M8743RCYDCG6M30DQ80WTWRS` (entry 463, undo an `McpPointer` to w4m, unused), 1% split
+   deployed 15:53:19Z.
+
+Teardown from 16:05:22Z: sampler stopped; ops cron reset to `[]` and `graft-m4a-ops` deployed as `ac4cd9a5` by version
+id; `graft-m4a-front` and `graft-m4a-mcp` deleted with both domains; both mcp secrets deleted; token revoked and its
+files shredded. Zone after: 0 custom domains, 0 DNS records, 2 universal packs. End sweep 16:05:59Z: no shard container
+running. Cost: the row $0.03 (15:31Z to 16:06Z); graft-m4a's UTC day $17.98 [measured, `acctcost.py`].

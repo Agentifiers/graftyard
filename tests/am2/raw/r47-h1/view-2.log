@@ -1,0 +1,6 @@
+2026-11-24T15:43:20Z
+73d81cd2
+{"script":"graft-m4a-front","created_on":"2026-11-24T15:35:34.480656Z","versions":["88809dbe 100"]}
+{"script":"graft-m4a-mcp","created_on":"2026-11-24T15:34:18.715329Z","versions":["08228ea2 100"]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T15:37:38.064739Z","versions":["99c67ce1 100"]}
+{"count":454,"current":null,"rolled":{"Edge":"e23f69e9","Front":"2310a9a4","Mcp":"2310a9a4","Ops":"7def7980","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"},"entries":[{"at":1795534946397,"entry":"ReleaseUploaded","index":452,"kind":"ReleaseUploaded","sigs":["d38725"]},{"at":1795534955830,"entry":"ReleaseUploaded","index":453,"kind":"ReleaseUploaded","sigs":["d38725"]}]}
