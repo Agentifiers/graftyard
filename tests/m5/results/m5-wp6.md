@@ -273,3 +273,31 @@ The `Abort` went from commit to `IntentDone` in 34 s, with the vendor key alread
 - The throwaway vendor seed is in `~/.graft-m4a/bm5/`; no `Keys` names it any more.
 
 **Driver fault found and fixed.** The orb has no `xxd`, so setup's first `Keys` entry was never built and vendor stayed null. The driver decodes the hex in Python now, and the `keys` phase posted the entry before the roll.
+
+## BM-5's unreadable format, code (2026-11-24, branch `bm5-format`, $0)
+
+**What was missing.** Every site build named one constant `RELEASE` (`workers/site/src/host.rs`), so a leader on N+1
+read N's `verify` refusals as same-release and never handed off, and no site build read a format N does not.
+
+**Built.**
+- **Release seq** (`decisions/DECISIONS.md`, "`release-seq`"). `graft-ops` tags each version `<seq>-<release id>`;
+  seq is the release's place in the `Release` group's uploads. A site member takes its `ReleaseTag` from its
+  `VERSION` tag at restore. A tag with no seq runs as `RELEASE` and logs it once per isolate.
+- **Test format.** `REPO_FORMAT_TEST` (0x20.0xfff0) is a push in the V1 shape with `Push::test_format` set. Only a site
+  built with the `test-format` feature (which needs `test-faults`) reads it; no product build does.
+- **Aimed `FORCE_FORMAT`.** A test-faults edge with `FORCE_FORMAT_SITE=<n>` forces the format only on a push whose
+  chain's leader it last saw on site n (`graftyard_lookup::cached_leader`); without it, BF-16's behaviour holds.
+
+**Tests.**
+- `bm5_a_release_s_seq_is_its_place_in_the_group_not_its_upload_time` (`crates/release/src/tests/group/run.rs`).
+- `a_member_s_release_is_its_version_tag_s_and_any_other_tag_is_the_oldest` (`workers/site/src/host.rs`).
+- `bm5_an_unreadable_format_from_a_newer_site_commits_nothing_and_moves_the_group` (`crates/git/tests/push.rs`): the
+  A, B, C hand-off on the git stand-in, with older refusers (moves) and same-release refusers (stays).
+- `bm5_a_forced_format_aimed_at_a_site_reaches_only_that_site_s_leaders` (`workers/edge/src/lib.rs`).
+
+**Plants** (`tests/m0carried/plant210.py`): 6 of 6 caught. They cover seq taken from upload time, seq 0 accepted, a malformed tag that panics, seq derived from the release id (so sites differ), same-release refusers handing off (`<=`), and `FORCE_FORMAT_SITE` ignored.
+
+**Hosted row, still to run on graft-m4a ($6 stop).** Today's m4a versions carry bare-id tags, so every member runs as
+`RELEASE`. The row needs N and N+1 uploaded by this `graft-ops` with seq tags: N for every site, then N+1 for site a
+built with `test-format`, rolled by a site day, and an edge with `FORCE_FORMAT=32.65520` and `FORCE_FORMAT_SITE=0`.
+Pass: no entry in 0x20.0xfff0 committed on any member, and A's groups lead elsewhere.

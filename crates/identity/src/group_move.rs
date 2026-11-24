@@ -106,29 +106,61 @@ pub fn next_step(cfg: &GroupConfig, leader: SiteId, to: &PlacementRecord) -> Mov
 /// group goes out by `Degrade` and comes back on `spare` by `Restore`, one content copy in between. A lost witness
 /// takes the `Joint`, whose halves need only the Full members. `Done` once the leader is on the target's home.
 pub fn replace_step(cfg: &GroupConfig, leader: SiteId, lost: SiteId, spare: SiteId) -> MoveStep {
-    let base = match cfg {
-        GroupConfig::Degraded { placement, lost: l } if *l == lost => return MoveStep::Restore { add: spare },
+    match cfg {
+        GroupConfig::Degraded { lost: l, .. } if *l == lost => return MoveStep::Restore { add: spare },
         GroupConfig::Degraded { .. } => return MoveStep::Degraded,
-        GroupConfig::Normal(p) => p,
+        GroupConfig::Normal(p)
+            if p.voters().iter().any(|m| m.site == lost && m.kind == graftyard_types::MemberKind::Full)
+                && p.voters().iter().any(|m| m.kind == graftyard_types::MemberKind::Witness) =>
+        {
+            return MoveStep::Degrade { lost };
+        }
+        _ => {}
+    }
+    next_step(cfg, leader, &replace_target(cfg, lost, spare))
+}
+
+/// The record `replace_step` moves a group to: its committed voters (a `Joint`'s old half) with `lost`'s site
+/// swapped for `spare`, and the home on `spare` if it was on `lost`, at the next generation.
+pub fn replace_target(cfg: &GroupConfig, lost: SiteId, spare: SiteId) -> PlacementRecord {
+    let base = match cfg {
+        GroupConfig::Normal(p) | GroupConfig::Degraded { placement: p, .. } => p,
         GroupConfig::Joint { old, .. } => old,
     };
-    let lost_kind = base.voters().iter().find(|m| m.site == lost).map(|m| m.kind);
-    if matches!(cfg, GroupConfig::Normal(_))
-        && lost_kind == Some(graftyard_types::MemberKind::Full)
-        && base.voters().iter().any(|m| m.kind == graftyard_types::MemberKind::Witness)
-    {
-        return MoveStep::Degrade { lost };
-    }
     let swap = |s: SiteId| if s == lost { spare } else { s };
-    let to = PlacementRecord {
+    PlacementRecord {
         name: graftyard_types::PlacementName::Tri,
         sites: base.voters().iter().map(|m| swap(m.site)).collect(),
         home: swap(base.home()),
         generation: base.next_generation(),
         moving_from: None,
         at: Timestamp(0),
-    };
-    next_step(cfg, leader, &to)
+    }
+}
+
+/// One `/move` ask of a `ReplaceMember` or `RestorePlacement` group instance (`workers/workflows`), moving `cfg`'s
+/// member on `from` to `to`. Before the instance took any step (`started` false) a group whose committed config holds
+/// no voter on `from` is `Done` at once: the coordinator asks every chain on the surviving registries, most of which
+/// never had one, and `next_step`'s identity target would move such a group's leader to its home. Once started, a
+/// group that dropped `from` at `Leave` still takes its `Home` and `Transfer`. `dead` (a `ReplaceMember`) plans by
+/// `replace_step`, which takes a `*2w` group's lost Full member out by `Degraded`; a restore's `from` is a live spare,
+/// so both Full members answer and every group moves by one-site `Joint`.
+pub fn replace_plan(
+    cfg: &GroupConfig,
+    leader: SiteId,
+    from: SiteId,
+    to: SiteId,
+    started: bool,
+    dead: bool,
+) -> MoveStep {
+    if !started && !holds(cfg, from) {
+        return MoveStep::Done;
+    }
+    match cfg {
+        _ if dead => replace_step(cfg, leader, from, to),
+        GroupConfig::Degraded { .. } => MoveStep::Degraded,
+        _ => next_step(cfg, leader, &replace_target(cfg, from, to)),
+    }
 }
 
 /// Whether `cfg` still holds a voter on `site`, in either half of a `Joint` or as a `Degraded` config's lost member:

@@ -37,6 +37,7 @@ func resetMaint(t *testing.T, hold, deferMax time.Duration) (step func(time.Dura
 		maint.Lock()
 		maint.until, maint.firstHeld, maint.cancel, maint.overdue = time.Time{}, time.Time{}, nil, false
 		maint.heldFrom, maint.longest, maint.maxUnkept, maint.stops = time.Time{}, 0, 0, 0
+		maint.waiting, maint.maxDeferred = time.Time{}, 0
 		maint.Unlock()
 		cpuSamples.Lock()
 		cpuSamples.last = nil
@@ -194,9 +195,10 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	if refsRepack(t, s.URL, prev) {
 		t.Fatal("a repack started with client CPU p99 above FANOUT_UP")
 	}
-	// The row reads the bound itself: deferred since the first stop, 1 + 1 + yieldHold on the hold's clock, and the
-	// CPU that held this start.
-	if st := maintStats(); st["deferred_s"].(float64) != 2+yieldHold.Seconds() || st["cpu_p99"].(float64) != 0.9 {
+	// deferred_s: the first start refused (at the second /refs, 0 s after the stop) waited 1 + 1 + yieldHold, and the
+	// CPU that held this one. No start has been granted since the stop, so max_deferred_s has nothing yet.
+	if st := maintStats(); st["deferred_s"].(float64) != 2+yieldHold.Seconds() || st["cpu_p99"].(float64) != 0.9 ||
+		st["max_deferred_s"].(float64) != 0 {
 		t.Fatalf("/procs maint while deferred: %v", st)
 	}
 	cpuSamples.Lock()
@@ -233,6 +235,11 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	if !refsRepack(t, s.URL, prev) {
 		t.Fatal("no repack once maintenance had been deferred maintDeferMax")
 	}
+	// Granted: no start waits while the overdue run runs. Counted from the first stop, mt22's site b read 427 to 667 s
+	// through its overdue run and 1,485 after load, with the bound held at about 420 (G41).
+	if st := maintStats(); st["deferred_s"].(float64) != 0 {
+		t.Fatalf("/procs maint while the overdue run runs: %v", st)
+	}
 	if holdMaint(t, s.URL) {
 		t.Fatal("moved load stopped the repack that ran past maintDeferMax")
 	}
@@ -250,11 +257,14 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	if n := unkeptPacks(repo("7")); n > 8 {
 		t.Fatalf("%d unkept packs after the overdue repack: it did not roll the tail", n)
 	}
+	// The longest hold is the first, renewed 1 s in: 1 + 1.5 s on the hold's clock. An hour idle after the overdue
+	// repack counts nothing, and max_deferred_s keeps the bound's reading.
+	step(time.Hour)
 	st := maintStats()
-	// The longest hold is the first, renewed 1 s in: 1 + 1.5 s on the hold's clock.
-	// The overdue repack ran to its end, so nothing is deferred now.
+	// The overdue start was granted 1 + 1 + yieldHold + yieldHold after the first stop.
+	maxDeferredAtGrant := 2 + 2*yieldHold.Seconds()
 	if st["stops"] != 2 || st["max_unkept_held"].(int) <= repackAt || st["longest_hold_s"].(float64) != 2.5 ||
-		st["deferred_s"].(float64) != 0 {
+		st["deferred_s"].(float64) != 0 || st["max_deferred_s"].(float64) != maxDeferredAtGrant {
 		t.Fatalf("/procs maint: %v", st)
 	}
 }

@@ -917,6 +917,7 @@ impl<C: Command> Member<C> {
         self.expire_agents();
         let joins = self.lead.as_ref().expect("leading").by_request.get(&id).copied();
         let mut admitted = a.class;
+        let mut demoted = None;
         let seq = match joins {
             Some(seq) => seq,
             None => {
@@ -932,6 +933,9 @@ impl<C: Command> Member<C> {
                     r?
                 };
                 admitted = class;
+                if class != a.class {
+                    demoted = a.actor;
+                }
                 let now = self.now;
                 let lead = self.lead.as_mut().expect("leading");
                 lead.seq += 1;
@@ -961,7 +965,7 @@ impl<C: Command> Member<C> {
         };
         let ticket = self.ticket(seq);
         self.pump();
-        Ok(Admitted { ticket, class: admitted })
+        Ok(Admitted { ticket, class: admitted, demoted })
     }
 
     fn lead_or_resume(&mut self) -> Result<(), NotLeader> {

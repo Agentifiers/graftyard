@@ -1,0 +1,8 @@
+2026-11-24T09:18:03Z
+46edc385
+env.MCP_HOST ("mcp.m4a.graftyard.dev")                                       Environment Variable         
+  m4a.graftyard.dev (custom domain)
+  mcp.m4a.graftyard.dev (custom domain)
+Current Version ID: 4bcb149f-9eba-42a7-86b7-1e53e4384db6
+✨ Success! Uploaded secret FRONT_TOKEN
+{"script":"graft-m4a-front","created_on":"2026-11-24T09:18:41.922579Z","versions":["e6a5bff8 100"]}

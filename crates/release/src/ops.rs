@@ -8,10 +8,12 @@
 //!
 //! - **Uploads.** `check_bundle` takes the release bucket's files only when `release.json` verifies under
 //!   `Keys.release` and lists every file with its SHA-256, and no file it lists is missing. `upload_next` uploads each
-//!   script's version, reusing one an earlier run uploaded under the same release tag, then commits `ReleaseUploaded`.
+//!   script's version, reusing one an earlier run uploaded under the same tag (`version_tag`, `<seq>-<release id>`), then commits
+//!   `ReleaseUploaded`.
 //! - **Forward steps.** `ROLL_STEPS` per kind (`group::roll_steps`, and a site day's drain, 1%, 10%, 50%, 100%,
 //!   undrain, first day). Each deploy step waits `STEP_DWELL` (a 1%-for-a-day roll's first step `FIRST_DAY`) and a
-//!   passing gate, then commits `IntentStep`. A site's 100% commits `SiteRelease` before its `IntentStep`. The last
+//!   passing gate, then commits `IntentStep`; a 100% step waits none, except a front or MCP roll's, which holds
+//!   `STEP_DWELL` and is judged. A site's 100% commits `SiteRelease` before its `IntentStep`. The last
 //!   step's `IntentStep` is followed by `IntentDone`.
 //! - **A breach** submits the intent's first unused pre-signed undo. The group refuses one that cannot read an enabled
 //!   format, and pages; `graft-ops` then pages and moves nothing.
@@ -264,6 +266,26 @@ fn hex(r: &ReleaseId) -> String {
     crate::types::hex(&r.0)
 }
 
+/// The `workers/tag` of every version `graft-ops` uploads for `r`: `<seq>-<release id>`, seq being r's place in the
+/// group's uploads (`Upload::seq`), or the next place while r has none. A member reads its `ReleaseTag` from it
+/// (`parse_version_tag`), so a release's order is the group's, never a version's upload time: a version made later for
+/// an older release keeps that release's seq.
+pub fn version_tag(fold: &ReleaseFold, r: &ReleaseId) -> String {
+    let seq = fold.uploads.get(&r.0).map_or(fold.uploads.len() as u32 + 1, |u| u.seq);
+    format!("{seq}-{}", hex(r))
+}
+
+/// The seq and release a `version_tag` names, or `None` for any other tag: a wrangler deploy's, or one from before
+/// tags carried a seq, which is a bare release id.
+pub fn parse_version_tag(tag: &str) -> Option<(u32, ReleaseId)> {
+    let (seq, id) = tag.split_once('-')?;
+    if seq.is_empty() || seq.len() > 10 || !seq.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let seq: u32 = seq.parse().ok().filter(|s| *s > 0)?;
+    Some((seq, ReleaseId(graftyard_types::Digest::parse_hex(id)?.0)))
+}
+
 /// A move of `target` to `release` with no gate: drain, the release at 100%, undrain for a site; the release at 100%
 /// for a script, with the rolled release `rolled` kept beside it at 0% for a pinned script, so the group's record of
 /// the deployment (`deployed`) holds. A `Containers` target needs no API call: shards read the view.
@@ -362,6 +384,12 @@ pub fn steps(fold: &ReleaseFold, c: &Current, dwell: Dwell) -> Result<Vec<Step>,
                 }
                 (Intent::EdgeRoll { .. }, Some(ps)) => {
                     ps.iter().map(|p| pct(*p, if *p < 100 { dwell.step } else { 0 })).collect()
+                }
+                // A front or MCP roll's 100% step holds `STEP_DWELL` and is judged like the others: its 1% step
+                // rarely reaches `STEP_MIN_ANSWERS`, so this is where a build failing under about 1% of calls is
+                // first judged, against N's counts from the intent's start (`gate::judge_roll`; R47's 1% gap).
+                (Intent::FrontRoll { .. } | Intent::McpRoll { .. }, Some(ps)) => {
+                    ps.iter().map(|p| pct(*p, if *p < 100 { dwell.first_day } else { dwell.step })).collect()
                 }
                 (_, Some(ps)) => ps.iter().map(|p| pct(*p, if *p < 100 { dwell.first_day } else { 0 })).collect(),
                 (_, None) => return Err(format!("{} has no roll steps", i.kind()).into()),
@@ -831,7 +859,7 @@ fn parse_formats(b: &[u8]) -> Option<FormatSet> {
 /// One upload step: a script's version, or the `ReleaseUploaded` once every script has one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UploadStep {
-    /// Upload this script's modules as a version tagged with the release id, without deploying it.
+    /// Upload this script's modules as a version tagged `version_tag`, without deploying it.
     Upload(Script),
     Commit(Box<ReleaseUploaded>),
     /// The group already holds this release's `ReleaseUploaded`.
@@ -1035,10 +1063,10 @@ pub trait Exec {
     fn page(&mut self, why: &str);
     /// The first release in the bucket that the group holds no `ReleaseUploaded` for.
     async fn bundle(&mut self, fold: &ReleaseFold) -> Result<Option<RawBundle>, String>;
-    /// The versions an earlier run uploaded for `release`, by the release's tag.
-    async fn tagged(&mut self, release: ReleaseId, scripts: &[Script]) -> Result<BTreeMap<Script, VersionId>, String>;
-    /// Uploads one script's modules as a version tagged with `release`, without deploying it.
-    async fn upload(&mut self, s: Script, release: ReleaseId, modules: &[(String, Vec<u8>)]) -> Result<(), String>;
+    /// The versions an earlier run uploaded with `tag` (`version_tag`).
+    async fn tagged(&mut self, tag: &str, scripts: &[Script]) -> Result<BTreeMap<Script, VersionId>, String>;
+    /// Uploads one script's modules as a version tagged `tag`, without deploying it.
+    async fn upload(&mut self, s: Script, tag: &str, modules: &[(String, Vec<u8>)]) -> Result<(), String>;
     /// Runs one host step of a `Rotate` to `slot` (`decisions/DECISIONS.md`, "`rotate-probe`"). Idempotent: a step
     /// rerun after a kill finds its work done.
     async fn rotate(
@@ -1263,13 +1291,14 @@ async fn upload_step<E: Exec>(e: &mut E, fold: &ReleaseFold) -> Result<Option<Ra
     let c = check_bundle(fold, &b.record, b.sig, &b.files, &e.scripts())
         .map_err(|r| Ran::Error(format!("release bundle refused: {r}").into()))?;
     let scripts: Vec<Script> = c.scripts.keys().copied().collect();
-    let tagged = e.tagged(c.release, &scripts).await.map_err(|x| Ran::Error(format!("versions: {x}").into()))?;
+    // Every script's version carries the same tag: a version uploaded under an earlier seq (another release's upload
+    // committed since) is not taken, so the scripts are uploaded again under the seq the group will record.
+    let tag = version_tag(fold, &c.release);
+    let tagged = e.tagged(&tag, &scripts).await.map_err(|x| Ran::Error(format!("versions: {x}").into()))?;
     match upload_next(fold, &c, &tagged) {
         UploadStep::Done => Ok(None),
         UploadStep::Upload(s) => {
-            e.upload(s, c.release, &c.scripts[&s])
-                .await
-                .map_err(|x| Ran::Error(format!("upload {s:?}: {x}").into()))?;
+            e.upload(s, &tag, &c.scripts[&s]).await.map_err(|x| Ran::Error(format!("upload {s:?}: {x}").into()))?;
             Ok(Some(Ran::Uploaded(s)))
         }
         UploadStep::Commit(u) => {

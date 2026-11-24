@@ -68,6 +68,7 @@ fn push(actor: Principal, agent: Option<&str>) -> Push {
         protected: Vec::new(),
         changed: Vec::new(),
         leases: false,
+        test_format: false,
     }
 }
 

@@ -3490,14 +3490,14 @@ Evidence:
 
 #### `gate-errors`: an edge, front, or MCP roll is judged on `graft-front`'s count of answers by version (2026-11-24)
 
-**Status.** Code-only, not deployed: `graft-front`'s counts, the site's `errors` route, and `graft-ops`'s gate each ship on their script's next deploy, the site's on a site day. Answers R47's trigger in code (`decisions/OPEN-QUESTIONS.md`), from AM2's design with the lead's three changes (2026-11-24). R47 stays open until a hosted row breaches on it.
+**Status.** Deployed for one row: the trigger passed hosted on graft-m4a (R47 row r1, 2026-11-24). The 100% hold for `FrontRoll` and `McpRoll` (the 1% gap) is code-only; it ships on the next `graft-ops` deploy and is read hosted by the next `McpRoll`. From AM2's design with the lead's three changes, and the lead's ruling on the 1% gap (2026-11-24).
 
 **Decision.**
 - **The counter.** `graft-front` already reads, from every answer, the version that ran it. Each isolate counts answers and 5xx by that version, under the script that answered and under its own version, so a `FrontRoll` is judged on the answers each front served (`gate::count`). A call whose binding threw counts as `threw`, and an answer with no version as `unversioned`.
 - **Where it goes.** Every `FLUSH_MS` (30 s, as the members' gate counters), beside a request, the isolate sends each script's counts to that script's home site: a SHA-256 of the script's key over the voter sites by id, as `fingerprint_shard` homes a key (`gate::errors_sites`). The next site in that order takes them only when the home does not answer. `graft-ops` sums every voter site's `errors` object, so a failover moves nothing.
 - **The judgment.** For a running `EdgeRoll`, `FrontRoll`, or `McpRoll`, `graft-ops` reads the sum from the step's window start (`gate::window_start`) and from the intent's start. It judges N+1's version against N's in the window, or against N's from the intent's start when the window holds under `STEP_MIN_ANSWERS` of N's (a pinned script's N serves 0% at 100%) (`gate::judge_roll`).
 - **Breach.** N+1's 5xx rate is over N's plus 0.1 points (`GATE_ERRORS_BP`), past chance: answers times the binary KL divergence at least ln 10,000 (`GATE_ERRORS_NATS`) [guess]. A breach at any count submits the undo, so 2 of 2 answers at 1% swap back. A thrown binding call is one of N+1's 5xx.
-- **The floor is relative.** Under `STEP_MIN_ANSWERS` (1,000 [guess]) with no breach, the gate is `Starved`, and `ops::next` treats it as `gate-pool` treats a site day: the 1% step commits after its dwell, the 10% step counts from the 1% step's start, and later steps dwell up to twice their dwell, then page. An `McpRoll` or `FrontRoll` goes from 1% straight to 100%, which has no dwell, so a quiet `graft-mcp` is judged only at 1%.
+- **The floor is relative.** Under `STEP_MIN_ANSWERS` (1,000 [guess]) with no breach, the gate is `Starved`, and `ops::next` treats it as `gate-pool` treats a site day: the 1% step commits after its dwell, the 10% step counts from the 1% step's start, and later steps dwell up to twice their dwell, then page. An `McpRoll` or `FrontRoll` goes from 1% straight to 100%, so its 100% step holds `STEP_DWELL` and is judged: N serves 0% there, so N+1 is judged against N's counts from the intent's start, under the same `Starved` rule (dwell up to twice, then page). A build failing under about 1% of calls, which a quiet 1% step cannot see, is caught at 100% within hours (R47's 1% gap, the lead's ruling of 2026-11-24). An `McpRoll`'s breach there submits its `McpPointer`. A `FrontRoll` has no pre-signed undo, so a breach at 100% pages and its return needs the Cloudflare API.
 - **A missing version header** is a front or script bug, not a bad build. It is counted apart, alarmed by `graft-front` per answer and by `graft-ops` per read, and never judged as N+1's.
 - `OpsRoll` and `ControllerRoll` stay `Pending`: no front sees their answers. They still pass only on a test install's `GATE`.
 - No request path calls the Cloudflare API. The counts travel over the `REGISTRY_<n>` bindings `graft-front` already reads its view through, in `wait_until`.
@@ -3512,10 +3512,13 @@ Evidence:
 - Analytics Engine through the API from `graft-ops`'s cron: that is an API read the swap-back would wait on during a control-plane outage.
 - Counting in the edge and `graft-mcp`: a script that throws or never starts cannot count itself.
 - `GATE=breach`, which the lead ruled does not stand in for the trigger.
+- For the 1% gap, a 10% step for `FrontRoll` and `McpRoll` (1%, 10%, 100%). It caps a subtle bad build's share at 10% before it is judged, but adds a `FIRST_DAY` to every such roll, and on quiet traffic (l015d's 0.09 calls/s) the pooled 1% and 10% steps hold about 860 answers after a day, under the floor, so the roll dwells on further. The same build then reaches 100% a day later anyway.
 
 **Evidence.**
 - `crates/release/src/tests/group/errors.rs`, 5 tests. Each answer counts by the version that ran it. Each script's counts home on one site whatever the site table's order (edge and mcp on a, front on c). The breach and floor cases. A missing version header never breaches, and a thrown call does. End to end: release 2's `McpRoll` at 1%, with 5 of 6 N+1 answers 500, breaches before its dwell, and the run submits the pre-signed `McpPointer` to release 1. A quiet healthy 1% step commits after its dwell, and an `OpsRoll` stays unjudged.
 - `tests/m0carried/plant121.py` to `plant124.py`: 13 mutants, all caught. They cover counts by the wrong version, the floor dropped, N's rate ignored, and a breach under the floor not undoing.
+- The 100% hold: `errors.rs`, `a_front_or_mcp_rolls_100pct_step_holds_and_is_judged_against_n_from_the_intents_start`. A passing read right after the 100% deploy waits `STEP_DWELL`. N+1 at 2.8% passes against N's 3% from the intent's start and breaches against N's empty window. A starved 100% step dwells to twice the dwell and pages. A build failing 1 of 80 at 1% (`Starved`) breaches at 100% on 20 of 2,000 and submits the `McpPointer`. A `FrontRoll` breaching at 100% pages. `tests/m0carried/plant125.py`: 3 mutants, all caught (no dwell at 100%, N judged on its empty window, a starved 100% committing).
+- Hosted: R47's row r1 on graft-m4a (2026-11-24), a `graft-mcp` answering 500 at 1% with `GATE` unset, breached on N+1 29 5xx of 29 against N 0 of 5,650 and committed the `McpPointer` with the deploy token invalid (`tests/am2/results/am2-wp4.md`) [measured]. The 100% hold has not run hosted.
 
 **Flip.**
 - A hosted step that breaches with a healthy N+1. Then raise `GATE_ERRORS_NATS`, or judge only at the floor.
@@ -9191,8 +9194,18 @@ tool-overhead p50 run on the second hosted day.
 push log:
 1. **A Human, Bot or MergeQueue write answered `full` by the edge.** It must be 0. This one is an invariant, not a
    90% gate.
-2. **Over-refusal.** In more than 10% of 10 s windows with edge refusals, the leader's own cuts show an agent wait
-   under half the bound.
+2. **Over-refusal.** In more than 10% of 10 s windows with edge refusals, the edge refused writes that would have
+   committed in time. As the lead ruled on 2026-11-24 from B0-33 h1A, a refusing window counts only when its refused
+   writes' budget left at the check (p50) exceeds the leader's agent wait in that window: its `expected_wait`, the
+   agent queue at the cut drain plus that window's own `round_ms` (`tests/fanout/flip2.py`). The first reading, an
+   agent wait under half the bound, flipped on every refusing run while each refusal would have expired anyway: on
+   h1A the 856 advert refusals had a p50 budget left of 51 ms against a leader wait of 236 ms, and 3,225 of 4,211 fulls
+   were `bound_at_send`. Readings on dc880f1d (`tests/am1/results/b033-h1-set.md`):
+   - **h1A:** 0 of 31 refusing windows (63 of 869 refusals) on each window's own round. At the run's p50 round,
+     4 of 31 (13%).
+   - **h2A:** 3 of 30 (10.0%), 170 of 564 refusals. This is at the line, not over it, so it does not flip.
+   - **h3A:** 3 of 31 (9.7%), 77 of 968 refusals.
+   - The first reading gave 31 of 31, 29 of 30 and 31 of 31.
 3. **Starvation.** The edge refuses while the leader's agent lane is empty (cuts ending `Empty` with fewer than
    AGENT_CMDS_ENTRY agent commands taken), or agent commands admitted a second fall below the drain measured before
    refusing began.
@@ -9347,7 +9360,8 @@ catch-up fix.
   error arm, which every REST, GraphQL, task and lease write's rows pass through, `command_tier_rows` included. This is
   `gate_ng`'s rule for an Agent push at the read gate, on the API writes.
 - Human, Bot and MergeQueue writes, every read, and an Agent write whose read failed any other way keep their 503. A
-  plain user token's write is Human before any read (`admission` returns `None`), so nothing new is read for it.
+  plain user token's write is Human before any read (`admission` classes it without one), so nothing new is read for
+  it.
   `task_claim`'s own row read is an App's token request under its JWT, not an agent write, and keeps its 503.
 - A fetch whose shard answered non-200 (`warming` most often) answers 503 with `Retry-After: 2`, the value
   `shard_unavailable` sends a push (`shard_read_failed`, `workers/edge/src/lib.rs`). It had none.
@@ -9838,9 +9852,13 @@ ships on an edge day and a site day. Not hosted: it rides on the next B0-34-shap
 - **The cold mark's order is unchanged.** Changing it was left to this decision; the evidence says no. A passed home
   went last, and site b took mt21's 14 hedged and 73 first-try validates before the kill, so the order moved load
   as `validate-hedge` meant. What was wrong was counting that load as a failover.
-- **`maintStats` adds `deferred_s` and `cpu_p99`**: how long maintenance has been deferred now (the clock
-  `MAINT_DEFER_MAX` bounds, 0 when nothing is deferred) and the client CPU p99 `maintBegin` reads.
-  `tests/fanout/shardprocs.mjs` records them in `/procs`'s `maint`. `longest_hold_s` spans hold calls, not the
+- **`maintStats` adds `deferred_s`, `max_deferred_s` and `cpu_p99`**: how long a start has waited now (since the first
+  start refused after the last one granted, 0 once a start is granted), the longest deferral a granted start had
+  waited (from the first refused start or stopped run, the clock `MAINT_DEFER_MAX` bounds), and the client CPU p99
+  `maintBegin` reads. `tests/fanout/shardprocs.mjs` records them in `/procs`'s `maint`. As first built, `deferred_s`
+  counted from that clock's start to now until a repack completed, so B0-34 mt22's site b read 427 to 667 through its
+  overdue run and 1,485 after load while the run started at 411.5 to 426.6 s, at the 420 s bound
+  (`tests/am1/results/b034-mt22.md`). `longest_hold_s` spans hold calls, not the
   deferral, so neither mt20b's 451 nor mt21's 573 measured the bound.
 
 **Why.** On B0-34 mt21 site b's container read `longest_hold_s` 573 and `max_unkept_held` 846, past 751, with the home
@@ -9870,7 +9888,8 @@ moved try.
 - `crates/git/tests/shard.rs`, `only_a_call_moved_off_a_failed_home_holds_maintenance`: an unmarked call at another site
   holds nothing whatever its `wait`. On main, mt21's first try (`wait` 15 at site b) held.
 - `containers/git/server/maint_test.go`, `TestMaintenanceYieldsToMovedLoad`: `deferred_s` reads 1 + 1 + `yieldHold`
-  after the first stop, `cpu_p99` reads 0.9, and `deferred_s` is 0 once the overdue repack ran to its end.
+  after the first stop and `cpu_p99` 0.9; `deferred_s` is 0 while the granted overdue repack runs (as first built it
+  read 5 there) and after an idle hour, and `max_deferred_s` reads 2 + 2·`yieldHold`, the wait at the grant.
 - `tests/m0carried/plant140.py`, six mutants: a pass marking the home failed, a pass clearing a live failure, a mark
   that never lapses, the mark read off the called site, the home's own call marked, and a URL without `moved=1`.
   `tests/m0carried/plant89.py`'s mutant 12 now plants an unmarked call counting.
@@ -9952,6 +9971,16 @@ with over 300 ms of bound at their first send, against 29 that committed [infere
 - **Raise `AGENT_SLOT_RESERVE`** if moved pushes that win a slot still end at `bound_at_send`.
 - **Revisit the hedge** if the home's one-try validates over 1.5 s stay above 5% with pool 429s near zero. That means
   the slow tail is git work after all.
+
+**Settle reading (B0-33 clA, 2026-11-24, `graft-m2b`, main `daa4dcc2`; `tests/am1/results/b033-closing.md`).**
+- **Moved validates that ended ok: 337 of 1,919 (18%),** against h1A's 29 of 1,010 (3%) on main `dc880f1d` without
+  it. h2A read 7 of 28 and h3A 362 of 839 on the same build as h1A. A validate is moved when `validate_tries` is 2 or
+  more.
+- Agent ok pushes were 8,741 against h1A's 9,295, with 1,919 validates moved against 1,010, so the first flip is not
+  met on this reading. 2,045 of clA's 4,774 `full`s were still `bound_at_send` against h1A's 3,225 of 4,211.
+- Git cache busy (a validate 429 seen by a1) was 284 against h1A's 0. Validates by site: 86.2%, 13.0% and 0.9%.
+- A moved validate's own time fell to p50 1,194 ms (p90 3,927), against h1A's p50 4,917 ms (p90 6,606), consistent with
+  the gate refusing a queue that will not drain instead of holding it 2 s [inference].
 
 ### `readindex-batch`: the read-index confirm is already batched; ack riding (B) and region asks (F) priced, not built, pushed grants (P) rejected, 2026-11-23
 
@@ -10182,3 +10211,243 @@ snapshot rebuild of the shard, which a rule kept outside the log would not.
 
 **Flip.** A developer enrolled on two lifeboats at once needs both tokens live. That needs a per-host revocation, which
 is a new Tokens format.
+
+### `user-demote`: the edge sends every authenticated user write with its actor, and the leader counts demotions, 2026-11-24
+
+**Status.** Built and tested at $0. The lead ruled it on 2026-11-24, from B0-33 h1A. It is not deployed; it ships
+with the next site day plus an edge day.
+
+**Decision.**
+- `AdmitWire::of` (`crates/git/src/group.rs`) gives a Human command by a user or App its admission: class Human with
+  its actor key. `crate::admission` (`workers/edge/src/lib.rs`) sends it for a plain user token, still without a read.
+  An anonymous Human command carries none, as before.
+- `AdmitWire::for_issue` drops a Human task API command's admission, so task writes never count toward
+  `DEMOTE_PER_MIN` ("Task commands do not demote, and the prompt reads comments as of the snapshot").
+- The leader's `Admitted.demoted` names the actor when `DEMOTE_PER_MIN` reclassed a newly queued command. The site
+  counts it per actor in `/stats?summary=1`'s `demoted` (`{actors, writes, by}`), so B0-33's "user token admitted as
+  `Agent`" line reads from the leader (`tests/fanout/demoted.py`).
+- **Behaviour change, accepted by the lead on 2026-11-24:** a plain user's Human push with an inline pack over
+  `INLINE_MAX_HOT` (64 KiB) on a hot group is now asked to stage its pack (`AdmitError::Stage`), at the leader
+  (`hot_stage`) and at the edge (`hot::stage_first`). Before, it carried no admission, `Member::commit` read every Human
+  push as `push: false`, and it stayed inline. This follows DESIGN's "Commit and read paths" for any push with an
+  admission class, and `crates/raft/tests/admission.rs`, `hot_is_read_from_the_log_so_a_new_leader_stages_at_once`,
+  expects a Human push to stage. Staging costs such a push a bucket place before its commit. a1's Human pushes (20 KB)
+  and merge pushes (5 KB) are under the limit.
+- Only the edge-to-member `/commit` body changes. No client reply does, so the GHES byte-diff row stands. A bytediff
+  run on the edge build confirms that before it is hosted.
+
+**Why.** DESIGN's agent block ("Shape") classes a command Agent "when its actor, user tokens included, passes
+DEMOTE_PER_MIN write commands on this group". `admission` returned `None` for a plain PAT, so the leader never saw the
+actor and the rule could not fire on the hosted path. B0-33 h1A's fast user, 100 writes a minute on a plain PAT, was
+never demoted. h1A to h3 record the line as "not reachable on dc880f1d; the build skipped DEMOTE_PER_MIN for plain
+PATs" (`tests/am1/results/b033-user-demote.md`).
+
+**What it beat.**
+- Recording the line as unreachable (the lead's option c). The design states the rule, so the build had to match it.
+- A class on a client-visible reply. That changes a GHES response for a client that did not opt in.
+- A Human-load exception in the leader. A Human writer at 137 writes a minute is not a human by the design's rule, so
+  the harness spreads its Human load instead.
+
+**Evidence.** `tests/m0carried/plant190.py`: 10 of 10 mutants caught. They are a user's Human write carrying no
+admission, the limit off by one either way, task commands counting, an App's class changing, an anonymous write
+sending an admission, the leader missing or inventing a demotion, and the site's counter missing one or keeping it
+past `reset`.
+
+**Flip.** A hosted run on this build where a Human writer under `DEMOTE_PER_MIN` (by a1's own per-token minute) is
+counted in `demoted`. That would mean the leader counts writes the edge did not send for that actor.
+
+### `replace-glue`: the Workflows coordinator per intent, a group instance per chain, the survivors probe a drained site, and removed members wipe 35 days after their move, 2026-11-24
+
+**Decision.** M6-WP1's hosted glue (`tests/m6/results/m6-wp1.md`, "The hosted glue"):
+- **The Workflows script** (`workers/workflows`) is plain JS, since workers-rs 0.8.7 has no Workflows bindings. Its coordinator, created under the intent's id, reads every registry shard on each surviving voter site one step at a time, starts one group instance per chain by `createBatch`, refills the spare single-copy first, then polls the groups, at most 200 a step.
+- **A group instance** asks its leader `/move` with `{"replace": {lost, spare}, started, dead}`, and the leader plans by `group_move::replace_plan`. A group that never held the lost site is `Done` before any step. A dead site's replace uses `replace_step`; a restore moves by `next_step` toward `replace_target`, so a `*2w` group goes back by `Joint` and never degrades.
+- **The drained-site probe.** `graft-ops`' `DRAIN_WINDOW` read of each `site_health` object names the lost and replaced sites, not those drained automatically, whose followers are still called. The object then pings the unjoined `probe#0` member on each every 2 s from its alarm for 15 minutes after the last read that named it, and counts each answer as a member call.
+- **The rollups.** `site_health` adds a per-minute table kept for `ZERO_ACKS` plus an hour. Reads longer than `UNDRAIN_AFTER` sum it, and `Live::health` now calls `gate::loss`.
+- **`deleteAll()`.** Each group instance that removed a member starts an expiry instance. It sleeps 35 days, then asks that member `/expire`, naming its replacement, until the member wipes. The member wipes only if its own config, F113's `superseded`, or the replacement's committed config says it is removed.
+
+**Why.** BF-50 needs every group moved without a list in `graft-ops`, and a replaced site needs calls to it before `gate::loss` can read it recovered: nothing else calls a site that holds no members. The 10 s buckets hold 15 minutes, so a 24 h read from them would judge 15 minutes as a day. A member on a lost site never commits the config that drops it, so only its replacement's config can say it was removed.
+
+**What it beat.**
+- **Workflows in Rust,** which workers-rs does not support.
+- **One poll over every group per step,** which at 3,100 groups would pass the 10,000-subrequest default within a few polls. A cursor over complete groups looks at each once after it finishes.
+- **The probe calling a real group's members,** which would touch group storage and read a recovered site as healthy before its members are.
+- **A daily sweep of every member for `/expire`,** which would wake every live member to find the few removed ones.
+- **Timing `deleteAll()` from when a member first finds itself removed,** which a member on a lost site never does.
+
+**Evidence.**
+- `workers/workflows/tests/move.test.mjs`, 9 tests: every chain at its highest generation with the single-copy refill first, a replayed start step creating nothing twice, a group following `notLeader` to Done and starting its expiry, a group passing over the lost member, and the expiry's 35 days.
+- `crates/identity/tests/group_move.rs`: `replace_plan` leaves a group that never held the site alone, and a restore moves a `*2w` Full member back by `Joint`.
+- `graftyard_git::sweep`'s `refill_runs_copy_single_copy_packs_first_and_resume_from_their_cursor`, and the site's `gatecount` and `replace` tests.
+- `tests/m0carried/plant130.py`, 8 mutants, all caught.
+
+**Flip.**
+- **Back the coordinator out for per-group Workflows started by `graft-ops`** if one coordinator cannot finish an install's groups within its step limits on graft-m6a (as `replace-member` says).
+- **Drop the probe** if BF-50 shows a recovered site's own traffic reaching `MIN_CALLS` in every recovery window without it, or if its 43,200 pings a day per prober show on the survivors' registry objects.
+- **Sweep removed members instead** if an expiry instance's 35-day sleep is lost or retained past Workflows' limits on a hosted install.
+
+### `agent-rows-cache`: a push gate's isolate entry holds its fill's agent rows, so a cached gate pays no agent-rows read, 2026-11-24
+
+**Status.** Asked for by the lead on 2026-11-24 as B0-33's lever 1, moved from edge refusal to LM-1. Built on branch
+`agent-rows-cache` from main `a07a518b`: `workers/edge/src/colo.rs` (`gate`, `GateFx::Rows`), `workers/edge/src/lib.rs`
+(`gate::put`/`get`, `fresh_gate`, `read_gate`, `ROWS_BYTES_MAX`) and `workers/edge/src/agents.rs` (`push_context`,
+`unlinked_by_cache`, `fresh_if_unlinked`), and `crates/git` (`Push::agent_rules`, `agent::protected_now`) for the
+policy rule below. It ships after the current B0-33 set: a site day first, so every repository leader applies the
+policy rule, then the edge day that turns on the cached rows. An edge day before the site day would let a cached
+policy pass for up to `READ_CACHE`. Not hosted. The validate path (F112's lever 2) is untouched.
+
+**Decision.** A push gate's fresh read (`{"rows": {"access": true, "agent": true}}`) already reads the push's agent
+rows. The gate's isolate entry now holds them beside the decision, as one value put and replaced whole:
+- **Served with the decision.** A push whose gate the entry answers (`Served::Isolate`) takes those rows and reads none
+  of its own. The rows are served only with the decision they were read with, under its stamp and `READ_CACHE`, and
+  lapse with it.
+- **A data-center copy carries none.** It replaces the isolate entry whole, so an older fill's rows never ride its
+  decision, and the push reads its own (`ctx_read` 1 in `server-timing`). So does a decision from rows read beside the
+  front, which are access rows only, and one from an older member that answered the access rows alone.
+- **A task created since the fill.** If the push's own `Graftyard-Session` trailer names a session the pusher's App
+  could own that the cached rows and the token's claim do not list, the push reads its rows itself before `fill_push`
+  (`ctx_read` and `ctx_stale` 1). Otherwise `linked` would leave a new task's trailer `Claimed`.
+- **A byte cap.** An isolate's entries hold at most `ROWS_BYTES_MAX` (8 MiB [guess]) of rows. An entry past it keeps its
+  decision with no rows, and its pushes read their own.
+
+**Why.** On B0-33 h1A (graft-m2b, repo 131411), `push_context`'s own `core_rows(…, "agent")` read cost p50 1,903 ms and
+p99 5,190 ms on the 8,754 agent pushes whose gate decision came from the isolate cache, and 0 on the 4,017 whose gate
+read the rows. It goes through the same shedding learners, and climbed from 140 ms to about 1.9 s as the load ramped. On
+bound fulls the time before the send split front 0.5 s, gate 1.3 s, context 1.9 s and validate 2.9 s, against the 5 s
+`AGENT_PUSH_BOUND` [measured by edge refusal, h1A; B0-33 m56 showed the same, 8,729 of 12,343 cached-gate pushes at
+`context` p50 1,422 ms, `tests/am1/results/b033-m56.md`].
+
+**What it beat.**
+- **A second cache for agent rows, keyed apart from the gate.** Two caches can disagree: rows from one fill beside a
+  decision from another. One entry, put and replaced whole, cannot.
+- **Putting the rows in the data center's entry.** The Cache API entry is a stamp; rows there would be per-tenant data
+  in a shared cache, and a copy would need the same replace-whole rule across isolates.
+- **`tier-read-batch`'s shared pass.** Dropped on 2026-11-19: only 8.6% of push passes were shared across 200 to 260
+  isolates.
+
+**What it changes.** The edge applies `AgentPolicy.extra_paths` (`validate`'s `protected`) and links sessions from the
+agent rows, which may now be up to `READ_CACHE` old. So `decide` no longer trusts the edge's `protected` alone for the
+policy's own paths: `Push::agent_rules` matches each ref's `changed` paths against the `extra_paths` of its own fold,
+after the entry's earlier commands (`agent::protected_now`), and refuses a hit `Protected`, per ref as any protected
+hit. A `PUT .../agents/policy` that adds a protected path therefore binds on the next entry after it commits, however
+old the edge's rows were. A directory of a `truncated` list counts when a glob may match under it, as an Exclusive lease
+does. `PROTECTED_PATHS` never change, so the edge's `protected` still covers them. The lead ruled on 2026-11-24 that the
+policy must bind at once, since `extra_paths` is a security control and a revocation's `READ_CACHE` bound does not
+stretch to it.
+
+**What the policy rule beat.** A policy revision carried on `Push` (the policy row's commit index from the rows the edge
+used) and checked in `decide`, refusing a mismatch in the agent retry shape. It needs a new format (32.27), a
+`FormatsEnable`, the revision in the member's rows answer, and an old-format path. `Push` already carries `changed`,
+which is `protected`'s input before the policy is applied, so `decide` can apply the policy itself: no new format, no
+member change, and no extra retry after a policy change. The cost is one glob match per changed path per `extra_paths`
+glob in `decide` (at most `PATHS_MAX` paths), and nothing when the policy adds no paths.
+
+**Evidence.**
+- `colo::tests::a_push_gate_serves_the_agent_rows_of_its_own_fill_and_no_other`:
+  - an advertisement's fill hands its rows to the POST served from the entry, with no second read;
+  - a data-center copy gives none;
+  - the rows lapse with the decision at `READ_CACHE`, and the next fill's rows replace them;
+  - a copy replaces an entry's older rows;
+  - after a revocation the refusing fill's rows are held, not the last `Allow`'s.
+- `gate_tests::a_gate_entry_holds_only_its_own_fills_rows_within_the_byte_cap`.
+- `agents::tests::cached_rows_missing_the_pushs_own_task_are_read_again`.
+- `tests/m0carried/plant150.py`: 10 of 10 mutants caught. They are:
+  - main's rule, where a push served from the entry gets no rows;
+  - a fresh read's rows not handed on;
+  - a copy keeping older rows;
+  - a refusal keeping the `Allow`'s rows;
+  - replaced rows never released from the byte count;
+  - the byte cap ignored;
+  - a put without rows keeping earlier rows;
+  - cached rows trusted for a new task;
+  - the token's claim not counted;
+  - another App's session counted.
+- `agent_gates::a_policy_committed_after_the_edges_read_binds_the_next_push`: a push validated on a policy without
+  `extra_paths` is refused once a policy protecting its path commits, in an earlier entry or earlier in the same
+  entry; so is a `truncated` directory a new glob may reach under; a path no glob names and a directory list no glob
+  reaches pass.
+- `tests/m0carried/plant151.py`: 6 of 6 mutants caught. They are main's rule (the edge's `protected` alone), the policy
+  read before the entry's earlier commands, only the first glob, only the first path, a directory matched as a file,
+  and every path matched by overlap.
+- `tests/edgeboot/run.sh` with and without `PRODUCT=1`.
+
+**Flip.** Back it out on the next B0-33 row after its edge day if either holds:
+- agent `ok` pushes fall against h1A on the same shape;
+- cached-gate pushes' `context` time does not drop: `context` p50 on `gate_iso` pushes without `ctx_read` stays above
+  200 ms, or `ctx_read` is on more than 25% of `gate_iso` pushes.
+
+Leases, a `Session` link and the policy's `extra_paths` stay `decide`'s: it checks them on its own read.
+
+### `release-seq`: a site member's `ReleaseTag` comes from its version's tag, `<seq>-<release id>`, seq being the release's place in the `Release` group's uploads, 2026-11-24
+
+**Status.** Built on branch `bm5-format` from main `dc880f1d` for BM-5's unreadable-format clause. Not hosted.
+
+**Decision.** `graft-ops` tags every version of a release `<seq>-<release id>` (`ops::version_tag`). Seq is the
+release's place in the group's uploads, from 1, kept in the fold as `Upload::seq`; it is not on the wire, since every
+member applies the same uploads in the same order. A site member reads its `VERSION` binding's tag once per isolate at
+restore (`host.rs`, `this_release`) and takes `ReleaseTag { id, seq }` from it, so `classify_refusals`'s
+`r.release.seq < mine.seq` now tells an older refuser from a same-release one hosted. A tag that names no seq (a
+wrangler deploy, a version uploaded before this change, junk) runs as the constant `RELEASE`, the oldest, and logs it
+once per isolate. `parse_version_tag` takes only a seq of 1 to 10 digits and a 64-character lowercase hex id.
+
+**Why.** Every site build reported one constant `RELEASE`, so a hosted N+1 leader classed N's `verify` refusals as
+same-release: `OwnDefect` or `cannot_follow`, never `NoLead`, and A's groups could not move (BM-5 survey, 2026-11-24).
+A release's place in the group is fixed once (a second `ReleaseUploaded` for it is refused), so every version of it,
+on every site and at any upload time, carries one seq, and a rollback deploys the older release's own versions with
+their lower seq.
+
+**What it beat.**
+- **`VERSION.timestamp` as seq** (vetoed by the lead). A secret, variable, binding or container change makes a new
+  version of the same release, so an R9 version made after R10's upload would outrank R10, and each site's day uploads
+  at its own time.
+- **A `Release` view read at restore.** It puts a member read on every restore's path and fails with the view.
+
+**Evidence.**
+- `crates/release/src/tests/group/run.rs`, `bm5_a_release_s_seq_is_its_place_in_the_group_not_its_upload_time`:
+  every site and pinned script of R1 carries `1-<R1>`, of R2 `2-<R2>`; R1's tag computed after R2's upload still
+  parses below R2; nine malformed tags parse as `None`.
+- `workers/site/src/host.rs`, `a_member_s_release_is_its_version_tag_s_and_any_other_tag_is_the_oldest`.
+- `crates/git/tests/push.rs`, `bm5_an_unreadable_format_from_a_newer_site_commits_nothing_and_moves_the_group`:
+  A on seq 12 reads `REPO_FORMAT_TEST`, B and C on seq 9 refuse it; nothing in that format is committed anywhere,
+  A raises `NoLead`, the group moves off A and commits on its new leader. With B and C on seq 12 too, A keeps leading
+  (`OwnDefect`).
+- `tests/m0carried/plant210.py`: 6 of 6 caught.
+
+**Flip.** Take seq from the view or a signed field if a release ever ships to a site without a `ReleaseUploaded`
+(a lifeboat or restore path), or if Cloudflare drops or truncates `workers/tag` (100 bytes today).
+
+### `warm-order`: a validate or read tries the home, then the network's other warm site, then the other Full sites, 2026-11-24
+
+**Status.** Built and tested at $0. Not deployed; it ships with the next edge day. The lead asked for it on 2026-11-24
+from B0-34 mt22's every-clone collapse.
+
+**Decision.** `validate_sites` (`workers/edge/src/lib.rs`) orders the sites after the home with the network's other
+warm site first (`graftyard_git::warm_sites`, the rendezvous-next site among the others, the one `chain_buckets`,
+`fanout` and `chain-site` call warm), then the record's other Full sites in record order. `shard_order` keeps
+`COLD_SHARD_MS`'s cold-last on top, so validates, streamed validates, shard reads and upload-packs all take it.
+
+**Why.** B0-34 mt22 served every clone 60.6% in the kill phase and 8% in the second, against mt21's 100% and 100%.
+No compose or chain-site code changed between mt21 (a940127a) and mt22 (b587a8cb). mt21's network 1048616 is warm
+on sites a and b and mt22's 1048617 on a and c, by the sha256 rendezvous (50.06% of 10,000 networks with home a pick
+c). The edge fell back in record order, so after the kill of site a mt22's reads went to site b, which held no chain
+and no compose bucket entry (`compose/1048617/` n = 0 all row, against 17 on a and c): in the 120 s after the kill
+site b took 69 misses at catch-up p50 7,260 ms and headers p50 6,767 ms, and site c 8 at 897 and 797 ms. mt21's 36
+misses on its warm site b took catch-up p50 1,629 ms. mt21 passed only because its warm site was also next in record
+order [measured, `tests/am1/results/b034-mt22.md`, "Every clone"]. DESIGN's git caches data-center row already
+assumed "the other warm site already holds k shards"; the order did not use it.
+
+**What it beat.**
+- Recording it as placement chance. Half of networks put the warm site third in record order, so B0-34's kill line
+  would pass or fail on the network's id.
+- Moving the chain to the record's next site. That changes `chain_buckets`, `fanout`'s pool grants and every
+  bucket's chain keys for half of all networks, against one sort at the edge.
+- Pinning B0-34's network to one warm on site b. That hides the fault from the row.
+
+**Evidence.** `workers/edge/src/lib.rs`,
+`a_validate_falls_back_from_the_home_shard_to_the_warm_site_then_the_other_full_sites`: mt22's network with home 0
+tries [0, 2, 1] and mt21's [0, 1, 2]; with home 2, [2, 0, 1] and [2, 1, 0]; 1048608 with home 2 tries [2, 1, 0]. On
+b587a8cb's record order the first case reads [0, 1, 2]. `tests/m0carried/plant161.py`, four mutants: record order,
+the warm site last, the warm site picked with the record's first site as home, and the warm site ahead of the home.
+
+**Flip.** A B0-34-shaped row whose kill phase reads composed misses no faster on the warm site than on the third site
+(catch-up p50 within 2 times), or a placement whose warm site is not where the chain and k live, would mean the order
+buys nothing and record order is as good.

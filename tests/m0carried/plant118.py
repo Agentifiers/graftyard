@@ -27,8 +27,9 @@ MUTANTS = [
      "        GroupConfig::Joint { old, new } => on(old) || on(new),\n",
      "        GroupConfig::Joint { old, new } => on(old) || (on(new) && false),\n", MOVE_T),
     ("a *2w group's lost Full member goes by Joint, with no Degraded first", MOVE,
-     "        && lost_kind == Some(graftyard_types::MemberKind::Full)\n",
-     "        && lost_kind == Some(graftyard_types::MemberKind::Learner)\n", MOVE_T),
+     "            if p.voters().iter().any(|m| m.site == lost && m.kind == graftyard_types::MemberKind::Full)\n",
+     "            if p.voters().iter().any(|m| m.site == lost && m.kind == graftyard_types::MemberKind::Learner)\n",
+     MOVE_T),
 ]
 
 def main():

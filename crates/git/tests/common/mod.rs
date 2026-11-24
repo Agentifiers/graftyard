@@ -648,6 +648,7 @@ pub fn push(who: Principal, updates: Vec<RefUpdate>, paths: &[&str]) -> graftyar
         protected,
         changed,
         leases: false,
+        test_format: false,
     }
 }
 

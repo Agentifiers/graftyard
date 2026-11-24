@@ -222,6 +222,16 @@ pub fn confirm_split_summary(xs: &[ConfirmSplit]) -> Value {
     Value::Object(out)
 }
 
+/// `/stats?summary=1`'s `demoted`: the actors DEMOTE_PER_MIN classed Agent, the commands it classed so, and per actor
+/// key (a user's account id, an App's id with the top bit set, as text) its count.
+pub fn demoted_summary(by: &BTreeMap<u64, u32>) -> Value {
+    json!({
+        "actors": by.len(),
+        "writes": by.values().map(|&n| u64::from(n)).sum::<u64>(),
+        "by": by.iter().map(|(a, n)| (a.to_string(), json!(n))).collect::<serde_json::Map<_, _>>(),
+    })
+}
+
 /// `/stats?summary=1`'s `admittedBytes`: per class, the count, p50, p99 and max of the priced bytes, their sum, and the
 /// sum of those at or over 10 KB, so a reader sees which commands move `Admission::cmd_bytes`' mean.
 pub fn admitted_bytes_summary(by: &BTreeMap<&'static str, Vec<u32>>) -> Value {
@@ -463,6 +473,10 @@ pub struct Stats {
     /// Leader: each admitted command's priced bytes (`stored_len`, less an Agent inline pack), by the class
     /// it queued under (`admitted_bytes_summary`).
     pub admitted_bytes: BTreeMap<&'static str, Vec<u32>>,
+    /// Leader: commands DEMOTE_PER_MIN classed Agent in place of the edge's Human or Bot, by actor key
+    /// (`demoted_summary`), so B0-33 reads "the user token admitted as `Agent`" and a row sees any Human writer that
+    /// crossed DEMOTE_PER_MIN.
+    pub demoted: BTreeMap<u64, u32>,
     pub alarms: Vec<String>,
     /// Object alarms that fired, and when the last one did.
     pub alarm_runs: u32,
@@ -539,6 +553,15 @@ impl Stats {
         self.test_merge_shed += v["shed"].as_u64().unwrap_or(0) as u32;
     }
 
+    /// One command the leader admitted: its priced bytes (`admitted_bytes`), and, if DEMOTE_PER_MIN classed it Agent in
+    /// place of the edge's class, its actor in `demoted`.
+    pub fn admitted(&mut self, a: &raft::Admitted, len: usize, inline: usize) {
+        self.admitted_bytes(a.class, len, inline);
+        if let Some(actor) = a.demoted {
+            *self.demoted.entry(actor.0).or_insert(0) += 1;
+        }
+    }
+
     /// Records one admitted command's priced bytes: `len` its `stored_len`, less `inline` when it queued as Agent, as
     /// `Admission::cmd_bytes` counts it.
     pub fn admitted_bytes(&mut self, class: raft::admit::AdmitClass, len: usize, inline: usize) {
@@ -576,6 +599,7 @@ impl Stats {
         self.cycle_ms.clear();
         self.last_append_at = None;
         self.admitted_bytes.clear();
+        self.demoted.clear();
         self.read_stages.clear();
         self.narrow_build_ms.clear();
         self.entries = 0;
@@ -1593,18 +1617,49 @@ fn seed() -> u64 {
     (a << 32) ^ b ^ now_ms()
 }
 
-/// The release this build is. Milestone 1 has no release registry, so every build names the same one; `Unsupported`
-/// carries it.
+/// The release of a version whose tag names none: a wrangler deploy's, or one `graft-ops` uploaded before tags carried
+/// a seq. Seq 1 is the lowest a tagged release has, so such a member counts as the oldest release (`design/DESIGN.md`,
+/// Shape, `verify`).
 pub const RELEASE: ReleaseTag = ReleaseTag { id: ReleaseId([1; 32]), seq: 1 };
 
-pub fn member_config<F: Family>(site: &SiteEnv, join: &Join) -> MemberConfig {
+/// The release a version tag names (`graftyard_release::ops::version_tag`, `<seq>-<release id>`), else `RELEASE`. A
+/// release's seq is its place in the `Release` group's uploads, so every site on one release has the same tag, and a
+/// version made later for an older release (a secret's site day) keeps that release's seq.
+pub fn release_of(tag: Option<&str>) -> ReleaseTag {
+    tag.and_then(graftyard_release::ops::parse_version_tag).map_or(RELEASE, |(seq, id)| ReleaseTag { id, seq })
+}
+
+thread_local! {
+    static THIS_RELEASE: Cell<Option<ReleaseTag>> = const { Cell::new(None) };
+}
+
+/// This isolate's release, from its `VERSION` binding's tag, read once. A tag that names none logs it once.
+pub fn this_release(env: &Env) -> ReleaseTag {
+    if let Some(r) = THIS_RELEASE.with(Cell::get) {
+        return r;
+    }
+    let tag = env.get_binding::<WorkerVersionMetadata>("VERSION").ok().map(|v| v.tag());
+    let r = release_of(tag.as_deref());
+    if r == RELEASE {
+        console_log!("release: version tag {tag:?} names no release seq; this member runs as the oldest release");
+    }
+    THIS_RELEASE.with(|c| c.set(Some(r)));
+    r
+}
+
+/// The release `this_release` read, or `RELEASE` before any member of this isolate restored.
+pub fn cached_release() -> ReleaseTag {
+    THIS_RELEASE.with(Cell::get).unwrap_or(RELEASE)
+}
+
+pub fn member_config<F: Family>(site: &SiteEnv, join: &Join, release: ReleaseTag) -> MemberConfig {
     MemberConfig {
         chain: join.chain,
         // A learner's address is its slot's, not its site's (`graftyard_types::learner_addr`).
         me: join.me.addr(),
         record: join.record.clone(),
         regions: site.sites.0.iter().map(|s| (s.id, s.region)).collect(),
-        release: RELEASE,
+        release,
         reads: F::reads(),
     }
 }
@@ -2317,9 +2372,13 @@ impl<F: Family> Host<F> {
         let applied = stored.state.as_ref().map_or(Index(0), |s| s.applied);
         // Everything `load` read back is durable.
         *self.synced.borrow_mut() = VecDeque::from([(stored.base.index.0 + stored.log.len() as u64, now_ms())]);
-        let (mut m, ready) =
-            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), stored, Timestamp(self.now()), seed())
-                .map_err(|e| err(e.to_string()))?;
+        let (mut m, ready) = raft::Member::<F::C>::restore(
+            member_config::<F>(&site, &join, this_release(&self.env)),
+            stored,
+            Timestamp(self.now()),
+            seed(),
+        )
+        .map_err(|e| err(e.to_string()))?;
         m.set_request_retention(retention);
         m.set_log_window_bytes(raft::LOG_WINDOW, raft::LOG_BYTES);
         let mut store = SqlStore::<F> {
@@ -4607,6 +4666,31 @@ fn log_take(rows: impl Iterator<Item = Result<(Value, usize)>>, n: usize, cap: u
 
 #[cfg(test)]
 mod tests {
+    /// user-demote: `/stats`' `demoted` counts each write DEMOTE_PER_MIN reclassed, per actor, and nothing for a write
+    /// admitted under the edge's own class, Agent included; `reset` clears it.
+    #[test]
+    fn the_demotion_count_counts_only_reclassed_writes() {
+        use graftyard_raft::admit::{ActorKey, AdmitClass};
+        use graftyard_raft::{Admitted, Term, Ticket};
+        let at = |class, demoted| Admitted { ticket: Ticket { term: Term(2), boot: 1, seq: 9 }, class, demoted };
+        let mut s = super::Stats::default();
+        let user = ActorKey(7100002);
+        let app = ActorKey(1 << 63 | 41);
+        for _ in 0..3 {
+            s.admitted(&at(AdmitClass::Agent, Some(user)), 100, 0);
+        }
+        s.admitted(&at(AdmitClass::Agent, Some(app)), 100, 0);
+        s.admitted(&at(AdmitClass::Agent, None), 100, 0);
+        s.admitted(&at(AdmitClass::Human, None), 100, 0);
+        assert_eq!(
+            super::demoted_summary(&s.demoted),
+            serde_json::json!({ "actors": 2, "writes": 4, "by": { "7100002": 3, (1u64 << 63 | 41).to_string(): 1 } })
+        );
+        assert_eq!(s.admitted_bytes["agent"].len(), 5, "every admitted write is still priced");
+        s.reset();
+        assert_eq!(super::demoted_summary(&s.demoted), serde_json::json!({ "actors": 0, "writes": 0, "by": {} }));
+    }
+
     /// `read-newest`: a learner copies a `ReadIndex` call at HEDGE only while no later batch has left, and copies
     /// every other call as before.
     #[test]
@@ -4705,6 +4789,21 @@ mod tests {
         // One entry over the cap still reads, alone.
         let huge = vec![Ok((json!(1), cap + 1)), Ok((json!(2), 1))];
         assert_eq!(super::log_take(huge.into_iter(), 10, cap).unwrap().len(), 1);
+    }
+
+    /// BM-5: a member's release is what its version's tag names, the same seq on every site of one release; any tag
+    /// that names none (a wrangler deploy's, a bare release id from before seqs, junk) runs as `RELEASE`, never panics.
+    #[test]
+    fn a_member_s_release_is_its_version_tag_s_and_any_other_tag_is_the_oldest() {
+        let id = "12".repeat(32);
+        let r = super::release_of(Some(&format!("9-{id}")));
+        assert_eq!(r.seq, 9);
+        assert_eq!(r.id.0, [0x12; 32]);
+        assert_eq!(super::release_of(Some(&format!("9-{id}"))), r, "one tag, one release on every site");
+        assert!(r.seq > super::RELEASE.seq);
+        for t in [None, Some(id.clone()), Some("v1.0.1".into()), Some(format!("0-{id}")), Some(format!("x-{id}"))] {
+            assert_eq!(super::release_of(t.as_deref()), super::RELEASE, "{t:?}");
+        }
     }
 
     /// A voter with leader-only work acts once it has seen no leader for 2 x ELECTION_AFTER: ELECTION_AFTER after its

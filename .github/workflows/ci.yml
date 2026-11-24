@@ -49,6 +49,7 @@ jobs:
           node-version: 24
       - run: node --test 'workers/runners/tests/*.test.mjs'
       - run: node --test 'workers/site/tests/*.test.mjs'
+      - run: node --test 'workers/workflows/tests/*.test.mjs'
 
   web:
     name: Web format, typecheck, build

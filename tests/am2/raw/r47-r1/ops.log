@@ -1,0 +1,6 @@
+2026-11-24T09:36:15Z
+46edc385
+graft-ops from 46edc385, {"gate":null,"scripts":["front","mcp","site/0","site/1","site/2"],"test_faults":true,"cron":"* * * * *","step_dwell_ms":60000,"first_day_ms":1800000,"step_min_entries":null}
+Current Version ID: 75708f21-61e3-41d0-b5b2-12bba8339f5a
+{"script":"graft-m4a-ops","created_on":"2026-11-24T09:37:09.906037Z","versions":["75708f21 100"]}
+{"schedules":["* * * * *"]}

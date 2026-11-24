@@ -799,7 +799,8 @@ impl Family for Repo {
     /// review comment outside a review, whose entry carries `ReviewEvent::SingleComment`, sent once `FormatsEnable` enabled it.
     /// 32.24 is R24's `RunChecksCmd` with `workflow_job` steps, which `RunOwner` sends only where `GRAFTYARD_APP_HOOKS` is set.
     /// 32.25 is `RepoEvent::Compacted`, which only a leader of this release records itself. 32.26 is a push over SSH
-    /// (M6-WP2), whose principal is an SSH key, sent once `FormatsEnable` enabled it.
+    /// (M6-WP2), whose principal is an SSH key, sent once `FormatsEnable` enabled it. A `test-format` build also reads
+    /// BM-5's `REPO_FORMAT_TEST`, which no other release reads.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -827,6 +828,8 @@ impl Family for Repo {
             git::workflow_job::REPO_FORMAT_WORKFLOW_JOB,
             git::repo::REPO_FORMAT_ROLLUP,
             git::repo::REPO_FORMAT_SSH,
+            #[cfg(feature = "test-format")]
+            git::repo::REPO_FORMAT_TEST,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -1360,7 +1363,7 @@ impl Family for Repo {
             let n = |i: usize| f.get(i).and_then(Value::as_u64).unwrap_or(0) as u16;
             return Some(json!({ "unsupported": { "family": n(0), "version": n(1) } }));
         }
-        let e = git::group::decode_commit(body, crate::host::RELEASE.id).err()?;
+        let e = git::group::decode_commit(body, crate::host::cached_release().id).err()?;
         serde_json::to_value(e).ok()
     }
     fn marked(cmd: &Self::C) -> Option<Self::C> {

@@ -92,6 +92,9 @@ pub fn formats_enable_message(f: Format) -> Vec<u8> {
 /// A release's upload, as the fold keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Upload {
+    /// The release's place in the group's uploads, from 1: what orders releases (`ops::version_tag`). The same on every
+    /// member, since every member applies the same uploads in the same order.
+    pub seq: u32,
     pub versions: Vec<(Script, VersionId)>,
     pub reads: FormatSet,
     /// Every file the signed record lists, with its SHA-256, which `release roll` compares per script.
@@ -857,8 +860,13 @@ impl ReleaseFold {
                         Some((Box::from(f["name"].as_str()?), sha.0))
                     })
                     .collect();
-                let up =
-                    Upload { versions: u.versions.to_vec(), reads: u.reads.clone(), files, images: u.images.to_vec() };
+                let up = Upload {
+                    seq: self.uploads.len() as u32 + 1,
+                    versions: u.versions.to_vec(),
+                    reads: u.reads.clone(),
+                    files,
+                    images: u.images.to_vec(),
+                };
                 self.uploads.insert(u.release.0, up);
             }
             ReleaseEntry::IntentStep { .. } => {

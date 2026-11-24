@@ -84,6 +84,7 @@ fn push(updates: Vec<RefUpdate>, atomicity: Atomicity, actor: Principal) -> Push
         protected: Vec::new(),
         changed: Vec::new(),
         leases: false,
+        test_format: false,
     }
 }
 
@@ -1143,3 +1144,84 @@ fn bf52_every_ssh_push_decided_after_its_keys_removal_is_refused() {
     assert_eq!(refused, 1_000);
     assert!(g.refs().is_empty(), "{:?}", g.refs());
 }
+
+/// BM-5's unreadable format, the members' half: site A runs N+1, a build that reads `REPO_FORMAT_TEST`, and B and C
+/// run N, which does not. Each member's release is what its version tag names (`graftyard_release::ops::version_tag`):
+/// N+1's seq is above N's, so B and C refuse as older followers and A truncates, hands off, and stays out of the lead.
+/// Nothing unreadable commits, and the group keeps committing on N. With both followers on the same release as A,
+/// as when every site's tag names no seq and all run as `RELEASE`, the same refusal is A's own defect and A keeps
+/// leading: that is what the constant release gave every hosted site before.
+#[test]
+fn bm5_an_unreadable_format_from_a_newer_site_commits_nothing_and_moves_the_group() {
+    use graftyard_git::repo::REPO_FORMAT_TEST;
+    use graftyard_raft::{Alarm, ReleaseTag};
+    use graftyard_release::ops::parse_version_tag;
+    use graftyard_types::SiteId;
+    const A: SiteId = SiteId(0);
+    let tag = |seq: u32, id: u8| format!("{seq}-{}", Digest([id; 32]).hex());
+    let release = |t: &str| parse_version_tag(t).map(|(seq, id)| ReleaseTag { id, seq }).expect("a tagged release");
+    let n = release(&tag(9, 0x09));
+    let n1 = release(&tag(12, 0x12));
+    let base = [(REPO_FORMAT_V1.family, REPO_FORMAT_V1.version)];
+    let reads_n: Vec<_> = base.iter().map(|(f, v)| graftyard_raft::Format { family: *f, version: *v }).collect();
+    let mut reads_n1 = reads_n.clone();
+    reads_n1.push(REPO_FORMAT_TEST);
+    let test_push = |i: u32| {
+        let mut p = push(vec![up(&format!("refs/heads/t{i}"), None, Some(oid(i)))], Atomicity::PerRef, who(WRITER, 2));
+        p.test_format = true;
+        p
+    };
+    assert!(n.seq < n1.seq);
+
+    let run = |older: bool| {
+        let mut g = group();
+        let (_, o) =
+            commit(&mut g, push(vec![up("refs/heads/main", None, Some(oid(1)))], Atomicity::PerRef, who(WRITER, 2)));
+        assert_eq!(refs_of(&o), [RefOutcome::Ok]);
+        let before = g.member(A).state().commit;
+        let (rel_a, rel_bc) = if older { (n1, n) } else { (n1, n1) };
+        for s in [SiteId(1), SiteId(2)] {
+            g.restart_on(s, rel_bc, &reads_n);
+        }
+        g.restart_on(A, rel_a, &reads_n1);
+        assert!(g.ensure_leader(), "A leads again on N+1");
+        let r = rid();
+        let mut p = test_push(77);
+        p.request = r;
+        let reply = g.commit_on(A, r, p);
+        for t in 1..=20u64 {
+            g.advance(Timestamp(g.now.0 + t * 1_000));
+        }
+        (g, reply, before)
+    };
+
+    // B and C on N: older refusers.
+    let (mut g, reply, before) = run(true);
+    assert!(!matches!(reply, CommitReply::Done(PushOutcome::Ok(_))), "{reply:?}");
+    assert!(g.alarms.iter().any(|(s, a)| *s == A && matches!(a, Alarm::NoLead { .. })), "{:?}", g.alarms);
+    for s in SITES_ALL {
+        let m = g.member(s);
+        assert!(m.log().iter().all(|e| e.format != REPO_FORMAT_TEST), "{s:?} holds the unreadable entry");
+        assert!(m.state().commit >= before);
+    }
+    assert_eq!(g.member(A).state().no_lead_until, Some(n1.id));
+    let l = g.leader().expect("the group has a leader");
+    assert_ne!(l, A, "A's group moved off A");
+    // The group keeps committing on N, under its new leader.
+    let r = rid();
+    let mut p = push(vec![up("refs/heads/after", None, Some(oid(5)))], Atomicity::PerRef, who(WRITER, 2));
+    p.request = r;
+    assert!(matches!(g.commit_on(l, r, p), CommitReply::Done(PushOutcome::Ok(_))));
+    assert_eq!(g.leader(), Some(l), "A stays a non-leader");
+
+    // B and C on A's own release: the refusal is A's own defect; nothing commits and A keeps leading.
+    let (g, reply, _) = run(false);
+    assert!(!matches!(reply, CommitReply::Done(PushOutcome::Ok(_))), "{reply:?}");
+    assert!(g.alarms.iter().any(|(_, a)| matches!(a, Alarm::OwnDefect { .. })), "{:?}", g.alarms);
+    assert!(!g.alarms.iter().any(|(_, a)| matches!(a, Alarm::NoLead { .. })));
+    assert_eq!(g.leader(), Some(A));
+    assert!(SITES_ALL.iter().all(|s| g.member(*s).log().iter().all(|e| e.format != REPO_FORMAT_TEST)));
+}
+
+const SITES_ALL: [graftyard_types::SiteId; 3] =
+    [graftyard_types::SiteId(0), graftyard_types::SiteId(1), graftyard_types::SiteId(2)];

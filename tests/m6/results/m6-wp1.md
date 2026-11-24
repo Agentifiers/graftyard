@@ -1,6 +1,6 @@
 # M6-WP1, region loss and re-protection
 
-This file records M6-WP1's work (`build/BUILD-PLAN.md`, M6-WP1; BF-50). Status: **the pure half is built** on branch `m6-wp1-pure`. The hosted glue and BF-50 on graft-m6a are not started. The operator approved graft-m6a for after the pure half and the glue merge (3 sites plus a wnam spare from genesis, test-faults builds, $20 a UTC day and $40 in total).
+This file records M6-WP1's work (`build/BUILD-PLAN.md`, M6-WP1; BF-50). Status: **the pure half is merged** (main 3bf43a16), and **the hosted glue is built** on branch `m6-wp1-glue`. BF-50 on graft-m6a is not started. The operator approved graft-m6a for after the pure half and the glue merge (3 sites plus a wnam spare from genesis, test-faults builds, $20 a UTC day and $40 in total).
 
 ## The pure half (2026-11-24)
 
@@ -29,15 +29,62 @@ This file records M6-WP1's work (`build/BUILD-PLAN.md`, M6-WP1; BF-50). Status: 
 
 Main's `gate-pool` took 114 before this branch, so these are 115 to 118.
 
-**Not built, and where it goes:**
-- **The hosted glue.**
-  - The Workflows coordinator (plain JS, after a C3 check that its deploy creates no site-script version).
-  - member.rs's replace on `/move` beside `replace_on` (LM-1 cleared it; a `Degraded` arm reads the log through `logread::log_after`).
-  - The drained-site probe.
-  - 24 h per-minute `SiteHealth` rollups, which `Live::health` needs before it can call `gate::loss`. Until then `silent` and `recovered` stay false on the host, so only `SiteLost` replaces and an operator undrains.
-  - `deleteAll()` on removed members after 35 days.
-- **Deferred by ruling.** The `from_record` swap for creates during a loss (R49), and `*2w` hosted (R48).
+**Deferred by ruling.** The `from_record` swap for creates during a loss (R49), and `*2w` hosted (R48).
+
+## The hosted glue (2026-11-24)
+
+| Part | Where | Tests |
+| --- | --- | --- |
+| The coordinator, group and expiry Workflows, and the `/move/<intent>` handler `graft-ops` calls | `workers/workflows/move.mjs`, `entry.mjs`, `deploy.mjs`; `workers/ops/deploy.mjs` (`"workflows"`, the `WORKFLOWS` service binding) | `workers/workflows/tests/move.test.mjs`, 9 tests |
+| Every row of a registry shard, and one budgeted refill pass | `workers/site/src/registry.rs` (`/all_rows`, `/refill`); `replace.rs`; `graftyard_git::refill_run` | `refill_runs_copy_single_copy_packs_first_and_resume_from_their_cursor` |
+| One group's replace or restore, asked of its leader | `workers/site/src/member.rs`, `move_step` (`{"replace": {lost, spare}, started, dead}`), the `Degrade` and `Restore` arms; `group_move::replace_plan` | `a_replace_leaves_a_group_that_never_held_the_lost_site_alone`, `a_restore_moves_a_2w_full_member_back_by_joint_without_degrading` |
+| The drained-site probe | `registry.rs` (`?probe=` on the `site_health` read, and the object's alarm); `replace::probe` | `a_probe_never_calls_its_own_site` |
+| 24 h per-minute `SiteHealth` rollups, and `gate::loss` on the host | `workers/site/src/gatecount.rs` (`site_health_min`); `workers/ops/src/exec.rs`, `Live::health` | `a_day_long_health_read_sums_the_minute_rollups` |
+| `deleteAll()` after 35 days | `move.mjs`, `expire`; `member.rs`, `/expire` | `an expiry asks the removed member after 35 days, naming its replacement, until it wipes`; `a_removed_member_is_wiped_only_35_days_after_its_move` |
+
+**How a replace runs.**
+- `graft-ops` posts the `MoveSpec` to `/move/<intent>`, which creates the coordinator under the intent's ULID. A second post finds it there and answers 200.
+- **The coordinator.**
+  - For a lost site it first refills the spare's bucket, single-copy packs only. It calls `/refill` on a surviving site's registry object `refill`, one `CronBudget::SITE_CRON` pass a step, and resumes at the network the last pass stopped on.
+  - It reads `/all_rows` from each of the 64 shards on each surviving voter site, one step per shard, and keeps each chain at its highest generation.
+  - It starts one group instance per chain with `createBatch`, 100 at a time, under ids derived from the intent and the chain. A replayed start step gets 10405 for each id and starts nothing twice.
+  - It then runs the full refill and polls the groups, at most 200 a step, from the first one not yet seen complete. One errored group errors the coordinator, which `graft-ops` pages on.
+- **A group instance** asks its row's member `/move` with `{"replace": {lost, spare}, started, dead}`.
+  - The leader plans by `replace_plan`. A group whose committed config holds no voter on the lost site is `Done` before any step, so the many chains that never touched it end on their first ask.
+  - A `notLeader` names the leader to ask next. For a lost site, a follower naming no leader, or one on the lost site, is asked `/campaign` (`campaign`, below), then asked again. A member that answers nothing, or knows no leader, passes the ask to the next voter its last config names, never one on the lost site.
+  - `Done` after a step starts the expiry instance for the removed member, naming the member that replaced it.
+- **The leader's new arms.** `Degrade { lost }` commits `Degraded` once the voters it needs are caught up (`voters_ready`). `Restore { add }` joins a member on the spare in the lost member's slot and kind at the next generation, then commits `Normal` with it, the home moving to the spare if it was on the lost site. Neither reads the stored log.
+- **The expiry instance** sleeps 35 days, then asks the removed member `/expire` once a day, up to 30 times, until it wipes. The member wipes only if it is removed: by its own committed config, by F113's `superseded`, or by the replacing member's committed config, which names that member and not this one. A member on a lost site never commits the config that drops it, so the last case is the one a replace meets. An unjoined member answers 409, which ends the instance.
+
+**The drained-site probe.**
+- A replaced site holds no members, so nothing calls it and `SiteHealth` never reaches `MIN_CALLS`. `gate::loss` could never read it recovered, so it would stay drained and `RestorePlacement` refused for good.
+- Each `graft-ops` run already reads every voter site's `site_health` object. The `DRAIN_WINDOW` read now names the lost and replaced sites (`?probe=`), not every drained one: an automatically drained site still holds followers that are called, and healthy pings to an unjoined member would dilute their misses (and cut across R53's undrain).
+- The object stores them with an end 15 minutes out, and its alarm pings the unjoined member `probe#0` on each every 2 s within `CALL_DEADLINE`, adding each answer as one member call. A stopped `graft-ops` stops the probe within 15 minutes.
+- Under test-faults an unjoined member's `/ping` answers 503 while BM-1's site fault is on, so a faulted site probes silent as a lost one does.
+- The cost is 43,200 pings a day per prober while a site is lost or replaced, on the prober's own registry object.
+
+**The rollups.** `site_health` keeps its 10 s buckets for `UNDRAIN_AFTER` and adds a per-minute table kept for `ZERO_ACKS` plus an hour. A read over more than `UNDRAIN_AFTER` sums the minutes. `Live::health` reads four windows per observer (`DRAIN_WINDOW`, `UNDRAIN_AFTER`, `ZERO_ACKS`, and the recovery window) and calls `gate::loss`, so a silent `ZERO_ACKS` now replaces without a `SiteLost`, and a lost site undrains on its own once recovered.
+
+**C3, the site-day question** (OPEN-QUESTIONS C3).
+- The Workflows script is a new script. Its own config binds every site's `Member` and `Registry` classes by `script_name`, as `graft-ops` does, and Cloudflare documents a Worker binding a Durable Object class or a Workflow of another script [doc: https://developers.cloudflare.com/workflows/build/workers-api/, "Cross-script calls"]. Deploying it gives no site script a new version, provided the install's `sites.json` lists the spare from genesis, as `workers/site/deploy.mjs` already binds every listed site.
+- The glue also changes the site script: `registry.rs` (routes and the probe alarm), `member.rs` (`/move`'s replace, `/expire`, the faulted probe), and `gatecount.rs`. **So it ships on a site day**, graft-m6a's install day, and an install that already exists takes it on its next one.
+- `graft-ops` gains a service binding and a variable, a new version of `graft-ops` only.
+
+**Deviation for BF-50.** `graft-ops`' recovery window is `OPS_RECOVER_MS` on a test-faults build (`"recover_ms"` in the executor file), lowered from `RECOVER_AFTER`'s 24 h for the row's recovery half, as the operator allowed. BF-50's lines don't measure the window's length. The drain's 24 h of zero acks runs at full length.
+
+**`campaign` (2026-11-24, before BF-50).** Every system chain's home is site A, so after A is lost its followers on B and C still name A's leader once their promise lapses, and nothing else calls an idle chain to make it campaign (`Host::keep_led` acts only for leader-only work). The group instance now asks the live voter it reached to `/campaign` when its `notLeader` names no leader or the lost site, as `graftyard_lookup`'s create does for a home member. Found reading the glue against m6a's genesis, before any row; one test and one plant added.
+
+**Plants.** `plant117.py`'s and `plant118.py`'s anchors are re-pointed for the `refill` and `replace_step` refactors, and still catch 3 of 3 each. `tests/m0carried/plant130.py`, 9 mutants, all caught:
+- a group that never held the lost site moved anyway;
+- a restore planned as a dead site's replace;
+- a day-long health read summed from the 10 s buckets;
+- `deleteAll()` a moment before 35 days;
+- a site probing itself;
+- the single-copy refill pass copying every pack;
+- the coordinator keeping a chain's lowest generation;
+- a group asking a member on the lost site;
+- a group following a leader named on the lost site instead of asking for a campaign.
 
 ## BF-50 (planned)
 
-On graft-m6a, from merged main, after the glue: site A lost with every account API token revoked, drained 24 h with zero acks, `ReplaceMember` by the executor, then recovery and `RestorePlacement`. The recovery window is lowered under test-faults only, which is a deviation to record here. The row is not run yet.
+On graft-m6a, from merged main, after the glue, with the Workflows script deployed beside the sites (`workers/workflows/deploy.mjs`) and named in the executor file: site A lost with every account API token revoked, drained 24 h with zero acks, `ReplaceMember` by the executor, then recovery and `RestorePlacement`. The recovery window is lowered under test-faults only (the deviation above). The row is not run yet.
