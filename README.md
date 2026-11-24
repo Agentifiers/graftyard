@@ -79,6 +79,7 @@ cargo test --workspace
 python3 scripts/check_design.py
 python3 scripts/check_names.py
 python3 scripts/check_links.py
+python3 scripts/check_plants.py
 ```
 
 | Script | What it does |
@@ -86,6 +87,7 @@ python3 scripts/check_links.py
 | `scripts/check_design.py` | Checks both design documents' structure, the Stack table against `research/cloudflare.md`, failure-mode and deployment rows, that the agent block is identical in `design/DESIGN.md` and `design/AGENT-LAYER.md`, and that the Cost sections match the cost scripts |
 | `scripts/check_names.py` | Checks that the project's old name appears nowhere outside `history/` |
 | `scripts/check_links.py` | Checks that every repository path cited outside `history/` exists |
+| `scripts/check_plants.py` | Checks that every planted bug's anchor matches its code exactly once, against `scripts/plants-baseline.txt`, which only shrinks. A match is necessary, not sufficient: only running a plant shows its mutants compile and are caught |
 | `scripts/cost.py` | Prints the base's monthly Cloudflare list cost at 50, 300, and 2,000 developers |
 | `scripts/cost_agents.py` | Prints the agent layer's added monthly cost |
 | `scripts/cost_model.py` | The AWS cost model, which also holds the workload every cost script uses |

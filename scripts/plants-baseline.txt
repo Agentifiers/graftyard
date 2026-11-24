@@ -2,12 +2,6 @@
 # `file: name` per line. This file only shrinks: fix a plant's anchors on its own branch and delete its lines, and
 # scripts/check_plants.py fails on a line added here, on new drift, and on a listed mutant that matches again.
 # Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
-tests/am1/wp1/plant.py: agent lane starves humans: Agent cut before Human and MergeQueue
-tests/am1/wp1/plant.py: AGENT_SHARE not enforced: the bucket never empties
-tests/am1/wp1/plant.py: AGENT_WAIT never expires agents
-tests/am1/wp1/plant.py: mergeable computed past the budget: pushes always admitted
-tests/am1/wp1/plant.py: GETs ignore the budget
-tests/am1/wp1/plant.py: LOG_MAX_BYTES ignored: only the 30-day rule archives
 tests/am1/hotshards/plant.py: no page is read ahead while one applies
 tests/am1/hotshards/plant.py: a resumed rehydrate ingests the marked packs again
 tests/am1/hotshards/plant.py: a rehydrate loads only the last promotion first, not the earlier ones still in the log
