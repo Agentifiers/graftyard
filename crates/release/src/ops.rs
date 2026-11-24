@@ -30,6 +30,7 @@
 use std::collections::BTreeMap;
 
 use graftyard_types::{ReleaseId, SiteId, Timestamp};
+use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
 use crate::gate::{STUCK_DAY, Verdict};
@@ -264,6 +265,46 @@ fn at_full(fold: &ReleaseFold, s: Script, to: ReleaseId, keep: Option<ReleaseId>
 
 fn hex(r: &ReleaseId) -> String {
     crate::types::hex(&r.0)
+}
+
+/// The version a new upload copies its bindings and runtime settings from: the one serving the most traffic. A version
+/// uploaded since and never deployed, or N+1 at 1%, is not it (R57).
+pub fn upload_source(split: &Split) -> Option<VersionId> {
+    split.iter().max_by_key(|(_, p)| *p).map(|(v, _)| *v)
+}
+
+/// The binding types a version read returns without their value, so an upload keeps them (`keep_bindings`) instead of
+/// sending them. Cloudflare keeps them from the newest uploaded version, which may not be the deployed one: only its
+/// beta Workers API version endpoints take an `inherit` binding's `version_id` (R57).
+pub const KEPT_BINDINGS: &[&str] = &["secret_text"];
+
+/// A version upload's metadata for `main` tagged `tag`, configured as `source` is: `source` is the `result` of the
+/// versions API's read of `upload_source`'s version. Every binding but a `KEPT_BINDINGS` one is sent as that version
+/// holds it, so a version uploaded since and never deployed sets none of the upload's vars (`keep_bindings` takes them
+/// from the newest upload: DECISIONS "`deployed-bindings`"). The compatibility date, flags, limits and container map
+/// come from `source` too: an upload keeps none of them from any version.
+pub fn upload_metadata(source: &Value, main: &str, tag: &str) -> Value {
+    let bindings: Vec<Value> = source["resources"]["bindings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| !KEPT_BINDINGS.contains(&b["type"].as_str().unwrap_or("")))
+        .cloned()
+        .collect();
+    let mut meta = json!({
+        "main_module": main,
+        "bindings": bindings,
+        "keep_bindings": KEPT_BINDINGS,
+        "keep_assets": true,
+        "annotations": { "workers/tag": tag, "workers/message": "graft-ops upload" },
+    });
+    let rt = &source["resources"]["script_runtime"];
+    for k in ["compatibility_date", "compatibility_flags", "limits", "containers"] {
+        if !rt[k].is_null() {
+            meta[k] = rt[k].clone();
+        }
+    }
+    meta
 }
 
 /// The `workers/tag` of every version `graft-ops` uploads for `r`: `<seq>-<release id>`, seq being r's place in the

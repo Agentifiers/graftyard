@@ -754,3 +754,47 @@ fn a_lifeboat_silent_for_seven_days_pages_and_a_decoder_or_removal_clears_it() {
     assert!(f.g.f.lifeboat_seen.is_empty());
     assert_eq!(run(&mut f), 0, "a removed lifeboat never pages");
 }
+
+/// R57: an upload is configured as the deployed version is, not as the newest upload. The deployment serves N at 99%
+/// and N+1 at 1%; a version uploaded since by hand, never deployed, has a stray var and another value for a shared one.
+/// The upload sends N's vars, buckets and runtime settings as N holds them, keeps no plain-text binding from the newest
+/// upload, and sends no secret (it is kept: no read returns its value).
+#[test]
+fn r57_an_upload_takes_the_deployed_version_s_bindings_not_the_newest_upload_s() {
+    use serde_json::{Value, json};
+    let (n, n1, stray) = (VersionId([1; 16]), VersionId([2; 16]), VersionId([3; 16]));
+    let read = |v: VersionId| -> Value {
+        let (formats, extra, cpu) = match v {
+            v if v == n => ("32.1,32.4", None, 300_000),
+            v if v == stray => (
+                "32.1,32.4,20.4",
+                Some(json!({ "type": "plain_text", "name": "FORCE_FORMAT", "text": "32.65520" })),
+                50,
+            ),
+            _ => ("32.1", None, 10),
+        };
+        let mut b = vec![
+            json!({ "type": "plain_text", "name": "FORMATS_ENABLED", "text": formats }),
+            json!({ "type": "r2_bucket", "name": "BUCKET_0", "bucket_name": "packs-a" }),
+            json!({ "type": "secret_text", "name": "BED_TOKEN" }),
+        ];
+        b.extend(extra);
+        json!({ "resources": { "bindings": b, "script_runtime": { "compatibility_date": "2026-10-01", "limits": { "cpu_ms": cpu } } } })
+    };
+    // N+1 at 1% and N at 99%, in the order the deployments API lists them; the stray version is in no deployment.
+    let split = vec![(n1, 1), (n, 99)];
+    let source = ops::upload_source(&split).expect("a deployed version");
+    assert_eq!(source, n, "the version serving the most traffic, not N+1 and not the newest upload");
+    let meta = ops::upload_metadata(&read(source), "index.js", "7-ab");
+    let bindings = meta["bindings"].as_array().unwrap();
+    let var = |name: &str| bindings.iter().find(|b| b["name"] == json!(name)).map(|b| b["text"].clone());
+    assert_eq!(var("FORMATS_ENABLED"), Some(json!("32.1,32.4")), "N's value, not the stray upload's");
+    assert_eq!(var("FORCE_FORMAT"), None, "the stray upload's var is not carried");
+    assert!(bindings.iter().any(|b| b["name"] == json!("BUCKET_0") && b["bucket_name"] == json!("packs-a")));
+    assert!(bindings.iter().all(|b| b["type"] != json!("secret_text")), "a secret's value is never sent");
+    assert_eq!(meta["keep_bindings"], json!(["secret_text"]), "only secrets are kept from the newest upload");
+    assert_eq!(meta["limits"], json!({ "cpu_ms": 300_000 }), "N's runtime settings");
+    assert_eq!(meta["annotations"]["workers/tag"], json!("7-ab"));
+    assert_eq!(meta["main_module"], json!("index.js"));
+    assert_ne!(read(stray)["resources"], read(n)["resources"], "the newest upload is configured otherwise");
+}
