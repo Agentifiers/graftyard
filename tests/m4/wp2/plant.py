@@ -5,7 +5,8 @@ byte. Each line prints CAUGHT with the failing tests, MISSED, or DID NOT COMPILE
     python3 tests/m4/wp2/plant.py          # every mutant
     python3 tests/m4/wp2/plant.py 0 3      # by number
 
-`$CARGO_TARGET_DIR` defaults to `../target-m4b`.
+`$CARGO_TARGET_DIR` defaults to `target/plants`. Each run goes through `timeout -k 10 600`, and a run it ended counts as
+caught (README, "Planted bugs").
 """
 import os, subprocess, sys
 
@@ -35,13 +36,13 @@ MUTANTS = [
      '|| self.through <= cur {', '|| self.through == cur {', GATES),
     # ---- Notify ----
     ('the actor is notified of its own comment', N,
-     '            if Some(a) == t.actor {\n                continue;\n            }', '', GATES),
+     '                if Some(a) == t.actor {\n                    continue;\n                }\n', '', GATES),
     ('an ignored repository still notifies', N,
-     '            if w.is_some_and(|w| w.ignored) {\n                continue;\n            }', '', GATES),
+     '                if w.is_some_and(|w| w.ignored) {\n                    continue;\n                }\n', '', GATES),
     ('a thread unsubscription is ignored', N,
      '            if unsubscribed && reason != Reason::Mention {', '            if unsubscribed && false {', GATES),
     ('watchers are not notified', N,
-     '        for a in watch::subscribers(meta) {', '        for a in watch::subscribers(meta).into_iter().take(0) {', GATES),
+     '            for a in subscribers.iter() {\n', '            for a in subscribers.iter().take(0) {\n', GATES),
     # ---- the Inbox ----
     ('a replayed entry applies again (sources ignored)', N,
      '        if self.sources.get(&chain).is_some_and(|i| *i >= index) {', '        if false {', GATES),
@@ -92,7 +93,7 @@ MUTANTS = [
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
-           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '..', 'target-m4b')),
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
            CARGO_INCREMENTAL='0')
 only = sys.argv[1:] and set(int(x) for x in sys.argv[1:])
 for n, (name, path, old, new, args) in enumerate(MUTANTS):
@@ -104,7 +105,7 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
     assert src.count(old) == 1, (name, 'anchor not unique', src.count(old))
     open(f, 'w').write(src.replace(old, new, 1))
     try:
-        r = subprocess.run(['cargo', 'test', '-j', '3', *args, '--no-fail-fast'], cwd=ROOT, env=env,
+        r = subprocess.run(['timeout', '-k', '10', '600', 'cargo', 'test', '-j', '3', *args, '--no-fail-fast'], cwd=ROOT, env=env,
                            capture_output=True, text=True)
         out = r.stdout + r.stderr
         failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')})
@@ -112,6 +113,8 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
             verdict = 'DID NOT COMPILE'
         else:
             verdict = 'CAUGHT' if r.returncode != 0 else 'MISSED'
+        if r.returncode == 124:
+            failed = ['(timed out)', *failed]
         print(f'{n:2} {verdict:8} {name}: {", ".join(failed)}', flush=True)
     finally:
         open(f, 'wb').write(orig)
