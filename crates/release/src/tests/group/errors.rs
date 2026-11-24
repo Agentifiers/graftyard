@@ -309,3 +309,95 @@ fn a_front_or_mcp_rolls_100pct_step_holds_and_is_judged_against_n_from_the_inten
     let Action::Page(why) = ops::next(&o.g.f, &o.world(), Dwell::default()) else { panic!("no page") };
     assert!(why.contains("no undo left"), "{why}");
 }
+
+/// BM-5's swap-back trigger in memory: release 2's `OpsRoll` at 1%, a `graft-ops` N+1 whose mints answer 503, judged
+/// by one edge isolate's own mint counts (`MintWatch`) with the API down and no `GATE`. The isolate submits the
+/// pre-signed `OpsPointer` to release 1, the group commits it, so the pin moves with no deploy, and `graft-ops` returns
+/// to N at 100% once the API answers. N's errors, a 4xx, a quiet N+1, and another roll never swap back.
+#[test]
+fn bm5_a_bad_graft_ops_at_1pct_is_swapped_back_by_an_edge_isolates_mint_errors() {
+    let mut o = Ops::new(G::new());
+    upload(&mut o, 1, &[Script::Ops]);
+    o.roll_all(1);
+    upload(&mut o, 2, &[Script::Ops]);
+    let ops::Roll::Next { intent: Intent::OpsRoll { .. }, undo } = o.roll(2) else { panic!("no OpsRoll") };
+    assert_eq!(undo, vec![ReleaseEntry::OpsPointer { pin: rel(1).0 }]);
+    let (v1, v2) = (vid(1, 0), vid(2, 0));
+    o.act(); // the 1% deploy
+    assert_eq!(o.deps[&Script::Ops].split, vec![(v2, 1), (v1, 99)]);
+    assert_eq!(o.gate, Gate::Pass);
+    o.gate = Gate::Pending; // the host's gate for an OpsRoll: no front sees its answers
+    let (s1, s2) = (v1.to_string(), v2.to_string());
+    let mut w = gate::MintWatch::default();
+    let mut t = 0;
+    let mut feed = |w: &mut gate::MintWatch, f: &ReleaseFold, ran: Option<&str>, status: Option<u16>| {
+        t += 100;
+        w.record(f, ran, status, t)
+    };
+
+    // N's own 503s (a Secrets Store failure every version shares) and the grant's 4xx swap nothing back.
+    for _ in 0..50 {
+        assert!(feed(&mut w, &o.g.f, Some(&s1), Some(503)).is_none());
+        assert!(feed(&mut w, &o.g.f, Some(&s2), Some(422)).is_none());
+    }
+    // One 503 of N+1's 51 answers is chance at 1%.
+    assert!(feed(&mut w, &o.g.f, Some(&s2), Some(503)).is_none());
+    // Mints N+1 answers 503: the sixth more makes 7 of N+1's 57 answers, past chance over 1% (a KL bound of ln
+    // 10,000, worked out apart from the code), and the isolate submits the undo once.
+    let mut sent = None;
+    for i in 0..20 {
+        if let Some(e) = feed(&mut w, &o.g.f, Some(&s2), Some(503)) {
+            sent = Some((i, e));
+            break;
+        }
+    }
+    let (i, e) = sent.expect("the isolate submits the OpsPointer");
+    assert_eq!(i, 5, "the sixth failed mint");
+    assert!(feed(&mut w, &o.g.f, Some(&s2), Some(503)).is_none(), "not again within MINT_RESEND_MS");
+
+    // The API is down: the group commits the pointer, graft-ops cannot deploy, and the pin is N.
+    let deployed = o.deployed.len();
+    o.g.ok(e.encode());
+    assert_eq!(o.g.f.pointers.ops, Some(v1), "pinned to N with no API call");
+    assert_eq!(o.deployed.len(), deployed);
+    t += gate::MINT_RESEND_MS;
+    assert!(w.record(&o.g.f, Some(&s2), Some(503), t).is_none(), "a committed undo is never sent again");
+    // graft-ops returns to N at 100% once the API answers, and finishes the intent.
+    o.gate = Gate::Pass;
+    o.finish();
+    assert_eq!(o.deps[&Script::Ops].split, vec![(v1, 100), (v2, 0)]);
+
+    // A thrown binding call is one of N+1's errors: release 3's roll swaps back on throws alone.
+    upload(&mut o, 3, &[Script::Ops]);
+    assert!(matches!(o.roll(3), ops::Roll::Next { intent: Intent::OpsRoll { .. }, .. }));
+    o.act();
+    let mut w = gate::MintWatch::default();
+    let mut got = None;
+    for k in 0..10 {
+        got = got.or(w.record(&o.g.f, None, None, k));
+    }
+    assert!(got.is_some(), "thrown mints swap back");
+
+    // A healthy, quiet N+1 never swaps back, and an EdgeRoll's mint errors are not graft-ops's to undo.
+    let mut o = Ops::new(G::new());
+    upload(&mut o, 1, &[Script::Ops, Script::Edge]);
+    o.roll_all(1);
+    upload(&mut o, 2, &[Script::Ops, Script::Edge]);
+    assert!(matches!(o.roll(2), ops::Roll::Next { intent: Intent::EdgeRoll { .. }, .. }));
+    o.act();
+    let mut w = gate::MintWatch::default();
+    for k in 0..30 {
+        assert!(w.record(&o.g.f, None, None, k).is_none(), "an EdgeRoll");
+    }
+    o.finish();
+    assert!(matches!(o.roll(2), ops::Roll::Next { intent: Intent::OpsRoll { .. }, .. }));
+    o.act();
+    let v2 = o.deps[&Script::Ops].split[0].0.to_string();
+    for k in 0..2_000 {
+        assert!(w.record(&o.g.f, Some(&v2), Some(200), k).is_none());
+    }
+    // 1% of N+1's mints failing is the line itself, not past it.
+    for k in 0..20 {
+        assert!(w.record(&o.g.f, Some(&v2), Some(500), 2_000 + k).is_none(), "{k}");
+    }
+}

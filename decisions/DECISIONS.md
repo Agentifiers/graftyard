@@ -10451,3 +10451,45 @@ the warm site last, the warm site picked with the record's first site as home, a
 **Flip.** A B0-34-shaped row whose kill phase reads composed misses no faster on the warm site than on the third site
 (catch-up p50 within 2 times), or a placement whose warm site is not where the chain and k live, would mean the order
 buys nothing and record order is as good.
+
+### `mint-ratio`: an edge isolate swaps a bad `graft-ops` back on its own mint errors by version, 2026-11-24
+
+**Status.** Built on branch `bm5-mint` from main `5167e846` for BM-5's `graft-ops` swap-back clause (the lead's
+option A: `GATE=breach` does not stand in). Not hosted.
+
+**Decision.**
+- **The count.** Each `/mint` answer now carries `x-graftyard-ops-version`, from `graft-ops`'s `VERSION` binding
+  (`workers/ops/deploy.mjs` binds it). The edge's `Ctx::ops` counts each mint in a per-isolate
+  `graftyard_release::gate::MintWatch` by that version. A 5xx is an error, a 4xx is not (the grant's fault), and a
+  call whose binding threw counts as N+1's error, as `GATE_ERRORS` counts a throw. The counts start over when the
+  current intent changes.
+- **The trigger.** Only while an `OpsRoll` runs forward, N+1's errors over `MINT_ERROR_RATIO` (1%) past chance, the
+  same Chernoff bound as `GATE_ERRORS` (`GATE_ERRORS_NATS`, ln 10,000), so a few errors among few mints trip it and one
+  error in a quiet isolate does not. N's errors, such as a Secrets Store failure every version shares, never swap back.
+- **The undo.** The isolate builds the intent's pre-signed `OpsPointer` (`undo_entry`) and commits it on the `Release`
+  group in `wait_until`, after the reply, at most once per `MINT_RESEND_MS` (10 s), and never once the group holds it.
+  No Cloudflare API call. `graft-ops` then returns to N at 100% through the API when it can, as for any undo.
+- **Test-faults.** `OPS_MINT_FAIL=on` (`"mint_fail": true` in the executor file) makes every mint of that version
+  answer 503: the bad `graft-ops` BM-5 rolls at 1%.
+
+**Why.** DESIGN names this trigger ("Edge isolates whose mint errors pass a compiled ratio submit the pre-signed
+`OpsPointer`") but nothing counted mints, and an `OpsRoll`'s gate stays `Pending` because no front sees its answers
+(`gate-errors`). The edge is the only caller of `/mint`, so it is the one place that sees every answer and every throw.
+
+**What it beat.**
+- **A fixed count floor before judging.** At 1%, one isolate may see a handful of N+1 mints; the bound fires on 2 throws
+  or 7 of 57 errors and never on one.
+- **Counting in `graft-ops`.** A version that throws or never starts cannot count itself.
+- **`graft-ops` submitting from Analytics Engine.** That is an API read the swap-back would wait on in a control-plane
+  outage.
+
+**Evidence.** `crates/release/src/tests/group/errors.rs`,
+`bm5_a_bad_graft_ops_at_1pct_is_swapped_back_by_an_edge_isolates_mint_errors`: release 2's `OpsRoll` at 1%, `GATE`
+pending. N's 503s and N+1's 4xx swap nothing back; N+1's 503s do on the sixth after 1 of 51, and only once per
+`MINT_RESEND_MS`. The group commits the pointer with no deploy, `graft-ops` returns to N at 100% after, two thrown mints
+swap release 3 back, an `EdgeRoll`'s mint errors and a healthy N+1 at exactly 1% do not. It fails on main, where nothing
+submits an `OpsPointer` during an `OpsRoll` with a pending gate. `tests/m0carried/plant211.py`: 6 of 6 caught (a 4xx
+counted, throws ignored, N's errors summed in, no resend gap, counts kept across intents, no chance bound).
+
+**Flip.** A hosted `OpsRoll` swapped back with a healthy N+1 (raise the bound), or one where a bad N+1 served mints
+for longer than one `MINT_RESEND_MS` after its errors crossed the line (count across isolates, as `gate-errors` does).

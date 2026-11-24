@@ -23,7 +23,8 @@ MUTANTS = [
     ("an answer counts under the front's version, not the version that ran it", GATE,
      '        Some(_) => one(errors_key(to), ran),\n', '        Some(_) => one(errors_key(to), front),\n', REL),
     ("a thrown call is not a 5xx of the front that served it", GATE,
-     'u64::from(status.is_none_or(|s| s >= 500))', 'u64::from(status.is_some_and(|s| s >= 500))', REL),
+     'u64::from(status.is_none_or(|s| s >= 500));\n    let mut one', 'u64::from(status.is_some_and(|s| s >= 500));\n    let mut one',
+     REL),
     ("an answer with no version counts as a thrown call", GATE,
      '            None => &mut e.unversioned,\n        };\n        a.answers += 1;\n        a.fivexx += fivexx;\n',
      '            None => {\n                e.threw += 1;\n                &mut e.unversioned\n            }\n        };\n'

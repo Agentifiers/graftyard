@@ -173,7 +173,7 @@ async fn mint_slot(env: &Env, ctx: &Context) -> Option<u8> {
 }
 
 #[event(fetch)]
-async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
+async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if req.method() == Method::Post && req.path().starts_with("/actions/") {
         let path = req.path();
         return actions(req, &env, &path).await;
@@ -187,6 +187,26 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     if req.method() != Method::Post || req.path() != "/mint" {
         return Response::error("Not Found", 404);
     }
+    let mut res = mint(req, &env, &ctx).await?;
+    // The edge counts each mint by the version that answered it (`MINT_ERROR_RATIO`). A version with no
+    // `VERSION` binding answers none, and its mints never count against a roll.
+    if let Ok(v) = env.get_binding::<WorkerVersionMetadata>("VERSION") {
+        let _ = res.headers_mut().set(OPS_VERSION_HEADER, &v.id());
+    }
+    Ok(res)
+}
+
+/// The header naming the version that answered a mint (`workers/edge`, `OPS_VERSION_HEADER`).
+const OPS_VERSION_HEADER: &str = "x-graftyard-ops-version";
+
+/// `POST /mint`: one installation token for the edge's `Grant`.
+async fn mint(mut req: Request, env: &Env, ctx: &Context) -> Result<Response> {
+    // BM-5, test-faults builds only: `OPS_MINT_FAIL=on` makes this version a bad `graft-ops` whose every mint answers
+    // 503, so a test install can roll it at 1% and watch the edge's mint errors swap it back.
+    #[cfg(feature = "test-faults")]
+    if env.var("OPS_MINT_FAIL").is_ok_and(|v| v.to_string() == "on") {
+        return Response::error("OPS_MINT_FAIL: this test version mints nothing", 503);
+    }
     let grant: Grant = match req.json().await {
         Ok(g) => g,
         Err(e) => return Response::error(format!("not a Grant: {e}"), 400),
@@ -194,10 +214,10 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     let now = Timestamp(Date::now().as_millis());
     // The secret is read only when the minter's key is missing or `SIGNING_KEY_CACHE` old.
     let text = if MINTER.with(|m| m.borrow().needs_key(now)) {
-        let Some(slot) = mint_slot(&env, &ctx).await else {
+        let Some(slot) = mint_slot(env, ctx).await else {
             return Response::error("MintWrapKey: no Release view yet", 503);
         };
-        match crate::exec::slot_value(&env, graftyard_release::SecretName::MintWrapKey, slot).await {
+        match crate::exec::slot_value(env, graftyard_release::SecretName::MintWrapKey, slot).await {
             Ok(t) => t,
             Err(e) => return Response::error(format!("MintWrapKey: {e}"), 503),
         }
