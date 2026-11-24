@@ -20,11 +20,13 @@
 //! - **BF-39 (`test-faults` builds only).** `OPS_KILL=<n>` kills each run after a uniform 0 to n of its view reads,
 //!   deploys, and commits: that call and every later one fail unsent, as `crates/release`'s in-memory BF-39 kills its
 //!   fake, so a run can die between a deploy and its `IntentStep`. `OPS_STEP_MIN_ENTRIES=<n>` passes a step that
-//!   `judge_site` found `Starved` with at least n entries, for a test install whose 1% step carries too little traffic
-//!   (OPEN-QUESTIONS R38).
+//!   `judge_site` or `judge_errors` found `Starved` with at least n entries or answers, for a test install whose 1%
+//!   step carries too little traffic (OPEN-QUESTIONS R38).
 //!
 //! - **Gates and drain (M5-WP4).** A site day's step reads the rolling site's `gate` object and asks
-//!   `graftyard_release::gate::judge_site`; every other intent's gate is pending until its inputs are counted. Each
+//!   `graftyard_release::gate::judge_site`. An edge, front, or MCP roll's step sums every voter site's `errors` object,
+//!   `graft-front`'s counts of the rolled script, and asks `gate::judge_errors` (OPEN-QUESTIONS R47). Every other
+//!   intent's gate (`OpsRoll`, `ControllerRoll`, `ContainerDay`) is pending until its inputs are counted. Each
 //!   run reads every voter site's `site_health` object and asks `gate::verdict`. A test install's `GATE` variable
 //!   (`pass`, `pending`, or `breach:<why>`) overrides the gate; unset, the gate is read.
 //! - **`Rotate` (M5-WP6).** Each rotatable secret this script holds has two Secrets Store bindings, `<NAME>_0` and
@@ -58,6 +60,19 @@ fn key(s: Script) -> String {
         Script::Site(SiteId(n)) => format!("site/{n}"),
         s => ops::folder(s).trim_end_matches('/').to_string(),
     }
+}
+
+/// A test-faults build's `OPS_STEP_MIN_ENTRIES=<n>`: a `Starved` gate with at least n entries (a site day) or answers
+/// (an edge, front, or MCP roll) passes, for a test install whose steps carry too little traffic (OPEN-QUESTIONS R38).
+fn floor_override(_env: &Env, g: Gate) -> Gate {
+    #[cfg(feature = "test-faults")]
+    {
+        let floor = _env.var("OPS_STEP_MIN_ENTRIES").ok().and_then(|v| v.to_string().parse::<u64>().ok());
+        if matches!(g, Gate::Starved(n) if floor.is_some_and(|f| n >= f)) {
+            return Gate::Pass;
+        }
+    }
+    g
 }
 
 fn var(env: &Env, name: &str) -> std::result::Result<String, String> {
@@ -234,6 +249,59 @@ impl<'a> Live<'a> {
         }
         Ok(v)
     }
+
+    /// An edge, front, or MCP roll's gate (`gate::judge_errors`, OPEN-QUESTIONS R47): `graft-front`'s counts of the
+    /// rolled script, summed over every voter site's `errors` object over the step's window (`gate::window_start`)
+    /// and from the intent's start, judged by `gate::judge_roll`. A site
+    /// that does not answer is left out of the sum, so its counts are lost, never misread. Answers with no version
+    /// alarm and are not judged.
+    async fn errors_gate(
+        &mut self,
+        fold: &ReleaseFold,
+        c: &graftyard_release::Current,
+        (script, n1, n): (Script, VersionId, Option<VersionId>),
+    ) -> Gate {
+        let Some(g) = fold.genesis.as_ref() else { return Gate::Pending };
+        let voters: Vec<SiteId> = g.sites.iter().filter(|s| !s.spare).map(|s| s.id).collect();
+        let key = gate::errors_key(script);
+        let (since, c_start) = (gate::window_start(fold, c).0, c.intent.issued_at.0);
+        let mut window = gate::ScriptErrors::default();
+        let mut whole = gate::ScriptErrors::default();
+        let mut answered = 0;
+        for site in &voters {
+            let Ok(stub) = self.bindings().registry(*site, "errors") else { continue };
+            for (from, out) in [(since, &mut window), (c_start, &mut whole)] {
+                let path = format!("https://registry/errors?key={key}&since={from}");
+                let Some(Ok(mut r)) = within(VIEW_CALL, stub.fetch_with_str(&path)).await else { continue };
+                if r.status_code() != 200 {
+                    continue;
+                }
+                let Ok(e) = r.json::<gate::ScriptErrors>().await else { continue };
+                out.add(&e);
+                answered += usize::from(from == since);
+            }
+        }
+        // No site answered: nothing was read, which is not a step with no answers.
+        if answered == 0 {
+            return Gate::Pending;
+        }
+        if window.unversioned.answers > 0 {
+            console_error!(
+                "ALARM graft-ops gate {key}: {} answers ({} 5xx) through graft-front reported no version",
+                window.unversioned.answers,
+                window.unversioned.fivexx
+            );
+        }
+        let g = gate::judge_roll(&window, &whole, n1, n);
+        console_log!(
+            "graft-ops gate {key}: N+1 {:?} thrown {} N {:?} (whole {:?}) from {answered} sites -> {g:?}",
+            window.of(n1),
+            window.threw,
+            n.map(|n| window.of(n)),
+            n.map(|n| whole.of(n))
+        );
+        g
+    }
 }
 
 impl Exec for Live<'_> {
@@ -292,15 +360,20 @@ impl Exec for Live<'_> {
     }
 
     /// A site day's gate from the site's `gate` object (`graftyard_release::gate::judge_site`), N+1's version against
-    /// N's over the step, from the current intent's last entry, or N's from the intent's start once N runs nowhere. Every other intent's gate input (5xx rates for
-    /// `GATE_ERRORS`, a `ContainerDay`'s shards) is not counted yet, so it is pending and its step waits. A test install's
-    /// `GATE` (`pass`, `pending`, or `breach:<why>`) overrides the reading.
+    /// N's over the step, from the current intent's last entry, or N's from the intent's start once N runs nowhere. An
+    /// edge, front, or MCP roll's is `errors_gate`. Every other intent's gate input (an `OpsRoll`'s or
+    /// `ControllerRoll`'s 5xx, which no front sees, a `ContainerDay`'s shards) is not counted yet, so it is pending and
+    /// its step waits. A test install's `GATE` (`pass`, `pending`, or `breach:<why>`) overrides the reading.
     async fn gate(&mut self, fold: &ReleaseFold) -> Gate {
         match self.env.var("GATE").map(|v| v.to_string()).as_deref() {
             Ok("pass") => return Gate::Pass,
             Ok("pending") => return Gate::Pending,
             Ok(b) if b.starts_with("breach:") => return Gate::Breach(b["breach:".len()..].into()),
             _ => {}
+        }
+        if let (Some(roll), Some(c)) = (gate::roll_versions(fold), fold.current.as_deref()) {
+            let g = self.errors_gate(fold, c, roll).await;
+            return floor_override(self.env, g);
         }
         let (Some((site, n1, n)), Some(c)) = (gate::day_versions(fold), fold.current.as_deref()) else {
             return Gate::Pending;
@@ -333,12 +406,7 @@ impl Exec for Live<'_> {
             },
             None => gate::Counters::default(),
         };
-        let g = gate::judge_site(&c1.side(), &c0.side());
-        #[cfg(feature = "test-faults")]
-        let g = {
-            let floor = self.env.var("OPS_STEP_MIN_ENTRIES").ok().and_then(|v| v.to_string().parse::<u64>().ok());
-            if matches!(g, Gate::Starved(n) if floor.is_some_and(|f| n >= f)) { Gate::Pass } else { g }
-        };
+        let g = floor_override(self.env, gate::judge_site(&c1.side(), &c0.side()));
         console_log!("graft-ops gate site {}: N+1 {:?} N {:?} -> {g:?}", site.0, c1.side(), c0.side());
         g
     }

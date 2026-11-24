@@ -217,6 +217,22 @@ teardown, so w3's versions (front `57581ba4`, mcp `016538f0`) and the earlier on
   fails, and an undo or `Abort` to w3 would fail the same way. Before either roll runs here, the operator
   decides how N is replaced. Bundles without `front/` and `mcp/` skip both rolls and are unaffected.
 
+**Decided (2026-11-24, R47's branch):** N is replaced by a release, not by hand. Before R47's row, the operator
+redeploys `graft-m4a-front` and `graft-m4a-mcp` (`workers/front/deploy.mjs`, `workers/mcp/deploy.mjs`) and adds both
+to `OPS_SCRIPTS`. Then a bundle w4 with only `front/` and `mcp/` (as `tests/am2/hosted/wp3-bundle.py` builds w3)
+gets its `ReleaseUploaded`. `release roll w4` signs a `FrontRoll` and an `McpRoll`, each with no pre-signed undo
+for the `FrontRoll` and an `McpPointer` to w3 for the `McpRoll`. The customer then signs `Abort { intent, target: w4 }`
+for each before its first step deploys. An `Abort` to the intent's own release deploys w4 at 100% (front) or w4 at
+100% with nothing kept (mcp, since `deployed` then keeps w4), and `IntentDone` records `rolled` as w4. So w4 is N
+for the row's `McpRoll` (`crates/release/src/tests/group/errors.rs`,
+`an_abort_to_the_intents_own_release_records_that_release_as_n`, which fails if an `Abort` does not record its
+target). Accepted by the lead over the hand redeploy, on one condition: before each `Abort` is posted, the intent
+must still be at step 0 with nothing deployed (relview's `next` 0 and the script's deployment unchanged). If either
+has stepped, stop and tell the lead. This differs from the lead's suggestion (redeploying w3's bundles as N with no roll): a hand deploy
+creates new version ids that the group never recorded, so `rolled` would still name w3's deleted versions, and the
+next roll's 1% split would fail. The `McpPointer` to w3 in the `McpRoll`'s undo list is never used, because the
+`Abort` ends that intent first.
+
 ## Proof it works
 
 - `install` committed the genesis at `Release` index 3, through the edge's first, test-faults build. All 3,072 `Tokens` groups exist (row above).

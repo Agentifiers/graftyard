@@ -229,9 +229,10 @@ impl DurableObject for Registry {
                     rows.first().map(|r| serde_json::from_str(&r.plan)).transpose()?.unwrap_or_default();
                 Response::from_json(&p)
             }
-            // M5-WP4's gate counters and `SiteHealth` (`crate::gatecount`), in the objects `gate` and `site_health` on
-            // this site, which `graft-ops` reads over its `REGISTRY_<n>` bindings.
-            (m @ (Method::Put | Method::Get), p @ ("/gate" | "/site_health")) => {
+            // M5-WP4's gate counters and `SiteHealth`, and `graft-front`'s `GATE_ERRORS` counts (`crate::gatecount`),
+            // in the objects `gate`, `site_health` and `errors` on this site, which `graft-ops` reads over its
+            // `REGISTRY_<n>` bindings.
+            (m @ (Method::Put | Method::Get), p @ ("/gate" | "/site_health" | "/errors")) => {
                 let body = if m == Method::Put { Some(req.json::<serde_json::Value>().await?) } else { None };
                 Response::from_json(&crate::gatecount::route(&sql, &p[1..], body, &|k| query(&url, k).ok())?)
             }
