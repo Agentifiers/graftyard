@@ -103,8 +103,8 @@ mod tests {
     use super::*;
     use futures_util::FutureExt;
 
-    fn ok(n: usize) -> impl Future<Output = Result<Vec<u8>, String>> {
-        async move { Ok(vec![0; n]) }
+    async fn ok(n: usize) -> Result<Vec<u8>, String> {
+        Ok(vec![0; n])
     }
 
     /// Every way a handler ends releases its bytes and its open count: an answer, an error, and a future dropped
