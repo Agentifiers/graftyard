@@ -27,7 +27,4 @@ tests/m4/wp1/plant.py: a rebuilt store starts past the committed read (replay_fr
 tests/m4/wp2/plant.py: the actor is notified of its own comment
 tests/m4/wp2/plant.py: an ignored repository still notifies
 tests/m4/wp2/plant.py: watchers are not notified
-tests/nr2/plant.py: through: a write-class request takes the cached entry
-tests/nr2/plant.py: through: a write's fresh answer does not refresh the entry
-tests/nr2/plant.py: an entry is stamped when its answer arrives, not when its read started
 tests/nr3/plant.py: cache: the answer is stamped with the floor, not the index it was built at
