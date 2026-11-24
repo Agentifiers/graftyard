@@ -1,4 +1,0 @@
-# Plant mutants whose anchors had drifted when scripts/check_plants.py went in (2026-11-24, main fec11ee1), one
-# `file: name` per line. This file only shrinks: fix a plant's anchors on its own branch and delete its lines, and
-# scripts/check_plants.py fails on a line added here, on new drift, and on a listed mutant that matches again.
-# Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
