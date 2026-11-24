@@ -1,0 +1,33 @@
+[package]
+name = "graftyard-agents-front"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# `graft-agents-front` (`design/AGENT-LAYER.md`, Shape, "Controller", `AgentsAnchor`, `AgentsReleaseView`, and
+# `forward`; `build/BUILD-PLAN.md`, AM3-WP1): the stable Worker on the controller's webhook hostname in the agents
+# account. It forwards every request to `graft-controller` over a `fetch()` service binding, with a version override
+# only while its view of the install's `Release` group pins the controller. The view's rules are plain Rust (`lib.rs`),
+# tested natively (`tests/front.rs`); `worker` is the Workers host.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+graftyard-release = { path = "../../crates/release" }
+graftyard-types.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+futures-util = { version = "0.3", default-features = false }
+# `appauth::app_key` and `sign_app_jwt`, the `graftyard-agent` App JWT of each `GET release/entries` read.
+graftyard-identity = { path = "../../crates/identity" }
+# Only to name the key type `app_key` returns, which the isolate keeps.
+rsa = { version = "0.9", default-features = false }
+serde_json.workspace = true
+worker.workspace = true
+
+[dev-dependencies]
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+serde_json.workspace = true
+sha2.workspace = true
+smallvec.workspace = true

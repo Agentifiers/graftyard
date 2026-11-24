@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# `agents::parse_page` reads the entries' standard base64 from `GET release/entries`.
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 # 2.x builds for wasm32-unknown-unknown with no default features: verification needs no randomness.
 ed25519-dalek = { version = "2.2", default-features = false }
 graftyard-types.workspace = true
