@@ -31,8 +31,8 @@ BED = ('bed',)
 MUTANTS = [
     # The composed pack.
     ('pack header counts only the chain, not the want\'s own pack', CG,
-     '\tcount := binary.BigEndian.Uint32(inc[8:12])\n', '\tcount := uint32(0)\n', MISS),
-    ('the want\'s own objects are left out', CG, '\tpw.Write(inc[12 : len(inc)-20])\n', '', MISS),
+     '\tn := binary.BigEndian.Uint32(c.inc[8:12])\n\tfor _, p := range c.packs {', '\tn := uint32(0)\n\tfor _, p := range c.packs {', MISS),
+    ('the want\'s own objects are left out', CG, '\tpw.Write(inc[12 : len(inc)-20])\n', '\t_ = inc\n', MISS),
     ('each part is sent with its own trailer', CG, 'io.NewSectionReader(p.f, 12, p.body)',
      'io.NewSectionReader(p.f, 12, p.body+20)', MISS),
     ('no shallow line, so the client takes a depth-1 pack as whole history', CG,
@@ -57,7 +57,8 @@ MUTANTS = [
     ('any want is composed, behind HEAD or not', CG,
      '\t\tif _, err := m.git(rp, nil, nil, "merge-base", "--is-ancestor", want, "HEAD"); err != nil {',
      '\t\tif _, err := m.git(rp, nil, nil, "merge-base", "--is-ancestor", want, "HEAD"); err != nil && false {', MISS),
-    ('the diff cap is never applied', CG, '\tif len(objs) > composeDiffMax {', '\tif len(objs) < 0 {', MISS),
+    ('the diff cap is never applied', CG, '\tif len(objs) > composeDiffMax {\n\t\treturn nil, "over the diff cap"',
+     '\tif len(objs) < 0 {\n\t\treturn nil, "over the diff cap"', MISS),
     ('compose=only falls through to stock', MAIN, '\tif only {\n\t\tw.WriteHeader(409)\n\t\treturn\n\t}',
      '\tif false {\n\t\tw.WriteHeader(409)\n\t\treturn\n\t}', MISS),
     # The network lock.
@@ -65,13 +66,18 @@ MUTANTS = [
      '\t\tw.Header().Set("content-type", "application/x-git-upload-pack-result")\n\t\tanswered, why := composeMiss(',
      '\t\tl.RLock()\n\t\tdefer l.RUnlock()\n\t\tw.Header().Set("content-type", "application/x-git-upload-pack-result")\n\t\tanswered, why := composeMiss(',
      ('go', 'TestComposedMissesDoNotQueueBehindTheLock')),
-    ('a spooled answer holds the lock to its end', MAIN, 'out = &tee{file: f, client: out, gone: func() { release() }}',
-     'out = &tee{file: f, client: out, gone: func() {}}', ('go', 'TestComposedMissesDoNotQueueBehindTheLock')),
+    # Since 6939f78f a spooled answer lets go both when its client's context ends and on tee's failed write, so taking
+    # out either release leaves the other. Planted on `release` itself: for a spooled answer every early release is a
+    # no-op, and only the answer's end unlocks.
+    ('a spooled answer holds the lock to its end', MAIN,
+     '\trelease = sync.OnceFunc(l.RUnlock)\n\tdefer func() { release() }()\n',
+     '\trelease = sync.OnceFunc(l.RUnlock)\n\tdefer release()\n\tif spooled {\n\t\trelease = func() {}\n\t}\n'
+     '\tdefer func() { release() }()\n', ('go', 'TestComposedMissesDoNotQueueBehindTheLock')),
     # Chain steps.
-    ('no fold', CG, 'if !have || len(h.Parts)+1 >= foldEvery {', 'if !have {', MISS),
+    ('no fold', CG, '\tbase := !have || len(h.Parts)+1 >= foldEvery\n', '\tbase := !have\n', MISS),
     ('a part holds every new object, the base\'s too', CG,
-     '\t\t\tobjs, err = missingFromChain(net, rp, objs, m.gitLow)\n\t\t}\n\t\tif err == nil {\n\t\t\tname = "part-"',
-     '\t\t}\n\t\tif err == nil {\n\t\t\tname = "part-"', MISS),
+     '\t\tobjs, err := missingFromChain(net, rp, parts, m.gitLow)\n',
+     '\t\tobjs, err := parts, error(nil)\n', MISS),
     ('a head is installed with a part missing', CG, '\tif len(missing) > 0 {\n\t\tw.Header().Set("content-type"',
      '\tif len(missing) < 0 {\n\t\tw.Header().Set("content-type"', MISS),
     # Priority.
@@ -131,30 +137,39 @@ MUTANTS = [
      'rest.div_ceil(SIDEBAND_MAX) * 5 + rest', COMPOSE_RS),
     # edge-compose: the edge's streamed answer, in local workerd (tests/composed/edgebed/run.sh).
     ('the trailer is not sent', HOST, 'frame(&mut framer, &sum).await?;', '', BED),
-    ('each pack\'s trailer is sent with its body', HOST, 'let mut left = p.body;', 'let mut left = p.body + 20;', BED),
-    ('a chain pack is not checked against the manifest\'s count', HOST, 'pack_count(&head) != Some(p.n)',
-     'pack_count(&head).is_none()', BED),
-    ('the rest of the chunk holding the header is dropped', HOST, 'rest = Some(v.subarray(k, v.length()));', '', BED),
+    ('each pack\'s trailer is sent with its body', HOST, 'let range = worker::Range::OffsetWithLength { offset: 12, length: p.body };',
+     'let p = CheckedPack { body: p.body + 20, ..p };\n'
+     '                let range = worker::Range::OffsetWithLength { offset: 12, length: p.body };', BED),
+    ('a chain pack is not checked against the manifest\'s count', HOST, '    if p.2 != n {\n        return Ok(None);\n    }\n',
+     '    let _ = n;\n', BED),
+    ('the rest of the chunk holding the header is dropped', HOST, 'LineStep::Line(line, at) => break (line, v.subarray(at as u32, v.length())),',
+     'LineStep::Line(line, at) => break (line, v.subarray(v.length(), v.length())),', BED),
     ('the pack header is left out of the hash', HOST, 'write(&hasher, &js_sys::Uint8Array::from(&hp[5..])).await?;', '',
      BED),
 ]
 
 
+# The shared rule for a hang (README, "Planted bugs"): each run is killed, process group and all, past its limit, and a
+# run it ended counts as caught. The edge bed builds the edge's wasm, so it has longer.
+LIMIT = ['timeout', '-k', '10', '600']
+BED_LIMIT = ['timeout', '-k', '10', '1800']
+
+
 def run(t):
     if t[0] == 'bed':
-        env = dict(ENV, CARGO_TARGET_DIR=os.environ.get('PLANT_BED_TARGET', '/tmp/edgebed-target'))
-        r = subprocess.run([os.path.join(ROOT, 'tests/composed/edgebed/run.sh')], cwd=ROOT, env=env, capture_output=True,
-                           text=True, timeout=1800)
+        env = dict(ENV, CARGO_TARGET_DIR=os.environ.get('PLANT_BED_TARGET', os.path.join(ROOT, 'target', 'plants-edgebed')))
+        r = subprocess.run([*BED_LIMIT, os.path.join(ROOT, 'tests/composed/edgebed/run.sh')], cwd=ROOT, env=env,
+                           capture_output=True, text=True)
         out = r.stdout + r.stderr
         return r.returncode, out, 'error[E' in out
     if t[0] == 'go':
-        r = subprocess.run(['go', 'test', '-count=1', '-timeout', os.environ.get('PLANT_GO_TIMEOUT', '300s'), '-run', t[1], '.'],
-                           cwd=os.path.join(ROOT, 'containers/git/server'), capture_output=True, text=True, timeout=600)
+        r = subprocess.run([*LIMIT, 'go', 'test', '-count=1', '-timeout', os.environ.get('PLANT_GO_TIMEOUT', '300s'), '-run',
+                            t[1], '.'], cwd=os.path.join(ROOT, 'containers/git/server'), capture_output=True, text=True)
         out = r.stdout + r.stderr
         return r.returncode, out, 'build failed' in out or 'syntax error' in out or 'undefined:' in out
     _, pkg, name = t
-    r = subprocess.run(['cargo', 'test', '-q', '-p', pkg, '--lib', name], cwd=ROOT, env=ENV, capture_output=True,
-                       text=True, timeout=1200)
+    r = subprocess.run([*LIMIT, 'cargo', 'test', '-q', '-p', pkg, '--lib', name], cwd=ROOT, env=ENV, capture_output=True,
+                       text=True)
     out = r.stdout + r.stderr
     return r.returncode, out, 'error[E' in out or 'could not compile' in out
 
@@ -180,6 +195,8 @@ def main():
         elif code != 0:
             caught += 1
             fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ') or l.startswith('--- FAIL')]
+            if code == 124:
+                fails = ['(timed out)', *fails]
             print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]')
         else:
             print(f'{i:2} MISSED  {name}')
