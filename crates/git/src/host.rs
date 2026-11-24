@@ -488,6 +488,15 @@ async fn check_pack(bucket: &R2, key: &str, n: u32) -> Result<Option<CheckedPack
     Ok(Some(CheckedPack { key: key.to_owned(), etag: p.0, body: p.1 - 32 }))
 }
 
+/// A warm bucket's `compose/<net>/head` at `key`, `None` when it has none or it does not parse as a checked chain.
+async fn read_head_object(b: &R2, key: &str) -> Result<Option<crate::compose::HeadObject>, StoreError> {
+    let v = Bucket::get(b, key).await?;
+    let Some(h) = v.and_then(|v| serde_json::from_slice::<crate::compose::HeadObject>(&v).ok()) else {
+        return Ok(None);
+    };
+    Ok(h.chain.clone().checked().map(|chain| crate::compose::HeadObject { chain, packs: h.packs }))
+}
+
 /// One chain pack's object in `bucket` as a head records it (`crate::compose::HeadPack`): its etag, size, and its
 /// header's object count, from one 12-byte ranged read; `None` when it is missing or not a pack.
 pub async fn pack_object(bucket: &R2, key: &str) -> Result<Option<crate::compose::HeadPack>, StoreError> {
@@ -1384,7 +1393,9 @@ impl ShardHost<'_> {
     }
 
     /// Readies the network's composed-miss chain (`crate::compose`). The builder, the home site's first shard, takes
-    /// the container's next step to HEAD (a base when it holds no chain, at nice 19 in the container), then brings each of `buckets`, the warm sites',
+    /// the container's next step to HEAD (`crate::compose::builder_step`: a container that holds no chain first installs
+    /// the one `buckets` name, so the step is a part; a base, at nice 19 in the container, only when no bucket holds
+    /// one or the install fails, `builder-install`), then brings each of `buckets`, the warm sites',
     /// up to its chain: the files that bucket's head lacks, then the head, and after a fold it deletes the files the
     /// new head does not name; `synced`, the head it last put to the buckets, skips that when nothing moved. Any other
     /// shard installs the chain the first of `buckets` names, fetching only the files its container lacks; one missing
@@ -1398,13 +1409,35 @@ impl ShardHost<'_> {
     ) -> Result<Option<crate::compose::ChainHead>, StoreError> {
         use crate::compose::HeadObject;
         let head_key = R2Key::Compose { network, file: "head".into() }.to_string();
-        let read_head = async |b: &R2| -> Result<Option<HeadObject>, StoreError> {
-            let v = Bucket::get(b, &head_key).await?;
-            let Some(h) = v.and_then(|v| serde_json::from_slice::<HeadObject>(&v).ok()) else { return Ok(None) };
-            Ok(h.chain.clone().checked().map(|chain| HeadObject { chain, packs: h.packs }))
-        };
+        let read_head = async |b: &R2| read_head_object(b, &head_key).await;
         if builder {
-            let (Some(head), _) = self.compose_step(network).await? else { return Ok(None) };
+            struct Builder<'a, 'h> {
+                host: &'a ShardHost<'h>,
+                network: NetworkId,
+                buckets: &'a [&'a R2],
+                head_key: &'a str,
+            }
+            impl crate::compose::BuilderIo for Builder<'_, '_> {
+                async fn held(&self) -> Result<Option<crate::compose::ChainHead>, StoreError> {
+                    self.host.chain(self.network).await
+                }
+                async fn bucket_head(&self) -> Result<Option<crate::compose::ChainHead>, StoreError> {
+                    for b in self.buckets {
+                        if let Some(h) = read_head_object(b, self.head_key).await? {
+                            return Ok(Some(h.chain));
+                        }
+                    }
+                    Ok(None)
+                }
+                async fn install(&self, head: &crate::compose::ChainHead) -> Result<bool, StoreError> {
+                    Ok(self.host.install_from(self.network, self.buckets, head, None).await?.as_ref() == Some(head))
+                }
+                async fn step(&self) -> Result<Option<crate::compose::ChainHead>, StoreError> {
+                    Ok(self.host.compose_step(self.network).await?.0)
+                }
+            }
+            let io = Builder { host: self, network, buckets, head_key: &head_key };
+            let Some(head) = crate::compose::builder_step(&io).await? else { return Ok(None) };
             if synced == Some(&head) {
                 return Ok(Some(head));
             }
@@ -1456,12 +1489,24 @@ impl ShardHost<'_> {
         if had.as_ref() == Some(&head) {
             return Ok(had);
         }
+        self.install_from(network, buckets, &head, had).await
+    }
+
+    /// Stages the files of `head` that `had`, the chain the container holds, lacks, from the first of `buckets` that has
+    /// each, then installs `head`. Answers the chain the container then holds: `had` when a file is missing.
+    async fn install_from(
+        &self,
+        network: NetworkId,
+        buckets: &[&R2],
+        head: &crate::compose::ChainHead,
+        had: Option<crate::compose::ChainHead>,
+    ) -> Result<Option<crate::compose::ChainHead>, StoreError> {
         for f in head.to_fetch(had.as_ref()) {
             if !self.fetch_chain_file(network, buckets, &f).await? {
                 return Ok(had);
             }
         }
-        Ok(if self.install_chain(network, &head).await? { Some(head) } else { had })
+        Ok(if self.install_chain(network, head).await? { Some(head.clone()) } else { had })
     }
 
     /// Installs `head` on the container once its files are staged; `false` when the container still lacks one.

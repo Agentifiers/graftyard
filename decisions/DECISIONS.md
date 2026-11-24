@@ -9507,3 +9507,73 @@ measured parts; C's share is a guess].
   keep A and B.
 - **A lets the disk overfill:** a shard answers a disk-full error during a run whose `make_room` budget was carried.
   Then reset the budget when a piece's container reports low space.
+
+### `builder-install`: a restarted builder installs the buckets' chain before its first step, and a forwarded miss on a chain site with no chain goes on at once, 2026-11-23
+
+**Status.** Ruled by the lead on 2026-11-23 from `tests/am1/results/g37-design.md` (G37): options A and B. Built on
+branch `g37-build` from main `3025e370` as two commits. Site script and shared code (`crates/git/src/compose.rs`,
+`builder_step` and `chain_ready`; `crates/git/src/host.rs`, `ShardHost::ready_chain` and `install_from`;
+`workers/site/src/shard.rs`, the composable branch of `/upload-pack`), so it ships on a site day. Not hosted.
+
+**Decision.**
+- **A.** The builder's step (`compose::builder_step`) first asks whether its container holds a chain. If it holds none
+  and a warm bucket's `head` names one, it installs that chain the way other shards do: stage the files the container
+  lacks, then `/compose-head`. Its step is then a part from that chain's tip to HEAD, or a base only where the
+  container's own rule already builds one (`composeDiffMax`, `foldEvery`). A container that holds a chain is never
+  installed over. With no bucket head, or a failed install, the step builds a base, as before. The builder stays the
+  one writer of the buckets' chain, and its order is unchanged: every file before the head, and an old base's files
+  deleted only after the head that replaces it (`colo-gate`).
+- **B.** `chain_ready` takes `holds`: whether the shard's container holds a chain, or this isolate synced one. On a
+  chain site, a forwarded composable miss (`next=1`) on a shard that holds none answers 503 `warming` at once, without
+  waiting `CHAIN_WAIT_FORWARDED`. The last site still waits all that is left, so a miss never runs out of sites that
+  would wait (`chain-wait`). The shard asks the container (`GET /compose-head`) only for a forwarded miss on a chain
+  site whose isolate has synced no chain.
+
+**Why.** On B0-34 mt20b and mt14 the home shard's new container held no chain after the kill. `ready_chain`'s builder
+branch only stepped, so the first step after the home's catch-up rebuilt the chain's 260 MB base at nice 19: 20:13:54
+to 20:15:54 on mt20b (19.8 CPU-s) and 14:33:58 to 14:38:28 on mt14 (17.5 CPU-s), on the busiest container of the
+group. Meanwhile the warm buckets held the chain the builder had put before the kill. Every forwarded composable miss
+to the home waited the 2 s chain bound and answered `warming`: 25 on mt20b and 45 on mt14. mt20b's one second-phase
+miss over 5 s was one of them (2,000 ms at the home, then 2,568 ms on site b, 5,195 ms). On mt14, 5 of second's 9
+misses over 5 s were, and 3 more were site b composing past the frozen chain [measured,
+`tests/am1/results/g37-design.md`].
+- A prices the home ready about 15 to 30 s after its catch-up (mt12's 13.8 s chain install on site c, plus one part
+  step), against 199 s and 341 s from step start to the home's first tail [inference].
+- B takes the 2 s off each forwarded miss while a shard holds no chain, which is now A's install window, or a whole
+  base where A cannot install [inference].
+
+**What it beat.**
+- **Builder failover** (mt14's proposal). It needs the install anyway, and two writers break the single-writer order
+  the edge's chain reads rest on (`colo-gate`, `head-etags`, `chain-warm`). Making it safe needs a lease on the head.
+- **A larger `tailMax`.** It covers only site b's composes past a frozen chain (3 on mt14), not the home's 2 s waits.
+  With A the chain keeps stepping, so tails stay small.
+- **Installing on every container start.** The builder installs only when it steps, which follows the catch-up a
+  restarted container runs first. Starting earlier would install against a disk still catching up, and the part step
+  would wait for it anyway.
+
+**Evidence.**
+- `crates/git/tests/shard.rs`, `a_restarted_builder_installs_the_buckets_chain_and_steps_a_part`: on a model container
+  whose step is the container's rule (no chain: a base; a chain: a part to HEAD), a new container with the buckets at
+  base a and parts b, c installs that chain and steps a part to 9, with no base. A container holding a later chain is
+  not installed over. No bucket head builds a base, and a failed install still steps, to a base. On main's rule (the
+  builder only steps) the first case fails.
+- `crates/git/tests/shard.rs`, `a_forwarded_miss_on_a_chain_site_that_holds_no_chain_goes_on_at_once`: forwarded with no
+  chain, the shard sleeps 0 and answers `warming`, even with a chain 1.5 s away. Last with no chain, it waits all 60 s
+  and composes a chain 14 s away. A shard that holds a chain keeps the 2 s bound forwarded and its whole deadline last.
+  On main's rule the first case sleeps 2 s.
+- Plants (`tests/m0carried/`), every mutant caught:
+  - 110 (A): main's rule (step only); an install over a held chain; a failed install that ends the step with no chain.
+  - 111 (B): main's rule (the bound whatever the shard holds); the last site answering at once too; a shard that holds
+    a chain sending its forwarded misses on at once.
+- The site script's `holds` (synced in the isolate, or the container's `/compose-head`) runs only in wasm, and no host
+  test reaches it. The hosted row checks it by the home's 503s, which should no longer read `headers_ms` 2000.
+
+**Flip.**
+- **Back A out** if a post-kill install is ever stale against a newer local build: a builder installs a bucket head
+  older than a chain its own container built and kept (a restart that kept `/data/compose`). `builder_step` installs
+  only into a container that holds no chain, so this needs a container that lost its head file but kept newer chain
+  packs. Read it from the post-kill `compose/<net>/head` puts: a head whose tip is behind the one before the kill.
+- **Back B out** if second-phase misses rise because the last site gets more traffic: a B0-34 row whose second-phase
+  misses over 5 s are more than mt20b's 1 and mt14's 9, with the extra ones on the last site of the order.
+- **A is not enough** if the home's post-restart `warming` window stays over 60 s with no base built. Then the install
+  itself is slow under post-kill load: price an install at the container's start.

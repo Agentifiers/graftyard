@@ -1421,9 +1421,22 @@ impl DurableObject for GitShard {
                     // warm site) waits for none (`graftyard_git::compose::chain_ready`, `chain-site`).
                     let follows = q(&url, "next").is_some();
                     let chain_site = graftyard_git::chain_buckets(net, &log.record).contains(&site.id);
+                    // Whether this shard holds a chain: synced in this isolate, else asked of a running container,
+                    // and only where the answer changes the wait (a forwarded miss on a chain site). A container that
+                    // holds none sends a forwarded miss on at once (`builder-install`).
+                    let holds = !(follows && chain_site)
+                        || COMPOSES.with(|m| m.borrow().get(&compose.key()).is_some_and(|r| r.synced.is_some()))
+                        || (running && host.chain(net).await.ok().flatten().is_some());
                     let ready = compose.ready();
-                    if !graftyard_git::compose::chain_ready(follows, chain_site, left(), ready, worker::Delay::from)
-                        .await
+                    if !graftyard_git::compose::chain_ready(
+                        follows,
+                        chain_site,
+                        holds,
+                        left(),
+                        ready,
+                        worker::Delay::from,
+                    )
+                    .await
                     {
                         return Ok(line.forward(warming()?));
                     }
