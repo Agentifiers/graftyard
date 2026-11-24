@@ -2,13 +2,6 @@
 # `file: name` per line. This file only shrinks: fix a plant's anchors on its own branch and delete its lines, and
 # scripts/check_plants.py fails on a line added here, on new drift, and on a listed mutant that matches again.
 # Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
-tests/m4/wp4/plant.py: repo-purge: a member that has not applied the tombstone is purged
-tests/m4/wp4/plant.py: repo-purge: an unanswered member counts as retired
-tests/m4/wp4/plant.py: trigger-stream: the cursor settles past an unfinished event (only retries count)
-tests/m4/wp4/plant.py: trigger-stream: an item to be tried again does not hold the cursor
-tests/m4/wp4/plant.py: trigger-stream: the turn is first come, first served (main's line)
-tests/m4/wp4/plant.py: a step of exactly ALARM_STEP_LOG_MS is left out
-tests/m4/wp4/plant.py: a quick alarm logs an empty line
 tests/am1/hosted/plant.py: commits reachable from existing refs reported as new
 tests/am1/pool/plant.py: ledger: leases never expire
 tests/am1/pool/plant.py: ledger: the heartbeat does not run the ledger (m21: torn-down leases never lapse)
