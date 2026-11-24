@@ -94,6 +94,7 @@ const releaseRows = [
   ['Deploy, read and mint keys rotated under live traffic (BF-46)', '6 rotations, 235 mints', ok('0 failed calls') + '; no new script version'],
   ['A deliberately unreadable format sent to one site (BM-5)', '3 repositories homed there', ok('Nothing committed') + '; the site handed its groups to another, and pushes landed there'],
   ['The vendor\'s token revoked mid-roll (BM-5)', 'Halt, remove the vendor key, abort', ok('Every site back') + ' on its earlier version in 34 s; a vendor-signed intent refused'],
+  ['A bad <code>graft-ops</code> at 1% with its deploy token made invalid (BM-5)', 'About 700 token mints through the edge', ok('Swapped back') + ' by its pre-signed pointer with no deploy or API call; back on the last good version once unblocked'],
 ];
 const latencyRows = [
   ['One cross-region round, enam to weur, under 100 commands/s', 'p50 107 to 189 ms', 'p99 283 to 473 ms', 'B0-01, Milestone 0'],
@@ -217,7 +218,7 @@ const latencyRows = [
         <p>New versions roll out one site a day under releases the customer signs. Each check breaks a rollout on purpose, then reads back where every site ended up.</p>
       </div>
       <Table head={['Check', 'Runs', 'Result']} rows={releaseRows} />
-      <p class="note">On the hosted test installs <code>graft-m4a</code> and <code>graft-m3f</code>, 22 to 24 November 2026. The vault ran on the runner account as a stand-in. Milestone 5's gate has one clause left, a bad <code>graft-ops</code> swapping back with the API blocked.</p>
+      <p class="note">On the hosted test installs <code>graft-m4a</code> and <code>graft-m3f</code>, 22 to 24 November 2026. The vault ran on the runner account as a stand-in. Every clause of Milestone 5's gate now passes.</p>
     </div>
   </section>
 
