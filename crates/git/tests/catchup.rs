@@ -782,16 +782,17 @@ fn a_rehydrate_is_marked_rehydrating_until_its_last_catch_up_reaches_the_head() 
 /// provides" on every call, as site a's shard did after the kill on graft-m3c (`tests/am1/results/hot-shards-2.md`).
 #[test]
 fn a_rehydrate_resumed_after_a_new_promotion_loads_it_and_skips_nothing() {
-    // Each cut falls in the tail: the marked phase is about 13 calls, and the tail about 67 (each stored pack alone,
-    // each run of inline packs between them one call).
+    // Each cut falls in the tail after at least one of its pages was saved: entries of 10 KB make the tail several
+    // pages of `PAGE_BYTES`, where 1 KB ones made it one page, and a place saved before it said nothing about the tail.
     for cut in [20, 40, 60] {
-        let b = bed(400, 1_000, 9);
+        let b = bed(400, 10_000, 9);
         b.promote(100);
         b.disk.cut_after.set(Some(cut));
         assert!(b.run().is_err(), "cut {cut}: the first run is cut off in its tail");
         let (_, s) = b.store.rehydrating.borrow().clone().expect("a saved place");
         assert!(s.marked, "cut {cut}: cut after the marked phase");
         let got = s.tail.at(CHAIN).0;
+        assert!(got > 100, "cut {cut}: cut after a tail page was saved");
         // The archive promotes past where the tail got while the shard is cut off.
         b.promote_range(101, got + 150);
         b.disk.cut_after.set(None);
@@ -807,15 +808,16 @@ fn a_rehydrate_resumed_after_a_new_promotion_loads_it_and_skips_nothing() {
 /// marked phase again, which brings every promotion still in the log, and the disk serves the head.
 #[test]
 fn a_rehydrate_resumed_from_an_older_place_loads_the_marked_phase_again() {
-    let b = bed(400, 1_000, 9);
+    let b = bed(400, 10_000, 9);
     b.promote(100);
-    // Cut two calls into the tail: the marked phase is 12 calls (the promotion and 11 pushed stored packs below the
-    // tail), so the disk holds none of the entries the older release's place claims.
-    b.disk.cut_after.set(Some(14));
+    // Cut in the tail just after its first page was saved, so the disk holds none of the entries past it that the older
+    // release's place claims.
+    b.disk.cut_after.set(Some(17));
     assert!(b.run().is_err());
     let (disk, mut s) = b.store.rehydrating.borrow().clone().expect("a saved place");
     assert!(s.marked, "cut in the tail");
     let got = s.tail.at(CHAIN).0;
+    assert!(got > 100, "cut after a tail page was saved");
     b.promote_range(101, got + 150);
     // The older release resumed at the new tail start and saved its tail past the entries it skipped.
     s.tail.advance(CHAIN, Index(got + 150));

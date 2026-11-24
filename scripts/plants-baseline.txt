@@ -2,15 +2,6 @@
 # `file: name` per line. This file only shrinks: fix a plant's anchors on its own branch and delete its lines, and
 # scripts/check_plants.py fails on a line added here, on new drift, and on a listed mutant that matches again.
 # Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
-tests/am1/hotshards/plant.py: no page is read ahead while one applies
-tests/am1/hotshards/plant.py: a resumed rehydrate ingests the marked packs again
-tests/am1/hotshards/plant.py: a rehydrate loads only the last promotion first, not the earlier ones still in the log
-tests/am1/hotshards/plant.py: the promotions load in marker order, not oldest first
-tests/am1/hotshards/plant.py: ingest never writes a multi-pack-index
-tests/am1/hotshards/plant.py: the multi-pack-index is written once and never again
-tests/am1/hotshards/plant.py: the catch-up that finishes a cut-off rehydrate keeps its place
-tests/am1/hotshards/plant.py: a batch whose packs answer Later is not retried from the pack that did
-tests/am1/hotshards/plant.py: a repack searches no deltas (--window=0)
 tests/composed/plant.py: pack header counts only the chain, not the want's own pack
 tests/composed/plant.py: the diff cap is never applied
 tests/composed/plant.py: no fold

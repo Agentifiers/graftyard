@@ -46,17 +46,17 @@ MUTANTS = [
      '        Some(l) if ok && l.index <= to => Ok(l.index),', '        Some(l) if ok && l.index <= to => Ok(to),',
      CATCHUP),
     ('an empty page ends the catch-up as if caught up', CU,
-     '        let last = page_end(chain, from, to, &page)?;',
-     '        if page.is_empty() {\n            break;\n        }\n        let last = page_end(chain, from, to, &page)?;',
+     '        page_end(chain, from, to, &page)?;\n        let k = fits(',
+     '        if page.is_empty() {\n            break;\n        }\n        page_end(chain, from, to, &page)?;\n        let k = fits(',
      CATCHUP),
-    ('no page is read ahead while one applies', CU, '        if next <= to {\n', '        if false {\n', CATCHUP),
+    ('no page is read ahead while one applies', CU, '        if next <= to && !full {\n', '        if false {\n', CATCHUP),
     ('a resumed rehydrate starts a new repository (blocker 11)', CU,
      '    let resumed = saved.rehydrating().await?.filter(|(d, _)| *d == disk).map(|(_, s)| s);',
      '    let resumed: Option<Rehydrating> = None;', CATCHUP),
     ('a resumed rehydrate reads its tail from the last Promoted again', CU,
      '        let from = Index(tail_start(last.as_ref()).0.max(state.tail.at(*chain).0 + 1));',
      '        let from = tail_start(last.as_ref());', CATCHUP),
-    ('a resumed rehydrate ingests the marked packs again', CU, '    if !state.marked {', '    if true {', CATCHUP),
+    ('a resumed rehydrate ingests the marked packs again', CU, '    if !state.marked {\n        // Every promoted pack first', '    if true {\n        // Every promoted pack first', CATCHUP),
     ('packs the container already holds are sent again', CU,
      '    let held = if loads.len() > 1 { io.have(&sums).await? } else { BTreeSet::new() };',
      '    let held: BTreeSet<Digest> = BTreeSet::new();\n    let _ = &sums;', CATCHUP),
@@ -71,11 +71,11 @@ MUTANTS = [
      '            cursor.advance(chain, last);\n            if last == Index(u64::MAX) {\n'
      '                saved.put_cursor(disk, cursor).await?;\n            }\n', CATCHUP),
     ('a rehydrate loads only the last promotion first, not the earlier ones still in the log', CU,
-     '                if e.promoted.as_ref().and_then(|p| p.pack.stored_id()) == Some(*id) {',
-     '                if false && e.promoted.as_ref().and_then(|p| p.pack.stored_id()) == Some(*id) {', CATCHUP),
-    ('the promotions load in marker order, not oldest first', CU,
-     '            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).copied()))',
-     '            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).map(|i| u64::MAX - i.0)))',
+     '                if let Some(p) = e.promoted.as_ref().filter(|p| p.pack.stored_id() == Some(*id)) {',
+     '                if let Some(p) = e.promoted.as_ref().filter(|p| false && p.pack.stored_id() == Some(*id)) {', CATCHUP),
+    ('the promotions load newest range first, not oldest first', CU,
+     '                id.and_then(|id| records.get(&id).map(|(_, p)| p.from).or_else(|| at.get(&id).copied())),',
+     '                id.and_then(|id| records.get(&id).map(|(_, p)| Index(u64::MAX - p.from.0)).or_else(|| at.get(&id).copied())),',
      CATCHUP),
     ('a leader scan reads every stored row in one alarm', PRSYNC,
      '        if bytes >= SCAN_BYTES {\n            return Ok(true);\n        }\n', '', PRSYNC_T),
@@ -99,7 +99,7 @@ MUTANTS = [
      "**s != record.home && **k == graftyard_types::MemberKind::Full", "**s != record.home", EDGE_T),
     ('a push validate tries the sites in record order, not the home site first', EDGE,
      '    std::iter::once(record.home).chain(others).collect()',
-     '    record.sites.iter().copied().filter(|s| others.clone().any(|o| o == *s) || *s == record.home).collect()',
+     '    record.sites.iter().copied().filter(|s| others.contains(s) || *s == record.home).collect()',
      EDGE_T),
     ('a cold shard is skipped altogether rather than tried last', EDGE,
      '    warm.into_iter().chain(cold).collect()', '    if warm.is_empty() { cold } else { warm }', EDGE_C),
@@ -136,10 +136,10 @@ MUTANTS = [
     ('a place an older release saved is trusted to have loaded up to its tail cursor', CU,
      '        None => true,', '        None => tail_start(p.as_ref()) > Index(state.tail.at(*c).0 + 1),', CATCHUP),
     ('ingest never writes a multi-pack-index', GO,
-     '\tmidxAfterIngest(net, rp)\n\tjsonOut(w, map[string]any{"ingested": true', '\tjsonOut(w, map[string]any{"ingested": true',
+     '\tm.n++\n\tif m.n < midxEvery || !m.mu.TryLock() {', '\tm.n++\n\tif true || !m.mu.TryLock() {',
      GOMIDX),
-    ('the multi-pack-index is written once and never again', GO, '\t*n = 0\n\tif _, err := git(rp',
-     '\t*n = -1 << 30\n\tif _, err := git(rp', GOMIDX),
+    ('the multi-pack-index is written once and never again', GO, '\tm.n = 0\n\tgo func() {',
+     '\tm.n = -1 << 30\n\tgo func() {', GOMIDX),
     # hot-shards-3
     ('a running derived command counts its children only once they exit (A31 accounting)', GO,
      '\t\t\tusec += cpu[p]\n', '', GODER),
@@ -158,7 +158,7 @@ MUTANTS = [
      '    saved.put_cursor(&disk, &cursor).await?;\n    saved.drop_rehydrating().await?;\n    lap(&mut ms, "refs");',
      ('cargo', ['-p', 'graftyard-git', '--test', 'catchup'], 'a_rehydrate_is_marked')),
     ('the catch-up that finishes a cut-off rehydrate keeps its place', CU,
-     '    if finishing {\n        saved.drop_rehydrating().await?;\n    }', '    let _ = finishing;',
+     '    if finishing && !behind {\n        saved.drop_rehydrating().await?;\n    }', '    let _ = finishing;',
      ('cargo', ['-p', 'graftyard-git', '--test', 'catchup'], 'a_rehydrate_is_marked')),
     ('the repack writes no commit-graph (B0-29 CPU climb)', GO,
      '"commit-graph", "write", "--reachable"', '"commit-graph", "verify", "--no-progress", "--reachable"', GOREPACK),
@@ -179,7 +179,7 @@ MUTANTS = [
      '                        if !batch.is_empty() && bytes + b.len() > INGEST_BATCH_BYTES {',
      '                        if !batch.is_empty() {', CATCHUP_B),
     ('a batch whose packs answer Later is not retried from the pack that did', CU,
-     '                    Ingested::Later => retry.push(left[i + k]),', '                    Ingested::Later => retry.push(left[i]),',
+     '                        retry.push(left[i + k]);', '                        retry.push(left[i]);',
      CATCHUP_B),
     ('a batch never splits: two packs carrying one object fail the call', GO,
      '\t\tmid := len(run) / 2\n', '\t\treturn fmt.Errorf("batch of %d: %v", len(run), err)\n\t\tmid := len(run) / 2\n',
@@ -193,7 +193,7 @@ MUTANTS = [
      '\t\t\tif false && unresolved(err) {\n\t\t\t\tresults[run[0]] = "later"', GOBATCH),
     # hot-shards-4
     ('a repack searches no deltas (--window=0)', GO,
-     '"repack", "-d", "-q", "--geometric=2")', '"repack", "-d", "-q", "--geometric=2", "--window=0")', GOREPACK),
+     '"repack", "-d", "-q", "--geometric=2", "--write-midx"}', '"repack", "-d", "-q", "--geometric=2", "--write-midx", "--window=0"}', GOREPACK),
     ('fsck runs alongside a repack', GO,
      '\trepacking.Lock()\n\tdefer repacking.Unlock()\n\tout, err := git(rp, nil, nil, "fsck"',
      '\tout, err := git(rp, nil, nil, "fsck"', ('go', [], 'RepackHolds')),
@@ -203,16 +203,21 @@ MUTANTS = [
 ]
 
 
+# A mutant can leave a test looping for ever (#9's unsaved cursor never lets a run's pieces end). `timeout` kills the
+# whole process group, the test binary too, and a run it ended counts as caught: the suite never passes.
+LIMIT = ['timeout', '-k', '10', '600']
+
+
 def run(tests):
     kind, args, filt = tests
     if kind == 'go':
-        r = subprocess.run(['go', 'test', '-count=1', '-run', filt, './...'], cwd=os.path.join(ROOT, 'containers/git/server'),
+        r = subprocess.run([*LIMIT, 'go', 'test', '-count=1', '-run', filt, './...'], cwd=os.path.join(ROOT, 'containers/git/server'),
                            capture_output=True, text=True)
         out = r.stdout + r.stderr
         failed = sorted({l.split()[2] for l in out.splitlines() if l.startswith('--- FAIL')})
         return r, out, failed
     env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'])
-    r = subprocess.run(['cargo', 'test', *args, '--no-fail-fast', '--', filt], cwd=ROOT, env=env,
+    r = subprocess.run([*LIMIT, 'cargo', 'test', *args, '--no-fail-fast', '--', filt], cwd=ROOT, env=env,
                        capture_output=True, text=True)
     out = r.stdout + r.stderr
     failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')})
@@ -231,7 +236,9 @@ def plant(n, name, path, old, new, tests):
         if compile_err and not failed:
             verdict = 'DID NOT COMPILE'
         else:
-            verdict = 'CAUGHT' if r.returncode != 0 and failed else 'MISSED'
+            verdict = 'CAUGHT' if r.returncode != 0 and (failed or r.returncode == 124) else 'MISSED'
+        if r.returncode == 124:
+            failed = [*failed, '(timed out)']
         print(f'{n:2} {verdict:8} {name}: {", ".join(failed)}', flush=True)
     finally:
         open(f, 'wb').write(orig)
