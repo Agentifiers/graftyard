@@ -49,8 +49,8 @@ MUTANTS = [
      '            MergeCause::List => {}', GIT),
     ('shed merges not counted', PS, '            self.stats.shed += 1;', '', GIT + SYNC),
     ('the catch-up is charged with the merge', PS,
-     [('    prepare().await?;\n    let turn', '    let turn'),
-      ('    let t0 = clock();\n    let r = run().await;', '    let t0 = clock();\n    prepare().await?;\n    let r = run().await;')],
+     [('    prepare().await?;\n    let queued', '    let queued'),
+      ('    let t0 = clock();\n    if let Some(b)', '    let t0 = clock();\n    prepare().await?;\n    if let Some(b)')],
      None, GIT),
     ('the budget ignores the shard size (always standard-4)', PS,
      '        let rate = TEST_MERGE_BUDGET * vcpu * 1000.0;', '        let rate = TEST_MERGE_BUDGET * 4.0 * 1000.0;\n        let _ = vcpu;',
@@ -74,7 +74,7 @@ MUTANTS = [
      '  const vcpuUsed = +(sites[0].spentMs / (seconds * 1000)).toFixed(4);', NODE),
     # A28: admission that lets concurrent merges overrun.
     ('A28: no turn, so merges in flight are admitted before the ones ahead are charged', PS,
-     '    let _turn = turn.turn().await;', '    let _turn = &turn;', GIT),
+     '    let _turn = turn.take(cause).await;', '    let _turn = &turn;', GIT),
     ('A28: the budget decides once, before the catch-up and the turn', PS,
      '    if !budgets.borrow_mut().of(net, now).decide(cause, n, MERGE_EST_MS, now) {', '    if !true {', GIT),
     ('A28: pushes admitted down to minus the estimate, as before', PS,
@@ -152,12 +152,14 @@ MUTANTS = [
 ]
 
 
-ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
+ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
+           PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
 
 
 def run(t):
     if t[0] == 'node':
-        r = subprocess.run(t, cwd=ROOT, capture_output=True, text=True, timeout=120)
+        # A hang counts as caught (README, "Planted bugs").
+        r = subprocess.run(['timeout', '-k', '10', '600', *t], cwd=ROOT, capture_output=True, text=True)
         out = r.stdout + r.stderr
         return r.returncode, out, 'SyntaxError' in out
     out, broke = '', False
@@ -165,7 +167,7 @@ def run(t):
     for i in range(0, len(t), 5):
         _, pkg_flag, pkg, kind, name = t[i:i + 5]
         args = ['cargo', 'test', '-q', pkg_flag, pkg, kind, name]
-        r = subprocess.run(args, cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=1200)
+        r = subprocess.run(['timeout', '-k', '10', '600', *args], cwd=ROOT, env=ENV, capture_output=True, text=True)
         out += r.stdout + r.stderr
         broke = broke or 'error[E' in out or 'could not compile' in out
         if r.returncode != 0:
@@ -198,6 +200,8 @@ def main():
         elif code != 0:
             caught += 1
             fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ')]
+            if code == 124:
+                fails = ['(timed out)', *fails]
             print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]')
         else:
             print(f'{i:2} MISSED  {name}')
