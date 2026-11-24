@@ -2938,7 +2938,7 @@ impl<F: Family> Routes<F> {
         let source = match F::source(join) {
             Source::Given => return Ok(()),
             Source::Genesis => {
-                crate::release::system_record(&self.host.env, join.chain).await.map_err(|e| json!({ "noRecord": e }))?
+                crate::release::source_record(&self.host.env, join.chain).await.map_err(|e| json!({ "noRecord": e }))?
             }
             Source::Owner(owner) => owner_record(&self.host.env, owner).await.map_err(|e| json!({ "source": e }))?,
             Source::Repo { repo, owner } => {
