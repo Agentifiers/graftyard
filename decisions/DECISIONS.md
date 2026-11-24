@@ -10616,6 +10616,23 @@ for longer than one `MINT_RESEND_MS` after its errors crossed the line (count ac
 
 **Flip.** None expected: the check's rule is the design's (`design/DESIGN.md`, Shape, `bootstrap`). Revisit if a genesis read on a cold isolate's first bootstrap join shows as join latency on a precreate or a `Names` create.
 
+### `quiet-failures`: a member's own failed or ended call is not activity, so its ticker winds down, 2026-11-24
+
+**Decision.** `Host::call_failed` and `Ended`'s drop step the core through `input_quiet` (`workers/site/src/host.rs`), which keeps `active_until` as `tick_once` and `apply_site_modes` already do. A transfer to a target that stopped answering is abandoned by the next tick after the LEASE, from the next input or alarm, and with no waiter it stalls nothing meanwhile. Every other input still runs `kick`, so a request, a peer's `/raft` call, a waiter or a read keeps the ticker up as before, and a leader that served ticks from its drain-check alarm for `DRAIN_IDLE_MS`. No raft rule, timer, send, or persist-then-send changes.
+
+**Why.** A peer that answers every AppendEntries 409 "member not joined", which a half-made chain's member does, kept its leader active with no client. Each refusal went through `input`, whose `step` runs `kick`, pushing `active_until` 3 s further out. `tick_leader` then sent the `behind` peer its next AppendEntries every `CALL_DEADLINE`, and so on forever. On graft-m6a 578 leaders of half-made `Tokens` chains on site a stayed active for hours, and site a's `Member` namespace cost $4.10 in the 11Z hour with no load (`tests/m6/results/m6-wp1.md`, "Idle leaders of half-made chains"; OPEN-QUESTIONS R55).
+
+**What it beat.**
+- **Backing off the refusing peer in `crates/raft`** (`CANNOT_FOLLOW_RETRY` for a 409): it slows the calls, but the ticker still never stops, because each slowed failure still counts, and it changes the raft crate's send rules, which the long sweep and Porcupine guard, for a cost that is the host's.
+- **The leader standing down when no follower has joined:** it ends the cost, but a group whose peer site is briefly down would lose its leader, and every later request would pay an election.
+- **Not counting `call_ended` only:** a failed call still runs `call_failed`, so half the loop stays.
+
+**Evidence.**
+- `tests/quietbed/run.sh`, the site's own build in local workerd. A register group is joined on sites 0 and 2, with site 1's member not joined, beside a control with all three joined. On 7e673712 (main) the refusing arm's leader stayed resident and leading 75 s after its last put, and called site 1 14 times in 15 s, once per `CALL_DEADLINE`, while the control was evicted (FAIL). With this change both arms are evicted while idle and both commit a later put (PASS, 0 wasm traps).
+- `tests/m0carried/plant132.py`, 3 mutants, all caught.
+
+**Flip.** If a member must keep ticking after its own failed call: a hosted row where a leader, idle but for retries, misses a commit, a read, or a transfer's end that a waiting client saw. Then count that case as activity, here first.
+
 #### `controller-task`: the controller's `Task` is a pure state machine in `graftyard_git::controller` (2026-11-24)
 
 **Status.** Code-only (AM3-WP1's second slice); no controller runs it yet.
