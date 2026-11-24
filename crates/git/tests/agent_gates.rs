@@ -980,10 +980,14 @@ fn a_repo_group_turns_hot_above_the_push_rate_and_stays_cold_below_it() {
 }
 
 /// DEMOTE_PER_MIN from `RepoFold`'s marks: a user token the edge classes Human keeps Human through 59 committed writes
-/// in the minute, pushes and issues alike, and the 60th demotes it to Agent.
+/// in the minute, pushes and issues alike, and the 60th demotes it to Agent. The admission is the one the edge sends
+/// for a plain user token (`AdmitWire::of`, user-demote): before it carried none, and B0-33 h1A's fast user at 100
+/// writes a minute was never demoted. `demoted` names the actor only on the write DEMOTE_PER_MIN reclassed, which
+/// the site's `/stats` counts.
 #[test]
 fn an_actor_past_demote_per_min_is_demoted() {
-    use graftyard_raft::admit::{ActorKey, Admit, AdmitClass, DEMOTE_PER_MIN};
+    use graftyard_git::group::AdmitWire;
+    use graftyard_raft::admit::{ActorKey, AdmitClass, DEMOTE_PER_MIN};
     let mut w = World::new();
     let mut cmds: Vec<RepoCmd> = (0..30)
         .map(|i| RepoCmd::Push(push(user(WRITER), vec![up(&format!("refs/heads/d{i}"), None, Some(oid(i)))], &[])))
@@ -991,36 +995,19 @@ fn an_actor_past_demote_per_min_is_demoted() {
     cmds.extend((0..DEMOTE_PER_MIN - 1 - 30).map(|i| open_issue(WRITER, &format!("d{i}"))));
     let o = w.commit_all(cmds);
     assert!(o.iter().all(Result::is_ok), "{o:?}");
-    let class = |w: &mut World, i: u32| {
-        let a = Admit {
-            class: AdmitClass::Human,
-            actor: Some(ActorKey(WRITER as u64)),
-            push: false,
-            inline: 0,
-            placement_ok: true,
-            budget: None,
-        };
+    let probe = |w: &mut World, who: i64, i: u32| {
+        let a =
+            AdmitWire::of(AdmitClass::Human, &user(who), false, 0).expect("a user token's write is admitted").admit();
         let (l, rid, now) = (w.repo.leader(), w.rid(), w.now);
-        let c = open_issue(WRITER, &format!("probe{i}"));
-        let class = w.repo.on(l, now, |m, t| m.commit_as(t, rid, c, a)).expect("admitted").class;
+        let c = open_issue(who, &format!("probe{i}"));
+        let r = w.repo.on(l, now, |m, t| m.commit_as(t, rid, c, a)).expect("admitted");
         w.settle();
-        class
+        (r.class, r.demoted)
     };
-    assert_eq!(class(&mut w, 0), AdmitClass::Human, "59 writes in the minute");
-    assert_eq!(class(&mut w, 1), AdmitClass::Agent, "60 writes in the minute");
+    assert_eq!(probe(&mut w, WRITER, 0), (AdmitClass::Human, None), "59 writes in the minute");
+    assert_eq!(probe(&mut w, WRITER, 1), (AdmitClass::Agent, Some(ActorKey(WRITER as u64))), "60 in the minute");
     // Another user is not counted with it.
-    let a = Admit {
-        class: AdmitClass::Human,
-        actor: Some(ActorKey(WRITER2 as u64)),
-        push: false,
-        inline: 0,
-        placement_ok: true,
-        budget: None,
-    };
-    let (l, rid, now) = (w.repo.leader(), w.rid(), w.now);
-    let c = open_issue(WRITER2, "other");
-    assert_eq!(w.repo.on(l, now, |m, t| m.commit_as(t, rid, c, a)).expect("admitted").class, AdmitClass::Human);
-    w.settle();
+    assert_eq!(probe(&mut w, WRITER2, 2), (AdmitClass::Human, None));
 }
 
 /// Format 32.22 through real members: a review comment outside a review by a reviewer who approved gets its

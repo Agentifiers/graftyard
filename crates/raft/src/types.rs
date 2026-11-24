@@ -278,6 +278,9 @@ pub struct Admitted {
     /// The class the leader queued it under: the edge's, or Agent after DEMOTE_PER_MIN. A command joining a ticket
     /// already queued reports the class it was first sent with.
     pub class: crate::admit::AdmitClass,
+    /// The actor DEMOTE_PER_MIN classed Agent in place of the edge's Human or Bot, for a command it queued now
+    /// (`/stats`' `demoted`). `None` for one joining a ticket already queued, and for one not demoted.
+    pub demoted: Option<crate::admit::ActorKey>,
 }
 
 /// What a held `commit` answers: the outcome when the ticket resolved within COMMIT_HOLD, else the ticket.

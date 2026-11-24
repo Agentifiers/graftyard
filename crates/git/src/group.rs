@@ -26,9 +26,12 @@ pub struct CommitReq {
     pub cmd: Push,
 }
 
-/// What the edge sends beside a command it classed other than Human (`crate::agent::admit_class`), as `"admit"` in a
-/// `/commit` body; the member then calls `Member::commit_as` with it. A command classed Human carries none and the
-/// member calls `Member::commit`, so a default command's body, and its admission, are what they were before AM1-WP2.
+/// What the edge sends beside a command (`crate::agent::admit_class`), as `"admit"` in a `/commit` body; the member
+/// then calls `Member::commit_as` with it. A Human command carries it with its actor, so the leader counts the actor's
+/// writes toward DEMOTE_PER_MIN (`design/DESIGN.md`, Shape, the agent block: "its actor, user tokens included"); B0-33
+/// h1A's fast user, 100 writes a minute on a plain PAT, was never demoted because no Human command carried one. A
+/// Human command with no actor (anonymous) carries none and the member calls `Member::commit`, as before AM1-WP2. Only
+/// the edge-to-member body changes; no client reply does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdmitWire {
     pub class: ClassWire,
@@ -53,20 +56,28 @@ pub enum ClassWire {
 }
 
 impl AdmitWire {
-    /// The edge's admission for a command by `p` in `class`, or `None` for Human, which `Member::commit` takes.
+    /// The edge's admission for a command by `p` in `class`, or `None` for a Human command with no actor, which
+    /// `Member::commit` takes.
     pub fn of(class: AdmitClass, p: &graftyard_identity::Principal, push: bool, inline: usize) -> Option<AdmitWire> {
-        let class = match class {
-            AdmitClass::Human => return None,
-            AdmitClass::MergeQueue => ClassWire::MergeQueue,
-            AdmitClass::Bot => ClassWire::Bot,
-            AdmitClass::Agent => ClassWire::Agent,
-        };
         let actor = match p.actor {
             graftyard_identity::Actor::User(u) => Some(u.0.0.0 as u64),
             graftyard_identity::Actor::App { app, .. } => Some(1 << 63 | app.0.0 as u64),
             graftyard_identity::Actor::Anonymous => None,
         };
+        let class = match class {
+            AdmitClass::Human if actor.is_none() => return None,
+            AdmitClass::Human => ClassWire::Human,
+            AdmitClass::MergeQueue => ClassWire::MergeQueue,
+            AdmitClass::Bot => ClassWire::Bot,
+            AdmitClass::Agent => ClassWire::Agent,
+        };
         Some(AdmitWire { class, actor, push, inline, placement_ok: true, budget_ms: None })
+    }
+
+    /// The admission an issue command `op` carries: a task API command's Human one carries none, so its writes never
+    /// count toward DEMOTE_PER_MIN (`decisions/DECISIONS.md`, "Task commands do not demote"); every other keeps it.
+    pub fn for_issue<B>(admit: Option<AdmitWire>, op: &crate::issue_ops::IssueOp<B>) -> Option<AdmitWire> {
+        admit.filter(|a| !(op.is_task() && a.class == ClassWire::Human))
     }
 
     pub fn admit(self) -> Admit {
@@ -365,5 +376,55 @@ mod tests {
         let j = serde_json::to_value(CommitReply::Done(o.clone())).unwrap();
         assert_eq!(j, serde_json::json!({ "done": { "full": { "retry_after_s": 9 } } }));
         assert_eq!(serde_json::from_value::<CommitReply>(j).unwrap(), CommitReply::Done(o));
+    }
+
+    /// user-demote: a user token's Human write carries its actor, so the leader can count it toward DEMOTE_PER_MIN; an
+    /// App keeps its class and its App key; an anonymous Human write carries no admission at all, as before.
+    #[test]
+    fn a_human_user_write_carries_its_actor_and_no_other_class_changes() {
+        use graftyard_identity::{Actor, Credential, Principal, ScopeSet};
+        use graftyard_identity::{AppId, InstallationId, UserId};
+        use graftyard_types::{AccountId, DbId};
+        let who = |actor| Principal {
+            actor,
+            scopes: ScopeSet(1),
+            credential: Credential::Stored([0; 32]),
+            sso_orgs: Default::default(),
+        };
+        let user = who(Actor::User(UserId(AccountId(DbId(7000002)))));
+        let bot = who(Actor::App { app: AppId(DbId(41)), installation: InstallationId(DbId(9)) });
+        let h = AdmitWire::of(AdmitClass::Human, &user, true, 20_000).expect("a user's Human write is admitted");
+        assert_eq!((h.class, h.actor, h.push, h.inline), (ClassWire::Human, Some(7000002), true, 20_000));
+        assert_eq!(h.admit().actor, Some(ActorKey(7000002)), "the leader keys it as the fold marks it");
+        assert_eq!(AdmitWire::of(AdmitClass::Human, &who(Actor::Anonymous), false, 0), None, "no actor, no admission");
+        for (class, wire) in [
+            (AdmitClass::Bot, ClassWire::Bot),
+            (AdmitClass::Agent, ClassWire::Agent),
+            (AdmitClass::MergeQueue, ClassWire::MergeQueue),
+        ] {
+            let a = AdmitWire::of(class, &bot, false, 0).expect("an App's command is admitted");
+            assert_eq!((a.class, a.actor), (wire, Some(1 << 63 | 41)), "{class:?}");
+        }
+    }
+
+    /// A Human task API command carries no admission, so task writes never count toward DEMOTE_PER_MIN; an App's task
+    /// command and a user's other issue commands keep theirs.
+    #[test]
+    fn a_human_task_command_carries_no_admission() {
+        use crate::issue_ops::IssueOp;
+        let human = AdmitWire {
+            class: ClassWire::Human,
+            actor: Some(7),
+            push: false,
+            inline: 0,
+            placement_ok: true,
+            budget_ms: None,
+        };
+        let agent = AdmitWire { class: ClassWire::Agent, ..human };
+        let cancel: IssueOp<()> = IssueOp::CancelTask { id: graftyard_identity::SessionId::Run(1) };
+        let close: IssueOp<()> = IssueOp::Close { n: crate::issues::IssueNumber(1) };
+        assert_eq!(AdmitWire::for_issue(Some(human), &cancel), None);
+        assert_eq!(AdmitWire::for_issue(Some(agent), &cancel), Some(agent));
+        assert_eq!(AdmitWire::for_issue(Some(human), &close), Some(human));
     }
 }

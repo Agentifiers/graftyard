@@ -9347,7 +9347,8 @@ catch-up fix.
   error arm, which every REST, GraphQL, task and lease write's rows pass through, `command_tier_rows` included. This is
   `gate_ng`'s rule for an Agent push at the read gate, on the API writes.
 - Human, Bot and MergeQueue writes, every read, and an Agent write whose read failed any other way keep their 503. A
-  plain user token's write is Human before any read (`admission` returns `None`), so nothing new is read for it.
+  plain user token's write is Human before any read (`admission` classes it without one), so nothing new is read for
+  it.
   `task_claim`'s own row read is an App's token request under its JWT, not an agent write, and keeps its 503.
 - A fetch whose shard answered non-200 (`warming` most often) answers 503 with `Retry-After: 2`, the value
   `shard_unavailable` sends a push (`shard_read_failed`, `workers/edge/src/lib.rs`). It had none.
@@ -10182,3 +10183,43 @@ snapshot rebuild of the shard, which a rule kept outside the log would not.
 
 **Flip.** A developer enrolled on two lifeboats at once needs both tokens live. That needs a per-host revocation, which
 is a new Tokens format.
+
+### `user-demote`: the edge sends every authenticated user write with its actor, and the leader counts demotions, 2026-11-24
+
+**Status.** Built and tested at $0. The lead ruled it on 2026-11-24, from B0-33 h1A. It is not deployed; it ships
+with the next site day plus an edge day.
+
+**Decision.**
+- `AdmitWire::of` (`crates/git/src/group.rs`) gives a Human command by a user or App its admission: class Human with
+  its actor key. `crate::admission` (`workers/edge/src/lib.rs`) sends it for a plain user token, still without a read.
+  An anonymous Human command carries none, as before.
+- `AdmitWire::for_issue` drops a Human task API command's admission, so task writes never count toward
+  `DEMOTE_PER_MIN` ("Task commands do not demote, and the prompt reads comments as of the snapshot").
+- The leader's `Admitted.demoted` names the actor when `DEMOTE_PER_MIN` reclassed a newly queued command. The site
+  counts it per actor in `/stats?summary=1`'s `demoted` (`{actors, writes, by}`), so B0-33's "user token admitted as
+  `Agent`" line reads from the leader (`tests/fanout/demoted.py`).
+- A Human push that now carries an admission is staged on a hot group past `INLINE_MAX_HOT`, as DESIGN's "Commit and
+  read paths" already says for any class's push ("a push with an admission class"); `Member::commit` had read every
+  Human push as `push: false`. a1's Human pushes (20 KB) and merge pushes (5 KB) are under it.
+- Only the edge-to-member `/commit` body changes. No client reply does, so the GHES byte-diff row stands. A bytediff
+  run on the edge build confirms that before it is hosted.
+
+**Why.** DESIGN's agent block ("Shape") classes a command Agent "when its actor, user tokens included, passes
+DEMOTE_PER_MIN write commands on this group". `admission` returned `None` for a plain PAT, so the leader never saw the
+actor and the rule could not fire on the hosted path. B0-33 h1A's fast user, 100 writes a minute on a plain PAT, was
+never demoted. h1A to h3 record the line as "not reachable on dc880f1d; the build skipped DEMOTE_PER_MIN for plain
+PATs" (`tests/am1/results/b033-user-demote.md`).
+
+**What it beat.**
+- Recording the line as unreachable (the lead's option c). The design states the rule, so the build had to match it.
+- A class on a client-visible reply. That changes a GHES response for a client that did not opt in.
+- A Human-load exception in the leader. A Human writer at 137 writes a minute is not a human by the design's rule, so
+  the harness spreads its Human load instead.
+
+**Evidence.** `tests/m0carried/plant190.py`: 10 of 10 mutants caught. They are a user's Human write carrying no
+admission, the limit off by one either way, task commands counting, an App's class changing, an anonymous write
+sending an admission, the leader missing or inventing a demotion, and the site's counter missing one or keeping it
+past `reset`.
+
+**Flip.** A hosted run on this build where a Human writer under `DEMOTE_PER_MIN` (by a1's own per-token minute) is
+counted in `demoted`. That would mean the leader counts writes the edge did not send for that actor.
