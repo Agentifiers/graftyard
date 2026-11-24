@@ -578,6 +578,50 @@ impl Stats {
         }
     }
 
+    /// memSplit's `stats` (test installs): the heap the sample arrays hold, priced by capacity, since `reset`'s
+    /// `clear` keeps every array's allocation. `samples` is every timing and size array; `trace` the read-index trace
+    /// ring and `elections` the election ring, kept apart because every voter fills them, not only a leader. The
+    /// map nodes and the bounded `Value` lists (`big_tx`, each call kind's `slow`, each peer's `errors` and
+    /// `appends`, `alarms`) are not counted: each is at most a few KB [inference: their caps].
+    #[cfg(any(test, feature = "test-faults"))]
+    pub fn sample_bytes(&self) -> Value {
+        fn v<T>(x: &Vec<T>) -> usize {
+            x.capacity() * size_of::<T>()
+        }
+        fn q<T>(x: &VecDeque<T>) -> usize {
+            x.capacity() * size_of::<T>()
+        }
+        let maps = self.append_ms.values().map(v).sum::<usize>()
+            + self.deps_ms.values().map(v).sum::<usize>()
+            + self.admitted_bytes.values().map(v).sum::<usize>()
+            + self.calls.values().map(|c| v(&c.ms)).sum::<usize>();
+        #[allow(unused_mut)]
+        let mut samples = maps
+            + v(&self.commit_ms)
+            + v(&self.round_ms)
+            + v(&self.apply_steps)
+            + v(&self.apply_ms)
+            + v(&self.confirm_ms)
+            + v(&self.confirm_split)
+            + v(&self.queue_ms)
+            + v(&self.queue_slot_ms)
+            + v(&self.queue_post_ms)
+            + v(&self.held_at_append)
+            + v(&self.cycle_ms)
+            + v(&self.read_stages)
+            + v(&self.narrow_build_ms)
+            + v(&self.appended)
+            + q(&self.raft_in);
+        #[cfg(feature = "test-faults")]
+        let (trace, elections) = {
+            samples += v(&self.lease_clock);
+            (q(&self.trace), q(&self.elections))
+        };
+        #[cfg(not(feature = "test-faults"))]
+        let (trace, elections) = (0, 0);
+        json!({ "samples": samples, "trace": trace, "elections": elections })
+    }
+
     /// `/stats?reset=1`: drops the samples and counts a row reads back, and restarts the inbound clock.
     pub fn reset(&mut self) {
         self.commit_ms.clear();
@@ -4761,6 +4805,47 @@ mod tests {
         a.set_mem(false);
         assert_eq!(a.bytes(), (0, 0), "arrival=sql clears the ring");
         assert!(!a.is_mem() && a.rows().is_none());
+    }
+
+    /// memSplit's `stats`: what it counts is the heap the counting allocator sees the sample arrays hold, by capacity,
+    /// both while they fill and after `reset`, whose `clear` keeps the top-level arrays' allocations but drops the
+    /// maps' arrays with their entries.
+    #[test]
+    fn the_stats_bytes_are_the_heap_the_sample_arrays_hold() {
+        use graftyard_raft::admit::AdmitClass;
+        let heap = || crate::heapcount::sample().0;
+        let counted = |s: &super::Stats| {
+            let v = s.sample_bytes();
+            ["samples", "trace", "elections"].iter().map(|k| v[*k].as_u64().unwrap() as usize).sum::<usize>()
+        };
+        let near = |a: usize, b: usize, what: &str| {
+            assert!(a.abs_diff(b) <= 4 << 10, "{what}: counted {a} against the heap's {b}");
+        };
+        let base = heap();
+        let mut s = super::Stats::default();
+        for i in 0..50_000u32 {
+            s.commit_ms.push(i);
+            s.queue_ms.push(i);
+            s.queue_slot_ms.push(i);
+            s.queue_post_ms.push(i);
+            s.apply_steps.push((i, i, i));
+            s.read_stages.push([i, i, i]);
+            s.appended.push((u64::from(i), 0));
+            s.deps_ms.entry("authz".to_owned()).or_default().push(i);
+            s.append_ms.entry(1).or_default().push(i);
+            s.calls.entry("append").or_default().ms.push(i);
+            s.admitted_bytes(AdmitClass::Agent, 100, 0);
+            s.raft_in(u64::from(i), 2048, 1, 1);
+            #[cfg(feature = "test-faults")]
+            s.trace.push_back([u64::from(i); 6]);
+        }
+        let full = heap() - base;
+        assert!(full > 4 << 20, "the arrays hold megabytes: {full}");
+        near(counted(&s), full, "filled");
+        s.reset();
+        let after = heap() - base;
+        assert!(after < full && after > 2 << 20, "reset keeps the arrays' capacity and drops the maps': {after}");
+        near(counted(&s), after, "after reset");
     }
 
     /// user-demote: `/stats`' `demoted` counts each write DEMOTE_PER_MIN reclassed, per actor, and nothing for a write

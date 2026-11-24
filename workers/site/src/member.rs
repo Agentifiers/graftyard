@@ -2586,7 +2586,7 @@ impl<F: Family> Routes<F> {
         })
     }
 
-    fn mem_split(&self) -> Value {
+    fn mem_split(&self, #[allow(unused)] stats: &host::Stats) -> Value {
         let core = self.host.core.borrow();
         let (rows, row_bytes) = core.as_ref().map_or((0, 0), |c| F::buffered(&c.m.group_fold().fold));
         let (memo_rows, memo_bytes) = core.as_ref().map_or((0, 0), |c| F::memo(&c.m.group_fold().fold));
@@ -2628,6 +2628,9 @@ impl<F: Family> Routes<F> {
         {
             let (rows, bytes) = self.host.arrivals_mem.borrow().bytes();
             v["arrivals"] = json!({ "rows": rows, "bytes": bytes });
+            // The host's `Stats` arrays by capacity (`host::Stats::sample_bytes`), which `heapLive` includes and no
+            // other part counts: the census's estimated 3 MiB of the leader's uncounted heap.
+            v["stats"] = stats.sample_bytes();
         }
         v
     }
@@ -2691,7 +2694,7 @@ impl<F: Family> Routes<F> {
                 "logBytes": self.host.core.borrow().as_ref().map(|c| c.m.log_bytes()),
                 "held": self.host.callers.borrow_mut().held_stats(reset).into_iter()
                     .map(|(s, n, b, peak, open)| json!([s.0, n, b, peak, open])).collect::<Vec<_>>(),
-                "memSplit": self.mem_split(),
+                "memSplit": self.mem_split(&s),
             });
             let mut v = v;
             // `?peers=1`: the per-peer call counts too, a few hundred bytes a peer, so a driver's end read gets them
