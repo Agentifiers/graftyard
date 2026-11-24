@@ -16,11 +16,14 @@ ARCHIVE = ['-p', 'graftyard-git', '--test', 'log_archive']
 SHARD = ['-p', 'graftyard-git', '--test', 'shard']
 
 MUTANTS = [
-    ('promote-ahead asks as a client, as on main', LA, 'request, d.is_none()).await?', 'request, false).await?', ARCHIVE),
-    ('every promotion is warm, so a due range never starts a shard', LA, 'request, d.is_none()).await?',
-     'request, true).await?', ARCHIVE),
-    ('a skipped promotion is an error, not idle', LA, ' else {\n        return Ok(Step::Idle);',
-     ' else {\n        return Err("skipped".into());', ARCHIVE),
+    ('promote-ahead asks as a client, as on main', LA, '    let warm = d.is_none();\n', '    let warm = false;\n',
+     ARCHIVE),
+    ('every promotion is warm, so a due range never starts a shard', LA, '    let warm = d.is_none();\n',
+     '    let warm = true;\n', ARCHIVE),
+    # `promote` answers None when every shard is stopped and the call was warm: the step is idle, not failed.
+    ('a skipped promotion is an error, not idle', LA,
+     '                f.at = now;\n            }\n            return Ok(Step::Idle);',
+     '                f.at = now;\n            }\n            return Err("skipped".into());', ARCHIVE),
     ('warm counts only on /catchup, as on main', SH, '        Some(_) => Caller::Warm,',
      '        Some(_) if path == "/catchup" => Caller::Warm,\n        Some(_) => Caller::Client,', SHARD),
     ('pool warm on every route', SH, '        Some("pool") if path == "/catchup" => Caller::PoolWarm,',
@@ -28,11 +31,14 @@ MUTANTS = [
     ('a call without warm is a warm call', SH, '        None => Caller::Client,', '        None => Caller::Warm,', SHARD),
 ]
 
-ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
+ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')))
 
 
 def run(t):
-    r = subprocess.run(['cargo', 'test', '-q'] + t, cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=1200)
+    # A hang counts as caught (README, "Planted bugs").
+    r = subprocess.run(['timeout', '-k', '10', '600', 'cargo', 'test', '-q'] + t, cwd=ROOT, env=ENV, capture_output=True,
+                       text=True)
     out = r.stdout + r.stderr
     return r.returncode, out, 'error[E' in out or 'could not compile' in out
 
@@ -58,6 +64,8 @@ def main():
         elif code != 0:
             caught += 1
             fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ')]
+            if code == 124:
+                fails = ['(timed out)', *fails]
             print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]')
         else:
             print(f'{i:2} MISSED  {name}')
