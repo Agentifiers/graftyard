@@ -1248,8 +1248,9 @@ impl DurableObject for GitShard {
                 // mid-push) is this shard's, a 503 the edge moves past (`graftyard_git::validate_status`).
                 use graftyard_git::host::{OnDisk, Validated};
                 let disk = if on_disk { OnDisk::AsItStands } else { OnDisk::CaughtUp };
-                // The edge's digests of the body (G35), only from a caller that sent them and only hex.
-                let sums: Vec<(&str, String)> = ["headsum", "packsum"]
+                // The edge's digests of the body (G35), and an agent's slot wait (`slot_ms`, `slot-bound`), only from
+                // a caller that sent them and only hex digits; a forward to a pool shard keeps them in its URL.
+                let sums: Vec<(&str, String)> = ["headsum", "packsum", "slot_ms"]
                     .into_iter()
                     .filter_map(|k| q(&url, k).filter(|v| v.bytes().all(|b| b.is_ascii_hexdigit())).map(|v| (k, v)))
                     .collect();

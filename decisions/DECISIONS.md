@@ -9882,6 +9882,77 @@ moved try.
 - **Mark a pass too** if a slow home's hedged validates on site b read `validate` over 5 s with a repack running there.
   That means a slow home's moved load does need the CPU.
 
+### `slot-bound`: an agent validate waits for a git cache slot only what its push's bound leaves, and a queue that will not drain refuses at once, 2026-11-24
+
+**Status.** Built on branch `g40-hedge` from main `a07a518b`, for G40's slow-home half (`decisions/OPEN-QUESTIONS.md`,
+G40). It touches the edge (`workers/edge/src/lib.rs`, `agent_slot_ms`, `validate`, `validate_streamed`), the shard
+object (`workers/site/src/shard.rs`, which passes `slot_ms` on) and the container (`containers/git/server/main.go`,
+`validateGate.acquire`, `agentWait`). It ships on an edge day plus a site day with a new shard image. Not hosted: it
+rides on the next B0-33 set.
+
+**Decision.**
+- **The slot wait comes from the bound.** An agent validate's try sends `slot_ms`: what is left of its push's
+  `AGENT_PUSH_BOUND` when the try starts, less `AGENT_SLOT_RESERVE` (1 s [guess]) for the validate's work and the
+  commit, at most the container's 2 s.
+  - The container waits that long for a slot, not a flat 2 s.
+  - The shard object passes `slot_ms` to its container, and a forward to a pool shard keeps it in the URL.
+  - A push with no bound sends none and keeps 2 s.
+- **A queue that will not drain refuses at once.** An agent that would queue is refused at once with 429 when the
+  agents already queued would not drain within its wait: ahead ÷ slots × the gate's measured average run. The old 8
+  queued a slot stays as a second limit.
+- **No agent hedge.** `validate_hedge(true)` stays `None`.
+
+**Why.** On B0-33 h1A no site answered 429 on the home's network shard. The 1,010 agent validates that moved on had
+each waited a pool shard's gate the whole 2 s for its 429 `validate queue full`:
+- 1,007 on site a's pool, wall p50 2,007 ms, at cpu p50 1 ms;
+- 299 more on site b's pool.
+
+Of the 1,010, 981 ended `full`, most at `bound_at_send` before any send [measured, `tests/am1/results/g40-slot.md`].
+The home's own slow tail is the same wait: 885 one-try home validates spent more than 1.5 s outside `v_walk` and
+`v_index`, and 728 of them ended `full`. Replaying the moved pushes' stages with the 429 at once leaves 443 of them
+with over 300 ms of bound at their first send, against 29 that committed [inference].
+
+**Beat.**
+- **An agent hedge at about the home's p90 (1.5 s).** About 10% of home validates pass 1.5 s, and each would start
+  sites b and c beside it. Their network shards forward to their own pool shards by the same pick, and site b's pool
+  was full too (3.74 vCPU; 299 third tries). It adds tries to full gates and makes none refuse sooner.
+- **Refusing on queue age alone** (the oldest agent waiter past N ms). It refuses the same pushes later than the
+  drain estimate does, and N has no anchor in the push's bound.
+- **The edge skipping a further site when the bound left is under that site's validate p50.** It saves nothing on the
+  try that already spent 2 s in a pool queue, and the edge has no per-site p50 of its own.
+
+**The cost.** One integer in the validate URL. One multiply and compare under the gate's lock.
+
+**Evidence.**
+- `workers/edge/src/lib.rs`, `an_agent_try_waits_for_a_slot_only_what_its_bound_leaves`:
+  - 4.5 s left waits 2 s;
+  - 2,433 ms left waits 1,433 ms;
+  - 800 ms left waits none;
+  - no bound sends none.
+  On main every agent try waited 2 s.
+- `containers/git/server/gate_test.go`:
+  - `TestGateAgentRefusedAtOnceWhenTheQueueWillNotDrainInItsWait`: with 0.5 s runs on one slot and three agents
+    queued, an agent with a 1.2 s wait is refused at once, and one with a 2 s wait still queues. On main the first
+    waits its whole 1.2 s.
+  - `TestGateHTTPSlotMsCapsTheAgentWait`: `slot_ms=40` answers 429 after about 40 ms, `slot_ms=0` at once, and a bad
+    or missing value keeps 2 s. On main both wait the whole default.
+  - `TestGateAgentsBeyondQueueLimitRefusedAtOnce` now sets 1 ms runs, so it still tests the count limit.
+- `tests/m0carried/plant160.py`, seven mutants:
+  - main's flat 2 s;
+  - no 2 s cap;
+  - no reserve;
+  - the container ignoring `slot_ms`;
+  - no drain refusal;
+  - a drain estimate that overcounts;
+  - the shard dropping `slot_ms`.
+
+**Flip.**
+- **Back it out** if agent ok pushes fall against h1A while pool 429s come back faster. That means refusing at once
+  turns waits that would have been granted into refusals.
+- **Raise `AGENT_SLOT_RESERVE`** if moved pushes that win a slot still end at `bound_at_send`.
+- **Revisit the hedge** if the home's one-try validates over 1.5 s stay above 5% with pool 429s near zero. That means
+  the slow tail is git work after all.
+
 ### `readindex-batch`: the read-index confirm is already batched; ack riding (B) and region asks (F) priced, not built, pushed grants (P) rejected, 2026-11-23
 
 **Status.** Ruled by the lead on 2026-11-23 from `tests/am1/results/readindex-batch.md`. Not built. Figures for m3fg3

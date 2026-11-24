@@ -182,6 +182,7 @@ func TestGateDeadlineGrantRaceDoesNotLeakSlot(t *testing.T) {
 
 func TestGateAgentsBeyondQueueLimitRefusedAtOnce(t *testing.T) {
 	g := newValidateGate(1)
+	g.average = 0.001 // validates that run 1 ms: the count limit binds, not the drain time (`slot-bound`)
 	held, _, err := g.acquire(context.Background(), false, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -285,5 +286,88 @@ func TestGateHTTPAgentRefusalDoesNotReadBody(t *testing.T) {
 	}
 	if body.read {
 		t.Fatal("refused validate read its request body")
+	}
+}
+
+// `slot-bound`, B0-33 h1A: a full pool shard held 1,306 agent validates its whole 2 s and then refused them. An agent
+// is now refused at once when the agents queued ahead of it would not drain within its wait at the gate's measured run
+// time, and still queues when they would.
+func TestGateAgentRefusedAtOnceWhenTheQueueWillNotDrainInItsWait(t *testing.T) {
+	g := newValidateGate(1)
+	g.average = 0.5 // a validate runs 0.5 s: the slot frees twice a second
+	held, _, err := g.acquire(context.Background(), false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Three agents queue: 0, 0.5 and 1 s of queue ahead of each, all inside a 5 s wait.
+	var waiting []<-chan gateResult
+	for i := 0; i < 3; i++ {
+		waiting = append(waiting, acquireAsync(g, ctx, true, 5*time.Second))
+		waitGateQueue(t, g, true, i+1)
+	}
+	// A fourth with 1.2 s to wait has 1.5 s of queue ahead: refused at once, not after 1.2 s.
+	started := time.Now()
+	release, retryAfter, err := g.acquire(context.Background(), true, 1200*time.Millisecond)
+	if elapsed := time.Since(started); !errors.Is(err, errValidateQueueFull) || release != nil || elapsed > 300*time.Millisecond {
+		t.Fatalf("acquire = (release %t, %v) after %v, want a refusal at once", release != nil, err, elapsed)
+	}
+	if retryAfter < 1 || retryAfter > 60 {
+		t.Fatalf("Retry-After = %d, want [1, 60]", retryAfter)
+	}
+	// One with 2 s to wait, 1.5 s ahead, still queues: the slot frees within its wait.
+	queued := acquireAsync(g, ctx, true, 2*time.Second)
+	waitGateQueue(t, g, true, 4)
+	select {
+	case got := <-queued:
+		t.Fatalf("an agent whose queue drains within its wait was answered at once: %v", got.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	cancel()
+	for _, r := range append(waiting, queued) {
+		if got := receiveGateResult(t, r); got.release != nil {
+			got.release()
+		}
+	}
+	held()
+	if running := gateRunning(g); running != 0 {
+		t.Fatalf("running = %d at test end, want 0", running)
+	}
+}
+
+// The edge's slot_ms (what the push's bound leaves) caps an agent's slot wait, never past agentValidateWait.
+func TestGateHTTPSlotMsCapsTheAgentWait(t *testing.T) {
+	if agentWait("") != agentValidateWait || agentWait("x") != agentValidateWait || agentWait("-5") != agentValidateWait {
+		t.Fatal("a missing or bad slot_ms is not agentValidateWait")
+	}
+	if agentWait("0") != 0 || agentWait("1433") != 1433*time.Millisecond || agentWait("99999") != agentValidateWait {
+		t.Fatalf("agentWait: 0 -> %v, 1433 -> %v, 99999 -> %v", agentWait("0"), agentWait("1433"), agentWait("99999"))
+	}
+	oldData, oldGate, oldWait := data, validateAdmission, agentValidateWait
+	defer func() {
+		data, validateAdmission, agentValidateWait = oldData, oldGate, oldWait
+	}()
+	data = t.TempDir()
+	if err := os.MkdirAll(repo("56"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	validateAdmission = newValidateGate(1)
+	held, _, err := validateAdmission.acquire(context.Background(), false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held()
+	agentValidateWait = 5 * time.Second
+	for _, c := range []struct {
+		slot     string
+		min, max time.Duration
+	}{{"&slot_ms=40", 30 * time.Millisecond, time.Second}, {"&slot_ms=0", 0, 300 * time.Millisecond}} {
+		started := time.Now()
+		w := httptest.NewRecorder()
+		handleValidate(w, httptest.NewRequest(http.MethodPost, "/validate?net=56&class=agent"+c.slot, &observedBody{}))
+		if elapsed := time.Since(started); w.Code != http.StatusTooManyRequests || elapsed < c.min || elapsed > c.max {
+			t.Fatalf("%s: %d after %v, want 429 within [%v, %v]", c.slot, w.Code, elapsed, c.min, c.max)
+		}
 	}
 }
