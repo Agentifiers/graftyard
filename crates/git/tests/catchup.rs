@@ -320,9 +320,19 @@ impl ShardIo for Disk {
         }
         Ok(())
     }
-    async fn apply_refs(&self, changes: &[(String, Option<String>)], head: Option<&str>) -> Result<(), StoreError> {
+    /// As the container's `POST /refs`: a call with changes starts the repack unless `repack` is false (`repack=0`);
+    /// one that only names HEAD starts none.
+    async fn apply_refs(
+        &self,
+        changes: &[(String, Option<String>)],
+        head: Option<&str>,
+        repack: bool,
+    ) -> Result<(), StoreError> {
         self.tick()?;
         self.clock.sleep(self.refs_ms.get()).await;
+        if repack && !changes.is_empty() {
+            self.events.borrow_mut().push("repack");
+        }
         if let Some(h) = head {
             self.head_calls.set(self.head_calls.get() + 1);
             *self.head.borrow_mut() = Some(h.to_owned());
@@ -1032,6 +1042,26 @@ fn a_rehydrate_of_promoted_packs_loads_their_stored_idx_and_skips_the_pushes_the
     // The check walks before the repack starts: started by the last ref page, the check waited out the whole repack
     // (`tests/am1/results/lm1-memory.md`, round 21).
     assert_eq!(*b.disk.events.borrow(), ["connected", "repack"]);
+    b.assert_serves_head();
+}
+
+/// The rehydrate's last catch-up, from its first refs page to the head, starts no repack when the backstop follows:
+/// the check's walk waits for any repack, so a repack one of its ref changes started put the whole repack and its
+/// commit-graph inside the rehydrate, 99 to 268 s of the home's on B0-34 mt21, mt23 and mt24
+/// (`tests/am1/results/b034-mt24.md`, "The home's rehydrate"). The walk runs first and starts the repack itself.
+#[test]
+fn a_rehydrates_last_catch_up_leaves_the_repack_to_the_backstop_after_its_walk() {
+    let b = bed(150, 0, 1);
+    b.promote_range(1, 100);
+    b.idx(100, true, Some((1, 100)));
+    // The log moved on while the refs were paged: the last catch-up applies entries 121..=151.
+    b.log.first_refs_at.set(Some(120));
+    let r = b.run().unwrap_or_else(|e| panic!("{}", e.0));
+    assert_eq!(r.entries, 31, "the last catch-up ran over 121..=151");
+    assert_eq!(r.rehydrated.as_ref().expect("a rehydrate").skipped, 100);
+    assert_eq!(*b.disk.events.borrow(), ["connected", "repack"], "the repack started before the walk");
+    let steps: Vec<&str> = r.ms.iter().map(|(s, _)| *s).collect();
+    assert!(steps.ends_with(&["refs", "catch_up", "walk"]), "{steps:?}");
     b.assert_serves_head();
 }
 

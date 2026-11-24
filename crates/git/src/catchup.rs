@@ -175,8 +175,15 @@ pub trait ShardIo {
         repack: bool,
         head: Option<&str>,
     ) -> Result<(), StoreError>;
-    /// Ref changes, and HEAD pointed at `head` when given: with no changes, only HEAD.
-    async fn apply_refs(&self, changes: &[(String, Option<String>)], head: Option<&str>) -> Result<(), StoreError>;
+    /// Ref changes, and HEAD pointed at `head` when given: with no changes, only HEAD. With `repack` the container
+    /// starts its repack after the changes, as a last ref page does; a rehydrate whose backstop check follows sends
+    /// false, so the check's walk runs before the repack rather than waiting it out.
+    async fn apply_refs(
+        &self,
+        changes: &[(String, Option<String>)],
+        head: Option<&str>,
+        repack: bool,
+    ) -> Result<(), StoreError>;
     /// Evicts other networks so `incoming` more bytes fit; the networks evicted.
     async fn make_room(&self, incoming: u64) -> Result<Vec<i64>, StoreError>;
     /// The network's `Committed` markers from every bucket of the placement.
@@ -243,6 +250,9 @@ pub struct StoredMs {
     /// The waits for the writer's section over the catch-up's `/refs` calls, and for the lock alone on a set that
     /// renames a ref between file and directory.
     pub refs_lock_wait_ms: u64,
+    /// The backstop checks' wait for a running repack before their walks (`/connected`'s `repack_wait_ms`): with the
+    /// repack left to the check, about 0 (`tests/am1/results/b034-mt24.md`, "The home's rehydrate").
+    pub repack_wait_ms: u64,
     /// Each stored pack's spool as `[start, end, bytes, site]`, start and end in the shard object's ms since the
     /// epoch, at most `SPOOLS_MAX`: the streams busy at once and the total bucket rate over time, which say whether
     /// a container's R2 reads stop at a per-container ceiling (`tests/am1/results/lm1-memory.md`, round 27b).
@@ -669,8 +679,17 @@ fn unresolved(chain: ChainId, n: usize, from: Index, to: Index) -> StoreError {
 /// The work a page's entries ask for: a catch-up applies their packs and ref changes and saves its cursor; a
 /// rehydrate's tail ingests their packs not yet loaded and saves its tail cursor.
 enum Mode<'a> {
-    CatchUp { cursor: &'a mut IngestCursor, seen: &'a mut BTreeSet<PackId> },
-    Tail { state: &'a mut Rehydrating, seen: &'a mut BTreeSet<PackId>, consumed: &'a BTreeSet<PackId> },
+    /// `repack`: each page's ref changes may start the container's repack (`ShardIo::apply_refs`).
+    CatchUp {
+        cursor: &'a mut IngestCursor,
+        seen: &'a mut BTreeSet<PackId>,
+        repack: bool,
+    },
+    Tail {
+        state: &'a mut Rehydrating,
+        seen: &'a mut BTreeSet<PackId>,
+        consumed: &'a BTreeSet<PackId>,
+    },
 }
 
 #[derive(Default)]
@@ -820,7 +839,7 @@ async fn apply_page<I: ShardIo, S: Saved>(
     t.room -= bytes;
     lap(&mut t.ms.room);
     match mode {
-        Mode::CatchUp { cursor, seen } => {
+        Mode::CatchUp { cursor, seen, repack } => {
             let changes = ref_changes(&page, cursor.at(chain), last).ok_or(Stop::NoRefs)?;
             // A `Promoted` entry follows its range, and a catch-up applies entries in order, so the disk already holds
             // every object of a promoted pack it reaches: fetching it again cost each shard the whole range's bytes.
@@ -838,7 +857,7 @@ async fn apply_page<I: ShardIo, S: Saved>(
                 Err(n) => return Err(Stop::Unresolved(unresolved(chain, n, from, last))),
             }
             t.refs += changes.len();
-            io.apply_refs(&changes, None).await?;
+            io.apply_refs(&changes, None, *repack).await?;
             lap(&mut t.ms.refs);
             cursor.advance(chain, last);
             saved.put_cursor(disk, cursor).await?;
@@ -938,7 +957,7 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
         if behind {
             continue;
         }
-        let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen };
+        let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen, repack: true };
         let mut tail = carry.take().filter(|(c, _)| c == chain).map(|(_, es)| es);
         match follow(
             io,
@@ -979,7 +998,7 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     // when it changed since the disk's HEAD was last set, and only once the run's last piece applied its refs.
     if !behind && head_ref.is_some() && cursor.head != head_ref {
         let at = now();
-        io.apply_refs(&[], head_ref.as_deref()).await?;
+        io.apply_refs(&[], head_ref.as_deref(), true).await?;
         t.ms.refs += now().saturating_sub(at);
         cursor.head = head_ref;
         saved.put_cursor(&disk, &cursor).await?;
@@ -1011,7 +1030,8 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
 
 /// `rehydrate`: every stored pack with a marker, minus consumed packs, then the packs each member chain names after its
 /// last `Promoted`, read from the log a page at a time, then the refs a page at a time, then a catch-up from the first
-/// ref page's index. A run cut off on the same disk resumes: no new repository, no stored pack the container holds
+/// ref page's index, then, when promotions covered packs, the backstop's walk (the `walk` step), which starts the
+/// repack. A run cut off on the same disk resumes: no new repository, no stored pack the container holds
 /// fetched again, and the tail from after its last saved page.
 #[allow(clippy::too_many_arguments)]
 async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
@@ -1252,13 +1272,18 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     }
     saved.put_cursor(&disk, &cursor).await?;
     lap(&mut ms, "refs");
+    // The backstop below runs only when promotions covered packs, and its walk waits for any repack, so then no ref
+    // change of this catch-up starts one: the check starts it after its walk, as the last ref page left it. Started by
+    // a page here, the walk waited out the whole repack and its commit-graph, 99 to 268 s of the home's rehydrate on
+    // B0-34 mt21, mt23 and mt24 (`tests/am1/results/b034-mt24.md`, "The home's rehydrate").
+    let repack = state.skipped.is_empty();
     let mut c = Tally::default();
     for (chain, end) in chains.iter().zip(ends) {
         if end <= cursor.at(*chain) {
             continue;
         }
         let from = Index(cursor.at(*chain).0 + 1);
-        let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen };
+        let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen, repack };
         match follow(io, saved, log, &disk, *chain, from, end, WHOLE, &mut mode, &mut c, &mut None, now).await {
             Ok(_) => {}
             Err(Stop::Err(e) | Stop::Unresolved(e)) => return Err(e),
@@ -1277,6 +1302,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     // that still misses an object never serves, and the next call rehydrates from nothing. The check starts the
     // network's repack once its walk ends, passed or failed, since the last ref page left it (above); a second check
     // after a fault waits for that repack, a cost only the fault path pays.
+    lap(&mut ms, "catch_up");
     r.skipped = state.skipped.len();
     if !state.skipped.is_empty()
         && let Err(why) = io.connected(true).await?
@@ -1307,7 +1333,8 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     saved.drop_rehydrating().await?;
     evicted.extend(t.evicted);
     evicted.extend(c.evicted);
-    lap(&mut ms, "catch_up");
+    // The backstop's walk, with the skipped packs' load and second walk on the fault path; 0 when nothing was skipped.
+    lap(&mut ms, "walk");
     let mut pages_ms = t.ms;
     pages_ms.add(&c.ms);
     Ok(Report {

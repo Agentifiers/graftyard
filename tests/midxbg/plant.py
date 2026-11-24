@@ -53,8 +53,8 @@ GO_MUTANTS = [
 ]
 MUTANTS = [(n, GO, o, w) for n, o, w in GO_MUTANTS] + [
     # catch_up's page timing (`PageMs`): a part counted in another, or not at all.
-    ("main's rule: /refs counted with the ingest", CU, '            io.apply_refs(&changes, None).await?;\n            lap(&mut t.ms.refs);',
-     '            io.apply_refs(&changes, None).await?;\n            lap(&mut t.ms.ingest);'),
+    ("main's rule: /refs counted with the ingest", CU, '            io.apply_refs(&changes, None, *repack).await?;\n            lap(&mut t.ms.refs);',
+     '            io.apply_refs(&changes, None, *repack).await?;\n            lap(&mut t.ms.ingest);'),
     ('make_room untimed', CU, '    t.room -= bytes;\n    lap(&mut t.ms.room);', '    t.room -= bytes;\n    lap(&mut 0);'),
 ]
 

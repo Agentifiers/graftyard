@@ -1157,12 +1157,14 @@ impl ShardHost<'_> {
     /// Applies ref changes (`crate::ingest::ref_changes`) to the container's refs: `POST /refs`, deletes then sets.
     /// An update to an object the shard does not hold is skipped by the container, as a rehydrate's is.
     /// With `head`, HEAD points at it too (the default branch, G26), and with no changes that is all the call does.
+    /// Without `repack` the container starts no repack after the changes (`repack=0`).
     /// Answers the container's wait for the network lock alone, 0 when it reported none.
     pub async fn apply_refs(
         &self,
         network: NetworkId,
         changes: &[(String, Option<String>)],
         head: Option<&str>,
+        repack: bool,
     ) -> Result<u64, StoreError> {
         #[derive(Default, Deserialize)]
         struct Out {
@@ -1174,7 +1176,12 @@ impl ShardHost<'_> {
         }
         let zero = "0".repeat(40);
         let body: String = changes.iter().map(|(r, o)| format!("{} {r}\n", o.as_deref().unwrap_or(&zero))).collect();
-        let path = format!("/refs?net={}{}", network.0.0, crate::catchup::head_param(head));
+        let path = format!(
+            "/refs?net={}{}{}",
+            network.0.0,
+            if repack { "" } else { "&repack=0" },
+            crate::catchup::head_param(head)
+        );
         let mut r = self.ok(Method::Post, &path, Some(body.into_bytes())).await?;
         Ok(r.json::<Out>().await.unwrap_or_default().lock_wait_ms)
     }
@@ -1973,6 +1980,8 @@ impl ShardIo for Io<'_, '_> {
             connected: bool,
             #[serde(default)]
             error: String,
+            #[serde(default)]
+            repack_wait_ms: u64,
         }
         let mut r = self
             .host
@@ -1983,6 +1992,7 @@ impl ShardIo for Io<'_, '_> {
             )
             .await?;
         let o: Out = r.json().await.map_err(worker_err)?;
+        self.stored.borrow_mut().repack_wait_ms += o.repack_wait_ms;
         Ok(if o.connected { Ok(()) } else { Err(o.error) })
     }
     async fn put_refs_page(
@@ -1995,8 +2005,13 @@ impl ShardIo for Io<'_, '_> {
     ) -> Result<(), StoreError> {
         self.host.put_refs_page(self.network, refs, start, done, repack, head).await
     }
-    async fn apply_refs(&self, changes: &[(String, Option<String>)], head: Option<&str>) -> Result<(), StoreError> {
-        let w = self.host.apply_refs(self.network, changes, head).await?;
+    async fn apply_refs(
+        &self,
+        changes: &[(String, Option<String>)],
+        head: Option<&str>,
+        repack: bool,
+    ) -> Result<(), StoreError> {
+        let w = self.host.apply_refs(self.network, changes, head, repack).await?;
         self.stored.borrow_mut().refs_lock_wait_ms += w;
         Ok(())
     }

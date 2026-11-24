@@ -524,6 +524,111 @@ func TestConnectedRunsBeforeTheRehydratesRepack(t *testing.T) {
 	release <- struct{}{}
 }
 
+// The rehydrate's last catch-up applies ref changes with POST /refs between its last ref page and the backstop
+// /connected. Without repack=0 such a POST started the repack ahead of the walk, and the walk waited it out with its
+// commit-graph: 99 to 268 s of the home's rehydrate on B0-34 mt21, mt23 and mt24 (tests/am1/results/b034-mt24.md,
+// "The home's rehydrate"). With repack=0 it starts none, the walk answers at once with repack_wait_ms near 0, and the
+// walk starts the repack. Main's order, the POST without repack=0, is shown waiting, and repack_wait_ms counts it.
+func TestACatchUpPostLeavesTheRepackToTheBackstopsWalk(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	run(t, wt, "", "init", "-q", "-b", "main")
+	base := commit(t, wt, map[string]string{"README": "r\n"})
+	run(t, wt, "", "push", "-q", repo("7"), "main")
+	prev := base
+	for i := 0; i <= repackAt; i++ {
+		tip := commit(t, wt, map[string]string{"f": fmt.Sprintf("%d\n", i)})
+		idx := exec.Command("git", "index-pack", "--stdin", "--fix-thin")
+		idx.Dir = repo("7")
+		idx.Stdin = bytes.NewReader(packOfWt(t, wt, tip, prev))
+		if out, err := idx.CombinedOutput(); err != nil {
+			t.Fatalf("index-pack: %v %s", err, out)
+		}
+		prev = tip
+	}
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	old := runRepack
+	runRepack = func(ctx context.Context, rp string) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}
+	defer func() { runRepack = old }()
+	refs := func(method, q, body string) {
+		req, _ := http.NewRequest(method, s.URL+"/refs?net=7"+q, strings.NewReader(body))
+		r, err := http.DefaultClient.Do(req)
+		if err != nil || r.StatusCode != 200 {
+			t.Fatalf("%s /refs%s: %v %v", method, q, err, r)
+		}
+		r.Body.Close()
+	}
+	none := func(what string) {
+		select {
+		case <-started:
+			t.Fatalf("%s started a repack ahead of the walk", what)
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	idle := func() { repacking.Lock(); repacking.Unlock() }
+
+	// The order the rehydrate now sends: last page and catch-up POST both repack=0, then the check.
+	refs("PUT", "&start=1&done=1&repack=0", prev+" refs/heads/main\n")
+	none("the last ref page")
+	refs("POST", "&repack=0", base+" refs/heads/side\n")
+	none("the catch-up's POST with repack=0")
+	got := make(chan map[string]any, 1)
+	go func() { got <- connected(t, s.URL, "&objects=tips&repack=1") }()
+	var v map[string]any
+	select {
+	case v = <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("/connected did not answer in 5 s")
+	}
+	if v["connected"] != true || v["repack"] != true {
+		t.Fatalf("connected: %v", v)
+	}
+	if w, ok := v["repack_wait_ms"].(float64); !ok || w > 200 {
+		t.Fatalf("the walk waited %v ms for a repack: %v", v["repack_wait_ms"], v)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the check did not start the repack after its walk")
+	}
+	release <- struct{}{}
+	idle()
+
+	// Main's order: the catch-up's POST without repack=0 starts the repack, and the walk waits until it ends.
+	refs("POST", "", prev+" refs/heads/side\n")
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a POST /refs without repack=0 started no repack")
+	}
+	go func() { got <- connected(t, s.URL, "&objects=tips&repack=1") }()
+	select {
+	case v = <-got:
+		t.Fatalf("/connected answered while the repack ran: %v", v)
+	case <-time.After(500 * time.Millisecond):
+	}
+	release <- struct{}{}
+	v = <-got
+	if w, ok := v["repack_wait_ms"].(float64); !ok || w < 400 {
+		t.Fatalf("repack_wait_ms %v did not count the walk's wait for the repack: %v", v["repack_wait_ms"], v)
+	}
+	// The walk's own repack=1 starts another once the first ended.
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the check did not start the repack after its walk")
+	}
+	release <- struct{}{}
+	close(release)
+	idle()
+}
+
 // A stock answer whose client reads slowly, pausing for less than clientWriteTimeout, holds the network's lock shared
 // for at most stockHoldMax and then streams on unlocked. B0-34 mt5's stock whole clones held it 36 to 119 s at the
 // client's pace, and catch-ups waited up to 88 s behind them (`tests/am1/results/b034-mt5.md`). With lock-split the
