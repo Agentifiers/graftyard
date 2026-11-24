@@ -9849,9 +9849,13 @@ ships on an edge day and a site day. Not hosted: it rides on the next B0-34-shap
 - **The cold mark's order is unchanged.** Changing it was left to this decision; the evidence says no. A passed home
   went last, and site b took mt21's 14 hedged and 73 first-try validates before the kill, so the order moved load
   as `validate-hedge` meant. What was wrong was counting that load as a failover.
-- **`maintStats` adds `deferred_s` and `cpu_p99`**: how long maintenance has been deferred now (the clock
-  `MAINT_DEFER_MAX` bounds, 0 when nothing is deferred) and the client CPU p99 `maintBegin` reads.
-  `tests/fanout/shardprocs.mjs` records them in `/procs`'s `maint`. `longest_hold_s` spans hold calls, not the
+- **`maintStats` adds `deferred_s`, `max_deferred_s` and `cpu_p99`**: how long a start has waited now (since the first
+  start refused after the last one granted, 0 once a start is granted), the longest deferral a granted start had
+  waited (from the first refused start or stopped run, the clock `MAINT_DEFER_MAX` bounds), and the client CPU p99
+  `maintBegin` reads. `tests/fanout/shardprocs.mjs` records them in `/procs`'s `maint`. As first built, `deferred_s`
+  counted from that clock's start to now until a repack completed, so B0-34 mt22's site b read 427 to 667 through its
+  overdue run and 1,485 after load while the run started at 411.5 to 426.6 s, at the 420 s bound
+  (`tests/am1/results/b034-mt22.md`). `longest_hold_s` spans hold calls, not the
   deferral, so neither mt20b's 451 nor mt21's 573 measured the bound.
 
 **Why.** On B0-34 mt21 site b's container read `longest_hold_s` 573 and `max_unkept_held` 846, past 751, with the home
@@ -9881,7 +9885,8 @@ moved try.
 - `crates/git/tests/shard.rs`, `only_a_call_moved_off_a_failed_home_holds_maintenance`: an unmarked call at another site
   holds nothing whatever its `wait`. On main, mt21's first try (`wait` 15 at site b) held.
 - `containers/git/server/maint_test.go`, `TestMaintenanceYieldsToMovedLoad`: `deferred_s` reads 1 + 1 + `yieldHold`
-  after the first stop, `cpu_p99` reads 0.9, and `deferred_s` is 0 once the overdue repack ran to its end.
+  after the first stop and `cpu_p99` 0.9; `deferred_s` is 0 while the granted overdue repack runs (as first built it
+  read 5 there) and after an idle hour, and `max_deferred_s` reads 2 + 2·`yieldHold`, the wait at the grant.
 - `tests/m0carried/plant140.py`, six mutants: a pass marking the home failed, a pass clearing a live failure, a mark
   that never lapses, the mark read off the called site, the home's own call marked, and a URL without `moved=1`.
   `tests/m0carried/plant89.py`'s mutant 12 now plants an unmarked call counting.
@@ -10396,3 +10401,40 @@ their lower seq.
 
 **Flip.** Take seq from the view or a signed field if a release ever ships to a site without a `ReleaseUploaded`
 (a lifeboat or restore path), or if Cloudflare drops or truncates `workers/tag` (100 bytes today).
+
+### `warm-order`: a validate or read tries the home, then the network's other warm site, then the other Full sites, 2026-11-24
+
+**Status.** Built and tested at $0. Not deployed; it ships with the next edge day. The lead asked for it on 2026-11-24
+from B0-34 mt22's every-clone collapse.
+
+**Decision.** `validate_sites` (`workers/edge/src/lib.rs`) orders the sites after the home with the network's other
+warm site first (`graftyard_git::warm_sites`, the rendezvous-next site among the others, the one `chain_buckets`,
+`fanout` and `chain-site` call warm), then the record's other Full sites in record order. `shard_order` keeps
+`COLD_SHARD_MS`'s cold-last on top, so validates, streamed validates, shard reads and upload-packs all take it.
+
+**Why.** B0-34 mt22 served every clone 60.6% in the kill phase and 8% in the second, against mt21's 100% and 100%.
+No compose or chain-site code changed between mt21 (a940127a) and mt22 (b587a8cb). mt21's network 1048616 is warm
+on sites a and b and mt22's 1048617 on a and c, by the sha256 rendezvous (50.06% of 10,000 networks with home a pick
+c). The edge fell back in record order, so after the kill of site a mt22's reads went to site b, which held no chain
+and no compose bucket entry (`compose/1048617/` n = 0 all row, against 17 on a and c): in the 120 s after the kill
+site b took 69 misses at catch-up p50 7,260 ms and headers p50 6,767 ms, and site c 8 at 897 and 797 ms. mt21's 36
+misses on its warm site b took catch-up p50 1,629 ms. mt21 passed only because its warm site was also next in record
+order [measured, `tests/am1/results/b034-mt22.md`, "Every clone"]. DESIGN's git caches data-center row already
+assumed "the other warm site already holds k shards"; the order did not use it.
+
+**What it beat.**
+- Recording it as placement chance. Half of networks put the warm site third in record order, so B0-34's kill line
+  would pass or fail on the network's id.
+- Moving the chain to the record's next site. That changes `chain_buckets`, `fanout`'s pool grants and every
+  bucket's chain keys for half of all networks, against one sort at the edge.
+- Pinning B0-34's network to one warm on site b. That hides the fault from the row.
+
+**Evidence.** `workers/edge/src/lib.rs`,
+`a_validate_falls_back_from_the_home_shard_to_the_warm_site_then_the_other_full_sites`: mt22's network with home 0
+tries [0, 2, 1] and mt21's [0, 1, 2]; with home 2, [2, 0, 1] and [2, 1, 0]; 1048608 with home 2 tries [2, 1, 0]. On
+b587a8cb's record order the first case reads [0, 1, 2]. `tests/m0carried/plant161.py`, four mutants: record order,
+the warm site last, the warm site picked with the record's first site as home, and the warm site ahead of the home.
+
+**Flip.** A B0-34-shaped row whose kill phase reads composed misses no faster on the warm site than on the third site
+(catch-up p50 within 2 times), or a placement whose warm site is not where the chain and k live, would mean the order
+buys nothing and record order is as good.

@@ -47,6 +47,10 @@ var maint struct {
 	longest   time.Duration
 	maxUnkept int
 	stops     int
+	// waiting: the first start refused since the last one granted, zero when none waits (`deferred_s`); maxDeferred:
+	// the longest deferral a granted start had waited, from firstHeld, the clock maintDeferMax bounds.
+	waiting     time.Time
+	maxDeferred time.Duration
 }
 
 // cpuP99 is the last minute's client CPU p99 (`/load`'s cpu_p99), at most 1.
@@ -81,8 +85,12 @@ func maintBegin() (ctx context.Context, end func(reset bool), ok bool) {
 		if maint.firstHeld.IsZero() {
 			maint.firstHeld = now
 		}
+		if maint.waiting.IsZero() {
+			maint.waiting = now
+		}
 		return nil, nil, false
 	}
+	maint.waiting, maint.maxDeferred = time.Time{}, max(maint.maxDeferred, deferred)
 	ctx, cancel := context.WithCancel(context.Background())
 	maint.cancel, maint.overdue = cancel, deferred >= maintDeferMax
 	return ctx, func(reset bool) {
@@ -130,20 +138,23 @@ func handleMaintHold(w http.ResponseWriter, r *http.Request) {
 
 // maintStats is `/procs`'s "maint", for the row: whether maintenance is held or running now, the longest continuous
 // hold (to its end, so with its last yieldHold), the most unkept packs any hold call saw, the runs holds stopped, how
-// long maintenance has been deferred now (the clock maintDeferMax bounds, 0 when none runs), and the client CPU p99
-// maintBegin reads. A hold's span is not its deferral: B0-34 mt21's 573 s hold on site b had its run start inside
-// the bound, which only these two show (G41).
+// long a start has waited now (`deferred_s`: since the first start refused after the last one granted, 0 when none
+// waits), the longest deferral a granted start had waited (`max_deferred_s`, from the first refused start or stopped
+// run since the last completed repack: the clock maintDeferMax bounds), and the client CPU p99 maintBegin reads. A
+// hold's span is not its deferral: B0-34 mt21's 573 s hold on site b had its run start inside the bound (G41). Counted
+// from firstHeld to now, `deferred_s` ran through mt22's overdue repack and the idle after load to 1,485 s while the
+// bound held at about 420.
 func maintStats() map[string]any {
 	cpu := cpuP99()
 	maint.Lock()
 	defer maint.Unlock()
-	now, deferred := maintClock(), 0.0
-	if !maint.firstHeld.IsZero() {
-		deferred = now.Sub(maint.firstHeld).Seconds()
+	now, waited := maintClock(), 0.0
+	if !maint.waiting.IsZero() {
+		waited = now.Sub(maint.waiting).Seconds()
 	}
 	return map[string]any{"held": now.Before(maint.until), "running": maint.cancel != nil,
 		"longest_hold_s": maint.longest.Seconds(), "max_unkept_held": maint.maxUnkept, "stops": maint.stops,
-		"deferred_s": deferred, "cpu_p99": cpu}
+		"deferred_s": waited, "max_deferred_s": maint.maxDeferred.Seconds(), "cpu_p99": cpu}
 }
 
 // gitMaint runs one maintenance git at nice 19 in its own process group, which ctx's end stops with SIGTERM: the
