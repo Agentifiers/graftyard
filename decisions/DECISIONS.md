@@ -9575,7 +9575,10 @@ measured parts; C's share is a guess].
 **Status.** Ruled by the lead on 2026-11-23 from `tests/am1/results/g37-design.md` (G37): options A and B. Built on
 branch `g37-build` from main `3025e370` as two commits. Site script and shared code (`crates/git/src/compose.rs`,
 `builder_step` and `chain_ready`; `crates/git/src/host.rs`, `ShardHost::ready_chain` and `install_from`;
-`workers/site/src/shard.rs`, the composable branch of `/upload-pack`), so it ships on a site day. Not hosted.
+`workers/site/src/shard.rs`, the composable branch of `/upload-pack`), so it ships on a site day. **Passed hosted on B0-34 mt21**
+(2026-11-24, `tests/am1/results/b034-mt21.md`): no miss waited 2 s on the restarted home's chain, every-clone 100% in kill
+and second, and each post-kill base was the chain's fold at its 20th step. The install is [unverified] there, because the
+kill fell on a due fold.
 
 **Decision.**
 - **A.** The builder's step (`compose::builder_step`) first asks whether its container holds a chain. If it holds none
