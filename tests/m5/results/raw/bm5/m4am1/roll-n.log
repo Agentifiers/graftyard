@@ -1,0 +1,17 @@
+2026-11-24T14:57:20Z release roll n 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6, stop $3 from 2026-11-24T14:56:03Z
+2026-11-24T14:57:25Z spend $0.0; {"count":442,"current":null,"rolled":{"Edge":"e23f69e9","Front":"2310a9a4","Mcp":"2310a9a4","Ops":"e23f69e9","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"},"uploads":23}; ops ["4603cf96 100"]
+2026-11-24T14:57:26Z roll: graftyard: release roll waits: release 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6 has no ReleaseUploaded 
+2026-11-24T14:58:30Z roll: graftyard: release roll waits: release 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6 has no ReleaseUploaded 
+2026-11-24T14:59:34Z roll: graftyard: release roll waits: release 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6 has no ReleaseUploaded 
+2026-11-24T15:00:37Z roll: graftyard: release roll waits: release 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6 has no ReleaseUploaded 
+2026-11-24T15:01:41Z roll: graftyard: release roll waits: release 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6 has no ReleaseUploaded 
+2026-11-24T15:02:44Z spend $0.0; {"count":442,"current":null,"rolled":{"Edge":"e23f69e9","Front":"2310a9a4","Mcp":"2310a9a4","Ops":"e23f69e9","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"},"uploads":23}; ops ["4603cf96 100"]
+2026-11-24T15:02:46Z roll: graftyard: release roll waits: release 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6 has no ReleaseUploaded 
+2026-11-24T15:03:49Z roll: graftyard: release roll waits: release 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6 has no ReleaseUploaded 
+2026-11-24T15:04:53Z roll: graftyard: release roll waits: release 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6 has no ReleaseUploaded 
+2026-11-24T15:05:56Z roll: graftyard: release roll waits: release 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6 has no ReleaseUploaded 
+2026-11-24T15:07:00Z roll: graftyard: release roll waits: release 7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6 has no ReleaseUploaded 
+2026-11-24T15:08:05Z spend $0.01; {"count":442,"current":null,"rolled":{"Edge":"e23f69e9","Front":"2310a9a4","Mcp":"2310a9a4","Ops":"e23f69e9","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"},"uploads":23}; ops ["4603cf96 100"]
+2026-11-24T15:08:07Z roll: release roll: intent 01M871K4W1KKEA0G6C20R2A1V8 OpsRoll { release: ReleaseId([125, 239, 121, 128, 194, 135, 212, 251, 210, 193, 99, 116, 208, 10, 37, 46, 116, 129, 8, 38, 154, 234, 154, 37, 85, 47, 173, 243, 181, 216, 31, 198]) }, 1 undo(s) {"answer":{"digest":"97bc28247a1ee6136def2a41208cb468053334c3c866953e5130fd28c8882d09","index":1227,"status":201},"intent":"01M871K4W1KKEA0G6C20R2A1V8"} 
+2026-11-24T15:10:13Z roll: {"roll": "done", "release": "7def7980c287d4fbd2c16374d00a252e748108269aea9a25552fadf3b5d81fc6"} 
+2026-11-24T15:10:13Z DONE

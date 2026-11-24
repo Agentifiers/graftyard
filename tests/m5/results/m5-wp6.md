@@ -352,3 +352,59 @@ query for "names no release seq" found 0 lines on sites a and b.
 - Site a still runs N+1 (2f379da8, built with `test-format`); b and c run N. A product build never reads 0x20.0xfff0.
 - New prefixes `bm5f-n/` and `bm5f-n1/` are in `graft-m4a-releases`.
 - Spend $0.46 on the graft-m4a prefix (`tests/fanout/acctcost.py`, 12:16:32Z to 13:14:48Z).
+
+## BM-5's `graft-ops` swap-back, hosted (2026-11-24, graft-m4a, row m4am1, $0.02)
+
+**Verdict: passes.** A bad `graft-ops` at 1% was swapped back by `OpsPointer` with the API blocked: an edge isolate
+committed the pre-signed pointer from its own mint errors, and once unblocked `graft-ops` returned to N at 100% and
+ended the intent. Driver: `tests/m5/bm5/mint.sh`; raw logs in `tests/m5/results/raw/bm5/m4am1/`.
+
+**Setup** (14:56:03Z to 15:11:57Z, every build from main 6aa73504).
+- `graft-ops` 4603cf96 (test-faults, `GATE=pass`, 60 s step dwell, a 120 s first-day dwell for the 1% step, minute
+  cron, `ops` in `OPS_SCRIPTS`). Its cron fired only after a second schedule reset, at 15:08Z (BF-47's gotcha).
+- **N.** e23f69e9's Ops version c7079529 carries a bare tag, so N is a fresh ops-only release, 7def7980, the plain
+  test-faults build. `graft-ops` uploaded it as e8626037, tagged `24-7def7980…`, and its `OpsRoll` (443 to 446) left
+  e8626037 at 100% with c7079529 at 0%.
+- **N+1.** 5bc88414, the `test-mint-fail` build, uploaded as c24d1836 (seq 25). `release roll` signed its `OpsRoll` at
+  448 with the `OpsPointer` to N pre-signed.
+- **The edge.** 06329970, main's test-faults edge with eef95142's bindings and 11 vars, at 100%: eef95142 predates
+  `MintWatch`.
+- **API blocked.** At 15:11:57Z, as soon as `graft-ops` deployed c24d1836 at 1% and e8626037 at 99%, the deploy token
+  in `graft-m4a-ops-deploy-token` was replaced by an invalid value. A probe under it answered 400.
+
+**The swap-back** (`load.log`, `checks.log`).
+
+| Time | Event |
+|---|---|
+| 15:12:23Z | m3-ci installation-token mints through the edge, 24 at a time, 100 a batch |
+| 15:12:23Z to 15:13:31Z | 700 mints: 688 answered 201, 12 answered 503 (1.7%, about N+1's share) |
+| 15:13:54Z | edge 06329970: "graft-ops mint errors past MINT_ERROR_RATIO: submitting the pre-signed OpsPointer" |
+| 15:13:55Z | `OpsPointer` committed at 449, customer-signed (the pre-signed undo); the intent is `Undoing` |
+| 15:13:56Z | the same isolate: "mint undo: OpsPointer committed" |
+| 15:14:43Z | `graft-ops`: `Wait { why: "no deployment of Ops read" }`, the API blocked; the split still c24d1836 1% |
+| 15:15:36Z | deploy token restored |
+| 15:16:52Z | `graft-ops` deploys e8626037 100% with c24d1836 0% kept, then `IntentStep` 0 at 450 |
+| 15:16:54Z | `IntentDone` at 451 (the done line) |
+
+- **No deploy between the pointer and the unblock.** graft-ops' deployments list runs from 15:12:20Z (1%) straight to
+  the 15:16:52Z return, and the only ops log line in that time is the blocked `Wait`. The load stopped when the pointer
+  committed, so this row did not measure mints answered under the pin.
+- **One isolate tripped**, after about 700 mints. The edge had 1 "mint undo" line and 1 MINT_ERROR_RATIO line, both
+  from that isolate, and no other isolate submitted. The bound needs 2 thrown or 5xx N+1 answers among few
+  (2·ln(1/0.01) ≥ ln 10,000), so an isolate needs about 200 of its own mints at 1% [inference]. That is well inside
+  the lead's 3,000-mint line.
+- `rolled.Ops` is 7def7980 (N). N+1's `ReleaseUploaded` stays in the group, and the `rolled` record never named it.
+
+**Left as found and as changed.**
+- The edge is back on eef95142 at 100% and f4e193b9 at 0%. `graft-ops` is parked on ac4cd9a5, schedules `[]`.
+- The row's deploy token `graft-m4a-bm5m-deploy` is revoked and its file shredded. `graft-m4a-ops-deploy-token`
+  holds that revoked token.
+- `rolled.Ops` moved from e23f69e9 to 7def7980. The graft-m4a-ops versions e8626037 (N) and c24d1836 (N+1) stay.
+- New prefixes `bm5m-n/` and `bm5m-n1/` are in `graft-m4a-releases`. Sites are untouched.
+- Spend $0.02 on the graft-m4a prefix (14:56:03Z to 15:20:57Z); the UTC day stands at $17.95.
+
+**Driver faults, fixed in the driver.**
+- A version upload's `keep_bindings` keeps the script's newest version's vars, not the deployed one's, so the first
+  edge upload carried clause 1's `FORCE_FORMAT` and `FORCE_FORMAT_SITE`. `upload-edge.mjs` now copies eef95142's
+  plain-text vars itself; 691d05c1 and 2f0a107d, the two wrong uploads, ran about 1 minute each before 06329970.
+- `watch` read `current` with jq's `?`, so it missed `IntentDone`; fixed.

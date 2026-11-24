@@ -1,0 +1,6 @@
+2026-11-24T15:01:22Z
+edge live 691d05c1
+{"ok":true,"id":"2f0a107d-5c47-4259-aabc-ee8280938ad6","errors":[]}
+{"vars":["EDGE_CAP_BYTES","FORCE_FORMAT","FORCE_FORMAT_SITE","FORMATS_ENABLED","GRAFTYARD_CUSTOMER_KEY","GRAFTYARD_INSTALL","GRAFTYARD_SITES","HOST","OPS_SCRIPT","PART_BYTES","PLAN","RUN_SERVICE_PUBLIC","SSH_OPTION"],"types":{"assets":1,"durable_object_namespace":24,"plain_text":13,"r2_bucket":3,"secret_text":1,"service":1,"version_metadata":1}}
+{"deploy":true,"errors":[]}
+{"script":"graft-m4a-edge","created_on":"2026-11-24T15:01:52.347882Z","versions":["2f0a107d 100"]}

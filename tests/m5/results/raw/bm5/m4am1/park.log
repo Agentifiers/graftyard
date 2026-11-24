@@ -1,0 +1,7 @@
+2026-11-24T15:20:31Z
+{"ops_schedules":[]}
+{"deploy":true,"errors":[]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T15:21:00.830631Z","versions":["ac4cd9a5 100"]}
+{"revoke":"graft-m4a-bm5m-deploy","ok":true,"errors":[]}
+token file shredded
+spend since setup: $0.02

@@ -1,0 +1,8 @@
+2026-11-24T15:10:32Z
+{"count":447,"uploads":24,"n_uploaded":true,"rolled":{"Edge":"e23f69e9","Front":"2310a9a4","Mcp":"2310a9a4","Ops":"7def7980","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"}}
+put bm5m-n1/formats.txt
+put bm5m-n1/ops/index.js
+put bm5m-n1/ops/index_bg.wasm
+put bm5m-n1/release.json
+put bm5m-n1/release.sig
+N+1 5bc884149dadbab5fdcd0fc0ddc8ba7b9a10c140e1db337f37135eb89f14b7bf
