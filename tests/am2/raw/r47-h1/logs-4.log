@@ -1,0 +1,8 @@
+2026-11-24T15:58:11Z
+73d81cd2
+{"at": 1795535596452, "msg": "graft-ops gate mcp: N+1 Answers { answers: 0, fivexx: 0 } thrown 0 N Some(Answers { answers: 6266, fivexx: 0 }) (whole Some(Answers { answers: 6266, fivexx: 0 })) from 3 sites -> Starved(0)"}
+{"at": 1795535601117, "msg": "graft-ops gate mcp: N+1 Answers { answers: 0, fivexx: 0 } thrown 0 N Some(Answers { answers: 7644, fivexx: 0 }) (whole Some(Answers { answers: 7887, fivexx: 0 })) from 3 sites -> Starved(0)"}
+{"at": 1795535655197, "msg": "graft-ops gate mcp: N+1 Answers { answers: 11, fivexx: 0 } thrown 0 N Some(Answers { answers: 10586, fivexx: 0 }) (whole Some(Answers { answers: 10586, fivexx: 0 })) from 3 sites -> Starved(11)"}
+{"at": 1795535709494, "msg": "graft-ops gate mcp: N+1 Answers { answers: 95, fivexx: 0 } thrown 0 N Some(Answers { answers: 17966, fivexx: 0 }) (whole Some(Answers { answers: 17966, fivexx: 0 })) from 3 sites -> Starved(95)"}
+{"at": 1795535772315, "msg": "graft-ops gate mcp: N+1 Answers { answers: 122, fivexx: 0 } thrown 0 N Some(Answers { answers: 20856, fivexx: 0 }) (whole Some(Answers { answers: 20856, fivexx: 0 })) from 3 sites -> Starved(122)"}
+{"at": 1795535833397, "msg": "graft-ops gate mcp: N+1 Answers { answers: 169, fivexx: 0 } thrown 0 N Some(Answers { answers: 26570, fivexx: 0 }) (whole Some(Answers { answers: 26570, fivexx: 0 })) from 3 sites -> Starved(169)"}

@@ -137,7 +137,12 @@ bundles)
     put() { npx --prefix tests/m0 wrangler r2 object put "graft-m4a-releases/$1" --file "$2" --remote 2>&1 | tail -1; }
     fmt=$W/wp3/formats.txt; echo "formats: $(wc -l <"$fmt") lines, from AM2-WP3's FMT_FROM"
     # w4 carries front/ and mcp/ (N for both); w5 only mcp/, so `release roll w5` signs an McpRoll and no FrontRoll.
-    for b in "w4:--front workers/front/build --mcp workers/mcp/build" "w5:--mcp tests/am2/hosted/r47-bad"; do
+    # N1=clean (the McpRoll 100%-hold row): w5 is this checkout's mcp again with a marker module, a healthy N+1.
+    w5="w5:--mcp tests/am2/hosted/r47-bad"; [ "${N1:-bad}" = clean ] && w5="w5:--mcp workers/mcp/build --marker"
+    # BUNDLES overrides the list, as `<label>:<wp3-bundle.py flags>` items separated by `;` (h1's w4m: an mcp-only N
+    # whose files differ from w4's, because main's mcp build matched r1's w4 and `release roll w4` skipped the McpRoll).
+    IFS=';' read -ra list <<<"${BUNDLES:-w4:--front workers/front/build --mcp workers/mcp/build;$w5}"
+    for b in "${list[@]}"; do
       l=${b%%:*}; d=$K/rel/$l; rm -rf "$d"; p=r47$TAG-$l
       python3 tests/am2/hosted/wp3-bundle.py "$d" "$p" --formats "$fmt" ${b#*:} | tee "$K/rel-$l.json"
       openssl pkeyutl -sign -rawin -inkey "$W/release.key" -in "$d/release.json" -out "$d/release.sig"
