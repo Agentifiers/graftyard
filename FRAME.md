@@ -355,6 +355,14 @@ Under that direction the orchestrator settled how graft-m6a's BF-50 rows read "L
 - **What the row then shows:** replacement and recovery need nothing from the Cloudflare API, because the executor key, the Workflows coordinator and the members do all of it. That is the claim the line exists for (`design/DESIGN.md`, "Downtime").
 - **What it does not show:** that the account's own control plane being unreachable changes nothing. That stays B0-19's question, and B0-19 stays skipped.
 
+### Operator decision, 2026-11-24, AM1 closed and the runner account stands in as the agents account
+
+> "Use the runner account as the agents stand-in, and close AM1 in BUILD-PLAN"
+
+- **AM1 is closed.** LM-1 is met, so AM1-WP6 is met (`build/BUILD-PLAN.md`, AM1-WP6, "State (2026-11-24)"). B0-33, the last open row, passed on the h1 set's median plus the closing run clA. B0-32, B0-33 and B0-34 are met on the lead's rulings under the operator's direction of 2026-11-23, and the operator accepted those rulings by closing AM1.
+- **The runner account is the agents account for test installs** until go-live: `graft-agents-front`, the controller, its `graft-ops` and its Sandboxes for AM3's hosted rows (`build/BUILD-PLAN.md`, AM3-WP1). Its spend counts toward `graft-m4a`, as the runner account's does, under the same $40 install cap.
+- **What it does not test.** The runner account also holds `graft-runners` and the vault stand-in, so the agents account is not isolated from Actions runners or the vault as `design/AGENT-LAYER.md` ("Failure modes", "Deployment modes") requires in production. A production install still gets its own agents account; each AM3 hosted verdict records the stand-in.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
