@@ -144,9 +144,15 @@ async fn take<H: Host>(h: &H, st: &mut State, r: &mut Report, rows: Rows) -> Res
     let applied = (got.held.0 + 1).saturating_sub(rows.first.0) as usize;
     st.owed.extend(owed_by(rows.chain, &rows.rows[..applied.min(rows.rows.len())]));
     st.puller.applied(rows.chain, got.held);
+    let top = Index(rows.first.0 + rows.rows.len() as u64 - 1);
     if got.halt.is_some() {
         st.puller.halt(rows.chain);
         r.halted.push(rows.chain);
+    } else if got.held < top {
+        // The copy took fewer rows than it was sent (a repository whose owner its `Names` copy does not name yet):
+        // the rest come from the edge, never from a later feed object stitched over the gap.
+        let b = st.puller.behind.entry(rows.chain).or_insert(top);
+        *b = (*b).max(top);
     }
     Ok(())
 }
@@ -180,7 +186,11 @@ pub async fn pass<H: Host>(h: &H, st: &mut State) -> Result<Report, String> {
                 }
             };
             let o: ExportObject = export::decode_object(&bytes)?;
-            for rows in st.puller.take_object(&o, h.now())? {
+            // Every other chain before a repository's: its copy is joined with the owner its `Names` shard's
+            // `RepoOwner` row names, which an object carries with or before the repository's first rows.
+            let mut taken = st.puller.take_object(&o, h.now())?;
+            taken.sort_by_key(|r| matches!(r.chain, ChainId::Repo(_)));
+            for rows in taken {
                 take(h, st, &mut r, rows).await?;
             }
             after = Some(k);
@@ -231,8 +241,10 @@ pub async fn pass<H: Host>(h: &H, st: &mut State) -> Result<Report, String> {
     }
     r.owed = st.owed.len();
     r.more = feed_more || edge_more || st.owed.len() > COPIES_PER_PASS;
-    // Current: nothing left to pull from the feed, and the edge had nothing more for any chain it was asked.
-    if !r.more && r.halted.is_empty() && st.puller.halted.is_empty() {
+    // Current: a source answered for every chain (the feed, or the edge once the feed is stale), nothing is left to
+    // pull, and no chain is behind or halted. A feed that did not answer confirms nothing until the edge is asked.
+    let confirmed = r.feed_error.is_none() || r.stale;
+    if confirmed && !r.more && st.puller.behind.is_empty() && st.puller.halted.is_empty() {
         st.current_at = h.now();
     }
     st.objects += r.objects as u64;

@@ -145,7 +145,19 @@ impl Host for Live {
             .await
             .map_err(err)?;
         let status = r.status_code();
-        let v: Value = r.json().await.map_err(|e| format!("import {chain}: {status}: {e}"))?;
+        let text = r.text().await.map_err(err)?;
+        // Not yet: a repository copy whose owner its `Names` copy does not name. The chain stays behind, so the edge
+        // fills it on a later pass.
+        if status == 409 {
+            return Ok(Imported { held: Index(0), halt: None });
+        }
+        // A copy that refuses the rows (entry 1 rebuilds no record, a family no member hosts) halts its chain, as a
+        // refused row does: the rows before stay, nothing is skipped, and the other chains go on.
+        if (400..500).contains(&status) {
+            // `held` 0: the puller's cursor never moves back (`Puller::applied`), so it stays where the copy is.
+            return Ok(Imported { held: Index(0), halt: Some(format!("{status} {text}")) });
+        }
+        let v: Value = serde_json::from_str(&text).map_err(|e| format!("import {chain}: {status}: {e}"))?;
         if status != 200 {
             return Err(format!("import {chain}: {status} {v}"));
         }
@@ -180,7 +192,7 @@ impl Host for Live {
 
 /// A repository chain's owner, from the copy of its `Names` shard: `None` for another chain, or one not copied yet.
 async fn owner_of(env: &Env, chain: ChainId) -> Option<i64> {
-    let ChainId::Repo(repo) = chain else { return None };
+    let (ChainId::Repo(repo) | ChainId::RepoMeta(repo)) = chain else { return None };
     let names = ChainId::Names(graftyard_identity::name_shard(&graftyard_identity::NameKey::Repo(repo)));
     let stub = env.durable_object("MEMBER").ok()?.get_by_name(&graftyard_lookup::lifeboat_object(names)).ok()?;
     let mut init = RequestInit::new();

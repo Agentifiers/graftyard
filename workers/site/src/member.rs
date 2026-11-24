@@ -610,6 +610,11 @@ impl Member {
         let rows = crate::lifeboat::rows_of(&body)?;
         if self.hosts.borrow().is_none() {
             let Some(row1) = rows.first() else { return Response::error("an unjoined copy starts at entry 1", 409) };
+            // A repository's family needs its owner, which the puller reads from the copy of the repository's `Names`
+            // shard: until that copy holds the `RepoOwner` row, the copy waits (409), never joins without it.
+            if matches!(body.chain, ChainId::Repo(_) | ChainId::RepoMeta(_)) && body.owner.is_none() {
+                return Response::error("no owner yet: the repository's Names copy names none", 409);
+            }
             // The family from the chain alone, as `Kind::of` picks it; the record from entry 1 under that family.
             let probe = Join {
                 chain: body.chain,

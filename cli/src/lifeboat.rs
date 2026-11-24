@@ -4,7 +4,10 @@
 //! - `init` makes the host's own Ed25519 key (seed in `<dir>/lifeboat.key`, mode 0600), signs `LifeboatAdd { host,
 //!   key }` with the customer key against the group's last digest (a probe's 409 names it), posts it, and writes the
 //!   bundle's `lifeboat.json`: the install's trust anchor (`GRAFTYARD_INSTALL`, `GRAFTYARD_CUSTOMER_KEY`), the same
-//!   anchor the sites get, which the copy's `Release` learner accepts the genesis against, and the edge and host.
+//!   anchor the sites get, which the copy's `Release` learner accepts the genesis against; the signed genesis, which
+//!   the front binds as an edge does (`GRAFTYARD_GENESIS_SIGNED`); the site table; the edge and host; and the bundle's
+//!   `unique_key`, which its Durable Object ids derive from. `lifeboat.json` and `lifeboat.key` are the host's
+//!   backed-up state.
 //! - `enroll` calls `POST /api/graftyard/v1/lifeboat/tokens` with the developer's own token (read from a file, never
 //!   argv) and writes the returned `lifeboat:read` token into gh's `hosts.yml` under the lifeboat host and a
 //!   0600 file a git credential helper reads. The token is never printed.
@@ -69,6 +72,8 @@ pub struct InitArgs<'a> {
     pub key: &'a Path,
     pub dir: &'a Path,
     pub edge: Option<&'a str>,
+    /// The signed genesis the install committed, whose SHA-256 is install.toml's `genesis`.
+    pub genesis: &'a Path,
 }
 
 pub fn init(config: &Path, a: InitArgs) -> Res<()> {
@@ -93,12 +98,27 @@ pub fn init(config: &Path, a: InitArgs) -> Res<()> {
         return Err("the group did not register the lifeboat".into());
     }
     let anchor = t.anchor()?;
+    // The genesis the sites hold, checked here against install.toml's committed digest and later, by the copy's
+    // `Release` learner and the front, against the anchor.
+    let genesis = fs::read(a.genesis).map_err(|e| format!("{}: {e}", a.genesis.display()))?;
+    let digest = hex(&<sha2::Sha256 as sha2::Digest>::digest(&genesis));
+    if t.genesis.as_deref() != Some(digest.as_str()) {
+        return Err(format!("{} is not the genesis install.toml names", a.genesis.display()));
+    }
+    graftyard_release::accept_genesis(&anchor, &genesis).map_err(|e| format!("{}: {e}", a.genesis.display()))?;
+    // Kept from an earlier init: the bundle's Durable Object ids derive from it, so a new one would lose the copy.
+    let old: Value =
+        fs::read(a.dir.join("lifeboat.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
+    let unique = old["unique_key"].as_str().map(str::to_string).unwrap_or_else(|| hex(&random::<16>()));
     let cfg = json!({
         "host": a.host,
         "edge": edge,
         "install": anchor.install.to_string(),
         "customer_key": t.customer_key,
         "key": key.hex(),
+        "sites": t.table(),
+        "genesis_signed": hex(&genesis),
+        "unique_key": unique,
     });
     let out = a.dir.join("lifeboat.json");
     fs::write(&out, serde_json::to_vec_pretty(&cfg).expect("json")).map_err(|e| format!("{}: {e}", out.display()))?;

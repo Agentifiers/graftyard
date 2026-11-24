@@ -75,12 +75,14 @@ pub fn amz_date(ms: u64) -> String {
 }
 
 impl S3 {
-    /// A signed `GET` of `path` (below the bucket, already a key) with `query` pairs, at `now_ms`.
+    /// A signed `GET` of `key` in the bucket (or of the bucket itself) with `query` pairs, at `now_ms`.
     pub fn get(&self, key: Option<&str>, query: &[(&str, &str)], now_ms: u64) -> Signed {
-        let host = self.endpoint.split("://").nth(1).unwrap_or(&self.endpoint).trim_end_matches('/').to_string();
+        // The endpoint's authority is the signed host; a path on it (a bed's stand-in) prefixes the canonical path.
+        let rest = self.endpoint.split_once("://").map_or(self.endpoint.as_str(), |(_, r)| r).trim_end_matches('/');
+        let (host, base) = rest.split_once('/').map_or((rest, String::new()), |(h, b)| (h, format!("/{b}")));
         let path = match key {
-            Some(k) => format!("/{}/{}", uri_encode(&self.bucket, true), uri_encode(k, true)),
-            None => format!("/{}", uri_encode(&self.bucket, true)),
+            Some(k) => format!("{base}/{}/{}", uri_encode(&self.bucket, true), uri_encode(k, true)),
+            None => format!("{base}/{}", uri_encode(&self.bucket, true)),
         };
         let mut q: Vec<(String, String)> =
             query.iter().map(|(k, v)| (uri_encode(k, false), uri_encode(v, false))).collect();

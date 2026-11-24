@@ -210,6 +210,9 @@ enum LifeboatCmd {
         /// The edge's base URL (default: https://<zone>).
         #[arg(long)]
         edge: Option<String>,
+        /// The signed genesis the install committed (install.toml's `genesis` digest).
+        #[arg(long)]
+        genesis: PathBuf,
     },
     /// Mints the caller's `lifeboat:read` token from the main host with their own token, and writes it for gh and git.
     Enroll {
@@ -624,9 +627,10 @@ fn run(cli: Cli) -> Res<()> {
                 release: vault::Release { dir: &release, release_key: &release_key },
             })
         }
-        Cmd::Lifeboat { cmd: LifeboatCmd::Init { host, key, dir, edge } } => {
-            lifeboat::init(config, lifeboat::InitArgs { host: &host, key: &key, dir: &dir, edge: edge.as_deref() })
-        }
+        Cmd::Lifeboat { cmd: LifeboatCmd::Init { host, key, dir, edge, genesis } } => lifeboat::init(
+            config,
+            lifeboat::InitArgs { host: &host, key: &key, dir: &dir, edge: edge.as_deref(), genesis: &genesis },
+        ),
         Cmd::Lifeboat { cmd: LifeboatCmd::Enroll { host, edge, token_file, gh_config, out } } => {
             lifeboat::enroll(lifeboat::EnrollArgs {
                 host: &host,

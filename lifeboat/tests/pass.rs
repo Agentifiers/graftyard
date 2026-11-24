@@ -64,6 +64,8 @@ struct Fake {
     kept: RefCell<BTreeMap<PackId, Vec<u8>>>,
     edge_calls: RefCell<Vec<(ChainId, u64)>>,
     feed_down: RefCell<bool>,
+    /// The next import takes at most this many rows and halts on none.
+    short: RefCell<Option<usize>>,
 }
 
 impl Fake {
@@ -117,6 +119,10 @@ impl Host for Fake {
         let mut copy = self.copy.borrow_mut();
         let c = copy.entry(chain).or_default();
         let halt = self.halt_at.borrow().get(&chain).copied();
+        let rows = match self.short.borrow_mut().take() {
+            Some(n) => &rows[..n],
+            None => rows,
+        };
         for r in rows {
             if Some(c.len() as u64 + 1) == halt {
                 return Ok(Imported { held: Index(c.len() as u64), halt: Some("planted".into()) });
@@ -200,6 +206,7 @@ fn the_feed_then_the_edge_with_packs_checked_and_a_halt_held() {
     let r = run(&h, &mut st);
     assert!(r.feed_error.is_some());
     assert_eq!(h.copy.borrow()[&REPO].len(), 6, "{r:?}");
+    assert_eq!(st.current_at, 1_000 + FEED_STALE_MS, "a halted copy is still never current");
 
     // The decoder: due with none sent, then not until a day later or another release.
     let rel = [9u8; 32];
@@ -209,6 +216,24 @@ fn the_feed_then_the_edge_with_packs_checked_and_a_halt_held() {
     assert!(!pass::decoder_due(&st, rel, 5 + pass::DECODER_EVERY_MS - 1));
     assert!(pass::decoder_due(&st, rel, 5 + pass::DECODER_EVERY_MS));
     assert!(pass::decoder_due(&st, [8; 32], 6), "a new decoder is reported at once");
+
+    // A copy that takes fewer rows than it is sent is behind: the edge fills it, even while the feed is fresh.
+    let mut st2 = State::default();
+    let h2 = Fake::default();
+    *h2.now.borrow_mut() = 50;
+    h2.round(0, &[(IDS, 1, 2)]);
+    *h2.short.borrow_mut() = Some(1);
+    let r = run(&h2, &mut st2);
+    assert!(!r.stale);
+    assert_eq!(h2.copy.borrow()[&IDS].len(), 2, "row 2 came from the edge: {r:?}");
+    assert_eq!(h2.edge_calls.borrow().as_slice(), [(IDS, 2)]);
+    assert!(st2.puller.behind.is_empty());
+    assert_eq!(st2.current_at, 50);
+    // A feed that does not answer before it is stale confirms nothing.
+    *h2.feed_down.borrow_mut() = true;
+    *h2.now.borrow_mut() = 60;
+    run(&h2, &mut st2);
+    assert_eq!(st2.current_at, 50);
 
     // The state round-trips.
     assert_eq!(State::decode(&st.encode()).unwrap(), st);
