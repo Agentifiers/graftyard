@@ -6,33 +6,49 @@
 //!   (`crate::feed`), at most `OBJECTS_PER_PASS`. Its rows go to each chain's copy (`Host::import`), and the cursor
 //!   moves only by what the copy holds after the import.
 //! - **Edge.** Each `Puller::pulls` tail, signed with the host's key, a page at a time; a page that does not start at
-//!   the copy's next index is refused, never stitched.
+//!   the copy's next index is refused, never stitched. The pulls go round the chains on a turn (`Puller::turn`),
+//!   `AT_ONCE` first pages at once, each chain pulled to its end before the turn passes it. Pages that carry rows count
+//!   against `PAGES_PER_PASS`, and answers with none (caught up, or any status) against `PROBES_PER_PASS`, so a stale
+//!   feed's round of thousands of caught-up chains is not held to the data budget (`decisions/DECISIONS.md`,
+//!   "`lifeboat-turns`").
 //! - **Packs.** Every stored pack a repository row names, from `packs/{id}?network=` and checked against the row's
-//!   `PackRef.checksum` before `graft-blob` keeps it (`Host::put_pack`). One the install does not serve yet stays owed.
+//!   `PackRef.checksum` before `graft-blob` keeps it (`Host::put_pack`), one network at a time on a turn. A pack the
+//!   install answers 404 sends one probe to its repository chain: a chain the edge answers 404 is gone, and its
+//!   network's owed packs are dropped. On a live chain the pack stays owed, and one unserved for
+//!   `UNSERVED_ALARM_MS` alarms (`unserved_alarm`).
 //! - **Halt.** A chain whose copy halted is moved by no source again (`Puller::halt`), and the pass names it.
 //! - **Gone.** A chain the edge answers 404 has no group, retired or purged for good (`Puller::gone`): it is asked no
 //!   more, and the pass names it. Any other status is asked again next pass.
 //! - **Unreachable feed.** A feed that does not answer is a stale one: the pass goes on to the edge, and once no
 //!   object arrived for `FEED_STALE_MS` the edge serves every chain.
-//! - **Current.** A pass that leaves no chain with more to pull, from either source, is the copy's current moment,
-//!   which `LifeboatStatus::cursor_age` counts from.
+//! - **Current.** With the feed fresh, a pass that leaves no chain with more to pull, from either source, is the copy's
+//!   current moment, which `LifeboatStatus::cursor_age` counts from. With it stale, a cycle of the turns in which every
+//!   chain answered caught up is current as of the cycle's start.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use graftyard_git::export::{self, ExportObject};
 use graftyard_git::pack::PackId;
 use graftyard_git::repo::{REPO_FORMAT_V1, RepoEvent, stored_packs};
 use graftyard_raft::{EntryBody, LogEntry, codec};
-use graftyard_types::{ChainId, Digest, Index, NetworkId};
+use graftyard_types::{ChainId, Digest, Index, NetworkId, RepoId};
 use serde::{Deserialize, Serialize};
 
 use crate::puller::{Puller, Rows};
 
 /// Feed objects one pass takes at most [guess, as the vault's `PAGES_PER_PASS` pages of one object each].
 pub const OBJECTS_PER_PASS: usize = 100;
-/// Edge pages and pack copies one pass makes at most [guess].
+/// Edge pages that carry rows, and pack copies, one pass makes at most [guess]; a pass may run `AT_ONCE` past them.
 pub const PAGES_PER_PASS: usize = 40;
 pub const COPIES_PER_PASS: usize = 40;
+/// Edge answers with no rows (a caught-up chain, or any status) one pass makes at most [guess]: about 80 s a round of
+/// graft-m3f's 3,234 chains at the bundle's 10 s alarm, against the 5-minute lag alarm (`decisions/DECISIONS.md`,
+/// "`lifeboat-turns`").
+pub const PROBES_PER_PASS: usize = 400;
+/// Edge requests in flight at once [guess].
+pub const AT_ONCE: usize = 16;
+/// A pack the install answers 404 on a live repository chain alarms once it has been unserved this long [guess].
+pub const UNSERVED_ALARM_MS: u64 = 3_600_000;
 
 /// A pack the copy owes: its network, id, and the checksum and length its entry names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -58,6 +74,12 @@ pub struct State {
     pub packs: u64,
     pub pages: u64,
     pub objects: u64,
+    /// The network whose owed pack was tried last: the next pass starts after it.
+    #[serde(default)]
+    pub pack_turn: Option<NetworkId>,
+    /// Owed packs the install answered 404 while their repository chain is live, and when it first did.
+    #[serde(default)]
+    pub unserved: BTreeMap<PackId, u64>,
 }
 
 /// What an import answered: the last index the copy holds, and the halt if the copy stopped.
@@ -111,6 +133,11 @@ pub struct Report {
     pub halted: Vec<ChainId>,
     /// Chains the edge answered 404 this pass: no group, asked no more.
     pub gone: Vec<ChainId>,
+    /// Edge answers with no rows: caught-up chains, and any status.
+    pub probes: usize,
+    /// Owed packs unserved on a live chain (`State::unserved`), and how many of them alarm.
+    pub unserved: usize,
+    pub unserved_alarm: usize,
     pub stale: bool,
     /// The feed did not answer (R2 down, or the token refused): the pass went on to the edge.
     pub feed_error: Option<String>,
@@ -204,66 +231,163 @@ pub async fn pass<H: Host>(h: &H, st: &mut State) -> Result<Report, String> {
             break;
         }
     }
-    // The edge: every known chain while the feed is stale, else the chains the feed left behind.
-    r.stale = st.puller.stale(h.now());
+    // The edge: every known chain while the feed is stale, else the chains the feed left behind, round the turns.
+    let now = h.now();
+    r.stale = st.puller.stale(now);
+    if !r.stale {
+        st.puller.cycle = None;
+    } else if st.puller.cycle.is_none() {
+        // A cycle starts at the first key, so it ends at the last one.
+        (st.puller.cycle, st.puller.cycle_dirty, st.puller.turn) = (Some(now), false, None);
+    }
+    let pulls = st.puller.pulls(now);
+    let last = pulls.iter().map(|p| p.chain).max();
     let mut edge_more = false;
-    'edge: loop {
-        let pulls = st.puller.pulls(h.now());
-        let mut moved = false;
-        for p in pulls {
-            if r.pages == PAGES_PER_PASS {
-                edge_more = true;
-                break 'edge;
-            }
-            // A chain the edge cannot serve now (a 503 while its followers move) is asked again next pass; one it
-            // answers 404 has no group and is asked no more.
-            let (first, rows) = match h.entries(p.chain, p.from, p.limit).await {
-                Ok(Page::Rows { first, rows }) => (first, rows),
-                Ok(Page::Status(404)) => {
-                    st.puller.gone(p.chain);
-                    r.gone.push(p.chain);
-                    continue;
-                }
-                _ => continue,
-            };
-            r.pages += 1;
-            if rows.is_empty() {
-                continue;
-            }
-            if !r.edge_chains.contains(&p.chain) {
-                r.edge_chains.push(p.chain);
-            }
-            let rows = st.puller.take_page(p.chain, first, rows)?;
-            take(h, st, &mut r, rows).await?;
-            moved = true;
-        }
-        if !moved {
+    'edge: for chunk in pulls.chunks(AT_ONCE) {
+        if r.pages >= PAGES_PER_PASS || r.probes >= PROBES_PER_PASS {
+            edge_more = true;
             break;
         }
+        let firsts = futures_util::future::join_all(chunk.iter().map(|p| h.entries(p.chain, p.from, p.limit))).await;
+        for (p, got) in chunk.iter().zip(firsts) {
+            let mut got = got;
+            // Each chain to its end before the turn passes it: a chain cut off by the budget is the next pass's first.
+            let clean = loop {
+                match got {
+                    Ok(Page::Rows { first, rows }) if !rows.is_empty() => {
+                        r.pages += 1;
+                        if !r.edge_chains.contains(&p.chain) {
+                            r.edge_chains.push(p.chain);
+                        }
+                        let n = rows.len() as u64;
+                        let rows = st.puller.take_page(p.chain, first, rows)?;
+                        take(h, st, &mut r, rows).await?;
+                        if st.puller.halted.contains(&p.chain) || st.puller.behind.contains_key(&p.chain) {
+                            break st.puller.halted.contains(&p.chain);
+                        }
+                        if n < p.limit {
+                            break true;
+                        }
+                        if r.pages >= PAGES_PER_PASS {
+                            edge_more = true;
+                            break 'edge;
+                        }
+                        got = h.entries(p.chain, st.puller.next(p.chain), p.limit).await;
+                    }
+                    Ok(Page::Rows { .. }) => {
+                        r.probes += 1;
+                        break true;
+                    }
+                    // No group: asked no more.
+                    Ok(Page::Status(404)) => {
+                        r.probes += 1;
+                        st.puller.gone(p.chain);
+                        r.gone.push(p.chain);
+                        break true;
+                    }
+                    // A chain the edge cannot serve now (a 503 while its followers move) is asked again next turn.
+                    _ => {
+                        r.probes += 1;
+                        break false;
+                    }
+                }
+            };
+            st.puller.turn = Some(p.chain);
+            if !clean {
+                st.puller.cycle_dirty = true;
+            }
+            if r.stale && Some(p.chain) == last {
+                let start = st.puller.cycle.unwrap_or(now);
+                if !st.puller.cycle_dirty && st.puller.behind.is_empty() && st.puller.halted.is_empty() {
+                    st.current_at = st.current_at.max(start);
+                }
+                (st.puller.cycle, st.puller.cycle_dirty) = (Some(h.now()), false);
+            }
+        }
     }
-    // Packs, oldest owed first. One the install does not serve yet (404) stays owed; a corrupt copy stays owed too,
-    // and is counted.
-    for p in st.owed.clone().into_iter().take(COPIES_PER_PASS) {
+    // Packs, one network at a time round the turns.
+    let mut probed: BTreeMap<NetworkId, bool> = BTreeMap::new();
+    for p in in_turns(&st.owed, st.pack_turn, COPIES_PER_PASS) {
+        if !st.owed.contains(&p) {
+            continue;
+        }
+        st.pack_turn = Some(p.network);
         match h.put_pack(&p).await {
             Ok(Copied::Kept) => {
                 st.owed.remove(&p);
+                st.unserved.remove(&p.id);
                 r.packs += 1;
             }
+            Ok(Copied::Status(404)) => {
+                let chain = ChainId::Repo(RepoId(p.network.0));
+                let gone = match probed.get(&p.network) {
+                    Some(g) => *g,
+                    None if st.puller.gone.contains(&chain) => true,
+                    None => {
+                        let g = matches!(h.entries(chain, st.puller.next(chain), 1).await, Ok(Page::Status(404)));
+                        probed.insert(p.network, g);
+                        g
+                    }
+                };
+                if gone {
+                    st.puller.gone(chain);
+                    if !r.gone.contains(&chain) {
+                        r.gone.push(chain);
+                    }
+                    let dropped: Vec<PackId> =
+                        st.owed.iter().filter(|o| o.network == p.network).map(|o| o.id).collect();
+                    st.owed.retain(|o| o.network != p.network);
+                    for id in dropped {
+                        st.unserved.remove(&id);
+                    }
+                } else {
+                    st.unserved.entry(p.id).or_insert(now);
+                }
+            }
+            // A corrupt copy, another status, or no answer: still owed.
             Ok(Copied::Status(_) | Copied::Corrupt) | Err(_) => {}
         }
     }
     r.owed = st.owed.len();
+    r.unserved = st.unserved.len();
+    r.unserved_alarm = unserved_alarm(st, h.now());
     r.more = feed_more || edge_more || st.owed.len() > COPIES_PER_PASS;
-    // Current: a source answered for every chain (the feed, or the edge once the feed is stale), nothing is left to
-    // pull, and no chain is behind or halted. A feed that did not answer confirms nothing until the edge is asked.
-    let confirmed = r.feed_error.is_none() || r.stale;
-    if confirmed && !r.more && st.puller.behind.is_empty() && st.puller.halted.is_empty() {
+    // Current with the feed fresh: a source answered for every chain, nothing is left to pull, and no chain is behind
+    // or halted. With it stale, only a clean cycle of the turns, above, or a copy that knows no chain to pull.
+    let settled = !r.more && st.puller.behind.is_empty() && st.puller.halted.is_empty();
+    if settled && (if r.stale { last.is_none() } else { r.feed_error.is_none() }) {
         st.current_at = h.now();
     }
     st.objects += r.objects as u64;
     st.pages += r.pages as u64;
     st.packs += r.packs as u64;
     Ok(r)
+}
+
+/// Owed packs unserved on a live chain for `UNSERVED_ALARM_MS` or more at `now`.
+pub fn unserved_alarm(st: &State, now: u64) -> usize {
+    st.unserved.values().filter(|t| now.saturating_sub(**t) >= UNSERVED_ALARM_MS).count()
+}
+
+/// The owed packs one pass tries: one per network, round and round, starting with the first network after `after`
+/// (where the last pass stopped), at most `n`, as the vault takes its copies (`in_turns` there). So packs the install
+/// no longer serves delay another network's by at most a turn each, not by their number.
+fn in_turns(owed: &BTreeSet<Owed>, after: Option<NetworkId>, n: usize) -> Vec<Owed> {
+    let mut turns: BTreeMap<NetworkId, VecDeque<Owed>> = BTreeMap::new();
+    for o in owed {
+        turns.entry(o.network).or_default().push_back(*o);
+    }
+    let (later, earlier): (Vec<_>, Vec<_>) = turns.into_iter().partition(|(t, _)| after.is_some_and(|a| *t > a));
+    let mut queue: VecDeque<VecDeque<Owed>> = later.into_iter().chain(earlier).map(|(_, q)| q).collect();
+    let mut out = Vec::new();
+    while out.len() < n {
+        let Some(mut q) = queue.pop_front() else { break };
+        out.extend(q.pop_front());
+        if !q.is_empty() {
+            queue.push_back(q);
+        }
+    }
+    out
 }
 
 /// How often a lifeboat reports its decoder at least (`design/DESIGN.md`, "Install operations", Lifeboat: "when its

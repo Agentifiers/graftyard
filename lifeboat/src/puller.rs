@@ -9,6 +9,10 @@
 //! - **Stale.** With no new feed object for `FEED_STALE_MS`, every known chain is pulled from the edge from its next
 //!   index, a page at a time. The edge serves the entries endpoint from followers and learners, never the leader. A
 //!   chain the feed never named is unknown here and waits for the feed [inference: no endpoint lists chains].
+//! - **Turns.** The pulls go round the known chains from the one after the last chain asked (`turn`), so every chain
+//!   is asked within one cycle whatever the pass budgets, never only the first ones in key order. A cycle starts each
+//!   time the turn comes round; one in which every chain answered caught up (or gone) is the copy's current moment as
+//!   of the cycle's start (`decisions/DECISIONS.md`, "`lifeboat-turns`").
 //! - **Halts.** A chain the importer halted on (a refused row, or one that does not chain) is moved by no source again,
 //!   and `halted` names it for the alarm. Nothing is ever skipped: a cursor moves only by what the importer applied.
 //! - **Gone.** A chain the edge answers 404 has no group: a repository purged or retired for good, every member
@@ -42,6 +46,15 @@ pub struct Puller {
     pub halted: BTreeSet<ChainId>,
     #[serde(default)]
     pub gone: BTreeSet<ChainId>,
+    /// The last chain whose edge pull ended: the next pass starts after it.
+    #[serde(default)]
+    pub turn: Option<ChainId>,
+    /// While the feed is stale: when the current cycle of the turns started, and whether a chain in it failed to
+    /// answer caught up.
+    #[serde(default)]
+    pub cycle: Option<u64>,
+    #[serde(default)]
+    pub cycle_dirty: bool,
 }
 
 /// Rows for the importer of one chain, starting at the copy's next index.
@@ -66,7 +79,7 @@ impl Puller {
         self.feed.is_none() || now.saturating_sub(self.feed_seen) >= FEED_STALE_MS
     }
 
-    fn next(&self, c: ChainId) -> Index {
+    pub fn next(&self, c: ChainId) -> Index {
         Index(self.held.get(c).0 + 1)
     }
 
@@ -132,15 +145,19 @@ impl Puller {
     }
 
     /// This pass's tail pulls at `now`: every known chain while the feed is stale, and otherwise only the chains
-    /// behind it. Never a halted or gone one.
+    /// behind it, from the chain after `turn` round to it. Never a halted or gone one.
     pub fn pulls(&self, now: u64) -> Vec<Pull> {
         let stale = self.stale(now);
-        self.held
+        let due: Vec<ChainId> = self
+            .held
             .0
             .keys()
             .filter(|c| !self.halted.contains(*c) && !self.gone.contains(*c) && (stale || self.behind.contains_key(*c)))
-            .map(|c| Pull { chain: *c, from: self.next(*c), limit: TAIL_PAGE })
-            .collect()
+            .copied()
+            .collect();
+        let (later, earlier): (Vec<ChainId>, Vec<ChainId>) =
+            due.into_iter().partition(|c| self.turn.is_some_and(|t| *c > t));
+        later.into_iter().chain(earlier).map(|c| Pull { chain: c, from: self.next(c), limit: TAIL_PAGE }).collect()
     }
 
     /// An edge page for `chain` starting at `first`: the rows, if they start at the copy's next index. A page that

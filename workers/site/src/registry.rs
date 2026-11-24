@@ -311,6 +311,16 @@ impl DurableObject for Registry {
                     .to_array()?;
                 Response::from_json(&rows)
             }
+            // Test installs only: the change feed's hold, in the feed site's object `export`. `?hold=1` stops every
+            // round claim, `?hold=0` lets them go again; either answers the state.
+            #[cfg(feature = "test-faults")]
+            (Method::Post, "/export_hold") => {
+                if let Ok(v) = query(&url, "hold") {
+                    sql.exec(crate::export_feed::HOLD_SCHEMA, None)?;
+                    sql.exec(crate::export_feed::HOLD_PUT, vec![i64::from(v == "1").into()])?;
+                }
+                Response::from_json(&serde_json::json!({ "held": export_held(&sql)? }))
+            }
             // The sweeper cron's cursor (`crate::sweep`), held only by this site's object `sweep`: the network the next
             // run starts at (null: from the first), and the last run's report.
             // Test installs only: one sweeper run, the cron's own, with its clock at `?now=` ms (BF-19).
@@ -384,6 +394,11 @@ impl DurableObject for Registry {
                 }
                 sql.exec(crate::export_feed::REPORTS_SCHEMA, None)?;
                 sql.exec(crate::export_feed::ROUND_SCHEMA, None)?;
+                // Test installs only: a held feed claims no round.
+                #[cfg(feature = "test-faults")]
+                if export_held(&sql)? {
+                    return Response::from_json(&serde_json::json!({ "due": false, "held": true }));
+                }
                 let now = crate::now_ms();
                 let last: Vec<Last> = sql.exec(crate::export_feed::ROUND_LAST, None)?.to_array()?;
                 if !graftyard_git::export::round_due(last.first().map(|l| l.last as u64), now) {
@@ -522,6 +537,18 @@ fn sweep_homes(sql: &SqlStorage) -> Result<()> {
         None,
     )?;
     Ok(())
+}
+
+/// Test installs only: whether the change feed is held (`/export_hold`).
+#[cfg(feature = "test-faults")]
+fn export_held(sql: &SqlStorage) -> Result<bool> {
+    #[derive(Deserialize)]
+    struct Held {
+        held: i64,
+    }
+    sql.exec(crate::export_feed::HOLD_SCHEMA, None)?;
+    let rows: Vec<Held> = sql.exec(crate::export_feed::HOLD_GET, None)?.to_array()?;
+    Ok(rows.first().is_some_and(|h| h.held == 1))
 }
 
 pub(crate) fn query(url: &Url, key: &str) -> Result<String> {

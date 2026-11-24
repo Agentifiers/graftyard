@@ -882,6 +882,7 @@ name = "graftyard-lifeboat"
 version = "0.1.0"
 dependencies = [
  "futures-executor",
+ "futures-util",
  "graftyard-git",
  "graftyard-raft",
  "graftyard-types",

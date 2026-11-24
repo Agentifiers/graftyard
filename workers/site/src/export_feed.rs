@@ -50,6 +50,16 @@ pub(crate) const SWEEP_SCHEMA: &str =
     "CREATE TABLE IF NOT EXISTS export_sweep (k INTEGER PRIMARY KEY CHECK (k = 0), n INTEGER NOT NULL)";
 pub(crate) const SWEEP_N: &str = "SELECT n FROM export_sweep WHERE k = 0";
 pub(crate) const SWEEP_PUT: &str = "INSERT OR REPLACE INTO export_sweep (k, n) VALUES (0, ?)";
+// Test installs only: the feed hold (`/export_hold`). While a row is held, no round is due, so nothing new reaches the
+// feed and a row can archive a repository the feed never carried (BF-53's R59 read, `decisions/DECISIONS.md`,
+// "`lifeboat-turns`"). Its own table, so a product build's `export_round` claim reads no new column.
+#[cfg(any(test, feature = "test-faults"))]
+pub(crate) const HOLD_SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS export_hold (k INTEGER PRIMARY KEY CHECK (k = 0), held INTEGER NOT NULL)";
+#[cfg(any(test, feature = "test-faults"))]
+pub(crate) const HOLD_GET: &str = "SELECT held FROM export_hold WHERE k = 0";
+#[cfg(any(test, feature = "test-faults"))]
+pub(crate) const HOLD_PUT: &str = "INSERT OR REPLACE INTO export_hold (k, held) VALUES (0, ?)";
 
 /// The next round's queue message, `{"exportFeed": true}`. A struct, not `json!`: the queue binding serializes its body
 /// through `serde_wasm_bindgen`, which makes a `serde_json` map a JS `Map`, and the JSON content type sends a `Map` as
@@ -256,8 +266,8 @@ mod tests {
     use rusqlite::{Connection, params};
 
     use super::{
-        REPORT_HELD, REPORT_PUT, REPORTS_ALL, REPORTS_SCHEMA, ROUND_LAST, ROUND_PUT, ROUND_SCHEMA, SWEEP_N, SWEEP_PUT,
-        SWEEP_SCHEMA,
+        HOLD_GET, HOLD_PUT, HOLD_SCHEMA, REPORT_HELD, REPORT_PUT, REPORTS_ALL, REPORTS_SCHEMA, ROUND_LAST, ROUND_PUT,
+        ROUND_SCHEMA, SWEEP_N, SWEEP_PUT, SWEEP_SCHEMA,
     };
 
     /// Every statement the registry object runs for the feed prepares and round-trips in SQLite. No other native
@@ -283,6 +293,11 @@ mod tests {
         db.execute(ROUND_PUT, [7_i64]).unwrap();
         let last: i64 = db.query_row(ROUND_LAST, [], |r| r.get(0)).unwrap();
         assert_eq!(last, 7);
+        db.execute(HOLD_SCHEMA, []).unwrap();
+        db.execute(HOLD_PUT, [1_i64]).unwrap();
+        db.execute(HOLD_PUT, [0_i64]).unwrap();
+        let held: i64 = db.query_row(HOLD_GET, [], |r| r.get(0)).unwrap();
+        assert_eq!(held, 0);
         db.execute(SWEEP_SCHEMA, []).unwrap();
         db.execute(SWEEP_PUT, [1_i64]).unwrap();
         db.execute(SWEEP_PUT, [2_i64]).unwrap();

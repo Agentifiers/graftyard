@@ -3894,6 +3894,20 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
         }
         return Response::from_json(&json!({ "now": now_ms, "plan": plan, "sites": set }));
     }
+    // The change feed's hold (`workers/site/src/export_feed.rs`, `HOLD_SCHEMA`): `?hold=1` stops every round on the
+    // feed site (the install's first), `?hold=0` lets them go; with neither, the state. BF-53 holds it while a
+    // repository archives, so the lifeboat first copies that chain from the archive (`decisions/OPEN-QUESTIONS.md`,
+    // R59).
+    if path == "/_bed/feed" {
+        let feed = c.sites.0.iter().map(|s| s.id).min().ok_or("no site")?;
+        let q = qp("hold").map(|h| format!("?hold={h}")).unwrap_or_default();
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post);
+        let stub = c.bindings().registry(feed, "export")?;
+        return stub
+            .fetch_with_request(Request::new_with_init(&format!("https://registry/export_hold{q}"), &init)?)
+            .await;
+    }
     // The sweeper cron's cursor and last report on site `?site=N` (`workers/site/src/sweep.rs`); with `&now=MS`, one
     // run of the site's sweeper with its clock at MS (BF-19), in that site's `Registry` object `sweep`.
     if path == "/_bed/sweep" {
