@@ -10151,6 +10151,13 @@ allocator keeps (fragmentation). The live heap does.
   allocator, not an owner.
 - **Remove it** if a hosted row shows member CPU per request more than 1% above the same shape's row without it.
 
+**Addendum, 2026-11-24 (`lm1-arrival-bytes`, the lead's ruling).** On `arrival=mem` rows `heapLive` includes BF-14's
+in-memory arrival ring. That is 19.4 MiB on a B0-33 leader at its 40,000-row cap, and none on a follower
+(`tests/am1/results/archive-memory.md`, "The census of the leader's uncounted heap"). Test-faults builds report it as
+memSplit `arrivals` `{rows, bytes}`, priced at 509 B a row, the wasm32 count [inference: rows times the measured
+mean], so a reading can subtract it. Rows keep `arrival=mem`: `arrival=sql` would bring back write-cuts' bare `exec` per
+`/commit`. Test `host::tests::the_arrival_bytes_follow_the_ring`; `tests/m0carried/plant153.py`, 7 of 7.
+
 ### `archive-scan`: the archive alarm keeps its `SUM(length(row))` scan, with no running sum, 2026-11-24
 
 **Status.** Priced at $0 by LM-1 on 2026-11-24 from raws already kept; nothing built.
