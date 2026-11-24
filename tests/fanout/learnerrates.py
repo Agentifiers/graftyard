@@ -2,7 +2,10 @@
 """learnerrates.py TSAVE FROM TO [SPLIT_ISO] -> each learner's read-index call time p50/p90 (IndexEnded 2's `ms`: the
 call from issue to its answer, tests/nr3/legs.py's "call"), and its inbound /read per second (Entered 25, route 2),
 before and after SPLIT_ISO (a leader change). Times on Cloudflare's clock (B0-33 m52 against m51)."""
-import collections, datetime, json, lzma, sys
+import collections, datetime, json, lzma, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load
 
 P, F, T = sys.argv[1:4]
 iso = lambda s: int(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
@@ -10,11 +13,7 @@ T0, T1 = iso(F), iso(T)
 S = iso(sys.argv[4]) if len(sys.argv) > 4 else T1
 pct = lambda xs, q: (sorted(xs)[min(len(xs) - 1, int(q * len(xs)))] if xs else None)
 hm = lambda t: datetime.datetime.fromtimestamp(t / 1000, datetime.UTC).strftime("%H:%M:%S")
-rows = collections.defaultdict(set)
-for line in (lzma.open if P.endswith(".xz") else open)(P, "rt"):
-    r = json.loads(line)
-    if "rows" in r and "learner" in r:
-        rows[r["learner"]].update(tuple(x) for x in r["rows"] if x[1] in (2, 25))
+rows = load(P, learners=True, keep=lambda x: x[1] in (2, 25))
 for a, b, name in ((T0, S, "before"), (S, T1, "after")):
     if b <= a:
         continue

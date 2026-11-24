@@ -7,21 +7,16 @@ log order is execution order):
            the member's own call (AnswerArrived), a write input (Stepped), or another read (ReadQuery).
 Counts, per class, reads whose isolate posted a Walk within 2 s. Query codes are `READ_QUERIES` + 1 (`workers/site/src/host.rs`): 3 rows (a merge's rows), 4 prsync, 13 ranges.
 Usage: heldgrant.py TSAVE"""
-import collections, json, lzma, sys
+import collections, json, lzma, os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'fanout')))
+from tracerows import load
 P = sys.argv[1]
-seen = set(); s0 = []; walks = collections.defaultdict(list); ent = collections.defaultdict(dict); by = collections.defaultdict(dict)
-with (lzma.open if P.endswith(".xz") else open)(P, "rt") as f:
-    for l in f:
-        d = json.loads(l)
-        if "rows" not in d or d.get("learner") is not None: continue
-        w = d.get("site")
-        for r in d["rows"]:
-            t = (w,) + tuple(r)
-            if t in seen: continue
-            seen.add(t)
-            if w == 0: s0.append(r)
-            if r[1] == 25: ent[w][r[4] // 64] = (r[0], r[4] % 64, r[2])
-            elif r[1] == 27: by[w][r[3]] = (r[4], r[5])
+s0 = []; walks = collections.defaultdict(list); ent = collections.defaultdict(dict); by = collections.defaultdict(dict)
+for w, rs in load(P).items():
+    for r in rs:
+        if w == 0: s0.append(r)
+        if r[1] == 25: ent[w][r[4] // 64] = (r[0], r[4] % 64, r[2])
+        elif r[1] == 27: by[w][r[3]] = (r[4], r[5])
 for w in ent:
     for n, (t, route, peer) in ent[w].items():
         sb = by[w].get(n)

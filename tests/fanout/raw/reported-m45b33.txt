@@ -1,11 +1,11 @@
-voter 0: 215 reports; by colo {'LAX': 193, 'UNKNOWN': 22}; by verdict {'leader': 215}
+voter 0: 4890 reports; by colo {'LAX': 4859, 'UNKNOWN': 31}; by verdict {'leader': 4890}
   term 1: 1; about {2: 1}; colos {'LAX': 1}; verdicts {'leader': 1}
-  term 2: 214; about {2: 73, 1: 141}; colos {'LAX': 192, 'UNKNOWN': 22}; verdicts {'leader': 214}
-voter 1: 5992 reports; by colo {'LAX': 5727, 'UNKNOWN': 265}; by verdict {'promised': 5992}
-  term 0: 1937; about {0: 1937}; colos {'LAX': 1937}; verdicts {'promised': 1937}
+  term 2: 4889; about {2: 1679, 1: 3210}; colos {'LAX': 4858, 'UNKNOWN': 31}; verdicts {'leader': 4889}
+voter 1: 60216 reports; by colo {'LAX': 59799, 'UNKNOWN': 417}; by verdict {'promised': 60216}
+  term 0: 13436; about {0: 13436}; colos {'LAX': 13436}; verdicts {'promised': 13436}
   term 1: 1; about {2: 1}; colos {'LAX': 1}; verdicts {'promised': 1}
-  term 2: 4054; about {2: 215, 0: 3361, 1: 478}; colos {'LAX': 3789, 'UNKNOWN': 265}; verdicts {'promised': 4054}
-voter 2: 18469 reports; by colo {'LAX': 18157, 'UNKNOWN': 312}; by verdict {'promised': 18469}
-  term 0: 6230; about {0: 6230}; colos {'LAX': 6230}; verdicts {'promised': 6230}
+  term 2: 46779; about {2: 3005, 0: 37971, 1: 5803}; colos {'LAX': 46362, 'UNKNOWN': 417}; verdicts {'promised': 46779}
+voter 2: 63722 reports; by colo {'LAX': 63288, 'UNKNOWN': 434}; by verdict {'promised': 63722}
+  term 0: 13541; about {0: 13541}; colos {'LAX': 13541}; verdicts {'promised': 13541}
   term 1: 1; about {2: 1}; colos {'LAX': 1}; verdicts {'promised': 1}
-  term 2: 12238; about {2: 478, 0: 10259, 1: 1501}; colos {'LAX': 11926, 'UNKNOWN': 312}; verdicts {'promised': 12238}
+  term 2: 50180; about {2: 3184, 0: 37605, 1: 9391}; colos {'LAX': 49746, 'UNKNOWN': 434}; verdicts {'promised': 50180}

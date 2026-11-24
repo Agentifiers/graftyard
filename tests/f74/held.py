@@ -8,14 +8,13 @@
 # exclusion; the routes that entered inside each 1 s stall; and a 15 s timeline of confirms, stalls, /suspect, /read.
 # Out and back are skew-corrected per pair as calls.py does ((min out - min back) / 2).
 #   python3 tests/f74/held.py tsave-TAG.jsonl --from ISO --to ISO
-import json,collections,datetime,bisect,sys
+import collections,datetime,bisect,os,sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fanout')))
+from tracerows import load
 args=sys.argv[1:]; opt={args[i]:args[i+1] for i in range(1,len(args)-1,2)}
 iso=lambda s:int(datetime.datetime.fromisoformat(s.replace("Z","+00:00")).timestamp()*1000)
 T0,T1=iso(opt["--from"]),iso(opt["--to"])
-rows=collections.defaultdict(set)
-for line in open(args[0]):
-    r=json.loads(line)
-    if 'rows' in r: rows[r.get('learner',r.get('site'))].update(tuple(x) for x in r['rows'])
+rows=collections.defaultdict(list, {w[1] if isinstance(w,tuple) else w:rs for w,rs in load(args[0],None).items()})
 V=(0,1,2)
 stalls={s:sorted((x[0]-x[5],x[0]) for x in rows[s] if x[1]==8 and T0-10000<=x[0]<=T1+10000) for s in V}
 for s in V:

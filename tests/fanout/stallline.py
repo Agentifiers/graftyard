@@ -10,7 +10,10 @@ FROM and TO are UTC times of 2026-11-21 such as 00:12:00 (the m64r33 row; edit D
   which it resolved. An isolate's `Date.now()` moves only at I/O, so requests run back to back after one event share its
   time; many at the resolve's time means they waited for it. The baseline is the share of the window's milliseconds that
   are a resolve time."""
-import bisect, collections, datetime, json, lzma, sys
+import bisect, collections, datetime, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load
 
 DAY = '2026-11-21'
 
@@ -19,16 +22,10 @@ def main(trace, site, frm, to, mn='500'):
     site, mn = int(site), int(mn)
     ts = lambda s: int(datetime.datetime.fromisoformat(f'{DAY}T{s}+00:00').timestamp() * 1000)
     A, B = ts(frm), ts(to)
-    seen, R = set(), collections.defaultdict(list)
-    for line in (lzma.open if trace.endswith('.xz') else open)(trace, 'rt'):
-        d = json.loads(line)
-        if d.get('site') != site or d.get('learner') is not None or 'rows' not in d:
-            continue
-        for r in d['rows']:
-            t = tuple(r)
-            if t not in seen and A - 5000 <= r[0] < B + 5000 and r[1] in (8, 16, 25, 30, 31):
-                seen.add(t)
-                R[r[1]].append(r)
+    R = collections.defaultdict(list)
+    keep = lambda r: A - 5000 <= r[0] < B + 5000 and r[1] in (8, 16, 25, 30, 31)
+    for r in load(trace, keep=keep).get(site, []):
+        R[r[1]].append(r)
     syncs = []
     for r in R[31]:
         b, i, ms = int(float(r[3])), int(float(r[4])), int(float(r[5]))

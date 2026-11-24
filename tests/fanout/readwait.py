@@ -6,17 +6,16 @@ precision in the JSON trace, so sends are not told apart by number (a `CALL_DEAD
 as a send, which shortens a few reads' queue), and a call's end is matched to its send by time: `IndexEnded`'s `at`
 less its `ms` within 3 ms of the send. The read's apply wait after the
 answer is not counted. Times are each learner's own clock. FROM and TO are ISO instants."""
-import bisect, collections, datetime, json, lzma, sys
+import bisect, collections, datetime, json, lzma, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load
 
 P, F, T = sys.argv[1:4]
 iso = lambda s: int(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
 T0, T1 = iso(F), iso(T)
 pct = lambda xs, q: (sorted(xs)[min(len(xs) - 1, int(q * len(xs)))] if xs else None)
-rows = collections.defaultdict(set)
-for line in (lzma.open if P.endswith(".xz") else open)(P, "rt"):
-    r = json.loads(line)
-    if "rows" in r and "learner" in r:
-        rows[r["learner"]].update(tuple(x) for x in r["rows"] if x[1] in (1, 2, 26))
+rows = load(P, learners=True, keep=lambda x: x[1] in (1, 2, 26))
 allq, allrt, allw = [], [], []
 out = []
 for l in sorted(rows):

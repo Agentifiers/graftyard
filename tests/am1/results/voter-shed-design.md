@@ -93,17 +93,19 @@ past 64 (0.1%). So the bound sheds nothing on a row that passes.
 
 | member | inbound | `/read` + `/outcome_by_request` shed | `/suspect` entered | `/suspect` stepped with the cache (at most) | removed |
 |---|---|---|---|---|---|
-| 0 | 520/s | 171/s | 119/s | 8.4/s | 282/s (54%) |
-| 1 | 339/s | 97/s | 45/s | 6.1/s | 135/s (40%) |
-| 2 | 532/s | 93/s | 194/s | 18.3/s | 269/s (51%) |
+| 0 | 520/s | 171/s | 119/s | 40.3/s | 250/s (48%) |
+| 1 | 339/s | 97/s | 45/s | 28.1/s | 113/s (33%) |
+| 2 | 532/s | 93/s | 194/s | 54.5/s | 233/s (44%) |
+
+Corrected 2026-11-24 (`tests/am1/results/trace-dedup.md`): the old trace merge dropped equal rows inside one save, so it read stepped 8.4 / 6.1 / 18.3 a second and removed 282 (54%) / 135 (40%) / 269 (51%).
 
 - The replay holds each member's arrivals as traced. A shed read's retry after `retryAfterMs` comes back, so on a
   member that stays past the bound the arrival rate does not fall by the whole share. What falls is the work and the
   queue time each one holds ahead of `/raft`.
 - The `/suspect` cache figure is an upper bound on steps: the trace has no `promise_until`, so the replay never drops
   a cache entry at promise end.
-- The cache alone, with no bound, answers 63 to 73% of stepped reports on m47 at `SUSPECT_REPEAT` 1 s
-  (`votershed/damp2.py`).
+- The cache alone, with no bound, answers 37 to 72% of stepped reports on m47 at `SUSPECT_REPEAT` 1 s
+  (`votershed/damp2.py`; it read 63 to 73% before the 2026-11-24 correction).
 
 ## The test that fails on main
 

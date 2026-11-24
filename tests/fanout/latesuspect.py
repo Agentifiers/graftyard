@@ -7,13 +7,12 @@ count is a lower bound on (i)'s withholding). A higher term clears the window an
 and seconds withheld, the seconds two followers withheld at once, the first such moment, the terms in which both would
 lapse (10 s at a stretch), and per term its length and the first two-voter withholding 3 s or more into it.
   python3 tests/fanout/latesuspect.py tests/fanout/raw/tsave-m44b33.jsonl.xz tests/fanout/raw/terms-m44b33.jsonl"""
-import bisect, collections, json, lzma, sys
+import bisect, collections, json, lzma, os, sys
 
-rows = collections.defaultdict(set)
-for line in lzma.open(sys.argv[1], "rt"):
-    r = json.loads(line)
-    if "rows" in r and "learner" not in r:
-        rows[r["site"]].update(tuple(x) for x in r["rows"])
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load
+
+rows = load(sys.argv[1])
 WINDOW, BAR = 10_000, 20_000
 IV = collections.defaultdict(dict)
 for s in sorted(rows):

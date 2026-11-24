@@ -12,9 +12,11 @@ For each leadership given, from one row's trace (`workers/site/src/host.rs`, `Tr
 FROM and TO are ISO times on Cloudflare's clock, as the trace's rows are."""
 import collections
 import datetime
-import json
-import lzma
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load
 
 ROUTES = ['other', '/raft', '/read', '/commit', '/commit_many', '/outcome', '/outcome_by_request', '/suspect',
           '/campaign', '/status', '/stats', '/trace', '/ping', '/rtt', '/place', '/learners', '/record']
@@ -35,15 +37,8 @@ def route(r):
 
 
 def main(trace, spans):
-    rows = collections.defaultdict(set)
-    for line in (lzma.open if trace.endswith('.xz') else open)(trace, 'rt'):
-        d = json.loads(line)
-        if 'rows' not in d:
-            continue
-        who = ('l', d['learner']) if d.get('learner') is not None else ('s', d.get('site'))
-        for r in d['rows']:
-            if r[1] in (8, 25, 28, 30, 31):
-                rows[who].add(tuple(r))
+    rows = collections.defaultdict(list, {w if isinstance(w, tuple) else ('s', w): rs for w, rs in
+                                          load(trace, None, keep=lambda r: r[1] in (8, 25, 28, 30, 31)).items()})
     for span in spans:
         s, a, b = span.split('@')
         site, a, b = int(s), ms(a), ms(b)

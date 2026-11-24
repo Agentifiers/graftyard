@@ -7,32 +7,24 @@ commit; split:
   round its own append -> its apply (confirm + quorum)
 Shares for all commands and for those at or over the modelled p99, the tail's own round against its entry's bytes
 and the far voter, and per-window p99 (30 s). Usage: attr.py TSAVE FROM TO"""
-import bisect, collections, datetime, json, lzma, sys
+import bisect, collections, datetime, os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'fanout')))
+from tracerows import load
 P, F, T = sys.argv[1:4]
 SKIP = int(sys.argv[4]) if len(sys.argv) > 4 else 0
 iso = lambda s: int(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
 T0, T1 = iso(F), iso(T)
-op = lzma.open if P.endswith(".xz") else open
-seen = set(); arr = []; app = {}; aply = []; q12 = {}; byts = collections.defaultdict(int); ended = collections.defaultdict(dict)
+arr = []; app = {}; aply = []; q12 = {}; byts = collections.defaultdict(int); ended = collections.defaultdict(dict)
 conf = []
-with op(P, "rt") as f:
-    for l in f:
-        d = json.loads(l)
-        if "rows" not in d or d.get("learner") is not None or d.get("site") != 0:
-            continue
-        for r in d["rows"]:
-            t = tuple(r)
-            if t in seen: continue
-            seen.add(t)
-            if not (T0 - 10000 <= r[0] < T1 + 10000): continue
-            if r[1] == 25 and r[4] % 64 == 3 and T0 <= r[0] < T1: arr.append(r[0])
-            elif r[1] == 15: app.setdefault(r[4], r[0])
-            elif r[1] == 4: aply.append((r[0], r[4]))
-            elif r[1] == 12 and r[2] in (1, 2):
-                q12[(r[2], r[3])] = r[4]; byts[r[4]] = max(byts[r[4]], r[5])
-            elif r[1] == 14 and r[2] in (1, 2) and r[4] == 0 and (r[2], r[3]) in q12:
-                ended[q12[(r[2], r[3])]].setdefault(r[2], r[0])
-            elif r[1] == 10: conf.append((r[0], r[4], r[5]))
+for r in load(P, keep=lambda r: T0 - 10000 <= r[0] < T1 + 10000).get(0, []):
+    if r[1] == 25 and r[4] % 64 == 3 and T0 <= r[0] < T1: arr.append(r[0])
+    elif r[1] == 15: app.setdefault(r[4], r[0])
+    elif r[1] == 4: aply.append((r[0], r[4]))
+    elif r[1] == 12 and r[2] in (1, 2):
+        q12[(r[2], r[3])] = r[4]; byts[r[4]] = max(byts[r[4]], r[5])
+    elif r[1] == 14 and r[2] in (1, 2) and r[4] == 0 and (r[2], r[3]) in q12:
+        ended[q12[(r[2], r[3])]].setdefault(r[2], r[0])
+    elif r[1] == 10: conf.append((r[0], r[4], r[5]))
 aply.sort(); applied_at = {}; prev = 0
 for at, idx in aply:
     for i in range(prev + 1, idx + 1): applied_at.setdefault(i, at)

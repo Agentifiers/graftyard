@@ -20,8 +20,11 @@ leader object's Workers Logs `tests/fanout/raw/wl-29/TAG-f0.json.xz` (`wlobj.py 
      append (today: the batch frozen at its cut);
    - floor: every command rides the first entry appended after it arrives (no freeze, no read in series).
 """
-import bisect, collections, json, lzma, sys
+import bisect, collections, json, lzma, os, sys
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import merge
 
 
 def ms(s):
@@ -40,15 +43,9 @@ def q3(xs):
 tag, start = sys.argv[1], sys.argv[2]
 lo = ms(start)
 hi = lo + 1000 * (int(sys.argv[3]) if len(sys.argv) > 3 else 600)
-seen, rows = set(), []
-for line in lzma.open(f'tests/fanout/raw/tsave-{tag}.jsonl.xz', 'rt'):
-    d = json.loads(line)
-    if d.get('site') != 0 or 'learner' in d or 'rows' not in d:
-        continue
-    for r in d['rows']:
-        if tuple(r) not in seen:
-            seen.add(tuple(r))
-            rows.append([int(float(x)) for x in r])
+saves = (json.loads(line) for line in lzma.open(f'tests/fanout/raw/tsave-{tag}.jsonl.xz', 'rt'))
+merged = merge((0, d['rows']) for d in saves if d.get('site') == 0 and 'learner' not in d and 'rows' in d)
+rows = [list(r) for r in merged[0]]
 n = len(rows)
 ent = [i for i, r in enumerate(rows) if r[1] == 25]
 pos = {(r[2], r[3]): i for i, r in enumerate(rows) if r[1] == 25 and r[3]}

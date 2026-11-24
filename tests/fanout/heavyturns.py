@@ -17,7 +17,9 @@ cuts or sends, resolutions only, or no traced work. Run from the repository root
 import bisect, collections, json, lzma, os, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'b033probes', 'host'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import RUNS, ms  # noqa: E402
+from tracerows import merge  # noqa: E402
 
 HEAVY = 20
 WL = {'ms': 'wl-ms', 'mr': 'wl-mr', 'pg': 'wl-pg', 'pf': 'wl-pf', 'bl': 'wl-bl', 'ql': 'wl-ql', 'm3': 'wl-m3'}
@@ -25,16 +27,10 @@ RAW = os.environ.get('B033_RAW', 'tests/fanout/raw')
 
 
 def trace(tag):
-    seen, rows = set(), []
-    for line in lzma.open(f'{RAW}/tsave-{tag}.jsonl.xz', 'rt'):
-        d = json.loads(line)
-        if d.get('site') != 0 or 'learner' in d or 'rows' not in d:
-            continue
-        for r in d['rows']:
-            if tuple(r) not in seen:
-                seen.add(tuple(r))
-                rows.append([int(float(x)) for x in r])
-    return rows
+    """Site 0's rows in ring order, merged by `tracerows.merge`: equal rows in one save are distinct events."""
+    saves = (json.loads(line) for line in lzma.open(f'{RAW}/tsave-{tag}.jsonl.xz', 'rt'))
+    rows = merge((0, d['rows']) for d in saves if d.get('site') == 0 and 'learner' not in d and 'rows' in d)
+    return [list(r) for r in rows[0]]
 
 
 def slices(tag):

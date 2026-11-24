@@ -247,7 +247,9 @@ slices (no apply, flush, send or confirm), and uses that fit to predict each flu
 | mrB | 0.12 + 0.190 a call + 0.0072 a KB | 68 | 5.3, 2.0 | 5.8, 235 | 2.9 | 2.4, 0.2 |
 | m3fsf2 (52.5) | 0.15 + 0.289 + 0.0075 | 8 | 22.9, 11.5 | 15.9, 336 | 7.3 | 15.6, 5.3 |
 | m3fsf1 (27.3) | 0.05 + 0.234 + 0.0047 | 5 | 3.2, 1.0 | 8.8, 183 | 3.0 | 0.2, −0.5 |
-| m3fg3 (55.8) | 0.17 + 0.408 + 0.0081 | 3 | 16.3, 6.0 | 15.0, 262 | 8.4 | 7.9, 0.0 |
+| m3fg3 (55.8) | −0.33 + 1.087 + 0.0082 | 4 | 14.0, 6.5 | 16.2, 299 | 19.8 | −5.8, −3.3 |
+
+Corrected 2026-11-24 (`tests/am1/results/trace-dedup.md`): the trace merge no longer drops equal rows inside one save; m3fg3's fit moved from 0.17 + 0.408 to −0.33 + 1.087 (one 46 ms slice with 3 calls carries it; capped at 20 ms of CPU it reads 0.16 + 0.293, 0.46 ms a call). Before it, m3fg3 read 0.17 + 0.408 + 0.0081, 3 slices, 16.3 and 6.0, 15.0 and 262, 8.4, and 7.9 and 0.0. mrB's 68 flush slices are 67 (mean 5.4, left 2.5 and 0.3) and m3fsf1's 5 are 4 (mean 3.8, 10.2 calls of 177 KB, left 0.5 and −0.4).
 
 - **The "flush slice" is mostly a learner-answer slice.** At the median, the calls the slice answered explain all of
   its CPU on every row (left p50 between −0.5 and 5.3 ms). The means are pulled up by a few slices: mrB's 128 ms

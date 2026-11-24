@@ -22,15 +22,17 @@ Leader ms per entry replicated:
 |---|---|---|---|---|---|---|
 | mrB, B0-33 (591, 136 ms) | 5.1 | 1.6 | 4.1 (574 KB) | 1.1 | **12.0** | 9% |
 | m3fsf2, B0-32 52.5 (20, 128 ms) | 14.7 | 4.5 | 5.1 (684 KB) | 1.1 | **25.4** | 20% |
-| m3fg3, B0-32 55.8 (14, 131 ms) | 16.5 | 7.1 | 8.2 (1,012 KB) | 2.2 | **34.0** | 26% |
+| m3fg3, B0-32 55.8 (14, 131 ms) | 21.8 | 9.3 | 8.3 (1,012 KB) | 2.2 | **41.5** | 32% |
+
+Corrected 2026-11-24 (`tests/am1/results/trace-dedup.md`): the trace merge no longer drops equal rows inside one save; m3fg3's fit moved from 0.17 + 0.408 to −0.33 + 1.087 (one 46 ms slice with 3 calls carries it; capped at 20 ms of CPU it reads 0.16 + 0.293, 0.46 ms a call). Before it, m3fg3 read 16.5, 7.1, 8.2, 2.2 and 34.0 (26%).
 
 By region (all learners in it, ms an entry: read-index + replies + held entries):
 - mrB: enam (2) 2.5 + 0.7 + 1.9; weur (1) 1.3 + 0.4 + 1.1; apac (1) 1.4 + 0.5 + 1.2.
 - m3fsf2: enam (4) 8.0 + 2.0 + 2.5; weur (2) 3.6 + 1.1 + 1.2; apac (2) 3.1 + 1.4 + 1.4.
-- m3fg3: enam (4) 8.6 + 2.7 + 3.7; weur (2) 4.2 + 1.3 + 1.6; apac (2) 3.8 + 3.1 + 2.9.
+- m3fg3: enam (4) 11.3 + 3.5 + 3.7; weur (2) 5.5 + 1.7 + 1.6; apac (2) 5.0 + 4.1 + 2.9 (corrected 2026-11-24).
 
 - **The largest part is read-index calls**: 43 to 58% of the learner bill. They are per call: 0.31 ms a call on mrB, 0.44
-  on m3fsf2, 0.58 on m3fg3. The entries themselves (held bytes) are 24 to 34%.
+  on m3fsf2, 0.76 on m3fg3 (0.58 before the correction). The entries themselves (held bytes) are 24 to 34%.
 - **Half the bill is the enam learners**, on the leader's own region (site 0 is enam on graft-m2b).
 - The fit spreads per-call and per-KB cost over every slice that answered learner calls, apply slices included. So
   these are estimates of the learner share, not a measured split of each turn [inference].

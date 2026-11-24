@@ -26,7 +26,7 @@ retries inflated.
 | m51, 4 learners | pre-change (58 s) | post-change (180 s) |
 |---|---|---|
 | index reads | 10,782 (186/s) | 290,058 (1,611/s) |
-| read-index batches to the leader | 45.1/s | 23.9/s |
+| read-index batches to the leader | 48.3/s | 38.4/s |
 | other learner calls to the leader | 14.5/s | 16.8/s |
 | reads a call that left anyway could grant | 11.9% | 13.7% |
 | batches every read of which it could grant | 42 of 2,599 (1.6%) | 40 of 4,140 (1.0%) |
@@ -34,8 +34,9 @@ retries inflated.
 
 What a learner would send under each rule, read-index batches a second over the 4 learners: "ride" holds a read up to
 D ms for another call to the leader and batches only the reads none reaches; "control" batches every D ms with no
-riding (`LEARNER_READ_EVERY` raised to D). The control at 50 ms reproduces today's rate (44.9 against 45.1 measured),
-which checks the model.
+riding (`LEARNER_READ_EVERY` raised to D). The control at 50 ms comes in under the measured rate by 3.4 a second in both windows (44.9 against 48.3, 35.0
+against 38.4), so the model undercounts batches by about 7 to 9%; the ride-against-control savings below are differences
+within the model and stand. Corrected 2026-11-24 (`tests/am1/results/trace-dedup.md`): the measured batch rates read 45.1 and 23.9 a second before the trace merge kept equal rows inside one save.
 
 | batches/s | 50 ms | 100 ms | 250 ms | 500 ms |
 |---|---|---|---|---|
@@ -47,8 +48,8 @@ which checks the model.
 [measured, `tests/fanout/raw/learnershare-m51b33.txt`]
 
 **Reading.** Riding answers saves 3.6 to 5.1 batches a second over the 4 learners at every window, pre-change and
-post-change alike, so the read gate's retries do not change it. At today's 50 ms cadence that is 45.1 to
-about 40 a second: about 5 of the 4 learners' 64.5 `/raft` calls a second to the leader on m51, about 7%. Most of the
+post-change alike, so the read gate's retries do not change it. At today's 50 ms cadence that is 48.3 to
+about 43 a second: about 5 of the 4 learners' 64.5 `/raft` calls a second to the leader on m51, about 7%. Most of the
 larger cuts at longer windows are coarser batching, which the control gets with no protocol change, at the cost of
 that much added latency on every learner read (round p50 58 ms today). The other calls run at about 3.6 a second per
 learner against 11 batches, and only 1.6% of today's batches have every read reached by a call that left anyway, so most

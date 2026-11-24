@@ -18,8 +18,12 @@ import bisect
 import collections
 import json
 import lzma
+import os
 import sys
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load as trace_load
 
 
 def ms(s):
@@ -36,17 +40,7 @@ def mean(xs):
 
 
 def load(path):
-    rows, seen = collections.defaultdict(list), set()
-    for line in lzma.open(path, 'rt'):
-        d = json.loads(line)
-        if 'rows' not in d or 'learner' in d:
-            continue
-        for r in d['rows']:
-            k = (d.get('site'),) + tuple(r)
-            if k not in seen:
-                seen.add(k)
-                rows[d.get('site')].append(r)
-    return rows
+    return collections.defaultdict(list, {s: [list(r) for r in rs] for s, rs in trace_load(path).items()})
 
 
 def cycles(rows, s, a, b):

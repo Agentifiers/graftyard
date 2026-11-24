@@ -352,7 +352,7 @@ stop.
 | ≥ 140 agent commands/s (≥ 126 at 90%; fail < 100) | **90.7 agent-class ok a second** (27,209 over 300 s: stand-ins 9,120, comments 5,428, task edits 4,732, lease renews 4,095, leases 1,949, agent pushes 1,290, draft PRs 595) | 17.2 | fail |
 | User token admitted as `Agent` | fast user 513 of 513 × 200 | 37 of 482 | pass |
 | Every refusal in the `ng` or 429 shape | agent pushes: 11,216 `full` (the `ng` shape) and 0 other refusals; other requests 943 × 5xx of 47,574 (2.0%) | 503s and 500s dominate | fail on the other requests (2.0%) |
-| Zero leader changes and zero `suspect` | **1 change** (term 2 → 3 at 10:18:24Z, 46 s into load); 1,631 `suspect` reports stepped at the voters (one colo, 1,618; all `promised` or `leader`) | 19 changes; 41,356 | fail |
+| Zero leader changes and zero `suspect` | **1 change** (term 2 → 3 at 10:18:24Z, 46 s into load); 1,631 `suspect` reports stepped at the voters (one colo, 1,618; all `promised` or `leader`) | 19 changes; 125,609 (41,356 before the 2026-11-24 trace-dedup correction) | fail |
 
 **Better than m47 on every line, and on the same code.** This deploy is main 94fdfb48. It has progress-suspect, lookup-retry
 and clock-guard, which m47 (branch lookup-retry 4e5c2afe) did not have. Agent pushes were refused cleanly at admission

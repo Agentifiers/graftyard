@@ -1,4 +1,8 @@
-import json, lzma, sys
+import os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load
+
 # round-time's turn trace (`Trace::Work`, kind 30, `work_row` in workers/site/src/host.rs): what each leader input step
 # produced, and how it lines up with the ticker stalls (`Trace::Lag`, kind 8) that F100 blames on leader CPU per input.
 # Usage: work.py TRACE.jsonl[.xz] LOAD_START_MS [SECONDS] [STALL_MS]
@@ -8,17 +12,10 @@ path, t0 = sys.argv[1], int(sys.argv[2])
 t1 = t0 + 1000 * int(sys.argv[3] if len(sys.argv) > 3 else 600)
 STALL = int(sys.argv[4]) if len(sys.argv) > 4 else 200
 BIG = 1_400_000  # a large cut, the size F100 names
-seen, work, lags = set(), [], []
-for l in (lzma.open if path.endswith('.xz') else open)(path, 'rt'):
-    d = json.loads(l)
-    if 'rows' not in d or 'learner' in d:
-        continue
-    for r in d['rows']:
-        t = (d.get('site'),) + tuple(r)
-        if r[1] not in (8, 30) or t in seen or not t0 <= r[0] < t1:
-            continue
-        seen.add(t)
-        site, at, peer, batch, index, ms = d.get('site'), r[0], r[2], int(float(r[3])), int(float(r[4])), int(float(r[5]))
+work, lags = [], []
+for site, rs in load(path, keep=lambda r: r[1] in (8, 30) and t0 <= r[0] < t1).items():
+    for r in rs:
+        at, peer, batch, index, ms = r[0], r[2], int(float(r[3])), int(float(r[4])), int(float(r[5]))
         if r[1] == 8:
             lags.append((site, at, ms))
         else:

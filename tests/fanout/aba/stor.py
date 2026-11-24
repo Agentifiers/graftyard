@@ -1,16 +1,15 @@
 """Storage-contention split. Usage: stor.py TSAVE FROM TO
 Per member: own Confirm p50/p99. Leader confirms binned by site-a / b+c learner lsRefs reads entered during the confirm."""
-import json, sys, collections, datetime, bisect
+import os, sys, collections, datetime, bisect
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from tracerows import load
 P, F, T = sys.argv[1:4]
 iso = lambda s: int(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
 T0, T1 = iso(F), iso(T)
 SITE = {192: 0, 193: 1, 194: 2, 195: 0, 196: 1, 197: 2, 198: 0, 199: 0}
 pct = lambda xs, q: (sorted(xs)[min(len(xs) - 1, int(q * len(xs)))] if xs else None)
-rows = collections.defaultdict(set)
-for l in open(P):
-    d = json.loads(l)
-    if "rows" in d:
-        rows[d.get("learner") if d.get("learner") is not None else f"v{d.get('site')}"].update(tuple(x) for x in d["rows"] if T0 - 5000 <= x[0] < T1)
+rows = collections.defaultdict(list, {w[1] if isinstance(w, tuple) else f"v{w}": rs for w, rs in
+                                     load(P, None, keep=lambda x: T0 - 5000 <= x[0] < T1).items()})
 for m in sorted(rows, key=str):
     c = [x[5] for x in rows[m] if x[1] == 10 and x[0] >= T0]
     reads = sum(1 for x in rows[m] if x[1] == 25 and x[4] % 64 == 2 and x[0] >= T0)

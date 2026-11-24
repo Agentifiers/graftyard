@@ -15,20 +15,23 @@
 # The leader's input queue, on its clock: idle = A minus the last leader row before A (when the isolate last showed
 # activity), and atGate = A minus the last leader confirm end at or before A. An input held behind the leader shows
 # as arrivals bunched just after the leader's own activity.
-import bisect, collections, json, sys
+import bisect, collections, json, os, sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fanout')))
+from tracerows import merge
 
 tag = sys.argv[1]
 D = json.load(open(f"tests/nr3/raw/trace-{tag}.json"))
 lead = next(k for k in D if k.startswith("f"))
-f = list(D[lead])
+f = [D[lead]]
 try:
     for l in open(f"tests/nr3/raw/tsave-{tag}.jsonl"):
         r = json.loads(l)
         if f"f{r.get('site')}" == lead and "rows" in r:
-            f += r["rows"]
+            f.append(r["rows"])
 except FileNotFoundError:
     pass
-f = sorted(dict.fromkeys(tuple(x) for x in f), key=lambda r: r[0])
+f = sorted(merge((0, s) for s in f)[0], key=lambda r: r[0])
 L0 = int(lead[1:])
 
 

@@ -1,23 +1,18 @@
-import json, lzma, bisect, sys, random
+import bisect, sys, random, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'fanout')))
+from tracerows import load
 # freezesim.py's replay of B0-29's leader (the same loader: measured /commit arrivals, rounds append->apply in order,
 # read-plus-decide samples of cuts taken at an apply), for `b029-tail`'s option (b): a command admitted after a batch
 # froze joins that batch when its own dependency read, asked at its admission, answers before the batch's append. The
 # append stays max(apply of the entry in flight, freeze + the batch's read), so a joiner never delays it.
 # Usage: latejoin.py TSAVE LOADSTART_MS [WINDOW_MS]
 path, t0 = sys.argv[1], int(sys.argv[2]); t1 = t0 + (int(sys.argv[3]) if len(sys.argv) > 3 else 600000)
-seen = set(); app = {}; aply = []; ct = []; arr = []
-for l in (lzma.open if path.endswith('.xz') else open)(path, 'rt'):
-    d = json.loads(l)
-    if 'rows' not in d or 'learner' in d or d.get('site') != 0: continue
-    for r in d['rows']:
-        t = tuple(r)
-        if t in seen: continue
-        seen.add(t)
-        if not (t0 - 5000 <= r[0] < t1 + 5000): continue
-        if r[1] == 15: app.setdefault(r[4], r[0])
-        if r[1] == 4: aply.append((r[0], r[4]))
-        if r[1] == 29: ct.append((r[0], r[2] >= 64))
-        if r[1] == 25 and r[4] % 64 == 3 and t0 <= r[0] < t1: arr.append(r[0])
+app = {}; aply = []; ct = []; arr = []
+for r in load(path, keep=lambda r: t0 - 5000 <= r[0] < t1 + 5000).get(0, []):
+    if r[1] == 15: app.setdefault(r[4], r[0])
+    if r[1] == 4: aply.append((r[0], r[4]))
+    if r[1] == 29: ct.append((r[0], r[2] >= 64))
+    if r[1] == 25 and r[4] % 64 == 3 and t0 <= r[0] < t1: arr.append(r[0])
 aply.sort(); applied_at = {}; prev = 0
 for at, idx in aply:
     for i in range(prev + 1, idx + 1): applied_at.setdefault(i, at)

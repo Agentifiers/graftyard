@@ -1,4 +1,8 @@
-import bisect, json, lzma, sys
+import bisect, json, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load
+
 # grown.py TRACE.jsonl[.xz] LOAD_START_MS SECONDS [SITE [SAMPLES.json]]: soft-grow's verdict lines from a leader's trace
 # (`decisions/DECISIONS.md`, "`soft-grow`", its flip). Uses the leader site's rows (default 0) and the followers'.
 #   Cuts (`Cut`, kind 29): how many ended `Soft` within ENTRY_SOFT and how many grew past it (soft bytes over
@@ -18,18 +22,9 @@ ENTRY_SOFT = 100_000
 path, t0 = sys.argv[1], int(sys.argv[2])
 t1 = t0 + 1000 * int(sys.argv[3])
 LEAD = int(sys.argv[4]) if len(sys.argv) > 4 else 0
-seen = set()
 cuts, queued, ended, confirms, syncs = [], {}, [], [], []
-for l in (lzma.open if path.endswith('.xz') else open)(path, 'rt'):
-    d = json.loads(l)
-    if 'rows' not in d or 'learner' in d:
-        continue
-    site = d.get('site')
-    for r in d['rows']:
-        k = (site,) + tuple(r)
-        if k in seen or not t0 - 30_000 <= r[0] < t1 + 30_000:
-            continue
-        seen.add(k)
+for site, rs in load(path, keep=lambda r: t0 - 30_000 <= r[0] < t1 + 30_000).items():
+    for r in rs:
         at, kind, peer = r[0], r[1], r[2]
         b, i, ms = int(float(r[3])), int(float(r[4])), int(float(r[5]))
         if site == LEAD and kind == 29 and t0 <= at < t1:

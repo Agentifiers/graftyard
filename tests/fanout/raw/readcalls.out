@@ -14,11 +14,11 @@ m3fsf2-b0-32: 20 entries in 6 s, 3.3 a second; 0.44 ms a call; 8 learners
   F+B: 12.2 (9.5% of 128 ms)
   C 100 ms floor: saves 43.0 calls/s = 5.7 (4.4% of 128 ms)
   followers: read-index calls 30.5/s = 4.0 ms an entry; a 50 ms follower floor saves 5.2 calls/s = 0.7 (0.5% of 128 ms)
-m3fg3-b0-32: 14 entries in 6 s, 2.3 a second; 0.58 ms a call; 8 learners
+m3fg3-b0-32: 14 entries in 6 s, 2.3 a second; 0.76 ms a call; 8 learners
   learner calls 95.7/s: asks 67.0 (8.4 a learner), append replies 28.7; voter calls 14.5/s; asks a call max 1
-  read-index calls 16.5 ms an entry, append-reply calls 7.1
-  F region cap 20/s: saves 31.5 calls/s = 7.8 ms an entry (5.9% of 131 ms)
-  B replies ride asks: saves up to 28.7 calls/s = 7.1 (5.4% of 131 ms)
-  F+B: 14.9 (11.3% of 131 ms)
-  C 100 ms floor: saves 22.2 calls/s = 5.5 (4.2% of 131 ms)
-  followers: read-index calls 14.5/s = 3.6 ms an entry; a 50 ms follower floor saves 0.5 calls/s = 0.1 (0.1% of 131 ms)
+  read-index calls 21.8 ms an entry, append-reply calls 9.3
+  F region cap 20/s: saves 31.5 calls/s = 10.2 ms an entry (7.8% of 131 ms)
+  B replies ride asks: saves up to 28.7 calls/s = 9.3 (7.1% of 131 ms)
+  F+B: 19.5 (14.9% of 131 ms)
+  C 100 ms floor: saves 22.2 calls/s = 7.2 (5.5% of 131 ms)
+  followers: read-index calls 14.5/s = 4.7 ms an entry; a 50 ms follower floor saves 0.5 calls/s = 0.2 (0.1% of 131 ms)

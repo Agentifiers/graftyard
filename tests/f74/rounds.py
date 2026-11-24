@@ -10,7 +10,10 @@
 # The read grant: on the leader, a learner's ReadIndex taken (IndexTaken, kind 5) to its ReadIndexRes sent (ResSent,
 # kind 6) for the same (peer, batch), on the leader's one clock; p50, p99 and max per serving site.
 #   python3 tests/f74/rounds.py tsave-TAG.jsonl [--from ISO] [--to ISO] [--gap 20]
-import collections, datetime, json, sys
+import collections, datetime, json, os, sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fanout')))
+from tracerows import load
 
 args = sys.argv[1:]
 path = args[0]
@@ -20,15 +23,7 @@ T0 = iso(opt["--from"]) if "--from" in opt else 0
 T1 = iso(opt["--to"]) if "--to" in opt else 1 << 62
 GAP = int(opt.get("--gap", 20))
 
-rows = collections.defaultdict(set)
-for line in open(path):
-    try:
-        r = json.loads(line)
-    except ValueError:
-        continue
-    if "rows" not in r or "learner" in r:
-        continue
-    rows[r["site"]].update(tuple(x) for x in r["rows"])
+rows = load(path)
 
 def pct(xs, p):
     xs = sorted(xs)

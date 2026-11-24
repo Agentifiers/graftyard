@@ -1,7 +1,7 @@
 # Batching read-index calls at the leader: priced at $0 (2026-11-23)
 
 The lead asked for this after `learner-relay.md` found that read-index calls are 43 to 58% of a leader's learner bill,
-at 0.31 to 0.58 ms a call. The question: would the leader save that by confirming R once per heartbeat round for every
+at 0.31 to 0.76 ms a call (0.58 before the trace-dedup correction below). The question: would the leader save that by confirming R once per heartbeat round for every
 waiting learner and follower read, not once per call? Does `read-newest` or `learner-hold` already do this, and why
 is the per-call cost still there? For each option, which invariant it touches and what it saves on mrB, m3fsf2 and
 m3fg3. Nothing is built and no hosted row ran. Tags follow `design/SHARED.md`, "Read this first".
@@ -26,7 +26,7 @@ The per-call cost is the hosted request, not the confirm:
 - Each learner ask is its own Durable Object `/raft` request: decode, `Host::step`, the output gate, an answer encode
   and the Workers request floor. Each call carries exactly one envelope (`Trace::RaftCall` asks per call is at most 1
   on all three rows).
-- The plain-slice fit prices that at 0.31 ms a call on mrB, 0.44 on m3fsf2 and 0.58 on m3fg3, apart from the
+- The plain-slice fit prices that at 0.31 ms a call on mrB, 0.44 on m3fsf2 and 0.76 on m3fg3 (0.58 before the correction; see the note under the table), apart from the
   per-KB answer cost [measured, `tests/fanout/learnercost.py`]. B0-02 measured 1.95 ms a learner `/raft` call hosted
   against 2 to 3 µs of modelled raft logic (`tests/am1/results/lm1-rows-m3f.md`, "Sizing LM-1's input cut on B0-32").
 - What sets the call count is each learner's own send floor: `send_batch` sends a batch at most every
@@ -52,7 +52,9 @@ B0-32's 6 s bursts, so the B0-32 rows rest on 402 to 670 asks]
 |---|---|---|---|---|---|---|---|
 | mrB, B0-33 (2.8; 136 ms) | 4 | 60.9 | 46.5 (11.6) | 14.4 | 5.1 | 1.6 | 1.4 |
 | m3fsf2, B0-32 52.5 (3.3; 128 ms) | 8 | 146.0 | 111.7 (14.0) | 34.3 | 14.7 | 4.5 | 30.5 |
-| m3fg3, B0-32 55.8 (2.3; 131 ms) | 8 | 95.7 | 67.0 (8.4) | 28.7 | 16.5 | 7.1 | 14.5 |
+| m3fg3, B0-32 55.8 (2.3; 131 ms) | 8 | 95.7 | 67.0 (8.4) | 28.7 | 21.8 | 9.3 | 14.5 |
+
+Corrected 2026-11-24 (`tests/am1/results/trace-dedup.md`): the trace merge no longer drops equal rows inside one save; m3fg3's fit moved from 0.17 + 0.408 to −0.33 + 1.087 (one 46 ms slice with 3 calls carries it; capped at 20 ms of CPU it reads 0.16 + 0.293, 0.46 ms a call). Call counts are unchanged; the ms columns scale with it.
 
 Learners average 8 to 14 asks a second against the floor's 20, so the floor binds in bursts, not all the time.
 
@@ -72,12 +74,12 @@ the per-KB part is not counted. Each 1 s bucket keeps at most the option's cap.
 | Option | What changes | mrB | m3fsf2 | m3fg3 | Invariant it touches |
 |---|---|---|---|---|---|
 | **Leader-side batching** (the question as asked) | Nothing: the confirm is already one round for all waiting reads (section 1) | 0 | 0 | 0 | none |
-| **F, one ask per region** | A region's learners send one batch per 50 ms between them, through a coordinator or one learner that asks for the rest | 0.5 ms (0.4%) | 7.7 ms (6.0%) | 7.8 ms (5.9%) | `read-newest`: a forwarded answer must grant only batches sent before it, per learner. A new hop adds a learner-to-learner call |
-| **B, ack riding at 50 ms** | A learner's append replies ride its next ask at the existing 50 ms floor | up to 1.6 (1.2%) | up to 4.5 (3.5%) | up to 7.1 (5.4%) | none of the four; `Acked` is untouched because learners never count |
-| **F and B** | Both | 2.1 (1.6%) | 12.2 (9.5%) | 14.9 (11.3%) | as F |
-| **C, 100 ms learner floor** | LEARNER_READ_EVERY 50 → 100 ms | 1.3 (1.0%) | 5.7 (4.4%) | 5.5 (4.2%) | none, but `learner-cadence` (200 ms) was reversed on read wait |
-| **Follower floor 10 → 50 ms** | FOLLOWER_READ_EVERY | 0 | 0.7 (0.5%) | 0.1 (0.1%) | none |
-| **P, pushed grants** | The leader pushes (R, its clock) in answers it already sends; a learner grants a read only once a push stamped at least DRIFT after the read arrived reaches it | up to 5.1 (3.8%) | up to 14.7 (11.5%) | up to 16.5 (12.6%) | read-index linearizability: R would rest on the lease and the clock bound, not on a confirm sent after the read arrived |
+| **F, one ask per region** | A region's learners send one batch per 50 ms between them, through a coordinator or one learner that asks for the rest | 0.5 ms (0.4%) | 7.7 ms (6.0%) | 10.2 ms (7.8%) | `read-newest`: a forwarded answer must grant only batches sent before it, per learner. A new hop adds a learner-to-learner call |
+| **B, ack riding at 50 ms** | A learner's append replies ride its next ask at the existing 50 ms floor | up to 1.6 (1.2%) | up to 4.5 (3.5%) | up to 9.3 (7.1%) | none of the four; `Acked` is untouched because learners never count |
+| **F and B** | Both | 2.1 (1.6%) | 12.2 (9.5%) | 19.5 (14.9%) | as F |
+| **C, 100 ms learner floor** | LEARNER_READ_EVERY 50 → 100 ms | 1.3 (1.0%) | 5.7 (4.4%) | 7.2 (5.5%) | none, but `learner-cadence` (200 ms) was reversed on read wait |
+| **Follower floor 10 → 50 ms** | FOLLOWER_READ_EVERY | 0 | 0.7 (0.5%) | 0.2 (0.1%) | none |
+| **P, pushed grants** | The leader pushes (R, its clock) in answers it already sends; a learner grants a read only once a push stamped at least DRIFT after the read arrived reaches it | up to 5.1 (3.8%) | up to 14.7 (11.5%) | up to 21.8 (16.6%) | read-index linearizability: R would rest on the lease and the clock bound, not on a confirm sent after the read arrived |
 
 Notes on each:
 - **F** saves little on mrB, whose one learner per region (two in enam) already asks under 20 a second. On B0-32 the
@@ -103,8 +105,8 @@ Notes on each:
 ## 5. Reading
 
 - The leader's confirm is already batched; the bill is per request, and only fewer learner requests lower it.
-- B, then F, are the two levers that keep the read path as it is. Together they save 1.6% on mrB and 9.5 to 11.3% on
-  B0-32's slow leaders, which is the same order as lever A (`encode-once`) and relay (`learner-relay`), and no more.
+- B, then F, are the two levers that keep the read path as it is. Together they save 1.6% on mrB and 9.5 to 14.9% on
+  B0-32's slow leaders (11.3% on m3fg3 before the 2026-11-24 correction), which is the same order as lever A (`encode-once`) and relay (`learner-relay`), and no more.
   Neither reaches the ×0.63 commit scale m3fsf2 needs for 450.
 - All three levers (A, relay, F and B) share one cost: `crates/raft/src` or the site's call path, so the long sweep,
   Porcupine and a site day. If any is built, B alone is the smallest change for its share: one hold of append replies

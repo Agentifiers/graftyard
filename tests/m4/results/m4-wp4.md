@@ -687,11 +687,11 @@ Raw Workers events for f0, read in 1 s slices, which are near complete (the calc
 
 Learner `/raft` was 27.5 s (60%) of f0's CPU in the window. 31 of those calls took 100 ms or more of CPU, 10.4 s together, and the rest took 1.57 ms each. The heaviest, 2,015 ms, was a learner call at 09:48:53.9Z whose span held one leader step sending 754 KB of appends. It covered a 2,056 ms ticker stall.
 
-**Duplicates.** Over the whole load f0 received 46,250 learner read-index calls. 9,535 of them, 21%, were copies of batches already in flight: 7,089 `HEDGE` copies and 2,446 `CALL_DEADLINE` resends [measured, learner traces]. By minute, the share of copies (HEDGE copies plus calls past 1 s, each resent) against the mean admission queue:
+**Duplicates.** Over the whole load f0 received 50,461 learner read-index calls (corrected 2026-11-24, `tests/am1/results/trace-dedup.md`; it read 46,250 before the trace merge kept equal rows inside one save). 9,535 of them, 18.9%, were copies of batches already in flight: 7,089 `HEDGE` copies and 2,446 `CALL_DEADLINE` resends [measured, learner traces]. By minute, the share of copies (HEDGE copies plus calls past 1 s, each resent) against the mean admission queue:
 
 | Minute of load | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Copies, % of read-index calls | 7.2 | 13.6 | 35.0 | 28.4 | 31.4 | 40.7 | 38.1 | 40.1 | 37.7 |
+| Copies, % of read-index calls (not recomputed after the 2026-11-24 correction; each minute's denominator grew, so these read high) | 7.2 | 13.6 | 35.0 | 28.4 | 31.4 | 40.7 | 38.1 | 40.1 | 37.7 |
 | Mean queued commands | 9 | 18 | 91 | 50 | 39 | 159 | 23 | 44 | 83 |
 
 **Does the read-index rate grow with the queue?** Not the base rate: learner batches to the leader ran 39/s, then 65 to 88/s for all 8 learners, and their correlation with the queue is −0.32. The copies do grow, from 1.4/s to 40/s at the peak, correlation +0.51. Queued commands make the leader slow to answer, and every batch slower than `HEDGE` is copied, so the retries add calls exactly when the leader is slowest. Learner ReadIndex call time, 09:46 to 09:52Z: p50 261 ms, p90 1,000 ms, p99 2,427 ms [measured].
@@ -706,7 +706,7 @@ The dominant kind is learner read-index calls, and about a fifth of them were co
 - the site host copies a learner's `ReadIndex` call at `HEDGE` only while its batch is the newest it sent (`workers/site/src/host.rs`, `hedge_due`). Other learner calls are hedged as before.
 
 **Replay** (`tests/fanout/readnewest.py tests/fanout/raw/tsave-m61.jsonl.xz 1795167860000 510`, every call's traced time held, so the leader's lighter load is not credited) [inference]:
-- f0's learner read-index calls fall from 46,250 to 36,467 (21% fewer). 6,751 of the 7,089 copies and 2,440 of the 2,446 resends are dropped, and 592 copies of dropped resends with them.
+- f0's learner read-index calls fall from 50,461 to 40,678 (19.4% fewer; corrected 2026-11-24, `tests/am1/results/trace-dedup.md`, it read 46,250 to 36,467, 21%). 6,751 of the 7,089 copies and 2,440 of the 2,446 resends are dropped, and 592 copies of dropped resends with them.
 - Batch waits fall from p50 / p90 / p99 222 / 796 / 2,256 ms to 218 / 713 / 1,778 ms, since a slow batch is now granted by a later answer.
 - At 2.87 ms a call, that is about 28 s of f0's CPU over the 510 s load, 0.055 vCPU or about 9% of its 0.6 vCPU. The fix takes away the retry loop that feeds on the leader's slowness, not most of its CPU. The rest of the learner call cost, 1.6 to 2.9 ms each at 110 to 140 calls/s, is per call, not per byte, and the next lever would be fewer learner calls per read.
 
@@ -735,7 +735,7 @@ Site day 62 (14:14:19Z to 14:15:44Z, exit 0, 6 versions) shipped main `99f614ee`
 | Leader queue (slot) | p99 17.8 s (17.6 s) | |
 | Round / confirm / deps | p99 880 ms / 898 ms / 1.4 s | |
 | f0's vCPU (GraphQL CPU-s per minute from 14:25) | 23.4, 23.6, 26.3, 27.1, 31.2, 31.0, 33.5, 40.0, 31.0, 27.1: mean 0.49, peak 0.67 | about 0.6 sustained |
-| Learner read-index calls to f0 | 44,515 sent, plus 1,904 `HEDGE` copies (**4.1%**); 2,543 past `CALL_DEADLINE` | 46,250, 15.3% `HEDGE` copies, 21% copies in all |
+| Learner read-index calls to f0 | 44,515 sent, plus 1,904 `HEDGE` copies (**4.1%**); 2,543 past `CALL_DEADLINE` | 50,461, 14.0% `HEDGE` copies, 18.9% copies in all (corrected 2026-11-24, `tests/am1/results/trace-dedup.md`; it read 46,250, 15.3% and 21%) |
 | Leader changes | **0**. Holds: 14:32:43 CommitErrors, 14:33:07 LoopLag, 14:35:19 CommitErrors (each `to: None`); no step-down | 2 (a transfer and the transfer home) |
 | `suspect` | each follower logged 2,000 or more reports from 14:33:35 to 14:35:00; no pre-vote | 302, no pre-vote |
 | f0 alarm-steps lines | 17: `activity` 8 lines and 8,363 ms; `load` 4 and 4,075 ms; `prsync` 3 and 2,028 ms; `actions_trigger` 4 and 1,088 ms; `split` 157 ms; `hookseq` 111 ms | 29 |

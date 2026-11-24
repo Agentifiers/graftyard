@@ -1,62 +1,62 @@
-voter 0: 11742 reports; by colo {'LAX': 6138, 'DFW': 4581, 'UNKNOWN': 202, 'SJC': 821}; by verdict {'leader': 893, 'promised': 8989, 'mayNotLead': 994, 'started': 12, 'busy': 854}
-  term 0: 2594; about {1: 1458, 2: 1136}; colos {'DFW': 974, 'LAX': 1321, 'SJC': 299}; verdicts {'promised': 1913, 'mayNotLead': 327, 'busy': 214, 'started': 2, 'leader': 138}
+voter 0: 42745 reports; by colo {'LAX': 24736, 'DFW': 15154, 'UNKNOWN': 230, 'SJC': 2625}; by verdict {'leader': 9413, 'promised': 28136, 'mayNotLead': 2402, 'started': 12, 'busy': 2782}
+  term 0: 5566; about {1: 3344, 2: 2222}; colos {'DFW': 2016, 'LAX': 2873, 'SJC': 677}; verdicts {'promised': 3767, 'mayNotLead': 568, 'busy': 399, 'started': 2, 'leader': 830}
   term 1: 1; about {2: 1}; colos {'LAX': 1}; verdicts {'leader': 1}
-  term 2: 92; about {2: 30, 1: 62}; colos {'DFW': 35, 'LAX': 53, 'UNKNOWN': 4}; verdicts {'leader': 30, 'promised': 33, 'mayNotLead': 7, 'busy': 22}
-  term 3: 549; about {1: 262, 2: 230, 0: 57}; colos {'LAX': 306, 'DFW': 234, 'UNKNOWN': 9}; verdicts {'promised': 303, 'mayNotLead': 114, 'started': 2, 'busy': 130}
-  term 4: 898; about {1: 117, 0: 63, 2: 718}; colos {'DFW': 327, 'LAX': 550, 'UNKNOWN': 21}; verdicts {'promised': 836, 'busy': 55, 'leader': 7}
-  term 5: 1319; about {1: 871, 2: 263, 0: 185}; colos {'DFW': 518, 'LAX': 772, 'UNKNOWN': 29}; verdicts {'promised': 1148, 'busy': 107, 'started': 1, 'leader': 63}
-  term 6: 249; about {1: 153, 0: 35, 2: 61}; colos {'LAX': 150, 'DFW': 93, 'UNKNOWN': 6}; verdicts {'leader': 121, 'started': 1, 'busy': 3, 'promised': 124}
-  term 7: 560; about {2: 58, 0: 66, 1: 436}; colos {'DFW': 235, 'LAX': 305, 'UNKNOWN': 20}; verdicts {'promised': 507, 'busy': 12, 'leader': 41}
-  term 8: 119; about {1: 48, 0: 16, 2: 55}; colos {'DFW': 55, 'LAX': 59, 'UNKNOWN': 5}; verdicts {'leader': 61, 'promised': 57, 'busy': 1}
-  term 9: 854; about {2: 657, 0: 14, 1: 183}; colos {'LAX': 439, 'DFW': 402, 'UNKNOWN': 13}; verdicts {'promised': 761, 'started': 1, 'busy': 60, 'mayNotLead': 24, 'leader': 8}
-  term 10: 966; about {1: 655, 2: 177, 0: 134}; colos {'DFW': 495, 'LAX': 449, 'UNKNOWN': 22}; verdicts {'promised': 777, 'started': 1, 'busy': 70, 'leader': 118}
-  term 11: 291; about {1: 203, 2: 57, 0: 31}; colos {'DFW': 132, 'LAX': 151, 'UNKNOWN': 8}; verdicts {'leader': 121, 'promised': 163, 'busy': 7}
-  term 12: 782; about {0: 135, 1: 467, 2: 180}; colos {'DFW': 324, 'LAX': 413, 'UNKNOWN': 12, 'SJC': 33}; verdicts {'promised': 698, 'started': 1, 'busy': 74, 'mayNotLead': 7, 'leader': 2}
-  term 13: 116; about {0: 42, 1: 27, 2: 47}; colos {'DFW': 41, 'LAX': 50, 'SJC': 23, 'UNKNOWN': 2}; verdicts {'busy': 22, 'promised': 92, 'mayNotLead': 1, 'leader': 1}
-  term 14: 442; about {1: 107, 2: 245, 0: 90}; colos {'DFW': 169, 'LAX': 221, 'UNKNOWN': 13, 'SJC': 39}; verdicts {'busy': 9, 'promised': 366, 'mayNotLead': 53, 'leader': 14}
-  term 15: 83; about {1: 64, 0: 8, 2: 11}; colos {'DFW': 13, 'LAX': 39, 'SJC': 31}; verdicts {'leader': 40, 'promised': 38, 'mayNotLead': 5}
-  term 16: 207; about {1: 113, 0: 20, 2: 74}; colos {'UNKNOWN': 8, 'LAX': 95, 'DFW': 38, 'SJC': 66}; verdicts {'leader': 75, 'promised': 118, 'mayNotLead': 14}
-  term 17: 648; about {0: 91, 1: 396, 2: 161}; colos {'LAX': 302, 'SJC': 131, 'DFW': 201, 'UNKNOWN': 14}; verdicts {'promised': 543, 'mayNotLead': 95, 'started': 1, 'busy': 3, 'leader': 6}
-  term 18: 752; about {1: 91, 2: 653, 0: 8}; colos {'UNKNOWN': 6, 'DFW': 268, 'LAX': 317, 'SJC': 161}; verdicts {'promised': 351, 'mayNotLead': 347, 'busy': 26, 'leader': 28}
-  term 19: 98; about {2: 18, 0: 4, 1: 76}; colos {'DFW': 23, 'LAX': 66, 'SJC': 7, 'UNKNOWN': 2}; verdicts {'leader': 18, 'started': 1, 'busy': 17, 'promised': 62}
-  term 20: 122; about {0: 18, 1: 104}; colos {'DFW': 4, 'LAX': 79, 'SJC': 31, 'UNKNOWN': 8}; verdicts {'busy': 22, 'started': 1, 'promised': 99}
-voter 1: 6845 reports; by colo {'LAX': 3493, 'DFW': 2739, 'UNKNOWN': 65, 'SJC': 548}; by verdict {'promised': 4175, 'busy': 2047, 'started': 9, 'leader': 614}
-  term 0: 2247; about {0: 1733, 2: 514}; colos {'LAX': 1107, 'DFW': 916, 'SJC': 224}; verdicts {'promised': 1465, 'busy': 650, 'started': 4, 'leader': 128}
+  term 2: 1014; about {2: 900, 1: 114}; colos {'DFW': 428, 'LAX': 581, 'UNKNOWN': 5}; verdicts {'leader': 893, 'promised': 83, 'mayNotLead': 7, 'busy': 31}
+  term 3: 2363; about {1: 947, 2: 1312, 0: 104}; colos {'LAX': 1400, 'DFW': 952, 'UNKNOWN': 11}; verdicts {'promised': 1406, 'mayNotLead': 304, 'started': 2, 'busy': 651}
+  term 4: 2137; about {1: 155, 0: 172, 2: 1810}; colos {'DFW': 788, 'LAX': 1325, 'UNKNOWN': 24}; verdicts {'promised': 1983, 'busy': 136, 'leader': 18}
+  term 5: 3040; about {1: 1896, 2: 656, 0: 488}; colos {'DFW': 1054, 'LAX': 1955, 'UNKNOWN': 31}; verdicts {'promised': 2561, 'busy': 133, 'started': 1, 'leader': 345}
+  term 6: 2180; about {1: 840, 0: 267, 2: 1073}; colos {'LAX': 1409, 'DFW': 761, 'UNKNOWN': 10}; verdicts {'leader': 1896, 'started': 1, 'busy': 21, 'promised': 262}
+  term 7: 2686; about {2: 757, 0: 235, 1: 1694}; colos {'DFW': 993, 'LAX': 1673, 'UNKNOWN': 20}; verdicts {'promised': 2310, 'busy': 147, 'leader': 229}
+  term 8: 810; about {1: 485, 0: 236, 2: 89}; colos {'DFW': 342, 'LAX': 462, 'UNKNOWN': 6}; verdicts {'leader': 595, 'promised': 214, 'busy': 1}
+  term 9: 2120; about {2: 1708, 0: 30, 1: 382}; colos {'LAX': 1128, 'DFW': 978, 'UNKNOWN': 14}; verdicts {'promised': 1595, 'started': 1, 'busy': 424, 'mayNotLead': 79, 'leader': 21}
+  term 10: 3080; about {1: 2160, 2: 662, 0: 258}; colos {'DFW': 1414, 'LAX': 1644, 'UNKNOWN': 22}; verdicts {'promised': 2373, 'started': 1, 'busy': 110, 'leader': 596}
+  term 11: 1995; about {1: 1240, 2: 420, 0: 335}; colos {'DFW': 817, 'LAX': 1169, 'UNKNOWN': 9}; verdicts {'leader': 1607, 'promised': 380, 'busy': 8}
+  term 12: 3571; about {0: 500, 1: 2094, 2: 977}; colos {'DFW': 1442, 'LAX': 2020, 'UNKNOWN': 12, 'SJC': 97}; verdicts {'promised': 3292, 'started': 1, 'busy': 248, 'mayNotLead': 28, 'leader': 2}
+  term 13: 646; about {0: 188, 1: 182, 2: 276}; colos {'DFW': 151, 'LAX': 419, 'SJC': 74, 'UNKNOWN': 2}; verdicts {'busy': 156, 'promised': 486, 'mayNotLead': 3, 'leader': 1}
+  term 14: 3015; about {1: 430, 2: 1601, 0: 984}; colos {'DFW': 905, 'LAX': 1698, 'UNKNOWN': 19, 'SJC': 393}; verdicts {'busy': 49, 'promised': 2611, 'mayNotLead': 283, 'leader': 72}
+  term 15: 329; about {1: 300, 0: 14, 2: 15}; colos {'DFW': 75, 'LAX': 197, 'SJC': 57}; verdicts {'leader': 259, 'promised': 65, 'mayNotLead': 5}
+  term 16: 2041; about {1: 754, 0: 237, 2: 1050}; colos {'UNKNOWN': 12, 'LAX': 1256, 'DFW': 385, 'SJC': 388}; verdicts {'leader': 1360, 'promised': 639, 'mayNotLead': 42}
+  term 17: 2466; about {0: 278, 1: 1599, 2: 589}; colos {'LAX': 1350, 'SJC': 456, 'DFW': 644, 'UNKNOWN': 16}; verdicts {'promised': 2324, 'mayNotLead': 131, 'started': 1, 'busy': 3, 'leader': 7}
+  term 18: 2915; about {1: 416, 2: 2434, 0: 65}; colos {'UNKNOWN': 7, 'DFW': 926, 'LAX': 1571, 'SJC': 411}; verdicts {'promised': 1486, 'mayNotLead': 952, 'busy': 62, 'leader': 415}
+  term 19: 492; about {2: 266, 0: 84, 1: 142}; colos {'DFW': 78, 'LAX': 379, 'SJC': 33, 'UNKNOWN': 2}; verdicts {'leader': 266, 'started': 1, 'busy': 135, 'promised': 90}
+  term 20: 278; about {0: 56, 1: 222}; colos {'DFW': 5, 'LAX': 226, 'SJC': 39, 'UNKNOWN': 8}; verdicts {'busy': 68, 'started': 1, 'promised': 209}
+voter 1: 18020 reports; by colo {'LAX': 10315, 'DFW': 6303, 'UNKNOWN': 84, 'SJC': 1318}; by verdict {'promised': 7530, 'busy': 5140, 'started': 9, 'leader': 5341}
+  term 0: 3994; about {0: 3105, 2: 889}; colos {'LAX': 1910, 'DFW': 1546, 'SJC': 538}; verdicts {'promised': 1830, 'busy': 1349, 'started': 4, 'leader': 811}
   term 1: 1; about {2: 1}; colos {'LAX': 1}; verdicts {'promised': 1}
-  term 2: 2122; about {0: 1381, 2: 740, 1: 1}; colos {'UNKNOWN': 16, 'DFW': 907, 'LAX': 1199}; verdicts {'promised': 1379, 'started': 1, 'busy': 688, 'leader': 54}
-  term 3: 71; about {0: 30, 1: 4, 2: 37}; colos {'DFW': 42, 'LAX': 27, 'UNKNOWN': 2}; verdicts {'leader': 65, 'busy': 6}
-  term 4: 76; about {2: 73, 0: 3}; colos {'UNKNOWN': 4, 'DFW': 44, 'LAX': 28}; verdicts {'busy': 27, 'started': 1, 'leader': 42, 'promised': 6}
-  term 5: 119; about {1: 14, 2: 58, 0: 47}; colos {'DFW': 56, 'LAX': 60, 'UNKNOWN': 3}; verdicts {'leader': 95, 'promised': 24}
-  term 6: 167; about {0: 115, 2: 46, 1: 6}; colos {'DFW': 67, 'LAX': 91, 'UNKNOWN': 9}; verdicts {'promised': 167}
-  term 9: 8; about {0: 8}; colos {'LAX': 6, 'DFW': 2}; verdicts {'promised': 6, 'busy': 1, 'leader': 1}
-  term 10: 155; about {0: 155}; colos {'DFW': 73, 'LAX': 82}; verdicts {'promised': 114, 'busy': 22, 'leader': 19}
-  term 11: 251; about {0: 231, 1: 13, 2: 7}; colos {'DFW': 102, 'LAX': 140, 'UNKNOWN': 9}; verdicts {'promised': 154, 'busy': 62, 'leader': 35}
-  term 12: 42; about {0: 17, 1: 4, 2: 21}; colos {'DFW': 16, 'LAX': 22, 'UNKNOWN': 2, 'SJC': 2}; verdicts {'leader': 42}
-  term 14: 5; about {0: 4, 1: 1}; colos {'LAX': 4, 'DFW': 1}; verdicts {'busy': 5}
-  term 15: 49; about {0: 43, 2: 6}; colos {'LAX': 19, 'DFW': 19, 'SJC': 11}; verdicts {'busy': 35, 'leader': 14}
-  term 16: 146; about {0: 99, 2: 36, 1: 11}; colos {'UNKNOWN': 8, 'DFW': 31, 'LAX': 70, 'SJC': 37}; verdicts {'busy': 85, 'leader': 58, 'promised': 3}
-  term 17: 258; about {0: 73, 1: 11, 2: 174}; colos {'LAX': 114, 'UNKNOWN': 4, 'SJC': 51, 'DFW': 89}; verdicts {'leader': 61, 'promised': 161, 'started': 1, 'busy': 35}
-  term 18: 1011; about {2: 912, 0: 61, 1: 38}; colos {'UNKNOWN': 6, 'DFW': 334, 'LAX': 462, 'SJC': 209}; verdicts {'promised': 578, 'started': 2, 'busy': 431}
-  term 19: 117; about {2: 92, 0: 25}; colos {'DFW': 40, 'LAX': 61, 'SJC': 14, 'UNKNOWN': 2}; verdicts {'promised': 117}
-voter 2: 22769 reports; by colo {'LAX': 12532, 'DFW': 8285, 'UNKNOWN': 280, 'SJC': 1672}; by verdict {'promised': 17541, 'started': 28, 'busy': 4514, 'leader': 534, 'mayNotLead': 152}
-  term 0: 6102; about {0: 3545, 1: 2557}; colos {'LAX': 3084, 'DFW': 2336, 'SJC': 682}; verdicts {'promised': 4671, 'busy': 1266, 'started': 11, 'mayNotLead': 47, 'leader': 107}
+  term 2: 2731; about {0: 1791, 2: 939, 1: 1}; colos {'UNKNOWN': 18, 'DFW': 1161, 'LAX': 1552}; verdicts {'promised': 1620, 'started': 1, 'busy': 935, 'leader': 175}
+  term 3: 1160; about {0: 642, 1: 91, 2: 427}; colos {'DFW': 453, 'LAX': 704, 'UNKNOWN': 3}; verdicts {'leader': 1132, 'busy': 28}
+  term 4: 247; about {2: 244, 0: 3}; colos {'UNKNOWN': 5, 'DFW': 135, 'LAX': 107}; verdicts {'busy': 68, 'started': 1, 'leader': 172, 'promised': 6}
+  term 5: 690; about {1: 75, 2: 426, 0: 189}; colos {'DFW': 243, 'LAX': 444, 'UNKNOWN': 3}; verdicts {'leader': 582, 'promised': 108}
+  term 6: 386; about {0: 236, 2: 139, 1: 11}; colos {'DFW': 163, 'LAX': 213, 'UNKNOWN': 10}; verdicts {'promised': 386}
+  term 9: 13; about {0: 13}; colos {'LAX': 11, 'DFW': 2}; verdicts {'promised': 11, 'busy': 1, 'leader': 1}
+  term 10: 255; about {0: 255}; colos {'DFW': 96, 'LAX': 159}; verdicts {'promised': 199, 'busy': 26, 'leader': 30}
+  term 11: 1742; about {0: 1566, 1: 31, 2: 145}; colos {'DFW': 681, 'LAX': 1042, 'UNKNOWN': 19}; verdicts {'promised': 1106, 'busy': 138, 'leader': 498}
+  term 12: 600; about {0: 393, 1: 61, 2: 146}; colos {'DFW': 239, 'LAX': 356, 'UNKNOWN': 2, 'SJC': 3}; verdicts {'leader': 600}
+  term 14: 16; about {0: 14, 1: 2}; colos {'LAX': 13, 'DFW': 3}; verdicts {'busy': 16}
+  term 15: 146; about {0: 140, 2: 6}; colos {'LAX': 47, 'DFW': 58, 'SJC': 41}; verdicts {'busy': 118, 'leader': 28}
+  term 16: 1966; about {0: 1323, 2: 616, 1: 27}; colos {'UNKNOWN': 12, 'DFW': 377, 'LAX': 1316, 'SJC': 261}; verdicts {'busy': 1267, 'leader': 696, 'promised': 3}
+  term 17: 978; about {0: 333, 1: 194, 2: 451}; colos {'LAX': 640, 'UNKNOWN': 4, 'SJC': 89, 'DFW': 245}; verdicts {'leader': 616, 'promised': 322, 'started': 1, 'busy': 39}
+  term 18: 2723; about {2: 2373, 0: 246, 1: 104}; colos {'UNKNOWN': 6, 'DFW': 838, 'LAX': 1518, 'SJC': 361}; verdicts {'promised': 1566, 'started': 2, 'busy': 1155}
+  term 19: 372; about {2: 250, 0: 122}; colos {'DFW': 63, 'LAX': 282, 'SJC': 25, 'UNKNOWN': 2}; verdicts {'promised': 372}
+voter 2: 64844 reports; by colo {'LAX': 37590, 'DFW': 21327, 'UNKNOWN': 322, 'SJC': 5605}; by verdict {'promised': 46210, 'started': 28, 'busy': 15192, 'leader': 2802, 'mayNotLead': 612}
+  term 0: 11224; about {0: 5644, 1: 5580}; colos {'LAX': 5772, 'DFW': 3932, 'SJC': 1520}; verdicts {'promised': 7912, 'busy': 2916, 'started': 11, 'mayNotLead': 93, 'leader': 292}
   term 1: 1; about {2: 1}; colos {'LAX': 1}; verdicts {'promised': 1}
-  term 2: 2381; about {0: 1497, 2: 786, 1: 98}; colos {'UNKNOWN': 18, 'DFW': 1022, 'LAX': 1341}; verdicts {'promised': 1616, 'started': 1, 'busy': 764}
-  term 3: 844; about {0: 334, 2: 129, 1: 381}; colos {'DFW': 313, 'LAX': 520, 'UNKNOWN': 11}; verdicts {'promised': 758, 'busy': 84, 'started': 1, 'leader': 1}
-  term 4: 155; about {1: 121, 0: 30, 2: 4}; colos {'LAX': 121, 'DFW': 32, 'UNKNOWN': 2}; verdicts {'leader': 25, 'promised': 107, 'busy': 21, 'mayNotLead': 2}
-  term 5: 1545; about {2: 177, 1: 1063, 0: 305}; colos {'DFW': 551, 'LAX': 963, 'UNKNOWN': 31}; verdicts {'promised': 1235, 'started': 1, 'busy': 296, 'mayNotLead': 13}
-  term 6: 1267; about {1: 416, 0: 610, 2: 241}; colos {'LAX': 794, 'DFW': 438, 'UNKNOWN': 35}; verdicts {'promised': 1064, 'busy': 139, 'mayNotLead': 64}
-  term 7: 663; about {0: 186, 2: 63, 1: 414}; colos {'DFW': 251, 'LAX': 392, 'UNKNOWN': 20}; verdicts {'promised': 644, 'mayNotLead': 19}
-  term 8: 809; about {1: 257, 0: 552}; colos {'DFW': 295, 'LAX': 490, 'UNKNOWN': 24}; verdicts {'promised': 808, 'leader': 1}
-  term 9: 310; about {0: 75, 2: 4, 1: 231}; colos {'LAX': 165, 'DFW': 145}; verdicts {'leader': 32, 'promised': 265, 'busy': 13}
-  term 10: 1520; about {2: 119, 0: 453, 1: 948}; colos {'LAX': 816, 'DFW': 681, 'UNKNOWN': 23}; verdicts {'promised': 1258, 'busy': 261, 'started': 1}
-  term 11: 1090; about {1: 458, 2: 153, 0: 479}; colos {'DFW': 455, 'LAX': 607, 'UNKNOWN': 28}; verdicts {'promised': 901, 'busy': 179, 'started': 4, 'leader': 6}
-  term 12: 1022; about {0: 255, 1: 639, 2: 128}; colos {'LAX': 608, 'DFW': 359, 'UNKNOWN': 11, 'SJC': 44}; verdicts {'promised': 836, 'busy': 140, 'started': 1, 'leader': 45}
-  term 13: 63; about {0: 28, 1: 28, 2: 7}; colos {'DFW': 24, 'LAX': 31, 'SJC': 7, 'UNKNOWN': 1}; verdicts {'busy': 44, 'leader': 15, 'promised': 4}
-  term 14: 371; about {1: 275, 2: 18, 0: 78}; colos {'DFW': 145, 'LAX': 214, 'UNKNOWN': 4, 'SJC': 8}; verdicts {'leader': 121, 'promised': 80, 'busy': 170}
-  term 15: 1187; about {0: 369, 1: 700, 2: 118}; colos {'LAX': 623, 'DFW': 310, 'SJC': 240, 'UNKNOWN': 14}; verdicts {'promised': 342, 'busy': 838, 'started': 5, 'leader': 2}
-  term 16: 759; about {1: 210, 0: 441, 2: 108}; colos {'LAX': 397, 'DFW': 166, 'UNKNOWN': 19, 'SJC': 177}; verdicts {'busy': 47, 'promised': 691, 'started': 1, 'leader': 20}
-  term 17: 736; about {0: 217, 1: 463, 2: 56}; colos {'LAX': 391, 'DFW': 152, 'SJC': 178, 'UNKNOWN': 15}; verdicts {'promised': 598, 'mayNotLead': 7, 'started': 1, 'busy': 51, 'leader': 79}
-  term 18: 684; about {1: 103, 2: 12, 0: 569}; colos {'DFW': 255, 'LAX': 266, 'SJC': 160, 'UNKNOWN': 3}; verdicts {'leader': 80, 'started': 1, 'busy': 59, 'promised': 544}
-  term 19: 1102; about {2: 103, 0: 874, 1: 125}; colos {'LAX': 606, 'DFW': 343, 'SJC': 140, 'UNKNOWN': 13}; verdicts {'busy': 142, 'promised': 960}
-  term 20: 158; about {0: 30, 1: 128}; colos {'DFW': 12, 'LAX': 102, 'SJC': 36, 'UNKNOWN': 8}; verdicts {'promised': 158}
+  term 2: 2872; about {0: 1791, 2: 939, 1: 142}; colos {'UNKNOWN': 18, 'DFW': 1230, 'LAX': 1624}; verdicts {'promised': 1907, 'started': 1, 'busy': 964}
+  term 3: 2892; about {0: 1100, 2: 731, 1: 1061}; colos {'DFW': 1013, 'LAX': 1864, 'UNKNOWN': 15}; verdicts {'promised': 2072, 'busy': 818, 'started': 1, 'leader': 1}
+  term 4: 370; about {1: 140, 0: 176, 2: 54}; colos {'LAX': 304, 'DFW': 64, 'UNKNOWN': 2}; verdicts {'leader': 172, 'promised': 175, 'busy': 21, 'mayNotLead': 2}
+  term 5: 3008; about {2: 471, 1: 1866, 0: 671}; colos {'DFW': 988, 'LAX': 1989, 'UNKNOWN': 31}; verdicts {'promised': 2655, 'started': 1, 'busy': 336, 'mayNotLead': 16}
+  term 6: 4663; about {1: 904, 0: 2357, 2: 1402}; colos {'LAX': 2880, 'DFW': 1740, 'UNKNOWN': 43}; verdicts {'promised': 3171, 'busy': 1147, 'mayNotLead': 345}
+  term 7: 4433; about {0: 1217, 2: 1102, 1: 2114}; colos {'DFW': 1713, 'LAX': 2696, 'UNKNOWN': 24}; verdicts {'promised': 4284, 'mayNotLead': 149}
+  term 8: 1911; about {1: 522, 0: 1389}; colos {'DFW': 716, 'LAX': 1169, 'UNKNOWN': 26}; verdicts {'promised': 1909, 'leader': 2}
+  term 9: 750; about {0: 301, 2: 95, 1: 354}; colos {'LAX': 479, 'DFW': 271}; verdicts {'leader': 233, 'promised': 501, 'busy': 16}
+  term 10: 3861; about {2: 322, 0: 1292, 1: 2247}; colos {'LAX': 2308, 'DFW': 1530, 'UNKNOWN': 23}; verdicts {'promised': 3401, 'busy': 459, 'started': 1}
+  term 11: 4878; about {1: 1356, 2: 490, 0: 3032}; colos {'DFW': 1990, 'LAX': 2850, 'UNKNOWN': 38}; verdicts {'promised': 3403, 'busy': 1463, 'started': 4, 'leader': 8}
+  term 12: 3497; about {0: 845, 1: 2204, 2: 448}; colos {'LAX': 2080, 'DFW': 1311, 'UNKNOWN': 11, 'SJC': 95}; verdicts {'promised': 2792, 'busy': 332, 'started': 1, 'leader': 372}
+  term 13: 270; about {0: 93, 1: 132, 2: 45}; colos {'DFW': 49, 'LAX': 205, 'SJC': 15, 'UNKNOWN': 1}; verdicts {'busy': 161, 'leader': 105, 'promised': 4}
+  term 14: 2006; about {1: 1332, 2: 27, 0: 647}; colos {'DFW': 706, 'LAX': 1272, 'UNKNOWN': 4, 'SJC': 24}; verdicts {'leader': 832, 'promised': 423, 'busy': 751}
+  term 15: 6027; about {0: 2021, 1: 3435, 2: 571}; colos {'LAX': 3347, 'DFW': 1189, 'SJC': 1471, 'UNKNOWN': 20}; verdicts {'promised': 1200, 'busy': 4819, 'started': 5, 'leader': 3}
+  term 16: 5795; about {1: 1039, 0: 2668, 2: 2088}; colos {'LAX': 3022, 'DFW': 1371, 'UNKNOWN': 26, 'SJC': 1376}; verdicts {'busy': 278, 'promised': 5488, 'started': 1, 'leader': 28}
+  term 17: 2744; about {0: 779, 1: 1655, 2: 310}; colos {'LAX': 1470, 'DFW': 624, 'SJC': 634, 'UNKNOWN': 16}; verdicts {'promised': 2289, 'mayNotLead': 7, 'started': 1, 'busy': 64, 'leader': 383}
+  term 18: 1362; about {1: 316, 2: 147, 0: 899}; colos {'DFW': 386, 'LAX': 725, 'SJC': 248, 'UNKNOWN': 3}; verdicts {'leader': 371, 'started': 1, 'busy': 270, 'promised': 720}
+  term 19: 1971; about {2: 258, 0: 1471, 1: 242}; colos {'LAX': 1293, 'DFW': 486, 'SJC': 179, 'UNKNOWN': 13}; verdicts {'busy': 377, 'promised': 1594}
+  term 20: 309; about {0: 79, 1: 230}; colos {'DFW': 18, 'LAX': 240, 'SJC': 43, 'UNKNOWN': 8}; verdicts {'promised': 309}
