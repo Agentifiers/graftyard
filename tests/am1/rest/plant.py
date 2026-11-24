@@ -33,8 +33,8 @@ SELF = ['node', A1, '--selftest']
 # (name, file, old, new, test args)
 MUTANTS = [
     ('archive: no slack, so the log is cut to exactly the cap', LA,
-     'let target = if total > max_bytes { max_bytes - max_bytes / ARCHIVE_SLACK } else { max_bytes };',
-     'let target = max_bytes;', ARCHIVE),
+     '    max_bytes - max_bytes / ARCHIVE_SLACK\n}',
+     '    max_bytes\n}', ARCHIVE),
     ('archive: a gap in the stored log is not refused', LA,
      '            && i.0 != last.0 + 1\n', '            && i.0 < last.0\n', ARCHIVE),
     ('archive: next archives past the last promotion', LA,
@@ -42,14 +42,14 @@ MUTANTS = [
     ('archive: next promotes again over a covered range', LA,
      'if done < from.0 { Next::Promote', 'if done < to.0 { Next::Promote', ARCHIVE),
     ('archive: a promotion takes an entry over PROMOTE_MAX', LA,
-     '        if !out.is_empty() && taken.saturating_add(b) > promote_max {',
-     '        if !out.is_empty() && taken > promote_max {', ARCHIVE),
+     '            if !first && packed + b > promote_max {',
+     '            if !first && packed > promote_max {', ARCHIVE),
     ('archive: a stored pack is promoted under its pack id, not its checksum', LA,
      '                PackRef::Stored { checksum, .. } => checksum,',
      '                PackRef::Stored { id, .. } => Digest(Sha256::digest(id.0.0.to_be_bytes()).into()),', ARCHIVE),
     ('archive: recorded while held in one bucket', LA,
-     '    if held < 2 {\n        return Err(format!("archive {key} is in {held} buckets"));',
-     '    if held < 1 {\n        return Err(format!("archive {key} is in {held} buckets"));', ARCHIVE),
+     '        if held < 2 {\n            return Err(format!("archive {key} is in {held} buckets"));',
+     '        if held < 1 {\n            return Err(format!("archive {key} is in {held} buckets"));', ARCHIVE),
     ('archive: the promote request id ignores the range', LA,
      'request(&[b"graftyard-log-promote", chain.to_string().as_bytes(), &from.0.to_be_bytes(), &to.0.to_be_bytes()])',
      'request(&[b"graftyard-log-promote", chain.to_string().as_bytes()])', ARCHIVE),
@@ -102,19 +102,23 @@ MUTANTS = [
 ]
 
 
+# A hang counts as caught (README, "Planted bugs").
+LIMIT = ['timeout', '-k', '10', '600']
+
+
 def run(args):
     kind, *rest = args
     env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
-               CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '..', 'target-rows')),
+               CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
                CARGO_INCREMENTAL='0')
     if kind == 'cargo':
         *pkg, filt = rest
         cmd = ['cargo', 'test', '-j', '3', *pkg, '--no-fail-fast'] + ([filt] if filt else [])
-        return subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+        return subprocess.run([*LIMIT, *cmd], cwd=ROOT, env=env, capture_output=True, text=True)
     if kind == 'go':
-        return subprocess.run(['go', 'test', '-count=1', '-run', rest[0], './...'], cwd=os.path.join(ROOT, 'containers/git/server'),
-                              env=env, capture_output=True, text=True)
-    return subprocess.run(['node', *rest], cwd=ROOT, env=env, capture_output=True, text=True)
+        return subprocess.run([*LIMIT, 'go', 'test', '-count=1', '-run', rest[0], './...'],
+                              cwd=os.path.join(ROOT, 'containers/git/server'), env=env, capture_output=True, text=True)
+    return subprocess.run([*LIMIT, 'node', *rest], cwd=ROOT, env=env, capture_output=True, text=True)
 
 
 def failures(kind, out):
@@ -135,6 +139,8 @@ def plant(n, name, path, old, new, args):
         r = run(args)
         out = r.stdout + r.stderr
         failed = failures(args[0], out) if r.returncode != 0 else []
+        if r.returncode == 124:
+            failed = ['(timed out)', *failed]
         broke = ('error[' in out or '\nerror: could not compile' in out) if args[0] == 'cargo' else \
             ('build failed' in out or 'SyntaxError' in out)
         if broke and not failed:
