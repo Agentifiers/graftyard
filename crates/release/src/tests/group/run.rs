@@ -809,6 +809,7 @@ fn r57_an_upload_takes_the_deployed_version_s_bindings_not_the_newest_upload_s()
     assert_eq!(meta["annotations"]["workers/tag"], json!("7-ab"));
     assert_eq!(meta["main_module"], json!("index.js"));
     assert_ne!(read(stray)["resources"], read(n)["resources"], "the newest upload is configured otherwise");
+}
 
 // ---- AM3-WP1: the agents account's `graft-ops` ----
 
