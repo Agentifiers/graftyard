@@ -2,7 +2,8 @@
 """M6-WP1's hosted glue: a `ReplaceMember` ask that moves a group which never held the lost site, a restore planned
 as a dead site's replace, a day-long health read summed from the 10 s buckets, `deleteAll()` before 35 days, a probe of
 the prober's own site, a single-copy refill pass that copies everything, and the Workflows coordinator taking a chain's
-lowest generation or a group asking a member on the lost site.
+lowest generation, a group asking a member on the lost site, or a group following a leader on the lost site
+instead of asking a live voter to campaign.
 
 Plants one mutant at a time, runs the tests that guard it, and restores the file byte for byte. Each line prints
 CAUGHT, MISSED, or DID NOT COMPILE. Run from the repository root:
@@ -45,6 +46,9 @@ MUTANTS = [
     ("the coordinator keeps a chain's lowest generation", WF,
      "    if (!e || r.generation > e.generation) by.set(r.chain, r);\n",
      "    if (!e || r.generation < e.generation) by.set(r.chain, r);\n", WF_T),
+    ("a group follows a leader named on the lost site instead of asking for a campaign", WF,
+     "    if (lost !== null && (l === null || l === undefined || l === lost)) return { campaign: true };\n",
+     "    if (lost !== null && (l === null || l === undefined)) return { campaign: true };\n", WF_T),
     ("a group asks a member on the lost site", WF,
      "      const live = members.filter((m) => !(p.dead && m.site === p.from));\n",
      "      const live = members;\n", WF_T),

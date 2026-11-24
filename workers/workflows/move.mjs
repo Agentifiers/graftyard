@@ -170,11 +170,15 @@ export function configMembers(x) {
 }
 
 // One `/move` ask: the member answers `{"step", "ok"|"error", "config"}`; a follower answers `{"error":
-// {"notLeader": {"leader"}}}`. Returns `{done}`, `{leader}` to ask next, `{held}`, or `{stepped}`.
-export function judge(answer, members) {
+// {"notLeader": {"leader"}}}`. Returns `{done}`, `{leader}` to ask next, `{campaign}`, `{held}`, or `{stepped}`.
+// `lost` is the site a dead replace leaves: a follower still naming a leader there (its promise lapsed, but nothing
+// asked it to campaign) or naming none is asked to campaign, since no other caller may reach an idle group.
+export function judge(answer, members, lost = null) {
   const e = answer.error;
   if (e && typeof e === "object" && e.notLeader) {
-    const next = members.find((m) => m.site === e.notLeader.leader);
+    const l = e.notLeader.leader;
+    if (lost !== null && (l === null || l === undefined || l === lost)) return { campaign: true };
+    const next = members.find((m) => m.site === l);
     return next ? { leader: next } : { held: "no leader yet" };
   }
   if (answer.step === "Done") return { done: true };
@@ -207,7 +211,7 @@ export async function group(env, event, step) {
     });
     members = configMembers(r.config ?? r.error?.notLeader?.config) ?? members;
     removed ??= members.find((m) => m.site === p.from) ?? null;
-    const v = judge(r, members);
+    const v = judge(r, members, p.dead ? p.from : null);
     if (v.done) {
       const by = members.find((m) => m.site === p.to);
       if (started && removed && by) {
@@ -224,6 +228,24 @@ export async function group(env, event, step) {
     }
     if (v.leader) {
       member = v.leader;
+      continue;
+    }
+    // The member asked is a live voter with no live leader: it campaigns, as lookup's create asks a home member to
+    // (`graftyard_lookup`, `/campaign`). It waits out any promise it holds (`Promised`), so the next ask may find it
+    // still following; ask it again after ASK_EVERY.
+    if (v.campaign) {
+      await step.do(`campaign ${k}`, STEP_RETRY, async () => {
+        try {
+          const res = await stub(env, "MEMBER", member.site, member.do_name).fetch("https://member/campaign", {
+            method: "POST",
+            body: "{}",
+          });
+          return res.status === 200 ? (await res.json()).verdict ?? null : `HTTP ${res.status}`;
+        } catch (e) {
+          return `call: ${e.message}`;
+        }
+      });
+      await step.sleep(`after ${k}`, ASK_EVERY);
       continue;
     }
     if (v.stepped) started = true;

@@ -51,7 +51,7 @@ Main's `gate-pool` took 114 before this branch, so these are 115 to 118.
   - It then runs the full refill and polls the groups, at most 200 a step, from the first one not yet seen complete. One errored group errors the coordinator, which `graft-ops` pages on.
 - **A group instance** asks its row's member `/move` with `{"replace": {lost, spare}, started, dead}`.
   - The leader plans by `replace_plan`. A group whose committed config holds no voter on the lost site is `Done` before any step, so the many chains that never touched it end on their first ask.
-  - A `notLeader` names the leader to ask next. A member that answers nothing, or knows no leader, passes the ask to the next voter its last config names, never one on the lost site.
+  - A `notLeader` names the leader to ask next. For a lost site, a follower naming no leader, or one on the lost site, is asked `/campaign` (`campaign`, below), then asked again. A member that answers nothing, or knows no leader, passes the ask to the next voter its last config names, never one on the lost site.
   - `Done` after a step starts the expiry instance for the removed member, naming the member that replaced it.
 - **The leader's new arms.** `Degrade { lost }` commits `Degraded` once the voters it needs are caught up (`voters_ready`). `Restore { add }` joins a member on the spare in the lost member's slot and kind at the next generation, then commits `Normal` with it, the home moving to the spare if it was on the lost site. Neither reads the stored log.
 - **The expiry instance** sleeps 35 days, then asks the removed member `/expire` once a day, up to 30 times, until it wipes. The member wipes only if it is removed: by its own committed config, by F113's `superseded`, or by the replacing member's committed config, which names that member and not this one. A member on a lost site never commits the config that drops it, so the last case is the one a replace meets. An unjoined member answers 409, which ends the instance.
@@ -72,7 +72,9 @@ Main's `gate-pool` took 114 before this branch, so these are 115 to 118.
 
 **Deviation for BF-50.** `graft-ops`' recovery window is `OPS_RECOVER_MS` on a test-faults build (`"recover_ms"` in the executor file), lowered from `RECOVER_AFTER`'s 24 h for the row's recovery half, as the operator allowed. BF-50's lines don't measure the window's length. The drain's 24 h of zero acks runs at full length.
 
-**Plants.** `plant117.py`'s and `plant118.py`'s anchors are re-pointed for the `refill` and `replace_step` refactors, and still catch 3 of 3 each. `tests/m0carried/plant130.py`, 8 mutants, all caught:
+**`campaign` (2026-11-24, before BF-50).** Every system chain's home is site A, so after A is lost its followers on B and C still name A's leader once their promise lapses, and nothing else calls an idle chain to make it campaign (`Host::keep_led` acts only for leader-only work). The group instance now asks the live voter it reached to `/campaign` when its `notLeader` names no leader or the lost site, as `graftyard_lookup`'s create does for a home member. Found reading the glue against m6a's genesis, before any row; one test and one plant added.
+
+**Plants.** `plant117.py`'s and `plant118.py`'s anchors are re-pointed for the `refill` and `replace_step` refactors, and still catch 3 of 3 each. `tests/m0carried/plant130.py`, 9 mutants, all caught:
 - a group that never held the lost site moved anyway;
 - a restore planned as a dead site's replace;
 - a day-long health read summed from the 10 s buckets;
@@ -80,7 +82,8 @@ Main's `gate-pool` took 114 before this branch, so these are 115 to 118.
 - a site probing itself;
 - the single-copy refill pass copying every pack;
 - the coordinator keeping a chain's lowest generation;
-- a group asking a member on the lost site.
+- a group asking a member on the lost site;
+- a group following a leader named on the lost site instead of asking for a campaign.
 
 ## BF-50 (planned)
 
