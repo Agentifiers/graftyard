@@ -10266,3 +10266,95 @@ counted in `demoted`. That would mean the leader counts writes the edge did not 
 - **Back the coordinator out for per-group Workflows started by `graft-ops`** if one coordinator cannot finish an install's groups within its step limits on graft-m6a (as `replace-member` says).
 - **Drop the probe** if BF-50 shows a recovered site's own traffic reaching `MIN_CALLS` in every recovery window without it, or if its 43,200 pings a day per prober show on the survivors' registry objects.
 - **Sweep removed members instead** if an expiry instance's 35-day sleep is lost or retained past Workflows' limits on a hosted install.
+
+### `agent-rows-cache`: a push gate's isolate entry holds its fill's agent rows, so a cached gate pays no agent-rows read, 2026-11-24
+
+**Status.** Asked for by the lead on 2026-11-24 as B0-33's lever 1, moved from edge refusal to LM-1. Built on branch
+`agent-rows-cache` from main `a07a518b`: `workers/edge/src/colo.rs` (`gate`, `GateFx::Rows`), `workers/edge/src/lib.rs`
+(`gate::put`/`get`, `fresh_gate`, `read_gate`, `ROWS_BYTES_MAX`) and `workers/edge/src/agents.rs` (`push_context`,
+`unlinked_by_cache`, `fresh_if_unlinked`), and `crates/git` (`Push::agent_rules`, `agent::protected_now`) for the
+policy rule below. It ships after the current B0-33 set: a site day first, so every repository leader applies the
+policy rule, then the edge day that turns on the cached rows. An edge day before the site day would let a cached
+policy pass for up to `READ_CACHE`. Not hosted. The validate path (F112's lever 2) is untouched.
+
+**Decision.** A push gate's fresh read (`{"rows": {"access": true, "agent": true}}`) already reads the push's agent
+rows. The gate's isolate entry now holds them beside the decision, as one value put and replaced whole:
+- **Served with the decision.** A push whose gate the entry answers (`Served::Isolate`) takes those rows and reads none
+  of its own. The rows are served only with the decision they were read with, under its stamp and `READ_CACHE`, and
+  lapse with it.
+- **A data-center copy carries none.** It replaces the isolate entry whole, so an older fill's rows never ride its
+  decision, and the push reads its own (`ctx_read` 1 in `server-timing`). So does a decision from rows read beside the
+  front, which are access rows only, and one from an older member that answered the access rows alone.
+- **A task created since the fill.** If the push's own `Graftyard-Session` trailer names a session the pusher's App
+  could own that the cached rows and the token's claim do not list, the push reads its rows itself before `fill_push`
+  (`ctx_read` and `ctx_stale` 1). Otherwise `linked` would leave a new task's trailer `Claimed`.
+- **A byte cap.** An isolate's entries hold at most `ROWS_BYTES_MAX` (8 MiB [guess]) of rows. An entry past it keeps its
+  decision with no rows, and its pushes read their own.
+
+**Why.** On B0-33 h1A (graft-m2b, repo 131411), `push_context`'s own `core_rows(…, "agent")` read cost p50 1,903 ms and
+p99 5,190 ms on the 8,754 agent pushes whose gate decision came from the isolate cache, and 0 on the 4,017 whose gate
+read the rows. It goes through the same shedding learners, and climbed from 140 ms to about 1.9 s as the load ramped. On
+bound fulls the time before the send split front 0.5 s, gate 1.3 s, context 1.9 s and validate 2.9 s, against the 5 s
+`AGENT_PUSH_BOUND` [measured by edge refusal, h1A; B0-33 m56 showed the same, 8,729 of 12,343 cached-gate pushes at
+`context` p50 1,422 ms, `tests/am1/results/b033-m56.md`].
+
+**What it beat.**
+- **A second cache for agent rows, keyed apart from the gate.** Two caches can disagree: rows from one fill beside a
+  decision from another. One entry, put and replaced whole, cannot.
+- **Putting the rows in the data center's entry.** The Cache API entry is a stamp; rows there would be per-tenant data
+  in a shared cache, and a copy would need the same replace-whole rule across isolates.
+- **`tier-read-batch`'s shared pass.** Dropped on 2026-11-19: only 8.6% of push passes were shared across 200 to 260
+  isolates.
+
+**What it changes.** The edge applies `AgentPolicy.extra_paths` (`validate`'s `protected`) and links sessions from the
+agent rows, which may now be up to `READ_CACHE` old. So `decide` no longer trusts the edge's `protected` alone for the
+policy's own paths: `Push::agent_rules` matches each ref's `changed` paths against the `extra_paths` of its own fold,
+after the entry's earlier commands (`agent::protected_now`), and refuses a hit `Protected`, per ref as any protected
+hit. A `PUT .../agents/policy` that adds a protected path therefore binds on the next entry after it commits, however
+old the edge's rows were. A directory of a `truncated` list counts when a glob may match under it, as an Exclusive lease
+does. `PROTECTED_PATHS` never change, so the edge's `protected` still covers them. The lead ruled on 2026-11-24 that the
+policy must bind at once, since `extra_paths` is a security control and a revocation's `READ_CACHE` bound does not
+stretch to it.
+
+**What the policy rule beat.** A policy revision carried on `Push` (the policy row's commit index from the rows the edge
+used) and checked in `decide`, refusing a mismatch in the agent retry shape. It needs a new format (32.27), a
+`FormatsEnable`, the revision in the member's rows answer, and an old-format path. `Push` already carries `changed`,
+which is `protected`'s input before the policy is applied, so `decide` can apply the policy itself: no new format, no
+member change, and no extra retry after a policy change. The cost is one glob match per changed path per `extra_paths`
+glob in `decide` (at most `PATHS_MAX` paths), and nothing when the policy adds no paths.
+
+**Evidence.**
+- `colo::tests::a_push_gate_serves_the_agent_rows_of_its_own_fill_and_no_other`:
+  - an advertisement's fill hands its rows to the POST served from the entry, with no second read;
+  - a data-center copy gives none;
+  - the rows lapse with the decision at `READ_CACHE`, and the next fill's rows replace them;
+  - a copy replaces an entry's older rows;
+  - after a revocation the refusing fill's rows are held, not the last `Allow`'s.
+- `gate_tests::a_gate_entry_holds_only_its_own_fills_rows_within_the_byte_cap`.
+- `agents::tests::cached_rows_missing_the_pushs_own_task_are_read_again`.
+- `tests/m0carried/plant150.py`: 10 of 10 mutants caught. They are:
+  - main's rule, where a push served from the entry gets no rows;
+  - a fresh read's rows not handed on;
+  - a copy keeping older rows;
+  - a refusal keeping the `Allow`'s rows;
+  - replaced rows never released from the byte count;
+  - the byte cap ignored;
+  - a put without rows keeping earlier rows;
+  - cached rows trusted for a new task;
+  - the token's claim not counted;
+  - another App's session counted.
+- `agent_gates::a_policy_committed_after_the_edges_read_binds_the_next_push`: a push validated on a policy without
+  `extra_paths` is refused once a policy protecting its path commits, in an earlier entry or earlier in the same
+  entry; so is a `truncated` directory a new glob may reach under; a path no glob names and a directory list no glob
+  reaches pass.
+- `tests/m0carried/plant151.py`: 6 of 6 mutants caught. They are main's rule (the edge's `protected` alone), the policy
+  read before the entry's earlier commands, only the first glob, only the first path, a directory matched as a file,
+  and every path matched by overlap.
+- `tests/edgeboot/run.sh` with and without `PRODUCT=1`.
+
+**Flip.** Back it out on the next B0-33 row after its edge day if either holds:
+- agent `ok` pushes fall against h1A on the same shape;
+- cached-gate pushes' `context` time does not drop: `context` p50 on `gate_iso` pushes without `ctx_read` stays above
+  200 ms, or `ctx_read` is on more than 25% of `gate_iso` pushes.
+
+Leases, a `Session` link and the policy's `extra_paths` stay `decide`'s: it checks them on its own read.
