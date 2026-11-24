@@ -2283,6 +2283,10 @@ impl Ctx<'_> {
     /// `OpsPointer` pins it (`design/DESIGN.md`, Shape, `Pointers`; journey 7). `OPS_SCRIPT` names the script the
     /// override header keys on. The edge reads the view only here and in the release endpoint, so only those requests
     /// refresh it (`graftyard_lookup::view::ensure`).
+    ///
+    /// Each `/mint` answer counts in this isolate's `MintWatch` by the version that answered (`OPS_VERSION_HEADER`):
+    /// once a running `OpsRoll`'s N+1 fails past `MINT_ERROR_RATIO`, the isolate submits the roll's pre-signed
+    /// `OpsPointer` to N on the `Release` group, after the reply, with no API call (DECISIONS "`mint-ratio`").
     async fn ops(&self, url: &str, mut init: RequestInit) -> Result<Response> {
         if let Some(a) = &self.anchor {
             graftyard_lookup::view::ensure(&self.bindings(), a, Some(self.ctx)).await;
@@ -2297,7 +2301,44 @@ impl Ctx<'_> {
             )?;
             init.with_headers(h);
         }
-        self.env.service("OPS")?.fetch(url, Some(init)).await
+        let res = self.env.service("OPS")?.fetch(url, Some(init)).await;
+        if url.ends_with("/mint") {
+            let ran = res.as_ref().ok().and_then(|r| r.headers().get(OPS_VERSION_HEADER).ok().flatten());
+            let status = res.as_ref().ok().map(Response::status_code);
+            let undo = graftyard_lookup::view::with(|v| {
+                MINTS.with(|m| m.borrow_mut().record(&v.fold, ran.as_deref(), status, now().0))
+            });
+            if let Some(e) = undo {
+                self.submit_mint_undo(e);
+            }
+        }
+        res
+    }
+
+    /// Commits the pre-signed `OpsPointer` an isolate's mint errors called for, after the reply. A refusal or no
+    /// outcome is logged; the isolate submits it again after `MINT_RESEND_MS` while the errors last.
+    fn submit_mint_undo(&self, e: graftyard_release::SignedEntry) {
+        let Some(record) = graftyard_lookup::view::release_record() else {
+            console_error!("PAGE mint errors past MINT_ERROR_RATIO, but this isolate has no Release record");
+            return;
+        };
+        console_error!("graft-ops mint errors past MINT_ERROR_RATIO: submitting the pre-signed OpsPointer");
+        let (env, sites, colo) = (self.env.clone(), self.sites.clone(), self.colo);
+        self.ctx.wait_until(async move {
+            let b = graftyard_lookup::Bindings { env: &env, sites: &sites };
+            let body =
+                json!({ "rid": graftyard_lookup::request_id().to_string(), "cmd": graftyard_lookup::hex(&e.encode()) })
+                    .to_string();
+            let hooks = graftyard_lookup::Hooks::default();
+            match graftyard_lookup::commit_hedged(&b, ChainId::Release, &record, body.as_bytes(), colo, 30_000, hooks)
+                .await
+            {
+                Ok(d) if d.get("ok").is_some() => console_log!("mint undo: OpsPointer committed"),
+                Ok(d) => console_error!("mint undo: {d}"),
+                Err(Ok(d)) => console_error!("mint undo refused: {d}"),
+                Err(Err(e)) => console_error!("mint undo: {e}"),
+            }
+        });
     }
 
     /// A system chain's record: from the `Release` view, accepted against this script's anchor. With `test-faults`
@@ -4363,6 +4404,14 @@ fn fivexx_line(status: u16, kind: &str, body: &str) -> String {
     let why = msg.as_deref().unwrap_or(body).trim();
     let cut = why.char_indices().nth(WHY_MAX).map_or(why.len(), |(i, _)| i);
     json!({ "fivexx": status, "kind": kind, "why": why[..cut].trim_end() }).to_string()
+}
+
+/// The version of `graft-ops` that answered a mint, which every `/mint` answer carries (`workers/ops`).
+pub const OPS_VERSION_HEADER: &str = "x-graftyard-ops-version";
+
+thread_local! {
+    /// This isolate's mint counts for `MINT_ERROR_RATIO` (`Ctx::ops`).
+    static MINTS: std::cell::RefCell<graftyard_release::gate::MintWatch> = std::cell::RefCell::default();
 }
 
 /// The request header `graft-front` sends, asking for `EDGE_VERSION_HEADER`.

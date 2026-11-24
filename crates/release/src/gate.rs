@@ -399,9 +399,22 @@ pub fn errors_sites(key: &str, voters: &[SiteId]) -> Vec<SiteId> {
 /// because no front sees their answers (R47).
 pub fn roll_versions(fold: &ReleaseFold) -> Option<(Script, VersionId, Option<VersionId>)> {
     let c = fold.current.as_deref()?;
+    let (Intent::EdgeRoll { .. } | Intent::FrontRoll { .. } | Intent::McpRoll { .. }) = c.intent.intent else {
+        return None;
+    };
+    pinned_versions(fold)
+}
+
+/// The running roll's script with its N+1 and N versions, as `roll_versions` reads them, for any roll forward.
+fn pinned_versions(fold: &ReleaseFold) -> Option<(Script, VersionId, Option<VersionId>)> {
+    let c = fold.current.as_deref()?;
     let (IntentState::Running { .. } | IntentState::Halted { .. }) = c.state else { return None };
     let i = &c.intent.intent;
-    let (Intent::EdgeRoll { release } | Intent::FrontRoll { release } | Intent::McpRoll { release }) = i else {
+    let (Intent::EdgeRoll { release }
+    | Intent::FrontRoll { release }
+    | Intent::McpRoll { release }
+    | Intent::OpsRoll { release }) = i
+    else {
         return None;
     };
     let s = i.script()?;
@@ -433,21 +446,93 @@ pub fn judge_roll(window: &ScriptErrors, whole: &ScriptErrors, n1: VersionId, n:
 pub fn judge_errors(n1: Answers, threw: u64, n: Answers) -> Gate {
     let (a, e) = (n1.answers + threw, n1.fivexx + threw);
     let base = (n.fivexx as f64 / n.answers.max(1) as f64 + f64::from(GATE_ERRORS_BP) / 10_000.0).min(1.0);
-    if a > 0 && (e as f64 / a as f64) > base {
-        let p = e as f64 / a as f64;
-        let term = |x: f64, y: f64| if x > 0.0 { x * (x / y).ln() } else { 0.0 };
-        let nats = a as f64 * (term(p, base) + term(1.0 - p, 1.0 - base));
-        if nats >= GATE_ERRORS_NATS {
-            return Gate::Breach(
-                format!("GATE_ERRORS: N+1 {e} 5xx of {a} answers ({threw} thrown), N {} of {}", n.fivexx, n.answers)
-                    .into(),
-            );
-        }
+    if past_chance(a, e, base) {
+        return Gate::Breach(
+            format!("GATE_ERRORS: N+1 {e} 5xx of {a} answers ({threw} thrown), N {} of {}", n.fivexx, n.answers).into(),
+        );
     }
     if a < STEP_MIN_ANSWERS {
         return Gate::Starved(a);
     }
     Gate::Pass
+}
+
+/// Whether `e` errors of `a` calls are over the rate `base` by more than chance: `a x KL(e / a, base)` at least
+/// `GATE_ERRORS_NATS`, at any count.
+fn past_chance(a: u64, e: u64, base: f64) -> bool {
+    if a == 0 || (e as f64 / a as f64) <= base {
+        return false;
+    }
+    let p = e as f64 / a as f64;
+    let term = |x: f64, y: f64| if x > 0.0 { x * (x / y).ln() } else { 0.0 };
+    a as f64 * (term(p, base) + term(1.0 - p, 1.0 - base)) >= GATE_ERRORS_NATS
+}
+
+/// `MINT_ERROR_RATIO`, in basis points of installation-token mints: an edge isolate whose mints answered by a running
+/// `OpsRoll`'s N+1 fail over it, past chance (`GATE_ERRORS_NATS`), submits the roll's pre-signed `OpsPointer` to N
+/// (`design/DESIGN.md`, "Commit and read paths", `graft-front` and `graft-ops`; DECISIONS "`mint-ratio`").
+pub const MINT_ERROR_RATIO_BP: u32 = 100;
+
+/// One mint the edge asked `graft-ops` for: the version that answered (`OPS_VERSION_HEADER`), and the answer's status,
+/// `None` when the binding threw. Only a 5xx or a throw is an error: a 4xx is the grant's fault, not the script's.
+pub fn count_mint(mints: &mut ScriptErrors, ran: Option<&str>, status: Option<u16>) {
+    let fivexx = u64::from(status.is_none_or(|s| s >= 500));
+    let a = match (status, ran) {
+        (None, _) => {
+            mints.threw += 1;
+            return;
+        }
+        (Some(_), Some(v)) => mints.versions.entry(v.to_string()).or_default(),
+        (Some(_), None) => &mut mints.unversioned,
+    };
+    a.answers += 1;
+    a.fivexx += fivexx;
+}
+
+/// How long an edge isolate waits before it submits the same `OpsPointer` again while the group has not committed it.
+pub const MINT_RESEND_MS: u64 = 10_000;
+
+/// One edge isolate's mint counts for the current intent (`MINT_ERROR_RATIO`), and when it last submitted the undo.
+#[derive(Clone, Debug, Default)]
+pub struct MintWatch {
+    intent: Option<crate::IntentId>,
+    mints: ScriptErrors,
+    sent_ms: Option<u64>,
+}
+
+impl MintWatch {
+    /// Counts one mint (`count_mint`) under the current intent, starting over when it changed, and answers the
+    /// pre-signed `OpsPointer` to submit, if any: only while an `OpsRoll` runs forward, only on N+1's answers plus
+    /// every thrown call, past chance over `MINT_ERROR_RATIO_BP`, and only an undo the group has not committed, at most
+    /// once per `MINT_RESEND_MS`. N's errors, such as a Secrets Store failure every version shares, never swap back.
+    pub fn record(
+        &mut self,
+        fold: &ReleaseFold,
+        ran: Option<&str>,
+        status: Option<u16>,
+        now_ms: u64,
+    ) -> Option<crate::SignedEntry> {
+        let c = fold.current.as_deref()?;
+        if self.intent != Some(c.intent.id) {
+            *self = MintWatch { intent: Some(c.intent.id), ..MintWatch::default() };
+        }
+        count_mint(&mut self.mints, ran, status);
+        // Only an `OpsRoll` carries an `OpsPointer`, and once one commits the intent is `Undoing`, which
+        // `pinned_versions` does not read.
+        let (_, n1, _) = pinned_versions(fold)?;
+        let n1 = self.mints.of(n1);
+        let (a, e) = (n1.answers + self.mints.threw, n1.fivexx + self.mints.threw);
+        if !past_chance(a, e, f64::from(MINT_ERROR_RATIO_BP) / 10_000.0) {
+            return None;
+        }
+        let (u, sig) = c.undo.iter().find(|(u, _)| matches!(u, ReleaseEntry::OpsPointer { .. }))?;
+        if self.sent_ms.is_some_and(|t| now_ms < t + MINT_RESEND_MS) {
+            return None;
+        }
+        self.sent_ms = Some(now_ms);
+        let install = fold.genesis.as_ref()?.install;
+        Some(crate::group::undo_entry(install, c.intent.id, u, c.undo_key, *sig))
+    }
 }
 
 /// One observer site's counts of calls to one target site that missed `CALL_DEADLINE`, over a window

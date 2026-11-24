@@ -14,6 +14,7 @@
 // takes `"ops_kill": n`, `"step_min_entries": n`, `"rotate_published_ms": n` (BF-46: `MintWrapKey`'s publish wait) and
 // `"cron"`, each ignored without it, and M6-WP1's `"recover_ms": n` (`OPS_RECOVER_MS`, the recovery window). M6-WP1's
 // `"workflows": "<name>"` binds the Workflows script (`workers/workflows/deploy.mjs`) as the service `WORKFLOWS`.
+// BM-5's `"mint_fail": true` (test-faults) makes every mint of the version answer 503 (`OPS_MINT_FAIL`).
 // M5-WP6's `Rotate`:
 // `"slots": {"DEPLOY_TOKEN": [<slot 0 secret name>, <slot 1 secret name>], "READ_TOKEN": [...], "MINT_WRAP_KEY": [...]}`
 // binds both slots of each as `<NAME>_0` and `<NAME>_1`, and the `Release` view names the active one
@@ -53,6 +54,8 @@ const cfg = {
   ],
   ...(wrapA ? { vars: { SECRETS_WRAP_KEY_CURRENT: current ?? "0" } } : {}),
   observability: { enabled: true },
+  // The version that answers each mint, which the edge counts mint errors by (`MINT_ERROR_RATIO`).
+  version_metadata: { binding: "VERSION" },
 };
 if (executor) {
   const sites = JSON.parse(readFileSync(executor.sites, "utf8"));
@@ -90,6 +93,8 @@ if (executor) {
     ...(faults && executor.step_min_entries != null ? { OPS_STEP_MIN_ENTRIES: String(executor.step_min_entries) } : {}),
     ...(faults && executor.rotate_published_ms != null ? { OPS_ROTATE_PUBLISHED_MS: String(executor.rotate_published_ms) } : {}),
     ...(faults && executor.recover_ms != null ? { OPS_RECOVER_MS: String(executor.recover_ms) } : {}),
+    // BM-5: a bad graft-ops whose mints all answer 503 (`src/worker_main.rs`, `OPS_MINT_FAIL`).
+    ...(faults && executor.mint_fail ? { OPS_MINT_FAIL: "on" } : {}),
   };
   // `"cron": "* * * * *"` for BF-39's kills on a test install; the design's cadence otherwise.
   cfg.triggers = { crons: [faults && executor.cron ? executor.cron : "*/5 * * * *"] };
