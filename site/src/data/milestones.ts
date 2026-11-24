@@ -107,7 +107,7 @@ export const milestones: Milestone[] = [
     ],
   },
   {
-    id: 'm5', code: 'M5', name: 'Release control and site days', state: 'now', when: 'Gate: 2 of 3 clauses pass',
+    id: 'm5', code: 'M5', name: 'Release control and site days', state: 'now', when: 'Gate: every clause passes',
     lead: 'How a new version reaches an install: releases the customer signs, applied one site a day with the site drained first, and a pre-signed way back for every step.',
     groups: [
       { title: 'Passed on hosted test installs', items: [
@@ -119,9 +119,7 @@ export const milestones: Milestone[] = [
         'The deploy, read and mint keys rotated under live traffic with no new script version, and 235 of 235 mints answered' + row('BF-46'),
         'Gate: a deliberately unreadable format sent to one site commits nothing, and its groups move to another site' + row('BM-5'),
         'Gate: with the vendor\'s token revoked mid-roll, the customer halts, removes the vendor key and aborts. Every site returns to the version it ran before, and a vendor-signed intent is refused' + row('BM-5'),
-      ] },
-      { title: 'Still to come', items: [
-        'The gate\'s last clause: a bad <code>graft-ops</code> at 1% swaps back by its pointer with the Cloudflare API blocked. The code is built' + row('BM-5'),
+        'Gate: a bad <code>graft-ops</code> at 1% swaps back by its pre-signed pointer with the Cloudflare API blocked, after about 700 token mints, and returns to the last good version once unblocked' + row('BM-5'),
       ] },
     ],
   },
