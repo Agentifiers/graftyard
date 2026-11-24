@@ -7,7 +7,7 @@ and L0-15's `AgentGate` half holds. State on 2026-11-24, after the lead's ruling
 | --- | --- | --- |
 | MCP row (L0-08) | **met** | auth cells on m3fa2, the 30-call cell and tool-overhead p50 on m3fa3 (`am2-wp1.md`); sessions through `mcp.<host>` at N and under the pin on AM2-WP3 day d1 (`am2-wp3.md`) |
 | Swap-back, the undo | measured | AM2-WP3 day d1: the pre-signed `McpPointer` with the deploy token invalid, 119,218 of 119,218 answers from N while pinned |
-| Swap-back, the trigger | **open** | the lead ruled a forced `GATE=breach` does not stand in for `graft-ops` noticing the bad build; `decisions/OPEN-QUESTIONS.md` R47 |
+| Swap-back, the trigger | **met** | R47 row r1 on graft-m4a (below): `graft-ops` breached `GATE_ERRORS` on its own (`GATE` unset) and committed the `McpPointer` with the deploy token invalid; the 1% gap stays open (`decisions/OPEN-QUESTIONS.md`, R47) |
 | L0-15's `AgentGate` half | **met** | the in-memory test below, and the hosted day l015 below |
 
 ## L0-15's `AgentGate` half, in memory
@@ -65,3 +65,48 @@ session. graft-mcp's grant: `write:write_approve_merge tools:pull_requests`.
 The lead approved the design on 2026-11-24 with three changes (flush homed by script name, the floor pooled as
 `gate-pool`, a missing version header counted apart and alarmed, not breached). Its code, plants plant121 to plant129,
 and the graft-m4a row follow on their own branch.
+
+### Hosted, row r1 on graft-m4a (2026-11-24)
+
+Cleared by the lead from main `46edc385` ($8 row stop; stop if the install's UTC day would pass $35). Driver
+`tests/am2/hosted/r47-day.sh`, logs in `tests/am2/raw/r47-r1/`. Start 09:06:28Z, done line 10:01:45Z (end sweep).
+
+| Check | Result |
+| --- | --- |
+| `graft-ops` notices the bad build by itself | **pass**: `GATE` unset; at the 1% step its run read `gate mcp: N+1 29 answers, 29 5xx, 0 thrown; N 5650 answers, 0 5xx (whole intent 8754, 0) from 3 sites -> Breach("GATE_ERRORS: N+1 29 5xx of 29 answers (0 thrown), N 0 of 5650")` [measured, `logs.log`] |
+| The swap-back commits with the API blocked | **pass**: `McpPointer` committed at `Release` entry 389, with `graft-m4a-ops-deploy-token` invalid; the run then waited on "no deployment of Mcp read" |
+| Answers after the pointer | **pass**: sampler on `mcp.m4a.graftyard.dev` (concurrency 4): every one of 29,474 answers from 10 s after the pointer to the end came from N `c2c4ec61` with pin `c2c4ec61`; front status `mcpPin c2c4ec61`, 0 mismatches |
+| Before the pointer | at 1%, `02fca362` (N+1) answered 76 of the sampler's 14,138 answers, all 500; N answered the rest 200 |
+
+Sampler answers by the view count the front reported (`mcp.jsonl.gz`): 388 (before w5's intent) 6,020 from N; 389 (the
+1% split) 7,192 from N and 76 500s from N+1; 390 (the `McpPointer`) 22,618 pinned to N, plus 5 unpinned from N while
+the isolate refreshed; 391 to 392 (the undo's `IntentStep` and `IntentDone` after unblock) 6,852 pinned to N. The 1%
+split was deployed at 09:52:13Z, the first N+1 answer came at 09:52:06Z by the sampler's clock, and the first pinned
+answer at 09:53:05Z, one cron run later. Workers Logs stamp the breach line 6 s after that first pinned answer, so
+the sampler's counts, not the log stamps, give the order.
+
+Setup, in the order the lead set:
+
+1. Site day (test-faults, site day 70's flags, image m4a60 `e55ab2ad`) 09:21:38Z to 09:22:34Z, exit 0, so each site
+   has `/errors`: a `b2bb49ec`, b `5f9e7a9f`, c `74869876`. Site crons reset to `[]`; reretire OK.
+2. `graft-m4a-mcp` N `35ec218a` and `graft-m4a-front` `e6a5bff8` (secrets `graft-m4a-MCP_CLIENT_SECRET_A` and
+   `-MCP_SEAL_KEY_A` made fresh, no `apps init`), custom domains `m4a.graftyard.dev` and `mcp.m4a.graftyard.dev`.
+   `graft-m4a-ops` `75708f21` from `46edc385` (`exec-r47.json`: `GATE` unset, `OPS_SCRIPTS` sites plus front and mcp,
+   60 s dwells, `FIRST_DAY` 1,800,000 ms, 1-minute cron). The cron fired only at 09:45:31Z, after two remove-and-re-add
+   cycles (R52); that run committed `ReleaseUploaded` for w4 (`r47r1-w4/`, `2310a9a4…`, front and mcp) and w5
+   (`r47r1-w5/`, `aa14c304…`, mcp only: `tests/am2/hosted/r47-bad/index.js`, which answers 500 and reports its version).
+3. w4 as N: `FrontRoll` (entry 381) and `McpRoll` (385) each blocked first by the token, then the step-0 check passed
+   (relview `next` 0; front still `e6a5bff8` 100, mcp still `35ec218a` 100), then `Abort` to w4 (382, 386). After
+   unblock each ran to `IntentDone`: `rolled.Front` and `rolled.Mcp` = `2310a9a4`, front `fb3d4dfe`, mcp `c2c4ec61`.
+4. w5 `McpRoll` (intent `01M86FG8J4JDA3AJDBR0PGBFGA`, entry 388) with `GATE` unset; `graft-ops` deployed
+   `02fca362` 1% / `c2c4ec61` 99%, then the token was blocked. Its first two gate reads were `Starved(0)` (no N+1
+   answer flushed yet); the third breached as above. Unblocked 09:55:50Z: the undo returned mcp to `c2c4ec61` 100,
+   `IntentStep` and `IntentDone` (count 392).
+
+Teardown from 09:57:48Z: sampler stopped; ops cron reset (a yearly cron, then `[]`) and `graft-m4a-ops` deployed as
+`ac4cd9a5` **by version id** (its own bindings: `GATE=pending`, `OPS_SCRIPTS` sites only, `OPS_STEP_MIN_ENTRIES=50`,
+60 s dwells); `graft-m4a-front` and `graft-m4a-mcp` deleted, with both domains; both mcp secrets deleted; token
+`graft-m4a-r47-deploy` revoked and its files shredded. Zone `graftyard.dev` before: 0 custom domains, 0 DNS records, 2
+universal packs; after: the same, plus one advanced pack for `mcp.m4a` in `pending_deletion`. End sweep 10:01:45Z: no
+shard container running. Ops schedules read `[]`, but Idle runs kept firing after the reset (last seen 10:02:13Z), as
+on M4-WP4's rows. Cost: the row $0.04 (09:06Z to 10:02Z); graft-m4a's UTC day $16.97 [measured, `acctcost.py`].

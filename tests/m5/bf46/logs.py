@@ -3,14 +3,15 @@
 `IntentStep`s, and any page) and the run summaries. One line per event: the time and the message, account ids
 removed by the caller's scrub. Needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (sent as a header only).
 
-  logs.py SCRIPT FROM_MS TO_MS
+  logs.py SCRIPT FROM_MS TO_MS     (KEEP=a,b,c: keep lines naming any of these instead)
 """
 import json, os, sys, urllib.request
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
 script, frm, to = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 URL = f"https://api.cloudflare.com/client/v4/accounts/{acct}/workers/observability/telemetry/query"
-KEEP = ("Rotate", "PAGE", "IntentStep", "IntentDone", "Committed", "Paged", "Error")
+KEEP = tuple(os.environ["KEEP"].split(",")) if os.environ.get("KEEP") else (
+    "Rotate", "PAGE", "IntentStep", "IntentDone", "Committed", "Paged", "Error")
 
 
 def query(a, b):
