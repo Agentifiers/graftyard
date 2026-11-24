@@ -1,0 +1,4 @@
+2026-11-24T19:14:13Z
+65c10004
+{"agentsFront":"91b302e7-34f3-48a7-a9d5-2aa0004ce3a8","counts":{"firstMismatch":null,"lastMismatch":null,"mismatches":0,"pinned":0,"requests":0,"thrown":0},"now":1795547662292,"view":{"controller":null,"failing":false,"fails":0,"fetchedAgoMs":null,"index":0,"lastError":null,"oks":0}}
+{"script":"graft-agents-m4a-controller","created_on":"2026-11-24T19:13:18.872175Z","versions":["b7125cca 100"]}

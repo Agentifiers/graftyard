@@ -7,6 +7,7 @@
 //                                                   id, from the answer or, when the slug is Taken, from its route
 //   node tests/am2/hosted/apps.mjs register <out>   every command in apps-register.request.json, stopping at the first
 //                                                   refusal; then reads back each App's route and record
+// A third argument names the files' prefix: `agents` for the files `graftyard agents init` writes (AM3-WP1's LF-7).
 //
 // `register` over an App that `tests/am1/rest/apps.mjs` registered (graft-m3f's `graftyard-mcp`, App 327680) marks it
 // `moved` in the state file before it sends anything, so `agentToken` and L0-12's `Graftyard MCP` kind stop using the
@@ -14,8 +15,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { bed, commit, log, refusal, state, tools } from "../../am1/hosted/lib.mjs";
 
-const [step, out] = process.argv.slice(2);
-if (!["claims", "register"].includes(step) || !out) throw new Error("usage: apps.mjs claims|register <out>");
+const [step, out, prefix = "apps"] = process.argv.slice(2);
+if (!["claims", "register"].includes(step) || !out) throw new Error("usage: apps.mjs claims|register <out> [prefix]");
 const requests = (f) => JSON.parse(readFileSync(`${out}/${f}`, "utf8"));
 const statePath = `${process.env.M3_STATE}/m3.json`;
 
@@ -26,7 +27,7 @@ async function send(r) {
 }
 
 if (step === "claims") {
-  for (const r of requests("apps-claims.request.json")) {
+  for (const r of requests(`${prefix}-claims.request.json`)) {
     const slug = r.cmd.op.ClaimSlug.slug;
     const o = await send(r);
     let app = o?.ok?.out?.App;
@@ -35,10 +36,10 @@ if (step === "claims") {
     console.log(`${slug} ${app}`);
   }
 } else {
-  const reqs = requests("apps-register.request.json");
-  const put = reqs.find((r) => r.op === "PutApp (graftyard-mcp)").cmd.op.PutApp.record.id;
+  const reqs = requests(`${prefix}-register.request.json`);
+  const put = reqs.find((r) => r.op === "PutApp (graftyard-mcp)")?.cmd.op.PutApp.record.id;
   const old = state.agentApps?.["graftyard-mcp"];
-  if (old?.app === put && !old.moved) {
+  if (put && old?.app === put && !old.moved) {
     old.moved = `taken over by \`graftyard apps init\` (AM2-WP1 hosted, ${new Date().toISOString()}): its key is in `
       + "Secrets Store, so agent-apps/graftyard-mcp.pem no longer verifies";
     writeFileSync(statePath, JSON.stringify(state, null, 2));

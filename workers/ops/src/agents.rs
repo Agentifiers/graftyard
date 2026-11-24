@@ -44,6 +44,8 @@ const ENTRIES_PATH: &str = "/api/graftyard/v1/release/entries";
 const JWT_REUSE_MS: u64 = 300_000;
 /// Pages one view read takes at most: a cold isolate replays the install's history 100 entries at a time.
 const PAGES: usize = 50;
+/// Reads of one page a run tries before it gives up on the view, each VIEW_CALL_MS at most.
+const VIEW_TRIES: usize = 4;
 /// How long one commit waits for the edge's answer.
 const COMMIT_MS: u64 = 30_000;
 
@@ -142,13 +144,23 @@ impl Exec for AgentsLive<'_> {
             .collect()
     }
 
-    /// Reads pages from the view's index until a short one. A failed read or a refused entry fails the run's view, and
-    /// the isolate keeps what it took: no lower index, and the next run reads on from there.
+    /// Reads pages from the view's index until a short one. A refused entry, or a page that fails `VIEW_TRIES` reads,
+    /// fails the run's view, and the isolate keeps what it took: no lower index, and the next run reads on from there.
+    /// A cron run starts on a cold isolate, whose first read of the edge can pass VIEW_CALL_MS (LF-7 r1: every run's
+    /// first page stopped at 1,000 ms, while the edge answered it in 800 to 880 ms), so a timed-out page is read again,
+    /// as the install's `graft-ops` refreshes again (`exec.rs`, `VIEW_TRIES`).
     async fn view(&mut self) -> std::result::Result<ReleaseFold, String> {
         let jwt = self.jwt().await?;
         for _ in 0..PAGES {
             let after = VIEW.with(|v| v.borrow().index());
-            let page = self.read_page(&jwt, after).await?;
+            let mut read = Err(String::new());
+            for _ in 0..VIEW_TRIES {
+                read = self.read_page(&jwt, after).await;
+                if read.is_ok() {
+                    break;
+                }
+            }
+            let page = read?;
             VIEW.with(|v| v.borrow_mut().extend(&self.anchor, &page))
                 .map_err(|e| format!("release/entries after {}: {}: {e}", after.0, e.variant()))?;
             if page.len() < ENTRIES_PER_PAGE {

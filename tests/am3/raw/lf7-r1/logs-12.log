@@ -1,0 +1,6 @@
+2026-11-24T20:03:28Z
+65c10004
+{"at": 1795550596664, "msg": "graft-agents-ops Idle"}
+{"at": 1795550596664, "msg": "graft-agents-ops Committed(\"IntentDone\")"}
+{"at": 1795550596664, "msg": "graft-agents-ops Committed(\"IntentStep\")"}
+{"at": 1795550596664, "msg": "graft-agents-ops Deployed(Controller, [(VersionId(298b89f0-57cc-4ec7-9c52-ca25fcbca6da), 100), (VersionId(04c3be7f-4bca-4e36-9ef6-97863b535e8e), 0)])"}

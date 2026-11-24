@@ -1,0 +1,5 @@
+2026-11-24T19:48:34Z
+65c10004
+current: {"intent":"ControllerRoll { release: ReleaseId([108, 46, 68, 231, 45, 181, 233, 179, 175, 247, 120, 124, 155, 75, 186, 181, 241, 71, 43, 7, 126, 112, 109, 203, 198, 245, 182, 134, 172, 120, 132, 156]) }","next":0,"since":1795549560926,"state":"Running { step: 0 }"}
+undo ControllerPointer pin c1 3452f14a06918a1d6ec26527eec17b23dd8e7d34cd2cb2086b8b157c2156c01a: {"digest":"915f33cfd14f45cbf87c6920960f9157a6d8e44f802e2234dae21f6dbf1e129d","index":1271,"status":201}
+{"count":476,"current":{"intent":"ControllerRoll { release: ReleaseId([108, 46, 68, 231, 45, 181, 233, 179, 175, 247, 120, 124, 155, 75, 186, 181, 241, 71, 43, 7, 126, 112, 109, 203, 198, 245, 182, 134, 172, 120, 132, 156]) }","next":0,"since":1795549727710,"state":"Undoing"}}

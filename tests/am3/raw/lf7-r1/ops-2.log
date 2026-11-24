@@ -1,0 +1,6 @@
+2026-11-24T19:31:47Z
+65c10004
+{"scripts":{"agents-front":"graft-agents-m4a-front","controller":"graft-agents-m4a-controller"},"releases":"graft-agents-m4a-releases","step_dwell_ms":60000,"first_day_ms":300000,"cron":"* * * * *","gate":null}
+Current Version ID: 39a03439-e6b5-4aaf-9e50-d34c3a30aae3
+{"script":"graft-agents-m4a-ops","created_on":"2026-11-24T19:32:16.125055Z","versions":["39a03439 100"]}
+{"graft-agents-m4a-ops":["* * * * *"]}
