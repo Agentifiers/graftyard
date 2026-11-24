@@ -4,13 +4,27 @@
 # SIGTERMs a1.mjs past 120 MiB, and keeps BF-14's arrival rows in memory), terms.mjs (leader timeline) and tsave.mjs (each voter's trace each minute).
 #   bash tests/fanout/b033.sh <tag>   -> tests/fanout/raw/{rows,memguard,terms,tsave}-<tag>.*
 # LEARNERS= (set and empty) places no learners; unset keeps the eight. A1_EXTRA=--lean is the leader-sync A/B's arm B.
+# B033_SECONDS (default 300) is the load window; rows.sh's a1 flags, the readers' window and memguard's and terms.mjs's
+# run (setup B033_SETUP_S, default 660 s, clA's 09:55 to 10:06, plus the load plus 240 s) follow it. After the row the
+# leader object's Workers Logs over the load window, a minute either side, go to raw/leaderlogs-<tag>.json.xz
+# (wlleader.py) in the background, so the sweep does not wait on them. DRY=1 prints the bounds and starts nothing.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
-source tests/m3/rows/env.sh
 TAG=$1 R=tests/fanout/raw
 repo="f$TAG-b033"
-node tests/fanout/memguard.mjs "$repo" 1200 2 120 mem > $R/memguard-$TAG.jsonl 2> $R/memguard-$TAG.err &
-node tests/fanout/terms.mjs "$repo" 1200 > $R/terms-$TAG.jsonl 2>&1 &
+export B033_SECONDS=${B033_SECONDS:-300}
+SECS=$B033_SECONDS MON=$(( ${B033_SETUP_S:-660} + B033_SECONDS + 240 ))
+if [ -n "${DRY:-}" ]; then
+  row=b0-33; eval "$(sed -n '/^  case \$row in$/,/^  esac$/p' tests/fanout/rows.sh)"
+  echo "b033.sh $TAG: load ${SECS} s; rows.sh a1 flags: $flags"
+  echo "memguard and terms.mjs: $MON s from the row's start (setup ${B033_SETUP_S:-660} + load $SECS + 240)"
+  echo "readers' window: a1's announced load start to start + $SECS s"
+  echo "leaderlogs: the leader object from 60 s before load to 60 s after it ($((SECS + 120)) s) -> $R/leaderlogs-$TAG.json.xz"
+  exit 0
+fi
+source tests/m3/rows/env.sh
+node tests/fanout/memguard.mjs "$repo" $MON 2 120 mem > $R/memguard-$TAG.jsonl 2> $R/memguard-$TAG.err &
+node tests/fanout/terms.mjs "$repo" $MON > $R/terms-$TAG.jsonl 2>&1 &
 ( while ! rid=$(awk -v n="$repo" '$1==n{print $2}' "$M3_STATE/am1-runs-repos.txt") || [ -z "$rid" ]; do sleep 2; done
   LEARNERS=1 ISOLATES=1 EVERY=10000 DONE_FILE=$R/.tsave-$TAG.done node tests/nr3/tsave.mjs "repo:$rid" > $R/tsave-$TAG.jsonl 2>&1 ) &
 T0_FILE=${T0_FILE:-tests/fanout/raw/mem7-t0.t0} ROWS=b0-33 K=4 TEARDOWN=1 NO_LF13=1 STOP_USD=${STOP_USD:-137} LEARNERS=${LEARNERS-enam:4000,weur:2000,apac:2000} \
@@ -59,7 +73,7 @@ if [ -n "$run" ]; then
   # home site at its cap with the others idle (concentration) reads apart from busy refusals with spare vCPU (a dearer
   # validate). The push log's own window starts with setup's pushes, minutes before load.
   lfrom=$(grep -E " b0-33 run $loadrun: .* s from " "$a1log" | tail -1 | sed -E 's/.* s from ([^ ,]+).*/\1/')
-  lto=$(python3 -c "import sys,datetime as d;print((d.datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'))+d.timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$lfrom")
+  lto=$(python3 -c "import sys,datetime as d;print((d.datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'))+d.timedelta(seconds=int(sys.argv[2]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$lfrom" "$SECS")
   python3 tests/fanout/instcpu.py "$lfrom" "$lto" git# > $R/instcpu-$TAG.jsonl 2>> $R/rows-$TAG.status
   { echo "shard vCPU (instcpu, G40):"; python3 -c "import collections,json,sys
 site=collections.Counter()
@@ -75,5 +89,21 @@ for l in lzma.open(sys.argv[1],'rt') if sys.argv[1].endswith('.xz') else open(sy
     d=json.loads(l)
     if 'rows' in d and str(d.get('site'))==str(d.get('leader')): rows.update(tuple(r) for r in d['rows'] if r[1]==34)
 print('reask-read top-ups (Trace::TopUp rows on the leader):', len(rows))" $R/tsave-$TAG.jsonl >> $R/rows-$TAG.status 2>&1
+# The leader object's Workers Logs (wlleader.py) over the load window, a minute either side: the archive and alarm-step
+# lines against memguard's samples. The leader is the one a1 announced at load start; a later leader is not fetched.
+if [ -n "${run:-}" ] && [ -n "${lfrom:-}" ]; then
+  lsite=$(grep -E " b0-33 run $loadrun: " "$a1log" | tail -1 | sed -nE 's/.*leader site ([0-9]+).*/\1/p')
+  rid=$(awk -v n="$repo" '$1==n{print $2}' "$M3_STATE/am1-runs-repos.txt")
+  if [ -n "$lsite" ] && [ -n "$rid" ]; then
+    span() { python3 -c "import sys,datetime as d;print((d.datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'))+d.timedelta(seconds=int(sys.argv[2]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1" "$2"; }
+    la=$(span "$lfrom" -60) lb=$(span "$lfrom" $((SECS + 60)))
+    svc=graft-m2b-site-$(echo abc | cut -c$((lsite + 1)))
+    echo "leaderlogs: repo:$rid#1#f$lsite on $svc, $la to $lb, in the background -> $R/leaderlogs-$TAG.json.xz" >> $R/rows-$TAG.status
+    ( python3 tests/fanout/wlleader.py "repo:$rid#1#f$lsite" "$la" "$lb" $R/leaderlogs-$TAG.json.xz "$svc" \
+        > $R/leaderlogs-$TAG.log 2>&1; echo "exit $?" >> $R/leaderlogs-$TAG.log ) &
+  else
+    echo "leaderlogs: no leader site or repository id, not fetched" >> $R/rows-$TAG.status
+  fi
+fi
 echo B033DONE >> $R/rows-$TAG.status
 exec sleep infinity

@@ -101,7 +101,7 @@ for row in $ROWS; do
     b0-29) flags="--seconds 600 --open-prs ${B029_PRS:-500}" ;;
     b0-31) flags="--seconds 600" ;;
     b0-32) flags="--seconds 180" ;;
-    b0-33) flags="--seconds 300" ;;
+    b0-33) flags="--seconds ${B033_SECONDS:-300}" ;;
     b0-34) flags="--seconds 600 --kill-shard-at 300" ;;
     b0-35) flags="--seconds 600" ;;
     l0-12) flags="--seconds 600 --kill-every 60" ;;
