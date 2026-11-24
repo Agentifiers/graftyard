@@ -36,6 +36,9 @@ def stages(t):
 
 where, marks, budget = collections.Counter(), collections.Counter(), collections.defaultdict(collections.Counter)
 n = collections.Counter()
+# G40: where each agent push's validate answered (`validate_site`; -1 or none when no try answered), how many moved on
+# after a try failed (`validate_tries` 2 or more), and the git cache busy refusals by the site that refused them.
+site, moved, busy_at = collections.Counter(), 0, collections.Counter()
 for line in open(path):
     r = json.loads(line)
     if r.get("kind") != "agent" or not lo <= r.get("start", 0) < hi:
@@ -45,6 +48,10 @@ for line in open(path):
     k = "full" if full else "ok" if res == "ok" else "other"
     n[k] += 1
     s = stages(r.get("timing"))
+    at = s["validate_site"][0] if s.get("validate_site") else None
+    if at is not None:
+        site[at] += 1
+        moved += s.get("validate_tries", [1])[0] >= 2
     if s.get("budget"):
         b = s["budget"][0]
         band = next((label for a, z, label in BANDS if a <= b < z), "3 to 5 s")
@@ -73,6 +80,7 @@ for line in open(path):
         # The git cache's validate gate: an agent validate waits at most 2 s for a slot, then 429, which the edge
         # answers `agent admission full` (`ShardRefusal::Busy`, workers/edge/src/lib.rs); no budget was set.
         where["git cache busy (validate 429)"] += 1
+        busy_at["none" if at is None else at] += 1
     else:
         where["no commit stage"] += 1
     for m in ("ask", "stagefirst", "busy", "missed", "suspect"):
@@ -84,6 +92,17 @@ print(json.dumps({"agentPushes": dict(n), "fullBy": dict(where.most_common()), "
 ERDA_AGENT_OK = 8_369
 print(f"flip R2b (push half): agent ok pushes {n['ok']} against erDA's {ERDA_AGENT_OK}: "
       + ("FLIPPED, revert the send check" if n["ok"] < ERDA_AGENT_OK else "not met"))
+# Read R2b beside this line (the lead's ruling, 2026-11-24): a flip with git cache busy near erDA's 354 is the send
+# check's; one with busy far above it is the git cache's (`tests/am1/results/b033-g39.md`, "g4B's R2b flip, split").
+# Baselines from this script on each run's whole push log: erDA 354 busy and 77.8% of agent validates on site 0, g4B
+# 4,041 and 99.1% (G40).
+ERDA_BUSY = 354
+print(f"git cache busy (validate 429): {where['git cache busy (validate 429)']} against erDA's {ERDA_BUSY}; by site "
+      + ", ".join(f"{k} {v}" for k, v in sorted(busy_at.items(), key=lambda kv: str(kv[0]))))
+answered = sum(v for k, v in site.items() if k >= 0)
+print("agent validates by answering site (G40): "
+      + ", ".join(f"{k} {v} ({100 * v / answered:.1f}%)" for k, v in sorted(site.items()) if k >= 0)
+      + f"; none answered {sum(v for k, v in site.items() if k < 0)}; moved on after a failed try {moved}")
 print("budget left at the first send | ok / full")
 for _, _, label in BANDS:
     print(f"  {label:10s} | {budget[label]['ok']} / {budget[label]['full']}")
