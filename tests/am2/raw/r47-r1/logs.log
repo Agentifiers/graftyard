@@ -1,0 +1,13 @@
+2026-11-24T09:57:19Z
+46edc385
+{"at": 1795513531812, "msg": "graft-ops Committed(\"ReleaseUploaded\")"}
+{"at": 1795513642201, "msg": "graft-ops Committed(\"IntentDone\")"}
+{"at": 1795513642201, "msg": "graft-ops Committed(\"IntentStep\")"}
+{"at": 1795513759763, "msg": "graft-ops Committed(\"IntentDone\")"}
+{"at": 1795513759763, "msg": "graft-ops Committed(\"IntentStep\")"}
+{"at": 1795513931252, "msg": "graft-ops gate mcp: N+1 Answers { answers: 0, fivexx: 0 } thrown 0 N Some(Answers { answers: 1907, fivexx: 0 }) (whole Some(Answers { answers: 5011, fivexx: 0 })) from 3 sites -> Starved(0)"}
+{"at": 1795513933340, "msg": "graft-ops gate mcp: N+1 Answers { answers: 0, fivexx: 0 } thrown 0 N Some(Answers { answers: 2308, fivexx: 0 }) (whole Some(Answers { answers: 5412, fivexx: 0 })) from 3 sites -> Starved(0)"}
+{"at": 1795513991548, "msg": "graft-ops gate mcp: N+1 Answers { answers: 29, fivexx: 29 } thrown 0 N Some(Answers { answers: 5650, fivexx: 0 }) (whole Some(Answers { answers: 8754, fivexx: 0 })) from 3 sites -> Breach(\"GATE_ERRORS: N+1 29 5xx of 29 answers (0 thrown), N 0 of 5650\")"}
+{"at": 1795513993444, "msg": "graft-ops Committed(\"McpPointer\")"}
+{"at": 1795514181175, "msg": "graft-ops Committed(\"IntentDone\")"}
+{"at": 1795514181175, "msg": "graft-ops Committed(\"IntentStep\")"}

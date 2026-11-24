@@ -1,0 +1,7 @@
+2026-11-24T09:46:22Z
+46edc385
+current: {"intent":"FrontRoll { release: ReleaseId([35, 16, 169, 164, 210, 211, 237, 34, 159, 70, 203, 54, 0, 213, 188, 134, 103, 200, 238, 13, 80, 9, 243, 146, 233, 151, 82, 93, 203, 77, 142, 151]) }","next":0,"since":1795513572995,"state":"Running { step: 0 }"}
+step-0 check: next 0, graft-m4a-front deployment [["e6a5bff8-0502-4d92-9370-3f073bba00a1",100]], at roll [["e6a5bff8-0502-4d92-9370-3f073bba00a1",100]]
+abort intent 01M86F5F8MSK3K0JQAZ6GZ6EPQ to 2310a9a4d2d3ed229f46cb3600d5bc8667c8ee0d5009f392e997525dcb4d8e97
+{"digest":"eb28c57ef5d248b4272910fed1a230b4a0d770a5352bb783d9926113340549ea","index":1139,"status":201}
+{"count":382,"current":{"intent":"FrontRoll { release: ReleaseId([35, 16, 169, 164, 210, 211, 237, 34, 159, 70, 203, 54, 0, 213, 188, 134, 103, 200, 238, 13, 80, 9, 243, 146, 233, 151, 82, 93, 203, 77, 142, 151]) }","next":0,"since":1795513592752,"state":"Aborting { target: ReleaseId([35, 16, 169, 164, 210, 211, 237, 34, 159, 70, 203, 54, 0, 213, 188, 134, 103, 200, 238, 13, 80, 9, 243, 146, 233, 151, 82, 93, 203, 77, 142, 151]) }"}}

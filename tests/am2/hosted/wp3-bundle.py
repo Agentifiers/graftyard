@@ -34,8 +34,10 @@ for script in ('front', 'mcp'):
     build = flag(f'--{script}')
     if not build:
         continue
+    # A JavaScript-only build (R47's bad graft-mcp) has no index_bg.wasm.
     for m in ('index.js', 'index_bg.wasm'):
-        put(f'{script}/{m}', open(os.path.join(build, m), 'rb').read())
+        if m == 'index.js' or os.path.exists(os.path.join(build, m)):
+            put(f'{script}/{m}', open(os.path.join(build, m), 'rb').read())
     if '--marker' in args:
         put(f'{script}/marker.js', f'export const label = {json.dumps(label)};\n'.encode())
 put('formats.txt', open(flag('--formats'), 'rb').read())

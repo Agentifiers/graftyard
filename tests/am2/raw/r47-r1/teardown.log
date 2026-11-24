@@ -1,0 +1,13 @@
+2026-11-24T09:57:48Z
+46edc385
+{"graft-m4a-ops":[]}
+graft-ops parked as ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef
+╰  SUCCESS  Deployed graft-m4a-ops version ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef at 100% (0.39 sec)
+{"graft-m4a-ops":[]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T09:58:01.511669Z","versions":["ac4cd9a5 100"]}
+Successfully deleted graft-m4a-front
+Successfully deleted graft-m4a-mcp
+{"delete":"graft-m4a-MCP_CLIENT_SECRET_A","ok":true}
+{"delete":"graft-m4a-MCP_SEAL_KEY_A","ok":true}
+{"revoke":"graft-m4a-r47-deploy","ok":true}
+row token files shredded
