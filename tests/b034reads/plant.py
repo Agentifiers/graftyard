@@ -26,11 +26,11 @@ MUTANTS = [
     ('the pack never moved in', GO,
      '\tif err := moveIn(q, rp, name); err != nil {\n\t\treturn 0, 0, 0, 0, 0, 500, err\n\t}\n\tif err := record(', '\tif err := record(', G),
     ('no record of the pack\'s objects', GO,
-     '\tif err := record(rp, sum, name, filepath.Join(rp, "objects"), st.Size()); err != nil {\n\t\treturn 0, 0, 0, 0, 0, 500, err\n\t}\n\tmidxMs = midxAfterIngest(net, rp)\n\treturn time.Since(t0)',
-     '\t_ = st\n\tmidxMs = midxAfterIngest(net, rp)\n\treturn time.Since(t0)', G),
+     '\tif err := record(rp, sum, name, filepath.Join(rp, "objects"), st.Size()); err != nil {\n\t\treturn 0, 0, 0, 0, 0, 500, err\n\t}\n\tmidxAfterIngest(net, rp)\n\treturn time.Since(t0)',
+     '\t_ = st\n\tmidxAfterIngest(net, rp)\n\treturn time.Since(t0)', G),
     ('no multi-pack-index count after an ingest', GO,
-     '\tmidxMs = midxAfterIngest(net, rp)\n\treturn time.Since(t0).Milliseconds(), 0, midxMs, sharedWaitMs + exclWaitMs, exclWaitMs, 0, nil',
-     '\treturn time.Since(t0).Milliseconds(), 0, midxMs, sharedWaitMs + exclWaitMs, exclWaitMs, 0, nil', G),
+     '\tmidxAfterIngest(net, rp)\n\treturn time.Since(t0).Milliseconds(), 0, midxMs(rp), sharedWaitMs + exclWaitMs, exclWaitMs, 0, nil',
+     '\treturn time.Since(t0).Milliseconds(), 0, midxMs(rp), sharedWaitMs + exclWaitMs, exclWaitMs, 0, nil', G),
     ('the quarantine left behind', GO, '\tdefer os.RemoveAll(q)\n\texclWaitMs, unlock := writeLock(net)\n',
      '\texclWaitMs, unlock := writeLock(net)\n', G),
     # (a): the edge's ls-refs answer (`graftyard_git::ls_refs`), against the recorded github.com answers.
@@ -58,12 +58,13 @@ MUTANTS = [
      '            let head = head?;\n            let Some(o) = head.oid else { pkt::flush(&mut out); return Some(out) };\n            let mut line = format!("{} HEAD", o.hex()).into_bytes();', C),
 ]
 
-ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '.worktrees/target-am1')), PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
+ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')), PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
 
 
 def run(t):
     cmd, cwd = (t[1:], os.path.join(ROOT, 'containers/git/server')) if t[0] == 'go' else (['cargo', 'test', '-q'] + t, ROOT)
-    r = subprocess.run(cmd, cwd=cwd, env=ENV, capture_output=True, text=True, timeout=1800)
+    # A hang counts as caught (README, "Planted bugs").
+    r = subprocess.run(['timeout', '-k', '10', '600', *cmd], cwd=cwd, env=ENV, capture_output=True, text=True)
     out = r.stdout + r.stderr
     return r.returncode, out, 'error[E' in out or ('could not compile' in out and 'test failed' not in out) or '[build failed]' in out
 
@@ -102,6 +103,8 @@ def main():
         elif code != 0:
             caught += 1
             fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ')] + [l.split()[2] for l in out.splitlines() if l.startswith('--- FAIL')]
+            if code == 124:
+                fails = ['(timed out)', *fails]
             print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]', flush=True)
         else:
             print(f'{i:2} MISSED  {name}', flush=True)

@@ -2,20 +2,3 @@
 # `file: name` per line. This file only shrinks: fix a plant's anchors on its own branch and delete its lines, and
 # scripts/check_plants.py fails on a line added here, on new drift, and on a listed mutant that matches again.
 # Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
-tests/am1/hosted/plant.py: commits reachable from existing refs reported as new
-tests/am1/wp3/plant.py: a derived final state is not recorded by the next command
-tests/am1/wp4/plant.py: glob overlap ignores a trailing ** after a literal
-tests/am1/wp4/plant.py: a release reports Expired, not Released
-tests/b034reads/plant.py: no record of the pack's objects
-tests/b034reads/plant.py: no multi-pack-index count after an ingest
-tests/budget/plant.py: the catch-up is charged with the merge
-tests/budget/plant.py: A28: no turn, so merges in flight are admitted before the ones ahead are charged
-tests/g26/plant.py: a changed default never reaches a warm disk
-tests/g26/plant.py: HEAD named on every catch-up
-tests/hitgate/plant.py: chain-site: main's rule, every site waits as a chain site
-tests/m3/close/plant.sh: cursor-chases-itself
-tests/m3/wp3/plant.sh: live-before-move
-tests/m3/wp4/plant.sh: key-cache-never-lapses
-tests/m3/wp4/plant.sh: claims-not-intersected
-tests/m4/wp1/plant.py: a rebuilt store starts past the committed read (replay_from ignored)
-tests/nr3/plant.py: cache: the answer is stamped with the floor, not the index it was built at

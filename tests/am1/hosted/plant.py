@@ -82,8 +82,8 @@ MUTANTS = [
 GOFILE = 'containers/git/server/main.go'
 GO = [
     ('commits reachable from existing refs reported as new',
-     '"rev-list", fmt.Sprintf("--max-count=%d", commitsMax+1), u.New, "--not", "--all")',
-     '"rev-list", fmt.Sprintf("--max-count=%d", commitsMax+1), u.New)'),
+     'strings.NewReader(u.New+"\\n"+snap.not()), "rev-list", fmt.Sprintf("--max-count=%d", commitsMax+1), "--stdin")',
+     'strings.NewReader(u.New+"\\n"), "rev-list", fmt.Sprintf("--max-count=%d", commitsMax+1), "--stdin")'),
     ('ff always true',
      '\t\t\td.FF = err == nil', '\t\t\td.FF = true || err == nil'),
     ('only the old tip diffed (merge-base paths lost)',
@@ -96,10 +96,12 @@ GO = [
 
 def cargo(args):
     env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
-               CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '..', 'target-am1')),
+               CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
                CARGO_INCREMENTAL='0')
-    return subprocess.run(['cargo', 'test', '-j', '3', *args, '--no-fail-fast'] if args[-1] != 'agents' else
-                          ['cargo', 'test', '-j', '3', *args[:-1], '--no-fail-fast', args[-1]],
+    # A hang counts as caught (README, "Planted bugs").
+    return subprocess.run(['timeout', '-k', '10', '600'] +
+                          (['cargo', 'test', '-j', '3', *args, '--no-fail-fast'] if args[-1] != 'agents' else
+                           ['cargo', 'test', '-j', '3', *args[:-1], '--no-fail-fast', args[-1]]),
                           cwd=ROOT, env=env, capture_output=True, text=True)
 
 
@@ -119,6 +121,8 @@ def plant(n, name, path, old, new, run):
             verdict = 'DID NOT COMPILE'
         else:
             verdict = 'CAUGHT' if r.returncode != 0 else 'MISSED'
+            if r.returncode == 124:
+                failed = ['(timed out)', *failed]
         print(f'{n:2} {verdict:8} {name}: {", ".join(failed)}', flush=True)
     finally:
         open(f, 'wb').write(orig)
@@ -133,5 +137,5 @@ for k, (name, old, new) in enumerate(GO):
     n = len(MUTANTS) + k
     if not only or n in only:
         plant(n, f'go: {name}', GOFILE, old, new,
-              lambda: subprocess.run(['go', 'test', './...'], cwd=os.path.join(ROOT, 'containers/git/server'),
+              lambda: subprocess.run(['timeout', '-k', '10', '600', 'go', 'test', './...'], cwd=os.path.join(ROOT, 'containers/git/server'),
                                      capture_output=True, text=True))

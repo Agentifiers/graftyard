@@ -6,16 +6,18 @@
 set -u
 out=${1:?usage: plant.sh <out file>}
 exec >"$out" 2>&1
-export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0
+export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$PWD/target/plants}
 if [ -n "$(git status --porcelain -- crates)" ]; then
 	echo "commit or stash changes under crates/ first" >&2
 	exit 1
 fi
 run() {
-	cargo test -j 4 -q --no-fail-fast -p graftyard-identity --test audit --test wp3 --test m3 2>&1 |
+	timeout -k 10 600 cargo test -j 4 -q --no-fail-fast -p graftyard-identity --test audit --test wp3 --test m3 2>&1 |
 		grep -E "^    [a-z0-9_]+$|test result" | sort -u
-	cargo test -j 4 -q --no-fail-fast -p graftyard-git --test issues 2>&1 |
+	[ "${PIPESTATUS[0]}" = 124 ] && echo "    (timed out)"
+	timeout -k 10 600 cargo test -j 4 -q --no-fail-fast -p graftyard-git --test issues 2>&1 |
 		grep -E "^    [a-z0-9_]+$|test result" | sort -u
+	[ "${PIPESTATUS[0]}" = 124 ] && echo "    (timed out)"
 }
 plant() {
 	local name=$1 file=$2 old=$3 new=$4
@@ -64,7 +66,7 @@ plant cursor-moves-back crates/identity/src/tokens.rs \
 	'                done(smallvec![TokensEvent::AuditCursor'
 # Audit: every cursor entry is followed by another, so an idle shard commits forever.
 plant cursor-chases-itself crates/identity/src/audit.rs \
-	'    through > from && (!owed.is_empty() || through.0 - from.0 >= CURSOR_STRIDE)' \
+	'    through > from && (!owed.is_empty() || streamed > 0 || through.0 - from.0 >= CURSOR_STRIDE)' \
 	'    through > from'
 # Item 1: a ghs_ issue write is allowed whatever the App's permissions.
 plant app-permission-ignored crates/identity/src/access.rs \
