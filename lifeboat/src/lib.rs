@@ -18,3 +18,6 @@ pub mod acme;
 pub mod blob;
 pub mod puller;
 pub mod status;
+
+/// The puller's one Durable Object in the bundle, which the front asks for the copy's status.
+pub const PULLER_OBJECT: &str = "puller";

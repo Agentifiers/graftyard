@@ -1559,6 +1559,9 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         Ok(r) => r,
         Err(e) => return Ok(Reply::json(200, json!({ "errors": [e.json()] }))),
     };
+    if graftyard_lookup::lifeboat() && gq.is_mutation().unwrap_or(true) {
+        return Ok(Reply::error(503, "the lifeboat is read-only", "graphql"));
+    }
     // gh's `repo create` without a README: `createRepository(input:)` names no repository yet (`crate::repos`).
     if let Ok(roots) = gq.roots()
         && let [(field, args)] = roots.as_slice()

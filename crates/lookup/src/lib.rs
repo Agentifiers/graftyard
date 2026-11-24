@@ -445,6 +445,17 @@ pub async fn registry_reads(b: &Bindings<'_>, chain: ChainId) -> Vec<graftyard_t
 /// genesis): the voters and generation from the first `MemberRegistry` row any site holds for it, with the sites in
 /// the row's order. Its bootstrap names are the row's voters' names at that generation, as `bootstrap_members` builds.
 pub async fn registry_record(b: &Bindings<'_>, chain: ChainId) -> Option<PlacementRecord> {
+    // A lifeboat has no registry: its `Release` copy's record is the genesis's, read from that copy (`read_genesis`),
+    // and every other chain's member is found by its chain alone (`Bindings::stub`).
+    if lifeboat() {
+        if chain != ChainId::Release {
+            return None;
+        }
+        let bytes = lifeboat_genesis(b).await.ok()?;
+        let e = graftyard_release::SignedEntry::decode(&bytes).ok()?;
+        let graftyard_release::ReleaseEntry::Genesis(g) = e.body else { return None };
+        return g.placement(graftyard_types::SystemChain::Release).cloned();
+    }
     for s in &b.sites.0 {
         if let Some(row) = registry_row(b, s.id, chain).await {
             return row.record();
@@ -2681,8 +2692,24 @@ pub fn system_of(chain: ChainId) -> Option<graftyard_types::SystemChain> {
 /// The genesis bytes a `Release` leader holds, found through the chain's `MemberRegistry` rows: a cold isolate does
 /// not hold the genesis that names the group's record yet.
 pub async fn read_genesis(b: &Bindings<'_>) -> std::result::Result<Vec<u8>, String> {
+    if lifeboat() {
+        return lifeboat_genesis(b).await;
+    }
     let rec = registry_record(b, ChainId::Release).await.ok_or("no Release group is registered")?;
     let (v, _) = call(b, ChainId::Release, &rec, "/read", &json!({ "q": { "genesis": true } })).await?;
+    let hex = v.pointer("/value/genesis").and_then(Value::as_str).ok_or_else(|| format!("no genesis held: {v}"))?;
+    unhex(hex).ok_or_else(|| "the genesis is not hex".into())
+}
+
+/// The genesis the lifeboat's `Release` copy holds, which every caller accepts against its own anchor.
+async fn lifeboat_genesis(b: &Bindings<'_>) -> std::result::Result<Vec<u8>, String> {
+    let stub = b.env.durable_object("MEMBER").and_then(|n| n.get_by_name(&lifeboat_object(ChainId::Release)));
+    let stub = stub.map_err(|e| e.to_string())?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(json!({ "q": { "genesis": true } }).to_string().into()));
+    let req = Request::new_with_init("https://member/read", &init).map_err(|e| e.to_string())?;
+    let mut r = stub.fetch_with_request(req).await.map_err(|e| e.to_string())?;
+    let v: Value = r.json().await.map_err(|e| e.to_string())?;
     let hex = v.pointer("/value/genesis").and_then(Value::as_str).ok_or_else(|| format!("no genesis held: {v}"))?;
     unhex(hex).ok_or_else(|| "the genesis is not hex".into())
 }

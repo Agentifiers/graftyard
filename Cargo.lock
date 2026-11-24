@@ -758,6 +758,7 @@ dependencies = [
  "graftyard-fold",
  "graftyard-git",
  "graftyard-identity",
+ "graftyard-lifeboat",
  "graftyard-lookup",
  "graftyard-raft",
  "graftyard-release",

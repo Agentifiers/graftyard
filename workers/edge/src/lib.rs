@@ -1627,6 +1627,13 @@ async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
     if c.ssh_front {
         return ssh::principal(c, req).await;
     }
+    if graftyard_lookup::lifeboat() {
+        // Only a `lifeboat:read` token is a caller on the lifeboat: no session, no `ghs_`, no main-host token.
+        return match token_of(req)? {
+            Some(t) => lifeboat::principal(c, &t).await,
+            None => Ok(None),
+        };
+    }
     let Some(t) = token_of(req)? else { return ui::session(c, req).await };
     if t.starts_with("ghs_") {
         return ident::stateless(c, &t).await;
@@ -4089,6 +4096,8 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     {
         console_error!("{e}");
     }
+    let boat = lifeboat::mode(&env);
+    graftyard_lookup::set_lifeboat(boat);
     graftyard_lookup::set_colo(colo_id(&req));
     graftyard_lookup::set_client();
     // A spread read's learner refresh runs after the reply, not inside the read (`cold-write`, B).
@@ -4099,6 +4108,11 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     let report = req.headers().has(FRONT_HEADER)?;
     let method = req.method();
     let r = serve(req, &env, &ctx, rid, &cfg, url, path.clone(), &sites, anchor).await;
+    // The lifeboat's front: every response carries the copy's lag (`LifeboatStatus`), and `/api/v3/meta` its status.
+    let r = match r {
+        Ok(res) if boat => Ok(lifeboat::stamp(&env, res, &path).await?),
+        r => r,
+    };
     if graftyard_lookup::refreshes_pending() {
         let (env, sites) = (env.clone(), sites.clone());
         ctx.wait_until(async move {
@@ -4292,6 +4306,10 @@ async fn serve(
             })
             .and_then(|v| v.trim().parse().ok()),
     };
+    // The lifeboat is read-only: a write, the export and release endpoints, a mint, or a test route is 503.
+    if graftyard_lookup::lifeboat() && !lifeboat::serves(req.method().as_ref(), &path) {
+        return lifeboat::read_only(&c, &path);
+    }
     // A site's SSH front reaches the key lookup and git, and nothing else (`ssh`).
     if c.ssh_front && !ssh::front_path(&path) {
         return text(rid, 404, "Not Found\n");

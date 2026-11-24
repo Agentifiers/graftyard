@@ -22,6 +22,7 @@ graftyard-api = { path = "../../crates/api" }
 graftyard-fold = { path = "../../crates/fold" }
 graftyard-git = { path = "../../crates/git", features = ["worker"] }
 graftyard-identity = { path = "../../crates/identity" }
+graftyard-lifeboat = { path = "../../lifeboat" }
 graftyard-lookup = { path = "../../crates/lookup" }
 graftyard-raft = { path = "../../crates/raft" }
 graftyard-release = { path = "../../crates/release" }
