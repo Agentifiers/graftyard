@@ -2,7 +2,7 @@
 //! repository rows and kept only when they hash to the entry's checksum, and a halted chain moved by nothing again.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use graftyard_git::export::{self, ChangeBatch, ExportObject};
 use graftyard_git::pack::{PackId, PackRef};
@@ -63,6 +63,9 @@ struct Fake {
     served: RefCell<BTreeMap<PackId, Vec<u8>>>,
     kept: RefCell<BTreeMap<PackId, Vec<u8>>>,
     edge_calls: RefCell<Vec<(ChainId, u64)>>,
+    /// Chains the edge answers 404 (no group: retired or purged), and ones it answers 503.
+    gone: RefCell<BTreeSet<ChainId>>,
+    down: RefCell<BTreeSet<ChainId>>,
     feed_down: RefCell<bool>,
     /// The next import takes at most this many rows and halts on none.
     short: RefCell<Option<usize>>,
@@ -110,6 +113,12 @@ impl Host for Fake {
     }
     async fn entries(&self, chain: ChainId, from: Index, limit: u64) -> Result<Page, String> {
         self.edge_calls.borrow_mut().push((chain, from.0));
+        if self.gone.borrow().contains(&chain) {
+            return Ok(Page::Status(404));
+        }
+        if self.down.borrow().contains(&chain) {
+            return Ok(Page::Status(503));
+        }
         let log = self.log.borrow();
         let l = log.get(&chain).cloned().unwrap_or_default();
         let rows: Vec<Vec<u8>> = l.into_iter().skip(from.0 as usize - 1).take(limit as usize).collect();
@@ -236,5 +245,41 @@ fn the_feed_then_the_edge_with_packs_checked_and_a_halt_held() {
     assert_eq!(st2.current_at, 50);
 
     // The state round-trips.
+    assert_eq!(State::decode(&st.encode()).unwrap(), st);
+}
+
+/// A chain the edge answers 404 has no group (retired or purged): it is asked once and never again, and it does not
+/// hold the copy back from current. A chain the edge answers 503 is asked again on the next pass. Before, a retired chain
+/// answered 503 "retry", and a stale feed asked for it on every pass for good (graft-m3f `repo:65577`, R59's read).
+#[test]
+fn a_chain_the_edge_answers_404_is_asked_no_more() {
+    let h = Fake::default();
+    let mut st = State::default();
+    *h.now.borrow_mut() = 1_000;
+    let other = ChainId::Names(graftyard_types::NameShard(3));
+    h.round(0, &[(IDS, 1, 2), (other, 1, 1)]);
+    run(&h, &mut st);
+
+    // The feed stops. `IDS` was retired at the install; `other` is down for now.
+    h.gone.borrow_mut().insert(IDS);
+    h.down.borrow_mut().insert(other);
+    *h.now.borrow_mut() = 1_000 + FEED_STALE_MS;
+    let r = run(&h, &mut st);
+    assert_eq!(r.gone, [IDS]);
+    assert_eq!(h.copy.borrow()[&IDS].len(), 2, "the copy keeps what it holds");
+
+    h.edge_calls.borrow_mut().clear();
+    *h.now.borrow_mut() += 1;
+    let r = run(&h, &mut st);
+    assert!(r.gone.is_empty());
+    assert_eq!(h.edge_calls.borrow().as_slice(), [(other, 2)], "the gone chain is asked no more; the down one is");
+
+    // The gone chain holds nothing back: the copy is current though the gone chain's copy is short of the log.
+    h.down.borrow_mut().clear();
+    h.commit(IDS, 4);
+    *h.now.borrow_mut() += 1;
+    run(&h, &mut st);
+    assert_eq!(st.current_at, *h.now.borrow());
+    assert_eq!(h.copy.borrow()[&IDS].len(), 2);
     assert_eq!(State::decode(&st.encode()).unwrap(), st);
 }

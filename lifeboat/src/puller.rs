@@ -11,6 +11,10 @@
 //!   chain the feed never named is unknown here and waits for the feed [inference: no endpoint lists chains].
 //! - **Halts.** A chain the importer halted on (a refused row, or one that does not chain) is moved by no source again,
 //!   and `halted` names it for the alarm. Nothing is ever skipped: a cursor moves only by what the importer applied.
+//! - **Gone.** A chain the edge answers 404 has no group: a repository purged or retired for good, every member
+//!   retired (`decisions/DECISIONS.md`, "`export-retired`"). The copy keeps what it holds, no source moves it again,
+//!   and it holds no pass back from current. Before, the edge answered such a chain 503 "retry", and a stale feed
+//!   asked for it on every pass for good.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +40,8 @@ pub struct Puller {
     /// Chains whose feed rows started past the copy's next index, with the index the feed had reached.
     pub behind: BTreeMap<ChainId, Index>,
     pub halted: BTreeSet<ChainId>,
+    #[serde(default)]
+    pub gone: BTreeSet<ChainId>,
 }
 
 /// Rows for the importer of one chain, starting at the copy's next index.
@@ -83,7 +89,7 @@ impl Puller {
         self.feed_seen = now;
         let mut out = Vec::new();
         for ((c, to), (_, first, rows)) in o.batch.chains.iter().zip(&o.entries) {
-            if self.halted.contains(c) {
+            if self.halted.contains(c) || self.gone.contains(c) {
                 continue;
             }
             let next = self.next(*c);
@@ -119,14 +125,20 @@ impl Puller {
         self.behind.remove(&chain);
     }
 
+    /// The edge answered 404 for `chain`: it has no group, and nothing moves it again.
+    pub fn gone(&mut self, chain: ChainId) {
+        self.gone.insert(chain);
+        self.behind.remove(&chain);
+    }
+
     /// This pass's tail pulls at `now`: every known chain while the feed is stale, and otherwise only the chains
-    /// behind it. Never a halted one.
+    /// behind it. Never a halted or gone one.
     pub fn pulls(&self, now: u64) -> Vec<Pull> {
         let stale = self.stale(now);
         self.held
             .0
             .keys()
-            .filter(|c| !self.halted.contains(*c) && (stale || self.behind.contains_key(*c)))
+            .filter(|c| !self.halted.contains(*c) && !self.gone.contains(*c) && (stale || self.behind.contains_key(*c)))
             .map(|c| Pull { chain: *c, from: self.next(*c), limit: TAIL_PAGE })
             .collect()
     }

@@ -10,6 +10,8 @@
 //! - **Packs.** Every stored pack a repository row names, from `packs/{id}?network=` and checked against the row's
 //!   `PackRef.checksum` before `graft-blob` keeps it (`Host::put_pack`). One the install does not serve yet stays owed.
 //! - **Halt.** A chain whose copy halted is moved by no source again (`Puller::halt`), and the pass names it.
+//! - **Gone.** A chain the edge answers 404 has no group, retired or purged for good (`Puller::gone`): it is asked no
+//!   more, and the pass names it. Any other status is asked again next pass.
 //! - **Unreachable feed.** A feed that does not answer is a stale one: the pass goes on to the edge, and once no
 //!   object arrived for `FEED_STALE_MS` the edge serves every chain.
 //! - **Current.** A pass that leaves no chain with more to pull, from either source, is the copy's current moment,
@@ -107,6 +109,8 @@ pub struct Report {
     pub packs: usize,
     pub owed: usize,
     pub halted: Vec<ChainId>,
+    /// Chains the edge answered 404 this pass: no group, asked no more.
+    pub gone: Vec<ChainId>,
     pub stale: bool,
     /// The feed did not answer (R2 down, or the token refused): the pass went on to the edge.
     pub feed_error: Option<String>,
@@ -211,8 +215,17 @@ pub async fn pass<H: Host>(h: &H, st: &mut State) -> Result<Report, String> {
                 edge_more = true;
                 break 'edge;
             }
-            // A chain the edge cannot serve now (a 503 while its followers move) is asked again next pass.
-            let Ok(Page::Rows { first, rows }) = h.entries(p.chain, p.from, p.limit).await else { continue };
+            // A chain the edge cannot serve now (a 503 while its followers move) is asked again next pass; one it
+            // answers 404 has no group and is asked no more.
+            let (first, rows) = match h.entries(p.chain, p.from, p.limit).await {
+                Ok(Page::Rows { first, rows }) => (first, rows),
+                Ok(Page::Status(404)) => {
+                    st.puller.gone(p.chain);
+                    r.gone.push(p.chain);
+                    continue;
+                }
+                _ => continue,
+            };
             r.pages += 1;
             if rows.is_empty() {
                 continue;
