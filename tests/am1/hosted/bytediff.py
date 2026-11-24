@@ -127,7 +127,9 @@ def run(out, rounds):
 def norm(c):
     # An `etag` is kept but not its value, which follows the repository's state, not the release: graft-m2b's m3org/j4
     # answered byte-identical bodies under three etags in three rounds (2026-11-23).
-    h = [(k, "*" if k == "etag" else v) for k, v in c["headers"] if not k.startswith("x-ratelimit")]
+    # `x-graft-colo` is kept but not its value either: it names the colo that served, which Cloudflare picks per request
+    # (graft-m2b's -pb baseline answered from LAX and -lp's from DFW, byte-identical otherwise, 2026-11-24).
+    h = [(k, "*" if k in ("etag", "x-graft-colo") else v) for k, v in c["headers"] if not k.startswith("x-ratelimit")]
     return c["status"], h, mask(c["body"])
 
 
