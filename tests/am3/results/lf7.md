@@ -98,7 +98,7 @@ sampler's rows are compared on the orb's own clock.
 | --- | --- |
 | Pointer with the API blocked | the `ControllerPointer` to c1 posted by hand with the agents deploy token invalid (probe 400): 201 at entry 486, 1.6 s from post to answer; the intent went to `Undoing` [measured] |
 | Pins N within `POINTER_TTL` | the first webhook pinned to c1 `d8b368a1` came 125 ms after the 201; 5 unpinned ones in the next 2.2 s also ran on c1; from then on every webhook carried the pin [measured, `hooks.jsonl.gz`] |
-| Webhooks flow during the 10-minute blackhole | 36,404 of 36,406 answered 202 (2 client `fetch failed`), p50 28 ms, p99 63 ms, p99.9 1,086 ms, max 4,462 ms. 48 took 1.0 to 1.3 s: new isolates waiting their bounded first read (`VIEW_CALL_MS`, 1 s), then forwarding pinned. Two took 4.3 and 4.5 s, 389 s in, pinned to c1; their cause is not known [unverified] |
+| Webhooks flow during the 10-minute blackhole | 36,404 of 36,406 answered 202 (2 client `fetch failed`), p50 28 ms, p99 63 ms, p99.9 1,086 ms, max 4,462 ms. 48 took 1.0 to 1.3 s: new isolates waiting their bounded first read (`VIEW_CALL_MS`, 1 s), then forwarding pinned. Two took 4.3 and 4.5 s, 398 s in, pinned to c1: a client-side stall, not the front (see "The two 4.4 s webhooks") |
 | **No webhook reaches N+1 after the pin** | **0 of 50,217 reached c2 (`8996a56e`, `test-bad`)** from the pointer's 201 to the end of the run, 36,406 of them during the blackhole. r1 sent 313 there in the same window [measured] |
 | The return | after `unblock`, the agents `graft-ops` deployed c1 100 / c2 0 at 22:46:48Z, removed `CONTROLLER_DEFAULT` (front version `1d05fc0e`, 22:46:50Z), and committed `IntentStep` and `IntentDone` (487, 488); count 489, no intent current, `rolled.Controller` c1 [measured, `final-view.json`] |
 
@@ -131,3 +131,14 @@ sampler's rows are compared on the orb's own clock.
   - the fault plan is cleared.
 - **End sweep:** no shard container running.
 - **Cost:** the row $0.08 on graft-m4a (21:55Z to 22:53Z) and $0.00 on the runner account; graft-m4a's UTC day is $18.40 [measured, `acctcost.py`].
+
+**The two 4.4 s webhooks [measured, Workers Logs, read 2026-11-24 23:00Z].**
+- The sampler logged two requests sent 398.20 s and 398.25 s after the fault plan was posted (22:41:26Z on Cloudflare's clock). They answered after 4,462 and 4,250 ms, both 202 and pinned to c1.
+- The sampler sent nothing else for the next 4.25 s, a 4.25 s gap in a stream that otherwise averaged about 41 requests a second. Its two clients each wait for the previous answer, so both stalled at once.
+- Workers Logs for the same window, shifted by the orb clock's 8.6 s:
+  - `graft-agents-m4a-front` ran in DFW until 0.3 s after the first of the two was sent, with wall times of 4 to 19 ms and one 1,000 ms (a refresh waiting `VIEW_CALL_MS`, 0.2 s before).
+  - It logged no invocation for the next 4.4 s.
+  - It resumed with 5 to 11 ms wall times, and `graft-agents-m4a-controller` showed the same gap.
+- So neither Worker held these two requests: no invocation of either script ran during those 4.25 s.
+- The stall sits between the orb's client and Cloudflare's edge: the HTTP/2 connection, or the orb's network. Which one is not known [inference].
+- Separately, Workers Logs shows 26 front invocations with wall times of 2.0 to 3.8 s, from 22:44:53Z to 22:45:37Z. The sampler's connection had moved to LAX by then, so these are new isolates there. The sampler saw their answers in 1.0 to 1.25 s: an invocation's wall time also counts the view refresh it runs under `ctx.wait_until` after it answers, so these are not slow webhooks.
