@@ -25,8 +25,16 @@ var yieldHold = 60 * time.Second
 // (MAINT_DEFER_MAX, 6 min [guess]: a kill's 120 s and a rehydrate's 207 s with about 30 s of room). 10 min let B0-34
 // mt19's site b reach 786 unkept packs while held, past the 751 that slowed merges, so the flip shortened it
 // (`decisions/DECISIONS.md`, "`maint-yield`"). Past it moved load no longer stops the next run, and client CPU delays
-// its start at most another yieldHold. A var for the tests.
+// its start up to cpuDeferMax. A var for the tests.
 var maintDeferMax = 6 * time.Minute
+
+// cpuDeferMax: how long client CPU above fanoutUp may delay a start in all, from the same clock (CPU_DEFER_MAX, 12 min
+// [guess]). Its cap was maintDeferMax plus one yieldHold, so on B0-34 mt23 site c's overdue repack started at client
+// CPU p99 1.0, sat at nice 19 with 0 to 1 CPU-s a sample for 105 s while holding the repack slot and the midx lock, and
+// composed misses there went from 5 to 6 s to 16 to 22 s at p50. Its client CPU fell under fanoutUp about 617 s after
+// the first refused start (`tests/am1/results/b034-mt23.md`; `maint-yield`, "The overdue start waits for client
+// CPU"). A var for the tests.
+var cpuDeferMax = 12 * time.Minute
 
 // maintClock is the hold's clock; the tests step it rather than sleep, so a loaded runner cannot let a hold lapse
 // between two calls the test meant to fall inside it.
@@ -66,8 +74,7 @@ func cpuP99() float64 {
 }
 
 // maintBegin starts a maintenance run if nothing holds it: not a hold younger than yieldHold unless maintenance has
-// been deferred maintDeferMax already, and not client CPU above fanoutUp unless it has been deferred maintDeferMax
-// plus yieldHold. Deferred counts from the first refused start or stopped run since the last completed repack. The
+// been deferred maintDeferMax already, and not client CPU above fanoutUp unless it has been deferred cpuDeferMax. Deferred counts from the first refused start or stopped run since the last completed repack. The
 // caller holds the repack slot, so one run at a time is registered. ok false: start none now. end unregisters the run;
 // reset says a repack ran to its end, which starts the deferral clock over (a roll's build does not: the repack the
 // bound protects would otherwise wait past it behind rolls).
@@ -80,7 +87,7 @@ func maintBegin() (ctx context.Context, end func(reset bool), ok bool) {
 		deferred = now.Sub(maint.firstHeld)
 	}
 	held := now.Before(maint.until) && deferred < maintDeferMax
-	busy := cpuP99() > fanoutUp && deferred < maintDeferMax+yieldHold
+	busy := cpuP99() > fanoutUp && deferred < cpuDeferMax
 	if held || busy {
 		if maint.firstHeld.IsZero() {
 			maint.firstHeld = now

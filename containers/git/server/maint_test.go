@@ -20,7 +20,7 @@ import (
 // hold's clock stands still until the test steps it (the returned func), so no sleep decides whether a hold lapsed.
 func resetMaint(t *testing.T, hold, deferMax time.Duration) (step func(time.Duration)) {
 	t.Helper()
-	oldHold, oldDefer, oldClock := yieldHold, maintDeferMax, maintClock
+	oldHold, oldDefer, oldCPU, oldClock := yieldHold, maintDeferMax, cpuDeferMax, maintClock
 	var mu sync.Mutex
 	at := time.Now()
 	maintClock = func() time.Time {
@@ -44,9 +44,9 @@ func resetMaint(t *testing.T, hold, deferMax time.Duration) (step func(time.Dura
 		cpuSamples.Unlock()
 	}
 	clear()
-	yieldHold, maintDeferMax = hold, deferMax
+	yieldHold, maintDeferMax, cpuDeferMax = hold, deferMax, 2*deferMax
 	t.Cleanup(func() {
-		yieldHold, maintDeferMax, maintClock = oldHold, oldDefer, oldClock
+		yieldHold, maintDeferMax, cpuDeferMax, maintClock = oldHold, oldDefer, oldCPU, oldClock
 		clear()
 	})
 	return step
@@ -217,8 +217,9 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 
 	// 3. The deferral bound: the first stop was 3.5 s ago on the hold's clock, past a 3 s maintDeferMax. The next
 	// repack starts through a live hold and moved load does not stop it, so a long outage still gets its repack.
-	// Client CPU above FANOUT_UP delays it at most another yieldHold: at 3.5 s it still does, at 5 s no longer.
-	maintDeferMax = 3 * time.Second
+	// Client CPU above FANOUT_UP still delays it, up to cpuDeferMax (TestAnOverdueStartWaitsForClientCPUWithinItsCap):
+	// at 3.5 s and at 5 s it does, and once CPU falls under the line it starts.
+	maintDeferMax, cpuDeferMax = 3*time.Second, time.Hour
 	delay = 0
 	holdMaint(t, s.URL)
 	cpuSamples.Lock()
@@ -229,8 +230,11 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	}
 	step(yieldHold)
 	holdMaint(t, s.URL) // a live hold, which no longer holds a start past maintDeferMax
+	if refsRepack(t, s.URL, prev) {
+		t.Fatal("the overdue repack started at client CPU p99 0.9, one yieldHold past maintDeferMax (B0-34 mt23)")
+	}
 	cpuSamples.Lock()
-	cpuSamples.last = []float64{0.9, 0.9, 0.9}
+	cpuSamples.last = []float64{0.2, 0.2, 0.2}
 	cpuSamples.Unlock()
 	if !refsRepack(t, s.URL, prev) {
 		t.Fatal("no repack once maintenance had been deferred maintDeferMax")
@@ -267,6 +271,54 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 		st["deferred_s"].(float64) != 0 || st["max_deferred_s"].(float64) != maxDeferredAtGrant {
 		t.Fatalf("/procs maint: %v", st)
 	}
+}
+
+// An overdue start waits for client CPU under FANOUT_UP, and its wait ends at cpuDeferMax: past maintDeferMax plus one
+// yieldHold at client CPU p99 1.0 none starts (main started one there, and on B0-34 mt23 site c's starved run held the
+// repack slot and the midx lock while composed misses went to 16 to 22 s at p50); CPU under the line starts it at
+// once; at cpuDeferMax one starts at CPU 1.0, so the deferral still ends. The constant covers mt23's measured wait: its
+// client CPU fell under the line about 617 s after the first refused start.
+func TestAnOverdueStartWaitsForClientCPUWithinItsCap(t *testing.T) {
+	if cpuDeferMax < 617*time.Second || cpuDeferMax <= maintDeferMax+yieldHold || cpuDeferMax > time.Hour {
+		t.Fatalf("cpuDeferMax %v: not past mt23's 617 s and maintDeferMax plus yieldHold, or not finite", cpuDeferMax)
+	}
+	step := resetMaint(t, time.Minute, 6*time.Minute)
+	cpu := func(v float64) {
+		cpuSamples.Lock()
+		cpuSamples.last = []float64{v, v, v}
+		cpuSamples.Unlock()
+	}
+	begin := func() (func(bool), bool) {
+		_, end, ok := maintBegin()
+		return end, ok
+	}
+	cpu(1)
+	if _, ok := begin(); ok {
+		t.Fatal("a start at client CPU 1.0 with nothing deferred")
+	}
+	step(maintDeferMax + yieldHold)
+	if end, ok := begin(); ok {
+		end(false)
+		t.Fatal("the overdue start granted at client CPU p99 1.0 one yieldHold past maintDeferMax")
+	}
+	cpu(0.5)
+	end, ok := begin()
+	if !ok {
+		t.Fatal("an overdue start held at client CPU 0.5, under FANOUT_UP")
+	}
+	end(false) // a roll's build: the clock goes on
+	cpu(1)
+	step(cpuDeferMax - maintDeferMax - yieldHold - time.Second)
+	if end, ok := begin(); ok {
+		end(false)
+		t.Fatal("the overdue start granted at client CPU 1.0 one second inside cpuDeferMax")
+	}
+	step(time.Second)
+	end, ok = begin()
+	if !ok {
+		t.Fatal("no start at cpuDeferMax: client CPU defers maintenance without end")
+	}
+	end(true)
 }
 
 // MAINT_DEFER_MAX covers a failover and keeps a held shard under the pack count that slowed merges. It must last
