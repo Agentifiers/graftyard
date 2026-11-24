@@ -6,9 +6,6 @@ tests/am1/hosted/plant.py: commits reachable from existing refs reported as new
 tests/am1/rest/plant.py: archive: no slack, so the log is cut to exactly the cap
 tests/am1/rest/plant.py: archive: a promotion takes an entry over PROMOTE_MAX
 tests/am1/rest/plant.py: archive: recorded while held in one bucket
-tests/am1/wp2/plant.py: 32.8 chosen for every push (default bytes change)
-tests/am1/wp2/plant.py: the agent check after the permission checks: an App without the permission gets a bare 403
-tests/am1/wp2/plant.py: Push::tiers Core only with provenance (followers refuse the entry)
 tests/am1/wp3/plant.py: a derived final state is not recorded by the next command
 tests/am1/wp4/plant.py: glob overlap ignores a trailing ** after a literal
 tests/am1/wp4/plant.py: a release reports Expired, not Released
