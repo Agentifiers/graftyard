@@ -1,0 +1,25 @@
+[package]
+name = "graftyard-lifeboat-worker"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The lifeboat bundle's puller (`design/DESIGN.md`, "Install operations", Lifeboat; `decisions/DECISIONS.md`,
+# "`lifeboat-bundle`"): one Durable Object that runs `graftyard_lifeboat::pass` on its alarm against the install's
+# export bucket (R2's S3 API) and edge, the bundle's member copies, and `graft-blob`; posts the daily
+# `LifeboatDecoder`; and answers the front's status read. Runs in workerd only.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+graftyard-git = { path = "../../crates/git" }
+graftyard-identity = { path = "../../crates/identity" }
+graftyard-lifeboat = { path = "../../lifeboat" }
+graftyard-lookup = { path = "../../crates/lookup" }
+graftyard-release = { path = "../../crates/release" }
+graftyard-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+js-sys = "0.3"
+worker.workspace = true

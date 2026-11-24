@@ -2106,6 +2106,25 @@ pub fn packs_of(events: &[Ev<Push>]) -> Vec<PackRef> {
         .collect()
 }
 
+/// Every stored pack a repository entry names, with its checksum and length: `packs_of`, and a promotion's or a roll's
+/// own pack. What a copy of the install owes (the vault, the lifeboat).
+pub fn stored_packs(events: &[Ev<Push>]) -> Vec<(crate::pack::PackId, graftyard_types::Digest, u64)> {
+    let mut all = packs_of(events);
+    for ev in events {
+        match ev {
+            RepoEvent::Promoted(p) => all.push(p.pack.clone()),
+            RepoEvent::Compacted(c) => all.push(c.produced.clone()),
+            _ => {}
+        }
+    }
+    all.into_iter()
+        .filter_map(|p| match p {
+            PackRef::Stored { id, checksum, bytes, .. } => Some((id, checksum, bytes)),
+            PackRef::Inline(_) => None,
+        })
+        .collect()
+}
+
 /// What a repository member commits: a client's `Push`, a consumer's `PrSync` (`crate::prsync`), or an issue, pull
 /// request, release, or LFS command from the edge (`crate::issue_ops::call`). A push keeps its wire form, the base64
 /// of `Push::to_wire`, so an edge that sends only pushes is unchanged; a sync is `{"prSync": ..}`, which only a member

@@ -16,6 +16,8 @@
 
 pub mod acme;
 pub mod blob;
+pub mod feed;
+pub mod pass;
 pub mod puller;
 pub mod status;
 
