@@ -7,6 +7,8 @@
 //!   (`graftyard_identity::appauth::sign_app_jwt`).
 //! - `CONTROLLER`, the `fetch()` service binding to `graft-controller`, and `CONTROLLER_SCRIPT`, the script name the
 //!   override names.
+//! - `CONTROLLER_DEFAULT`, a variable the agents `graft-ops` sets to N while a `ControllerRoll`'s split is deployed and
+//!   removes after: the pin of an isolate whose view has not shown the roll (`plan`).
 //! - `VERSION`, the version metadata binding, and `FRONT_TOKEN`, a Worker secret: `GET /_agents_front/status` with it
 //!   as `x-front-token` answers this version, the view, and the counts. Without it the route does not exist.
 //!
@@ -217,10 +219,8 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         ensure(&env, &ctx, &a).await;
     }
     let script = var(&env, "CONTROLLER_SCRIPT").unwrap_or_default();
-    let (pin, overrides) = READER.with(|r| {
-        let r = r.borrow();
-        (r.view().controller(), plan(r.view(), &script))
-    });
+    let default = var(&env, "CONTROLLER_DEFAULT").and_then(|v| v.parse::<VersionId>().ok());
+    let (pin, overrides) = READER.with(|r| plan(r.borrow().view(), default, &script));
     let report = req.headers().has(REPORT_HEADER)?;
     let fwd = req.clone_mut()?;
     let _ = fwd.headers().delete(OVERRIDE_HEADER);
@@ -297,5 +297,8 @@ fn status(env: &Env, req: &Request) -> Result<Response> {
         json!({ "requests": c.requests, "pinned": c.pinned, "thrown": c.thrown, "mismatches": c.mismatches,
                 "firstMismatch": c.first_mismatch, "lastMismatch": c.last_mismatch })
     });
-    Response::from_json(&json!({ "agentsFront": version, "now": now, "view": view, "counts": counts }))
+    let default = var(env, "CONTROLLER_DEFAULT");
+    Response::from_json(
+        &json!({ "agentsFront": version, "now": now, "default": default, "view": view, "counts": counts }),
+    )
 }

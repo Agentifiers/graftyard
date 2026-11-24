@@ -14,6 +14,9 @@
 //!   `Freshness` (from `view`) says when to try again and that no request waits on it.
 //! - **The pin.** `controller_override` is the override `graft-agents-front` sets on `graft-controller`: `Some` only
 //!   while `Pointers.controller` is `Some`, so a `None` pointer follows the deployment split (the base's pin-only rule).
+//!   While a `ControllerRoll`'s split is deployed, `controller_default` is N, and `controller_pin` pins it for an
+//!   isolate whose view has not shown the roll: the split applies only once a verified view says so (LF-7 r1,
+//!   OPEN-QUESTIONS A53).
 //!
 //! The view replays every entry, not only the agents' kinds, because the `Keys`, `prev`, and intent rules are the
 //! group's and depend on the whole history; the endpoint therefore serves every committed entry, and the agents
@@ -139,4 +142,63 @@ pub fn parse_page(body: &[u8]) -> Result<Vec<(Index, Vec<u8>, Timestamp)>, Strin
 /// `Some` only while the view's `Pointers.controller` is `Some`, so `None` follows the deployment split.
 pub fn controller_override(view: &AgentsReleaseView, controller_script: &str) -> Option<String> {
     view.controller().map(|v| version_override(controller_script, v))
+}
+
+/// `graft-agents-front`'s `CONTROLLER_DEFAULT` for a `graft-controller` deployment of `split` (DECISIONS
+/// "`controller-default`"): while no version serves 100%, the roll's N, the version serving the larger share; `None`
+/// once one version serves 100%, at the roll's 100% step, an undo's or `Abort`'s return, and with no roll. The agents
+/// `graft-ops` sets it on `graft-agents-front` before it deploys a split that needs it, removes it after the deploy
+/// that ends one, and reads no controller deployment while the front's value differs, so no step of the intent
+/// commits until the front carries what the deployment needs.
+pub fn controller_default(split: &[(VersionId, u8)]) -> Option<VersionId> {
+    if split.iter().any(|(_, p)| *p == 100) {
+        return None;
+    }
+    split.iter().max_by_key(|(_, p)| *p).map(|(v, _)| *v)
+}
+
+/// `graft-agents-front`'s variable that carries `controller_default`.
+pub const CONTROLLER_DEFAULT: &str = "CONTROLLER_DEFAULT";
+
+/// The `CONTROLLER_DEFAULT` a version of `graft-agents-front` carries: `source` is the `result` of the versions API's
+/// read of it.
+pub fn front_default(source: &serde_json::Value) -> Option<VersionId> {
+    source["resources"]["bindings"]
+        .as_array()?
+        .iter()
+        .find(|b| b["name"] == CONTROLLER_DEFAULT)
+        .and_then(|b| b["text"].as_str()?.parse().ok())
+}
+
+/// The bindings of a `graft-agents-front` settings change from `source`'s (the deployed version's, as
+/// `front_default` reads it) to `default`: every other binding as `source` holds it, so a secret keeps its value.
+pub fn front_bindings(source: &serde_json::Value, default: Option<VersionId>) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = source["resources"]["bindings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b["name"] != CONTROLLER_DEFAULT)
+        .cloned()
+        .collect();
+    if let Some(v) = default {
+        out.push(serde_json::json!({ "type": "plain_text", "name": CONTROLLER_DEFAULT, "text": v.to_string() }));
+    }
+    out
+}
+
+/// The version `graft-agents-front` pins a forwarded request to, or `None` for the deployment's split:
+/// - `Pointers.controller` while it is set;
+/// - else nothing while the view, read and verified, holds a `ControllerRoll` running or halted, whose split is the
+///   canary;
+/// - else `default`, the front's `CONTROLLER_DEFAULT`: an isolate that has never read a view, or whose view predates
+///   the roll, pins N and never follows the split to N+1 (LF-7 r1, OPEN-QUESTIONS A53).
+pub fn controller_pin(view: &AgentsReleaseView, default: Option<VersionId>) -> Option<VersionId> {
+    if let Some(v) = view.controller() {
+        return Some(v);
+    }
+    let canary = view.fold.current.as_deref().is_some_and(|c| {
+        matches!(c.intent.intent, crate::Intent::ControllerRoll { .. })
+            && matches!(c.state, crate::IntentState::Running { .. } | crate::IntentState::Halted { .. })
+    });
+    if canary { None } else { default }
 }

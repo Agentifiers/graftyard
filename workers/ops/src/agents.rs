@@ -14,6 +14,9 @@
 //!   account's deploy token, through `exec::Api`; `RELEASES` is the agents account's release bucket.
 //! - **Gate.** No front counts a `ControllerRoll`'s answers yet (OPEN-QUESTIONS R47), so the gate is `Pending` unless a
 //!   test install's `GATE` forces `pass`, `pending`, or `breach:<why>`, as LF-7 does.
+//! - **The front's default.** A `graft-controller` deploy whose split serves no version 100% first sets
+//!   `graft-agents-front`'s `CONTROLLER_DEFAULT` to N, and one that serves a version 100% clears it after; a controller
+//!   deployment read while the front's value differs sets it and fails the run (`agents::controller_default`).
 //! - Pages are `PAGE graft-agents-ops` lines.
 //!
 //! Not built: `graft-agents-front`'s own 1%-for-a-day roll under the same intent (OPEN-QUESTIONS A52), and `Rotate`
@@ -26,7 +29,10 @@ use std::time::Duration;
 use graftyard_identity::AppId;
 use graftyard_identity::appauth::{app_key, sign_app_jwt};
 use graftyard_lookup::within;
-use graftyard_release::agents::{AgentsAnchor, AgentsReleaseView, ENTRIES_PER_PAGE, parse_page};
+use graftyard_release::agents::{
+    AgentsAnchor, AgentsReleaseView, CONTROLLER_DEFAULT, ENTRIES_PER_PAGE, controller_default, front_bindings,
+    front_default, parse_page,
+};
 use graftyard_release::gate::Verdict;
 use graftyard_release::ops::{
     self, Account, Deployment, Exec, Gate, MoveRun, MoveSpec, Ran, RawBundle, Signer, Split, Submit,
@@ -121,6 +127,37 @@ impl<'a> AgentsLive<'a> {
             .await
             .unwrap_or_else(|| Err(format!("after={}: no answer within {VIEW_CALL_MS} ms", after.0)))
     }
+
+    /// `graft-agents-front`'s name and the versions API's read of its deployed version.
+    async fn front(&self) -> std::result::Result<(String, Value), String> {
+        let name = self.api.name(Script::AgentsFront)?.to_string();
+        let d = self.api.deployment(Script::AgentsFront).await?;
+        let live = ops::upload_source(&d.split).ok_or("graft-agents-front has no deployed version")?;
+        let path = format!("/workers/scripts/{name}/versions/{live}");
+        let one = self.api.call(&self.api.token, Method::Get, &path, None, false).await?;
+        Ok((name, one["result"].clone()))
+    }
+
+    /// Sets `graft-agents-front`'s `CONTROLLER_DEFAULT` to `want` unless its deployed version carries it already.
+    /// The settings call uploads and deploys a version with the deployed one's bindings and that one change; it is
+    /// refused while a version uploaded since is not deployed (Cloudflare error 10214), and the run fails then.
+    async fn set_default(&self, want: Option<VersionId>) -> std::result::Result<bool, String> {
+        let (name, src) = self.front().await?;
+        if front_default(&src) == want {
+            return Ok(false);
+        }
+        let settings = serde_json::json!({ "bindings": front_bindings(&src, want) }).to_string();
+        let opts = web_sys::BlobPropertyBag::new();
+        opts.set_type("application/json");
+        let parts = js_sys::Array::of1(&settings.into());
+        let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &opts).map_err(|e| format!("{e:?}"))?;
+        let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
+        form.append_with_blob("settings", &blob).map_err(|e| format!("{e:?}"))?;
+        let path = format!("/workers/scripts/{name}/settings");
+        self.api.call(&self.api.token, Method::Patch, &path, Some(form.into()), false).await?;
+        console_log!("graft-agents-ops {name} {CONTROLLER_DEFAULT} = {want:?}");
+        Ok(true)
+    }
 }
 
 impl Exec for AgentsLive<'_> {
@@ -170,8 +207,14 @@ impl Exec for AgentsLive<'_> {
         Err(format!("{PAGES} pages read, more remain"))
     }
 
+    /// A `graft-controller` deployment counts only while `graft-agents-front` carries the `CONTROLLER_DEFAULT` it
+    /// needs: a front that differs is set, and the read fails this run, so no step commits until the next.
     async fn deployment(&mut self, s: Script) -> std::result::Result<Deployment, String> {
-        self.api.deployment(s).await
+        let d = self.api.deployment(s).await?;
+        if s == Script::Controller && self.set_default(controller_default(&d.split)).await? {
+            return Err(format!("{CONTROLLER_DEFAULT} differed from the controller deployment's; set"));
+        }
+        Ok(d)
     }
 
     async fn gate(&mut self, _fold: &ReleaseFold) -> Gate {
@@ -186,8 +229,18 @@ impl Exec for AgentsLive<'_> {
         BTreeMap::new()
     }
 
+    /// A controller split that needs `CONTROLLER_DEFAULT` gets it before the deploy, and one that ends it loses it
+    /// after, so no cold `graft-agents-front` isolate follows a split to N+1 (DECISIONS "`controller-default`").
     async fn deploy(&mut self, s: Script, split: &Split) -> std::result::Result<(), String> {
-        self.api.deploy(s, split).await
+        let want = if s == Script::Controller { controller_default(split) } else { None };
+        if want.is_some() {
+            self.set_default(want).await?;
+        }
+        self.api.deploy(s, split).await?;
+        if s == Script::Controller && want.is_none() {
+            self.set_default(None).await?;
+        }
+        Ok(())
     }
 
     async fn submit(&mut self, bytes: &[u8]) -> Submit {
