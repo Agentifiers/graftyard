@@ -10586,3 +10586,32 @@ for longer than one `MINT_RESEND_MS` after its errors crossed the line (count ac
 - `tests/m0carried/plant131.py`, 3 mutants.
 
 **Flip.** None expected: the check's rule is the design's (`design/DESIGN.md`, Shape, `bootstrap`). Revisit if a genesis read on a cold isolate's first bootstrap join shows as join latency on a precreate or a `Names` create.
+
+#### `controller-task`: the controller's `Task` is a pure state machine in `graftyard_git::controller` (2026-11-24)
+
+**Status.** Code-only (AM3-WP1's second slice); no controller runs it yet.
+
+**Decision.**
+- `Task`, `TaskState`, `TaskBudget`, and `Workspace` are the AGENT-LAYER Shape's, in `crates/git/src/controller.rs`, beside the base's `AgentTask` row in `crate::task`. The controller holds one per Graftyard-run task in the agents account. It is no group's fold, so it has no record format and no `decide`; `Task::step` is its rule, and the base's rules stay on `AgentTask`.
+- `Task::new` takes only a `SessionId::Run`, derives `branch` with `task::run_prefix`, and picks `Workspace` from the org's `agents_workspace`: `Fork(<org>-agents/<repo>)`, the fork keeping the base's name, or `InRepo`.
+- `Task::step` moves a task by one event:
+  - `Queued` to `Running` when a Sandbox starts; a push records `last_push`; `Running` to `Draft { pr }` or `Done`.
+  - Any live state to `Failed { reason }`, or to `Failed` when `TaskBudget::over` names a limit: task tokens past their limit, the org's monthly tokens past theirs, or the wall (60 min by default) reached. At a token limit is within it.
+  - Any live state to `Cancelled` on the cancel delivery.
+  - A non-writer's title or body edit pauses a `Queued` or `Running` task, as the host's pause does. Only a writer's reassignment queues it again, and moves `snapshot` to that entry's index.
+  - `Draft`, `Done`, `Failed`, and `Cancelled` are final and take no event. A refused step changes nothing.
+- `TaskState::api` is the `PATCH` state each sends, by the table in "Tasks and the activity feed": `Paused` is `waiting_for_user`, `Draft` and `Done` are `completed`, and `Cancelled` sends none, because only the cancel endpoint sets it and `PATCH` refuses it (`TaskErr::HostState`). A controller state is final exactly when the base state it sends is.
+
+**Why.**
+- The base already holds the task's durable record; the controller's state only decides its next call, so a pure step with no format keeps it testable and adds no failure domain.
+- `Draft { pr }` is final because the table maps it to `completed`, a final base state. Review and merge then go through the PR, not the task.
+
+**Beat.** Storing the controller's `Task` as fields on `AgentTask`, which would put Sandbox ids and budgets on the base's group for a component the base does not run.
+
+**Evidence.**
+- `crates/git/tests/controller.rs`, 5 tests: the prefix and both workspaces, and the 32 and 33 character org logins on either side of the 39-character limit (OPEN-QUESTIONS A51); each budget limit at and past it; every forward step and every refused one; each final state refusing every event; the pause and its resume, with the snapshot moved; and the `api` map with no `cancelled` or `timed_out`.
+- `tests/m0carried/plant221.py`: 11 mutants, all caught.
+
+**Flip.**
+- The controller needs a step this model refuses, such as resuming a failed task. Then add the event here first, with its base `PATCH`.
+- A design choice for long org logins (A51). Then `workspace` follows it.
