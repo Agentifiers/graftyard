@@ -194,6 +194,11 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	if refsRepack(t, s.URL, prev) {
 		t.Fatal("a repack started with client CPU p99 above FANOUT_UP")
 	}
+	// The row reads the bound itself: deferred since the first stop, 1 + 1 + yieldHold on the hold's clock, and the
+	// CPU that held this start.
+	if st := maintStats(); st["deferred_s"].(float64) != 2+yieldHold.Seconds() || st["cpu_p99"].(float64) != 0.9 {
+		t.Fatalf("/procs maint while deferred: %v", st)
+	}
 	cpuSamples.Lock()
 	cpuSamples.last = []float64{0.2, 0.2, 0.2}
 	cpuSamples.Unlock()
@@ -247,7 +252,9 @@ func TestMaintenanceYieldsToMovedLoad(t *testing.T) {
 	}
 	st := maintStats()
 	// The longest hold is the first, renewed 1 s in: 1 + 1.5 s on the hold's clock.
-	if st["stops"] != 2 || st["max_unkept_held"].(int) <= repackAt || st["longest_hold_s"].(float64) != 2.5 {
+	// The overdue repack ran to its end, so nothing is deferred now.
+	if st["stops"] != 2 || st["max_unkept_held"].(int) <= repackAt || st["longest_hold_s"].(float64) != 2.5 ||
+		st["deferred_s"].(float64) != 0 {
 		t.Fatalf("/procs maint: %v", st)
 	}
 }

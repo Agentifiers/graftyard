@@ -8457,6 +8457,10 @@ is in. So any point is a safe point:
   (`promote_moves_on`). If every shard is held, the step fails and the next alarm tries again. Archiving and
   promotion still run: they are not maintenance, and the log needs them.
 
+**Moved load is marked by the edge since G41 (2026-11-24), `moved-mark` below.** The shard no longer reads moved load
+off `wait` = 15: a call counts only with the edge's `moved=1`, sent after a try on the home failed. The first-try rule
+below is the original decision and no longer holds.
+
 **Shortened to 6 minutes (2026-11-23), by its own flip.** B0-34 mt19 (`tests/am1/results/b034-mt19.md`) was the
 first hosted row. Every-clone passed, at 100% in kill and in second. But site b's shard was held for 517.5 s, and its
 unkept packs reached 786 while held, past the 751 line. That meets "shorten `MAINT_DEFER_MAX` if a held shard's pack
@@ -9739,6 +9743,69 @@ second site is still refused at the commit send, in the same shape (`bound_at_se
   reaches site b.
 - **Revisit the 60 s wait on later tries** if moved agent validates read `validate` over 5 s on sites b and c. That
   means a later site's catch-up, not its gate, holds them.
+
+### `moved-mark`: the edge marks a call moved only after the home failed a try, and a hedge pass marks nothing, 2026-11-24
+
+**Status.** Built on branch `g41-moved` from main `371b784d` for G41 (`decisions/OPEN-QUESTIONS.md`). Edge and shard
+object (`workers/edge/src/lib.rs`, `note`, `moved`, `shard_url`; `crates/git/src/shard.rs`, `maint_hold`;
+`workers/site/src/shard.rs`), plus the container's report (`containers/git/server/maint.go`, `maintStats`), so it
+ships on an edge day and a site day. Not hosted: it rides on the next B0-34-shaped row.
+
+**Decision.**
+- **The edge marks moved load.** A try sent to a site other than the record's home carries `moved=1` when this
+  isolate's `COLD` map holds the home cold because a try failed on it (`Seen::Failed`), within `COLD_SHARD_MS`. That
+  covers the request's own failed first try and the isolate's later pushes while the mark lasts.
+- **A hedge pass marks nothing.** `hedged`'s pass still sends the home last for `COLD_SHARD_MS` (`Seen::Passed`), as
+  `validate-hedge` built it, but does not make calls elsewhere moved. A pass over a home whose failure mark is live
+  keeps that mark, so a pass never hides a failure.
+- **The shard holds maintenance only on `moved=1`** (`maint_hold`), with the rest of `maint-yield`'s rule unchanged:
+  push and fetch paths, a client caller, not derived, not at the home. `wait` = 15 no longer means moved.
+- **The cold mark's order is unchanged.** Changing it was left to this decision; the evidence says no. A passed home
+  went last, and site b took mt21's 14 hedged and 73 first-try validates before the kill, so the order moved load
+  as `validate-hedge` meant. What was wrong was counting that load as a failover.
+- **`maintStats` adds `deferred_s` and `cpu_p99`**: how long maintenance has been deferred now (the clock
+  `MAINT_DEFER_MAX` bounds, 0 when nothing is deferred) and the client CPU p99 `maintBegin` reads.
+  `tests/fanout/shardprocs.mjs` records them in `/procs`'s `maint`. `longest_hold_s` spans hold calls, not the
+  deferral, so neither mt20b's 451 nor mt21's 573 measured the bound.
+
+**Why.** On B0-34 mt21 site b's container read `longest_hold_s` 573 and `max_unkept_held` 846, past 751, with the home
+alive. The hold began 4.7 minutes before the kill. A human validate's hedge reached site b at 03:10:59Z, its pass
+marked the home cold in that isolate, and that isolate's next pushes reached site b as first tries with `wait=15`,
+which `maint_hold` counted as moved [measured, `tests/am1/results/b034-mt21.md`, "Site b's maintenance hold"; G41].
+The deferral bound held as built, so the fault was upstream of it. mt19's first hold had the same cause (`maint-yield`,
+"Shortened to 6 minutes").
+
+**Beat.**
+- **A `wait` the hedge's cold mark changes** (say 16 s on a first try after a pass). It keeps one signal carrying two
+  meanings, the catch-up's wait and moved load, and a later change to either breaks the other.
+- **No cold mark from a hedge pass.** It would send that isolate's next pushes to the slow home first again, which
+  `validate-hedge` chose against: each would wait out its 1 s hedge.
+- **The shard deciding from its own view of the home** (say the home's `/load`). It needs a read per call, or a cache
+  that lags a kill.
+
+**The cost.** Nothing on the request path: `moved` is one lookup in the isolate's map, and the URL gains 8 bytes on a
+moved try.
+
+**Evidence.**
+- `workers/edge/src/lib.rs`, `only_a_failed_home_makes_a_call_elsewhere_moved_load`. After a hedge pass the home is
+  still tried last but a call to site b is not moved (on main the pass and a failure write the same mark, and `wait=15`
+  to site b counted). A failure makes it moved, the home's own call never is, a pass keeps a live failure's mark, the
+  mark lapses at `COLD_SHARD_MS`, and an answer clears it. `every_shard_try_but_the_last_says_another_follows` checks
+  the URL.
+- `crates/git/tests/shard.rs`, `only_a_call_moved_off_a_failed_home_holds_maintenance`: an unmarked call at another site
+  holds nothing whatever its `wait`. On main, mt21's first try (`wait` 15 at site b) held.
+- `containers/git/server/maint_test.go`, `TestMaintenanceYieldsToMovedLoad`: `deferred_s` reads 1 + 1 + `yieldHold`
+  after the first stop, `cpu_p99` reads 0.9, and `deferred_s` is 0 once the overdue repack ran to its end.
+- `tests/m0carried/plant140.py`, six mutants: a pass marking the home failed, a pass clearing a live failure, a mark
+  that never lapses, the mark read off the called site, the home's own call marked, and a URL without `moved=1`.
+  `tests/m0carried/plant89.py`'s mutant 12 now plants an unmarked call counting.
+
+**Flip.**
+- **Back it out** if a B0-34-shaped row's kill phase reads site b's maintenance running through the kill (the stop
+  count 0 with repacks after the kill while the home was down). That means the edge failed to mark a real failover,
+  for instance because a kill's first answer reached the isolate as a hedge pass, not a failure.
+- **Mark a pass too** if a slow home's hedged validates on site b read `validate` over 5 s with a repack running there.
+  That means a slow home's moved load does need the CPU.
 
 ### `readindex-batch`: the read-index confirm is already batched; ack riding (B) and region asks (F) priced, not built, pushed grants (P) rejected, 2026-11-23
 

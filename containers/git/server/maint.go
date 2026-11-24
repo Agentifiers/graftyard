@@ -129,12 +129,21 @@ func handleMaintHold(w http.ResponseWriter, r *http.Request) {
 }
 
 // maintStats is `/procs`'s "maint", for the row: whether maintenance is held or running now, the longest continuous
-// hold (to its end, so with its last yieldHold), the most unkept packs any hold call saw, and the runs holds stopped.
+// hold (to its end, so with its last yieldHold), the most unkept packs any hold call saw, the runs holds stopped, how
+// long maintenance has been deferred now (the clock maintDeferMax bounds, 0 when none runs), and the client CPU p99
+// maintBegin reads. A hold's span is not its deferral: B0-34 mt21's 573 s hold on site b had its run start inside
+// the bound, which only these two show (G41).
 func maintStats() map[string]any {
+	cpu := cpuP99()
 	maint.Lock()
 	defer maint.Unlock()
-	return map[string]any{"held": maintClock().Before(maint.until), "running": maint.cancel != nil,
-		"longest_hold_s": maint.longest.Seconds(), "max_unkept_held": maint.maxUnkept, "stops": maint.stops}
+	now, deferred := maintClock(), 0.0
+	if !maint.firstHeld.IsZero() {
+		deferred = now.Sub(maint.firstHeld).Seconds()
+	}
+	return map[string]any{"held": now.Before(maint.until), "running": maint.cancel != nil,
+		"longest_hold_s": maint.longest.Seconds(), "max_unkept_held": maint.maxUnkept, "stops": maint.stops,
+		"deferred_s": deferred, "cpu_p99": cpu}
 }
 
 // gitMaint runs one maintenance git at nice 19 in its own process group, which ctx's end stops with SIGTERM: the

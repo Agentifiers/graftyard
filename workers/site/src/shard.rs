@@ -1041,13 +1041,13 @@ impl DurableObject for GitShard {
                 }
             }
         }
-        // Moved load (`maint-yield`): a client's first try that reached this site rather than the record's home holds
-        // the container's maintenance, told off the request's path at most once per `MAINT_HOLD_EVERY`, so the
-        // repack, its commit-graph and a roll-up yield the CPU, the repack slot and the midx lock to the lost site's
-        // work (`tests/am1/results/b034-mt18.md`).
-        let wait_s = q(&url, "wait").and_then(|v| v.parse::<u32>().ok());
+        // Moved load (`maint-yield`, `moved-mark`): a client's call the edge sent here after the record's home failed
+        // it (`moved=1`) holds the container's maintenance, told off the request's path at most once per
+        // `MAINT_HOLD_EVERY`, so the repack, its commit-graph and a roll-up yield the CPU, the repack slot and the midx
+        // lock to the lost site's work (`tests/am1/results/b034-mt18.md`).
+        let moved = q(&url, "moved").is_some();
         let derived = q(&url, "derived").is_some();
-        if graftyard_git::maint_hold(&path, caller, derived, site.id, log.record.home, wait_s) {
+        if graftyard_git::maint_hold(&path, caller, derived, site.id, log.record.home, moved) {
             let due = MAINT_HELD.with(|m| {
                 let mut m = m.borrow_mut();
                 let last = m.entry((self.run_key.clone(), net.0.0)).or_insert(0);

@@ -2628,14 +2628,59 @@ fn validate_sites(record: &PlacementRecord, pinned: Option<SiteId>) -> Vec<SiteI
     std::iter::once(record.home).chain(others).collect()
 }
 
-/// After a shard of a network answers anything but 200, 422 or 429, this isolate tries it last for this long, so pushes
-/// during a 30 min rehydrate do not each wait out the home shard first: j9d's pushes took about 21 s each, 15 of them
-/// the home's `wait` (`tests/am1/results/hot-shards.md`). Past it the home is tried first again.
+/// After a shard of a network answers anything but 200, 422 or 429, or a hedge passes it, this isolate tries it last
+/// for this long, so pushes during a 30 min rehydrate do not each wait out the home shard first: j9d's pushes took
+/// about 21 s each, 15 of them the home's `wait` (`tests/am1/results/hot-shards.md`). Past it the home is tried first
+/// again.
 const COLD_SHARD_MS: u64 = 30_000;
 
+/// A shard this isolate saw cold, until when, and whether a try failed on it (else a hedge only passed it, slow but
+/// live). Only a failed home makes a call elsewhere moved load (`moved-mark`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Cold {
+    until: u64,
+    failed: bool,
+}
+
+type ColdMap = std::collections::BTreeMap<(i64, u8), Cold>;
+
 thread_local! {
-    static COLD: std::cell::RefCell<std::collections::BTreeMap<(i64, u8), u64>> =
-        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    static COLD: std::cell::RefCell<ColdMap> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// What a try told this isolate about a shard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seen {
+    /// 200, or the pack's or the gate's answer (422, 429): warm.
+    Answered,
+    Failed,
+    /// A hedge started the sites left beside it (`validate-hedge`).
+    Passed,
+}
+
+/// Records `seen` for `key` at `now`. A pass keeps a live failure's mark, so it never hides one.
+fn note(m: &mut ColdMap, key: (i64, u8), seen: Seen, now: u64) {
+    let failed = match seen {
+        Seen::Answered => {
+            m.remove(&key);
+            return;
+        }
+        Seen::Failed => true,
+        Seen::Passed => m.get(&key).is_some_and(|c| c.until > now && c.failed),
+    };
+    m.insert(key, Cold { until: now + COLD_SHARD_MS, failed });
+}
+
+/// Whether a call to `site` is moved load (`graftyard_git::maint_hold`): `site` is not the record's home, and a try
+/// failed on the home within `COLD_SHARD_MS`. A hedge that only passed a slow home moves nothing: on B0-34 mt21 the
+/// first tries such a pass sent to site b held its maintenance 573 s with the home alive (G41).
+fn moved(m: &ColdMap, net: i64, home: SiteId, site: SiteId, now: u64) -> bool {
+    site != home && m.get(&(net, home.0)).is_some_and(|c| c.until > now && c.failed)
+}
+
+/// `moved` for a call to `site` of `repo`'s network now.
+fn moved_to(repo: &Repo, site: SiteId) -> bool {
+    COLD.with(|m| moved(&m.borrow(), repo.id.0.0, repo.record.home, site, now().0))
 }
 
 /// `sites` with the ones marked cold at `now` moved to the end, keeping the order within each part.
@@ -2650,35 +2695,32 @@ fn shard_order(repo: &Repo, pinned: Option<SiteId>) -> Vec<SiteId> {
     let net = repo.id.0.0;
     COLD.with(|m| {
         let m = m.borrow();
-        warm_first(validate_sites(&repo.record, pinned), |s| m.get(&(net, s.0)).is_some_and(|until| *until > t))
+        warm_first(validate_sites(&repo.record, pinned), |s| m.get(&(net, s.0)).is_some_and(|c| c.until > t))
     })
 }
 
-fn mark_shard(repo: &Repo, site: SiteId, cold: bool) {
-    COLD.with(|m| {
-        let mut m = m.borrow_mut();
-        if cold {
-            m.insert((repo.id.0.0, site.0), now().0 + COLD_SHARD_MS);
-        } else {
-            m.remove(&(repo.id.0.0, site.0));
-        }
-    });
+/// Records a try's answer on `site`: `failed` marks it cold, else it is warm again.
+fn mark_shard(repo: &Repo, site: SiteId, failed: bool) {
+    let seen = if failed { Seen::Failed } else { Seen::Answered };
+    COLD.with(|m| note(&mut m.borrow_mut(), (repo.id.0.0, site.0), seen, now().0));
 }
 
 /// How long the first shard tried, usually the home's, may hold a validate in its catch-up before the edge tries the
 /// next: past it the shard answers 503 `warming` and goes on catching up in the background. Each later shard gets
 /// `VALIDATE_WAIT_OTHER_S`. With three Full sites they stay under the push's 180 s deadline.
-/// A shard reads this `wait` as the edge's first try (`graftyard_git::maint_hold`), so the two are one constant.
+/// The shard's `FIRST_TRY_WAIT_S` names the same wait (`maint-hold` reads `moved`, not this).
 const VALIDATE_WAIT_HOME_S: u32 = graftyard_git::FIRST_TRY_WAIT_S;
 const VALIDATE_WAIT_OTHER_S: u32 = 60;
 
 /// Try `i` of `n` on a shard: the first waits `VALIDATE_WAIT_HOME_S` on its catch-up, each later one
 /// `VALIDATE_WAIT_OTHER_S`, and every try but the last says another shard follows (`next=1`), so a shard that is
-/// rehydrating answers it 503 `warming` at once rather than after the wait (`workers/site/src/shard.rs`).
-fn shard_url(url: &str, i: usize, n: usize) -> String {
+/// rehydrating answers it 503 `warming` at once rather than after the wait (`workers/site/src/shard.rs`). `moved`
+/// (`moved_to`) adds `moved=1`, which holds that shard's maintenance (`graftyard_git::maint_hold`).
+fn shard_url(url: &str, i: usize, n: usize, moved: bool) -> String {
     let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
     let next = if i + 1 < n { "&next=1" } else { "" };
-    format!("{url}&wait={wait}{next}")
+    let moved = if moved { "&moved=1" } else { "" };
+    format!("{url}&wait={wait}{next}{moved}")
 }
 
 /// `GitCacheShard::validate` on the network's home shard, or, while that one catches up past its wait or fails,
@@ -2721,13 +2763,14 @@ pub(crate) async fn validate(
         let site = sites[i];
         async move {
             let body = || Some(js_sys::Uint8Array::from(&head[..]).into());
-            let r = validate_on(c, repo, site, &shard_url(url, i, n), &body, detail).await;
+            let r = validate_on(c, repo, site, &shard_url(url, i, n, moved_to(repo, site)), &body, detail).await;
             let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
             mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
             r
         }
     };
-    let t = hedged(n, start, validate_hedge(agent), |i| mark_shard(repo, sites[i], true), worker::Delay::from).await;
+    let passed = |i: usize| COLD.with(|m| note(&mut m.borrow_mut(), (repo.id.0.0, sites[i].0), Seen::Passed, now().0));
+    let t = hedged(n, start, validate_hedge(agent), passed, worker::Delay::from).await;
     // Which site answered, how many tries started, and whether a hedge started one (`validate-hedge`).
     c.timing.put("validate_site", t.answer.as_ref().map_or(-1.0, |(i, _)| f64::from(sites[*i].0)));
     c.timing.put("validate_tries", t.started as f64);
@@ -2874,7 +2917,7 @@ async fn validate_streamed(
     let record = record.unwrap_or_default();
     let probe = |i: usize, site: SiteId| {
         let url = format!("https://shard/catchup?repo={}&record={record}", repo.id.0.0);
-        let url = shard_url(&url, i, sites.len());
+        let url = shard_url(&url, i, sites.len(), moved_to(repo, site));
         async move {
             let mut init = RequestInit::new();
             init.with_method(Method::Post);
@@ -2891,7 +2934,7 @@ async fn validate_streamed(
         }
     };
     let (site, mut tries) = streamed_site(&sites, probe).await;
-    let r = validate_on(c, repo, site, &shard_url(&url, 1, 2), &body, detail).await;
+    let r = validate_on(c, repo, site, &shard_url(&url, 1, 2, moved_to(repo, site)), &body, detail).await;
     let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
     mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
     match r {
@@ -2980,7 +3023,7 @@ pub(crate) async fn shard_read(
         if let Some(b) = body {
             init.with_body(Some(js_sys::Uint8Array::from(b).into()));
         }
-        let req = Request::new_with_init(&shard_url(&url, i, sites.len()), &init)?;
+        let req = Request::new_with_init(&shard_url(&url, i, sites.len(), moved_to(repo, *site)), &init)?;
         let r = shard_at(c, repo, Some(*site))?.fetch_with_request(req).await;
         mark_shard(repo, *site, !r.as_ref().is_ok_and(|r| r.status_code() == 200));
         if i + 1 == sites.len() || r.as_ref().is_ok_and(|r| r.status_code() == 200) {
@@ -5143,10 +5186,48 @@ mod tests {
     /// waits, so a call never runs out of shards that would serve it. The home try waits less than the others.
     #[test]
     fn every_shard_try_but_the_last_says_another_follows() {
-        assert_eq!(shard_url("u?repo=1", 0, 3), "u?repo=1&wait=15&next=1");
-        assert_eq!(shard_url("u?repo=1", 1, 3), "u?repo=1&wait=60&next=1");
-        assert_eq!(shard_url("u?repo=1", 2, 3), "u?repo=1&wait=60");
-        assert_eq!(shard_url("u?repo=1", 0, 1), "u?repo=1&wait=15");
+        assert_eq!(shard_url("u?repo=1", 0, 3, false), "u?repo=1&wait=15&next=1");
+        assert_eq!(shard_url("u?repo=1", 1, 3, false), "u?repo=1&wait=60&next=1");
+        assert_eq!(shard_url("u?repo=1", 2, 3, false), "u?repo=1&wait=60");
+        assert_eq!(shard_url("u?repo=1", 0, 1, false), "u?repo=1&wait=15");
+        assert_eq!(shard_url("u?repo=1", 1, 3, true), "u?repo=1&wait=60&next=1&moved=1");
+    }
+
+    /// A call elsewhere is moved load only while the home is cold because a try failed on it: a hedge that passed a
+    /// slow, live home still sends this isolate's next pushes to the other sites first, but unmarked, so their shards'
+    /// maintenance runs. On B0-34 mt21 a hedge pass at 03:10:59Z held site b's maintenance 573 s before any failover
+    /// (G41). A pass keeps a live failure's mark, the mark lapses with `COLD_SHARD_MS`, and an answer clears it.
+    #[test]
+    fn only_a_failed_home_makes_a_call_elsewhere_moved_load() {
+        use super::{COLD_SHARD_MS, ColdMap, Seen, moved, note};
+        let (net, home, b) = (7, SiteId(0), SiteId(1));
+        let key = (net, home.0);
+        let cold = |m: &ColdMap, t: u64| m.get(&key).is_some_and(|c| c.until > t);
+        // mt21: a hedge passes the home. It goes last for COLD_SHARD_MS, and nothing sent to site b is moved.
+        let mut m = ColdMap::new();
+        note(&mut m, key, Seen::Passed, 1_000);
+        assert!(cold(&m, 1_001), "a passed home is still tried last");
+        assert!(!moved(&m, net, home, b, 1_001), "a hedge pass is not a failed home");
+        // A try fails on the home: calls elsewhere are moved, and the home's own never is.
+        note(&mut m, key, Seen::Failed, 2_000);
+        assert!(moved(&m, net, home, b, 2_001));
+        assert!(!moved(&m, net, home, home, 2_001), "the home's own call");
+        assert!(!moved(&m, net + 1, home, b, 2_001), "another network");
+        // A later pass does not hide the live failure, and renews the cold mark.
+        note(&mut m, key, Seen::Passed, 3_000);
+        assert!(moved(&m, net, home, b, 3_000 + COLD_SHARD_MS - 1));
+        assert!(!moved(&m, net, home, b, 3_000 + COLD_SHARD_MS), "the mark lapses");
+        // A pass after a failure that lapsed is a pass.
+        note(&mut m, key, Seen::Passed, 3_000 + COLD_SHARD_MS);
+        assert!(!moved(&m, net, home, b, 3_001 + COLD_SHARD_MS));
+        // The home answers: warm, and nothing is moved.
+        note(&mut m, key, Seen::Failed, 100_000);
+        note(&mut m, key, Seen::Answered, 100_001);
+        assert!(!cold(&m, 100_002) && !moved(&m, net, home, b, 100_002));
+        // Only the home's failure counts: site b failing makes a call to site c no moved load.
+        let mut m = ColdMap::new();
+        note(&mut m, (net, b.0), Seen::Failed, 1_000);
+        assert!(!moved(&m, net, home, SiteId(2), 1_001));
     }
 
     /// A shard seen cold goes last and the rest keep their order: the home first among the warm ones, and the cold
