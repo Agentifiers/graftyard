@@ -1,0 +1,5 @@
+2026-11-24T09:48:20Z
+46edc385
+release roll: intent 01M86F9NKEAHRB4C40GX1BS2NQ McpRoll { release: ReleaseId([35, 16, 169, 164, 210, 211, 237, 34, 159, 70, 203, 54, 0, 213, 188, 134, 103, 200, 238, 13, 80, 9, 243, 146, 233, 151, 82, 93, 203, 77, 142, 151]) }, 1 undo(s)
+{"answer":{"digest":"24a4ca27d7d8a1c4cfbe4ddced7d6bfb91b210a3afbcc424c513bb296158698a","index":1142,"status":201},"intent":"01M86F9NKEAHRB4C40GX1BS2NQ"}
+{"count":385,"current":{"intent":"McpRoll { release: ReleaseId([35, 16, 169, 164, 210, 211, 237, 34, 159, 70, 203, 54, 0, 213, 188, 134, 103, 200, 238, 13, 80, 9, 243, 146, 233, 151, 82, 93, 203, 77, 142, 151]) }","next":0,"since":1795513710050,"state":"Running { step: 0 }"}}
