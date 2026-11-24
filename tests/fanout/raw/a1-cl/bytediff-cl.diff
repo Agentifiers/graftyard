@@ -1,0 +1,2 @@
+UNAVAILABLE bytediff-cl/0.json b034-mono-repo: GET /api/v3/repos/m3org/b034-mono 503 (a read, excused as load)
+348 replies compared against tests/fanout/raw/bytediff-m2b-pb, 0 differ, 1 unavailable (a 5xx tests/fanout/raw/bytediff-m2b-pb never answered)
