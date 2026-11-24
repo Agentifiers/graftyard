@@ -507,9 +507,12 @@ pub(crate) async fn read_repo(
         Ok(v) => v,
         Err(r) => return Ok(Err(shed_reply(c, viewer, r).await)),
     };
-    // A member built before the `rows` read answered `ranges`: its tiers cannot be served.
-    let Ok(rows) = TierRows::from_value(&v["value"]) else {
-        return Ok(Err(unavailable("the repository's members do not serve tier rows yet (site release)")));
+    let rows = match parsed_rows(repo.id, &v) {
+        Ok(rows) => rows,
+        Err(e) if e.contains(graftyard_lookup::OVERLOADED) => {
+            return Ok(Err(shed_reply(c, viewer, read_failed(TIER_FAILED, &e)).await));
+        }
+        Err(e) => return Ok(Err(unavailable(&e))),
     };
     if !rows.complete {
         return Ok(Err(unavailable("the repository is too large for this edge's tier read")));
@@ -615,17 +618,17 @@ async fn rows_read(c: &Ctx<'_>, repo: &Repo, q: &Value) -> Result<std::result::R
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
     let q = q.clone();
-    let mut v = crate::spread_read(c, &b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
+    let mut v = crate::spread_read(c, &b, chain, &repo.record, &q).await.map(|o| o.map(with_member));
     if let Ok(None) = v {
         if let Err(r) = first_use(c, repo).await? {
             return Ok(Err(r));
         }
-        v = crate::spread_read(c, &b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
+        v = crate::spread_read(c, &b, chain, &repo.record, &q).await.map(|o| o.map(with_member));
     }
     Ok(match v {
         Ok(Some(v)) => Ok(v),
         Ok(None) => Err(unavailable("the repository's group has no leader; retry")),
-        Err(e) => Err(read_failed("the repository's tier rows did not answer; retry", &e)),
+        Err(e) => Err(read_failed(TIER_FAILED, &e)),
     })
 }
 
@@ -672,7 +675,7 @@ pub(crate) async fn tier_rows(
             Some(_) => graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.to_string().as_bytes()).await,
             None => crate::spread_read(c, &b, chain, &repo.record, &q).await,
         };
-        r.map(|o| o.map(|(v, _, _)| v))
+        r.map(|o| o.map(with_member))
     };
     let mut v = read().await;
     if let Ok(None) = v {
@@ -684,7 +687,7 @@ pub(crate) async fn tier_rows(
     Ok(match v {
         Ok(Some(v)) => Ok(v),
         Ok(None) => Err(unavailable("the repository's group has no leader; retry")),
-        Err(e) => Err(read_failed("the repository's tier rows did not answer; retry", &e)),
+        Err(e) => Err(read_failed(TIER_FAILED, &e)),
     })
 }
 
@@ -748,6 +751,51 @@ fn tier_off_line(why: &str, e: &str) -> Option<String> {
         .then(|| json!({ "shed": graftyard_lookup::TIER_OFF, "why": why }).to_string())
 }
 
+const TIER_FAILED: &str = "the repository's tier rows did not answer; retry";
+
+/// A member's read answer with the member that gave it, `member: {site, do}`, so a `rows` answer that does not parse
+/// (`parsed_rows`) names its member.
+fn with_member((mut v, _, t): (Value, graftyard_lookup::Step, graftyard_lookup::Target)) -> Value {
+    if let Some(o) = v.as_object_mut() {
+        o.insert("member".into(), json!({ "site": t.site.0, "do": t.do_name }));
+    }
+    v
+}
+
+/// A member's `rows` answer (`with_member`'s) as tier rows. A member built before the `rows` read answers its `ranges`
+/// reply (`promoted`, `first`), which only a site day serves: "site release", 503 with `Retry-After: 5`. Any other
+/// value that does not parse is a member that could not answer now, as a shed is (B0-33 lpB: five Agent writes at
+/// 04:47:13Z, while a learner reset, all on members of one release): its reason names `graftyard_lookup::OVERLOADED`,
+/// so `read_failed` gives `Retry-After: 1`, `shed_for` an Agent write's 429, and `gate_ng` an Agent push's `ng`. It is
+/// logged with its member and the value's first 200 bytes.
+fn parsed_rows(repo: graftyard_types::RepoId, v: &Value) -> std::result::Result<TierRows, String> {
+    let value = &v["value"];
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unused_variables))]
+    let e = match TierRows::from_value(value) {
+        Ok(rows) => return Ok(rows),
+        Err(e) => e,
+    };
+    if value.get("promoted").is_some() || value.get("first").is_some() {
+        return Err("the repository's members do not serve tier rows yet (site release)".into());
+    }
+    #[cfg(target_arch = "wasm32")]
+    worker::console_log!("{}", unparsed_line(repo, v, &e));
+    Err(format!("repo:{}: a member's tier rows did not parse: {}", repo.0.0, graftyard_lookup::OVERLOADED))
+}
+
+/// `parsed_rows`' log line: the repository, the member that answered, the parse error, and the value's first 200
+/// bytes.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn unparsed_line(repo: graftyard_types::RepoId, v: &Value, e: &serde_json::Error) -> String {
+    let text = match &v["value"] {
+        Value::String(s) => s.clone(),
+        value => value.to_string(),
+    };
+    let head = String::from_utf8_lossy(&text.as_bytes()[..text.len().min(200)]).into_owned();
+    json!({ "rowsUnparsed": { "repo": repo.0.0, "member": v["member"], "error": e.to_string(), "head": head } })
+        .to_string()
+}
+
 /// `tier_rows`'s query. `ranges` too: a member built before the `rows` read answers its small ranges reply instead of
 /// every ref. `packed`: the whole tiers as one JSON string (`TierRows::packed`), which `TierRows::from_value` reads.
 fn tier_rows_query(merge: Option<MergeOf>) -> Value {
@@ -803,10 +851,10 @@ async fn core_rows_at(
         v = crate::spread_read(c, &b, chain, &repo.record, &q).await;
     }
     Ok(match v {
-        Ok(Some((v, _, _))) => match TierRows::from_value(&v["value"]) {
-            Ok(rows) => Ok((TierRows::store(&rows.core), v["value"]["agent"] == json!(true))),
-            Err(_) => Err("the repository's members do not serve tier rows yet (site release)".into()),
-        },
+        Ok(Some(o)) => {
+            let v = with_member(o);
+            parsed_rows(repo.id, &v).map(|rows| (TierRows::store(&rows.core), v["value"]["agent"] == json!(true)))
+        }
         Ok(None) => Err(NO_LEADER.into()),
         Err(e) => Err(e),
     })
@@ -2745,6 +2793,62 @@ mod tests {
         assert_eq!(super::shed_for(late(), true, Some(ClassWire::Agent)), late(), "not a shed: 503, Retry-After 5");
         let other = || super::unavailable("the repository's metadata tier is loading; retry");
         assert_eq!(super::shed_for(other(), true, Some(ClassWire::Agent)), other());
+    }
+
+    /// A member's `rows` answer that does not parse is a shed, not a site release: an Agent write gets 429
+    /// `retry-after: 1` and a Human's or plain PAT's keeps 503 with `Retry-After: 1` (B0-33 lpB's five Agent 503s at
+    /// 04:47:13Z). Only a member built before the `rows` read, which answers its `ranges` reply, stays "site release",
+    /// 503 with `Retry-After: 5`, for every class.
+    #[test]
+    fn an_unparsed_rows_answer_is_shed_and_only_a_ranges_answer_is_a_site_release() {
+        use graftyard_api::hosted::TierRows;
+        use graftyard_git::group::ClassWire;
+        use serde_json::{Value, json};
+        let repo = graftyard_types::RepoId(graftyard_types::DbId(131410));
+        let answer =
+            |value: Value| json!({ "value": value, "index": 9, "member": { "site": 1, "do": "repo:131410#1#l195" } });
+        let reply = |value: Value, class: Option<ClassWire>| {
+            let r = match super::parsed_rows(repo, &answer(value)) {
+                Ok(_) => panic!("parsed"),
+                Err(e) if e.contains(graftyard_lookup::OVERLOADED) => super::read_failed(super::TIER_FAILED, &e),
+                Err(e) => super::unavailable(&e),
+            };
+            super::shed_for(r, true, class)
+        };
+        let packed = TierRows::default().packed();
+        let Value::String(whole) = &packed else { panic!("packed") };
+        let unparsed = [json!(null), json!({}), json!(whole[..whole.len() / 2]), json!({ "error": "fold lost" })];
+        for v in &unparsed {
+            let r = reply(v.clone(), Some(ClassWire::Agent));
+            assert_eq!((r.status, r.header("retry-after")), (429, Some("1")), "{v}: {:?}", r.body);
+            for class in [None, Some(ClassWire::Human)] {
+                let r = reply(v.clone(), class);
+                assert_eq!((r.status, r.header("retry-after")), (503, Some("1")), "{v} {class:?}: {:?}", r.body);
+            }
+            // The push's read gate (`core_rows_at`'s error): an Agent push's `ng`, as a shed gate read is.
+            let e = super::parsed_rows(repo, &answer(v.clone())).expect_err("unparsed");
+            assert!(e.contains(graftyard_lookup::OVERLOADED), "{e}");
+        }
+        let line: Value = serde_json::from_str(&super::unparsed_line(
+            repo,
+            &answer(json!({})),
+            &TierRows::from_value(&json!({})).expect_err("unparsed"),
+        ))
+        .unwrap();
+        assert_eq!(line["rowsUnparsed"]["member"]["do"], "repo:131410#1#l195");
+        assert_eq!(line["rowsUnparsed"]["head"], "{}");
+        let long =
+            super::unparsed_line(repo, &answer(json!("x".repeat(500))), &serde_json::from_str::<u8>("x").unwrap_err());
+        let long: Value = serde_json::from_str(&long).unwrap();
+        assert_eq!(long["rowsUnparsed"]["head"].as_str().map(str::len), Some(200));
+        // The pre-`rows` member's `ranges` reply (`workers/site/src/family.rs`, `repo_read`).
+        let ranges = json!({ "promoted": null, "compactions": [], "archived": null, "first": 1, "fanout": 0, "default_branch": "refs/heads/main" });
+        for class in [Some(ClassWire::Agent), Some(ClassWire::Human), None] {
+            let r = reply(ranges.clone(), class);
+            assert_eq!((r.status, r.header("retry-after")), (503, Some("5")), "{class:?}");
+            assert!(r.value()["message"].as_str().unwrap().contains("site release"), "{:?}", r.body);
+        }
+        assert!(super::parsed_rows(repo, &answer(packed.clone())).is_ok(), "a packed answer parses");
     }
 
     /// A leader's `full` for an issue or merge command is GitHub's secondary rate limit, 429 with the leader's own
