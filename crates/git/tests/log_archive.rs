@@ -306,8 +306,18 @@ impl ArchiveHost for Bed {
         let mut w = self.w.borrow_mut();
         let l = w.repo.leader();
         let now = w.now;
+        let promoted = match events.first() {
+            Some(RepoEvent::Promoted(p)) => Some(p.clone()),
+            _ => None,
+        };
         w.repo.on(l, now, |m, t| m.record(t, request, format, events)).map_err(|e| format!("{e:?}"))?;
         w.settle();
+        // A promotion, sent fresh or again, leaves the fold holding it. A request id that ignored the range would be
+        // answered from an earlier promotion's row, and the drain would promote the same range for ever.
+        if let Some(p) = promoted {
+            let held = w.repo.members[l.0 as usize].group_fold().fold.promoted();
+            assert_eq!(held.map(|h| (h.from, h.to)), Some((p.from, p.to)), "a promotion the fold does not hold");
+        }
         w.repo
             .resolutions
             .iter()
