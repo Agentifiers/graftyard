@@ -25,6 +25,16 @@ Stamp every harness time on Cloudflare's clock, never the orb's. The orb's clock
 - Files written before 2026-11-18's fix are on the orb's clock. Shift them by the offset measured for that run (m50
   +7,310 ms, m51 +7,440 ms), or by the newest trace row's lead over `at` in the run's tsave file.
 
+## B0-33's load length (`B033_SECONDS`, from 2026-11-24)
+
+B0-33 loads 300 s by default. `B033_SECONDS=900` (the lead's 15-minute row, heap-count's reading) passes through
+`costrow.sh` and `b033.sh` to `rows.sh`'s a1 flags, the readers' load window (instcpu) and memguard's and `terms.mjs`'s
+run, which is `B033_SETUP_S` (default 660 s, clA's setup) plus the load plus 240 s. `DRY=1 bash tests/fanout/b033.sh
+<tag>` prints those bounds and starts nothing. Every row also fetches the leader object's Workers Logs over the load
+window, a minute either side, to `raw/leaderlogs-<tag>.json.xz` (`wlleader.py`, the leader a1 announced at load start),
+in the background after `B033DONE`; `raw/leaderlogs-<tag>.log` ends `exit 0` when it is complete. At about $0.50 a load
+minute (clA), a 900 s row is about $8.0 to $8.5, so it runs under RUN_STOP 10.
+
 ## B0-33 runs with `arrival=mem` (from 2026-11-18, write-cuts)
 
 `rows.sh` sets test-faults `/stats?arrival=mem` on every voter before B0-33's load (`arrival.mjs`), and skips the
