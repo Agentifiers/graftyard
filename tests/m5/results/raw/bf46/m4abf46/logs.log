@@ -1,0 +1,23 @@
+2026-11-24T00:51:45Z
+{"at": 1795479449066, "msg": "graft-ops Rotate DeployToken slot 1 probe: 27 scripts listed"}
+{"at": 1795479452884, "msg": "graft-ops Committed(\"IntentDone\")"}
+{"at": 1795479452884, "msg": "graft-ops Committed(\"IntentStep\")"}
+{"at": 1795479566422, "msg": "graft-ops Rotate ReadToken slot 1 probe: graft-m4a-site-a-packs location ENAM"}
+{"at": 1795479568960, "msg": "graft-ops Committed(\"IntentDone\")"}
+{"at": 1795479568960, "msg": "graft-ops Committed(\"IntentStep\")"}
+{"at": 1795479688065, "msg": "graft-ops Rotate MintWrapKey slot 1 Publish: tokens:0 committed {\"cred\":{\"account\":null,\"key\":null},\"op\":{\"PutVerifyingKey\":{\"key\":[88,84,111,34,87,12,226,78,137,17,114,214,199,111,104,176,80,158,35,187,116,10,145,32,124,82,239,167,216,186,32,170],\"kid\":2,\"retired\":null}}}"}
+{"at": 1795479689227, "msg": "graft-ops Committed(\"IntentStep\")"}
+{"at": 1795480350695, "msg": "graft-ops Rotate MintWrapKey slot 1 Retire: tokens:0 committed {\"cred\":{\"account\":null,\"key\":null},\"op\":{\"PutVerifyingKey\":{\"key\":[79,86,50,254,95,250,170,181,82,57,161,187,244,27,90,231,2,5,30,67,250,76,77,243,55,205,28,9,150,125,211,165],\"kid\":1,\"retired\":1795570409261}}}"}
+{"at": 1795480352818, "msg": "graft-ops Committed(\"IntentDone\")"}
+{"at": 1795480352818, "msg": "graft-ops Committed(\"IntentStep\")"}
+{"at": 1795480526028, "msg": "graft-ops Rotate DeployToken slot 0 probe: 27 scripts listed"}
+{"at": 1795480528483, "msg": "graft-ops Committed(\"IntentDone\")"}
+{"at": 1795480528483, "msg": "graft-ops Committed(\"IntentStep\")"}
+{"at": 1795480588995, "msg": "graft-ops Rotate ReadToken slot 0 probe: graft-m4a-site-a-packs location ENAM"}
+{"at": 1795480592383, "msg": "graft-ops Committed(\"IntentDone\")"}
+{"at": 1795480592383, "msg": "graft-ops Committed(\"IntentStep\")"}
+{"at": 1795480706834, "msg": "graft-ops Rotate MintWrapKey slot 0 Publish: tokens:0 committed {\"cred\":{\"account\":null,\"key\":null},\"op\":{\"PutVerifyingKey\":{\"key\":[79,86,50,254,95,250,170,181,82,57,161,187,244,27,90,231,2,5,30,67,250,76,77,243,55,205,28,9,150,125,211,165],\"kid\":1,\"retired\":null}}}"}
+{"at": 1795480707775, "msg": "graft-ops Committed(\"IntentStep\")"}
+{"at": 1795481369664, "msg": "graft-ops Rotate MintWrapKey slot 0 Retire: tokens:0 committed {\"cred\":{\"account\":null,\"key\":null},\"op\":{\"PutVerifyingKey\":{\"key\":[88,84,111,34,87,12,226,78,137,17,114,214,199,111,104,176,80,158,35,187,116,10,145,32,124,82,239,167,216,186,32,170],\"kid\":2,\"retired\":1795571428373}}}"}
+{"at": 1795481371800, "msg": "graft-ops Committed(\"IntentDone\")"}
+{"at": 1795481371800, "msg": "graft-ops Committed(\"IntentStep\")"}

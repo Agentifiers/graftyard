@@ -1,0 +1,18 @@
+prev c61955e2a0c5
+{"digest":"2fd836c0f35dfc9aa9f06733bbc4a21f85baac5278b89cd88ede4bad369dc6ec","index":897,"status":201}
+Rotate DeployToken to slot 1 posted
+prev d503671d7df5
+{"digest":"65dfa5ac36f4e6f0fb721ea079e9ded785b5db7f95818e418f9bca6344ff5c6c","index":901,"status":201}
+Rotate ReadToken to slot 1 posted
+prev d46e728cf1eb
+{"digest":"8643ce0c9c7a1d121aebd0def7c30aa8fc04d120341561edfcbbac4305d760bb","index":905,"status":201}
+Rotate MintWrapKey to slot 1 posted
+prev 79ba18f8e125
+{"digest":"6b4667e9746e0dd193ee02f3df04f8674119ee254a5609fbd3c17af1b06b93b6","index":911,"status":201}
+Rotate DeployToken to slot 0 posted
+prev 411615b68648
+{"digest":"0a1fc02a209f3c0af04936d3e4a0bb6cc846dfaade656ec0cb97f306fc761fbe","index":915,"status":201}
+Rotate ReadToken to slot 0 posted
+prev eba2ee3ce003
+{"digest":"bb7aaa5b2e33231a46139a0e826702a2b4beeee9f2d33e3e82ae43d03863f2ac","index":919,"status":201}
+Rotate MintWrapKey to slot 0 posted

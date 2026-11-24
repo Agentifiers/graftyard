@@ -112,6 +112,90 @@ printed.
 - **Stop.** $5 on graft-m4a's day, counted with `tests/fanout/acctcost.py` (`PREFIX=graft-m4a`). graft-m4a idle cost
   $0.01 from 11:35Z to 11:55Z.
 
+## BF-46 hosted (2026-11-24, graft-m4a): pass for `DeployToken`, `ReadToken` and `MintWrapKey`
+
+Gate line (`build/BUILD-PLAN.md`, M5-WP6): `Rotate` of each `SecretName` with live traffic. Pass: no new script
+version; zero failed calls; old value unused after the switch. Fail: a new version, or failures.
+
+**Result: pass for the three secrets `graft-ops` runs (done line 00:49:30.781Z, the restore's `IntentDone`).** Six
+`Rotate`s (each secret to slot 1, then each back to 0) ran on `graft-m4a-ops` `de3c4bdb` and shipped no version. 235
+mints across them all answered 201, and each token's read answered 200. The R45 rows stay refused, as ruled.
+Driver `tests/m5/bf46/row.sh`, tag `m4abf46`, logs `raw/bf46/m4abf46/`. Spend from 00:06:48Z to 00:54Z: $0.11 on
+graft-m4a (`tests/fanout/acctcost.py`, `PREFIX=graft-m4a`), under the $5 stop.
+
+**How graft-ops was deployed (the lead's ruling).** `workers/ops/deploy.mjs --executor` with the `"slots"` option, a
+test-install deployment step outside the measured path. Binding both slots is a bindings change an `OpsRoll` cannot
+make (it uploads with `keep_bindings`), and graft-m4a's group holds no Ops release. Build: main `05aace32`,
+test-faults, `GATE=pending`, 60 s dwells, `OPS_STEP_MIN_ENTRIES` 50, a 1-minute cron, both slots of each secret
+bound. Version `de3c4bdb`, deployed 00:11:08Z. The deploy's Cron Trigger did not fire, as in BF-7 and the gate check
+row; a re-PUT at 00:17:03Z did.
+
+**`MintWrapKey`'s publish wait is a test-faults override.** `OPS_ROTATE_PUBLISHED_MS` = 600,000 (10 minutes, not
+`ROTATE_PUBLISHED_FOR`'s hour), read only by a test-faults build. Each retire is still dated `switched +
+SIGNING_KEY_CACHE + JOB_TOKEN_MAX + CLOCK_SKEW`, about 25 h out.
+
+**Throwaway tokens only.** `graft-m4a-bf46-deploy-0` and `-1` (Workers Scripts Write and Workers Containers Write) and
+`graft-m4a-bf46-read-0` and `-1` (Workers R2 Storage Read), all minted 00:08:11Z to 00:08:12Z; kid 2 from `mintkey`.
+`MintWrapKey` slot 0 stayed the install's kid 1 secret.
+
+| Secret, slot | `Rotate` (index, time) | Probe (Workers Logs) | `Switch` `IntentStep` (index, time) | `IntentDone` | Ops version before / after |
+| --- | --- | --- | --- | --- | --- |
+| `DeployToken` → 1 | 193, 00:14:11Z | 00:17:29Z: 27 scripts listed under slot 1 | 195, 00:17:30.346Z | 196, 00:17:31Z | `de3c4bdb` / `de3c4bdb` |
+| `ReadToken` → 1 | 197, 00:18:52Z | 00:19:26Z: `graft-m4a-site-a-packs` location ENAM under slot 1 | 199, 00:19:27.295Z | 200, 00:19:28Z | `de3c4bdb` / `de3c4bdb` |
+| `MintWrapKey` → 1 | 201, 00:20:32Z | publish 00:21:28Z: `tokens:0` `PutVerifyingKey` kid 2, `retired: null` (step 0, index 202); wait to 00:32:28Z (step 1, 203) | 204, 00:32:29.261Z | 206, 00:32:31Z | `de3c4bdb` / `de3c4bdb` |
+| `DeployToken` → 0 | 207, 00:35:11Z | 00:35:26Z: 27 scripts listed under slot 0 | 209, 00:35:26.860Z | 210, 00:35:27Z | `de3c4bdb` / `de3c4bdb` |
+| `ReadToken` → 0 | 211, 00:36:14Z | 00:36:29Z: the same bucket's location ENAM under slot 0 | 213, 00:36:30.257Z | 214, 00:36:31Z | `de3c4bdb` / `de3c4bdb` |
+| `MintWrapKey` → 0 | 215, 00:37:29Z | publish 00:38:26Z: kid 1, `retired: null` (216); wait to 00:49:27Z (217) | 218, 00:49:28.373Z | 220, 00:49:30.781Z | `de3c4bdb` / `de3c4bdb` |
+
+The retire rows: after the first `MintWrapKey` switch, kid 1 `retired` 2026-11-25 01:33:29Z (step 3, 00:32:30Z); after
+the restore's, kid 2 `retired` 2026-11-25 01:50:28Z (00:49:29Z). The restore's publish rewrote kid 1 with no
+`retired`, which cleared the first retire, so kid 1 is valid with no end again. The group after the row: 221 entries,
+nothing current, every slot 0.
+
+**The minting probe** (`tests/m5/bf46/mint.mjs`, one installation token through the edge every 10 s and one read of
+`m3org/j4` with it; `raw/bf46/m4abf46/mint.jsonl`, `kids.txt`). 00:13:03Z to 00:52:07Z: **235 mints, 235 × 201, 235
+reads × 200, no non-201.**
+
+| Window | Mints | kid 1 | kid 2 |
+| --- | --- | --- | --- |
+| start to `DeployToken` → 1 (00:17:30Z) | 27 | 27 | 0 |
+| to `ReadToken` → 1 (00:19:27Z) | 12 | 12 | 0 |
+| to `MintWrapKey` → 1 (00:32:29Z) | 78 | 78 | 0 |
+| to `DeployToken` → 0 (00:35:26Z) | 17 | 9 | 8, the first at 00:32:47Z, 18 s after the switch |
+| to `ReadToken` → 0 (00:36:30Z) | 7 | 2 | 5 |
+| to `MintWrapKey` → 0 (00:49:28Z) | 78 | 13 | 65 |
+| after, to 00:52:07Z (the probe's last mint) | 16 | 10 | 6, the last at 00:51:27Z |
+
+kid 1 and kid 2 interleave after each `MintWrapKey` switch. Each `graft-ops` isolate keeps the key it read for up to
+`SIGNING_KEY_CACHE` (one hour) and reads the slot only when its key is missing or that old, so an isolate warm before
+the switch mints on the old kid until it is recycled or the hour runs out. That is the design ("old value unused after
+the switch" holds for each isolate's next key read, and the old key stays published and valid until its retire, about
+25 h later). Every mint on either kid answered 201 and its token read 200.
+
+**Verdict lines.**
+- **`DeployToken`: pass.** No new version (`de3c4bdb` before and after both switches); 0 failed calls (each probe
+  listed 27 scripts; 235 mints 201); after each switch `graft-ops`' calls used the new slot's token. The account audit
+  log shows each throwaway token's only call is its probe: `deploy-1` at 00:17:28Z, `deploy-0` at 00:35:25Z, both
+  `List Worker Scripts` 200. No deploy ran in the row, so no other call was due.
+- **`ReadToken`: pass.** No new version; 0 failed calls; `read-1` at 00:19:26Z and `read-0` at 00:36:28Z, each its
+  probe's `Get Bucket` 200, and nothing else.
+- **`MintWrapKey`: pass, with the `SIGNING_KEY_CACHE` reading above.** No new version; 0 failed mints in 235 across
+  both switches; kid 2 minted 18 s after its switch, and kid 1 again after the restore's. "Old value unused after the
+  switch" holds per isolate at its next key read, not at the switch instant.
+
+**Teardown (00:52:14Z to 00:53:14Z, `raw/bf46/m4abf46/teardown.log`, `lists.log`).** Probe stopped; ops cron off; the
+four tokens revoked; the four new store secrets deleted; `graft-m4a-ops-deploy-token` left holding the revoked
+`deploy-0`, as before the row; token files shredded. graft-ops is `5f29ee48`, the test-faults build of main `ad8fd52f`
+with `exec-ck-pending.json`: `GATE=pending`, `OPS_STEP_MIN_ENTRIES` 50, 60 s dwells, no slots, `OPS_SCRIPTS` the three
+sites, schedules `[]`. That is `4bbfd9e5`'s configuration in a new version. The lists: 0 `graft-m4a-bf46` tokens, 0
+`graft-m4a-bf46` secrets, the store at 17, schedules `[]`, every slot 0. Idle runs went on firing to at least 00:53:29Z,
+the known tail after a removed cron. Per the lead's ruling, M4-WP4 hears "graft-ops free" once, after BF-47.
+
+**Row notes (`raw/bf46/m4abf46/notes.txt`).** The first setup run was cut off at 00:07:50Z by the caller's 58 s
+timeout during the graft-ops build, after the mints and the store writes; `mint()` now keeps a token a cut-off run
+minted, and the rerun at 00:09:23Z kept all four. The probe service first started without the env and exited; it was
+restarted at 00:13:03Z, before any `Rotate`.
+
 ## BM-5's revocation mid-roll, in memory (2026-11-23, code only)
 
 Before this row, the group tests covered each piece of the runbook on its own:
