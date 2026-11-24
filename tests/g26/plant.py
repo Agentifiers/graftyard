@@ -29,9 +29,9 @@ MUTANTS = [
     ('the rehydrate passes no head', CU,
      'state.skipped.is_empty(), head_ref.as_deref()).await?;', 'state.skipped.is_empty(), None).await?;', C),
     ('a changed default never reaches a warm disk', CU,
-     '    if head_ref.is_some() && cursor.head != head_ref {', '    if false && cursor.head != head_ref {', C),
+     '    if !behind && head_ref.is_some() && cursor.head != head_ref {', '    if false && cursor.head != head_ref {', C),
     ('HEAD named on every catch-up', CU,
-     '    if head_ref.is_some() && cursor.head != head_ref {', '    if head_ref.is_some() {', C),
+     '    if !behind && head_ref.is_some() && cursor.head != head_ref {', '    if !behind && head_ref.is_some() {', C),
     ('the cursor forgets the head a rehydrate set', CU,
      '    cursor.head = head_ref.clone();\n', '', C),
     ('the head parameter not encoded', CU,
@@ -40,12 +40,13 @@ MUTANTS = [
      '            "default_branch": default_branch,\n', '            "default_branch": Value::Null,\n', S),
 ]
 
-ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '.worktrees/target-am1')), PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
+ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')), PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
 
 
 def run(t):
     cmd, cwd = (t[1:], os.path.join(ROOT, 'containers/git/server')) if t[0] == 'go' else (['cargo', 'test', '-q'] + t, ROOT)
-    r = subprocess.run(cmd, cwd=cwd, env=ENV, capture_output=True, text=True, timeout=1800)
+    # A hang counts as caught (README, "Planted bugs").
+    r = subprocess.run(['timeout', '-k', '10', '600', *cmd], cwd=cwd, env=ENV, capture_output=True, text=True)
     out = r.stdout + r.stderr
     return r.returncode, out, 'error[E' in out or ('could not compile' in out and 'test failed' not in out) or '[build failed]' in out
 
@@ -82,6 +83,8 @@ def main():
         elif code != 0:
             caught += 1
             fails = [l.split()[2] if l.startswith('--- FAIL') else l.split()[1] for l in out.splitlines() if l.startswith('--- FAIL') or l.startswith('test ') and l.endswith('FAILED')]
+            if code == 124:
+                fails = ['(timed out)', *fails]
             print(f'{n:2} CAUGHT  {name}  {" ".join(fails[:3])}')
         else:
             print(f'{n:2} MISSED  {name}')
