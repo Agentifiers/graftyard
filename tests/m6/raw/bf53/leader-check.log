@@ -1,0 +1,13 @@
+2026-11-24T21:59:10Z
+reset:
+{"site":0,"role":"follower","term":2,"commit":36,"log_rows":0,"since_ms":1795557557968}
+{"site":1,"role":"follower","term":2,"commit":36,"log_rows":0,"since_ms":1795557558181}
+{"site":2,"role":"follower","term":2,"commit":36,"log_rows":0,"since_ms":1795557558356}
+2026-11-24T21:59:24.549Z late push ok
+2026-11-24T21:59:24Z
+{"site":0,"role":"leader","term":2,"commit":39,"log_rows":1,"since_ms":19781}
+{"site":1,"role":"follower","term":2,"commit":39,"log_rows":1,"since_ms":19725}
+{"site":2,"role":"follower","term":2,"commit":39,"log_rows":0,"since_ms":19736}
+{"site":0,"role":"leader","commit":39,"answer":"refused: leader"}
+{"site":1,"role":"follower","commit":39,"answer":"rows page (3859 chars)"}
+{"site":2,"role":"follower","commit":39,"answer":"rows page (3859 chars)"}

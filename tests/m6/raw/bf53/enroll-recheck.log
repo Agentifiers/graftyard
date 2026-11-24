@@ -1,0 +1,9 @@
+2026-11-24T21:51:03Z
+checks again after one pass (the LifeboatRead row reached the copy):
+main edge, lifeboat token: 401 (want 401)
+lifeboat, lifeboat token: 200 (want 200)
+lifeboat, PAT: 401 (want 401)
+lifeboat, pulls/1: 200 (want 200)
+lifeboat, REST write: 503 (want 503)
+lifeboat, GraphQL mutation: 503 (want 503)
+2026-11-24T21:51:04Z

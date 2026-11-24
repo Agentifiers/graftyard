@@ -1,0 +1,10 @@
+2026-11-24T21:49:56Z
+a915d4b5
+enrolled on lifeboat.bf53.test: token written to ~/.graft-m3f/bf53/lifeboat.token and ~/.graft-m3f/bf53/gh/hosts.yml (0600); the main host refuses it
+main edge, lifeboat token: 401 (want 401)
+main edge, PAT: 200 (want 200)
+lifeboat, lifeboat token: 401 (want 200)
+lifeboat, PAT: 401 (want 401)
+lifeboat, REST write: 503 (want 503)
+lifeboat, receive-pack: 503 (want 503)
+2026-11-24T21:50:00Z

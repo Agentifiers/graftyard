@@ -1,0 +1,21 @@
+2026-11-24T22:07:40Z
+hosted feed held, so only the lifeboat's edge pulls read repo:65631's members
+{"held":true}
+reset:
+{"site":0,"role":"follower","term":2,"commit":39,"log_rows":0,"since_ms":1795558069023}
+{"site":1,"role":"follower","term":2,"commit":39,"log_rows":0,"since_ms":1795558069263}
+{"site":2,"role":"follower","term":2,"commit":39,"log_rows":0,"since_ms":1795558069485}
+2026-11-24T22:07:57.463Z late push ok
+{"site":0,"role":"leader","term":2,"commit":42,"log_rows":0,"since_ms":16051}
+{"site":1,"role":"follower","term":2,"commit":42,"log_rows":0,"since_ms":15951}
+{"site":2,"role":"follower","term":2,"commit":42,"log_rows":0,"since_ms":15917}
+2026-11-24T22:07:58Z
+after the lifeboat's pull (22:08:45): copy repo:65631 = 42, 15 packs kept, none owed
+{"site":0,"role":"leader","term":2,"commit":42,"log_rows":1,"since_ms":63812}
+{"site":1,"role":"follower","term":2,"commit":42,"log_rows":0,"since_ms":1795558133017}
+{"site":2,"role":"follower","term":2,"commit":42,"log_rows":0,"since_ms":1795558133213}
+{"site":0,"role":"leader","commit":42,"answer":"refused: leader"}
+{"site":1,"role":"follower","commit":42,"answer":"rows page (4284 chars)"}
+{"site":2,"role":"follower","commit":42,"answer":"rows page (4284 chars)"}
+{"held":false}
+2026-11-24T22:08:47Z
