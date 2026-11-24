@@ -9774,3 +9774,41 @@ reads 0.16 + 0.293 ms, 0.46 ms a call.
 - **Build B** when a row that misses its line on leader CPU has append-reply calls over 5% of leader CPU an entry.
 - **Build F** only when, on such a row, one region's learners together ask more than 40 times a second.
 - **P** stays rejected unless a design keeps confirm-after-arrival for every learner read.
+
+### `open-bytes`: memSplit counts the request and answer body bytes a member holds open, with their peak beside the open-request peak, 2026-11-24
+
+**Status.** Asked for by the lead on 2026-11-24 after the per-invocation read of B0-33 lpB's leader logs
+(`tests/am1/results/archive-memory.md`). Built on branch `open-bytes` from main `6d1e47d5`:
+`workers/site/src/openbytes.rs`, `workers/site/src/member.rs` (`Member::fetch`, `answer_len`, `memSplit.open`) and
+`workers/site/src/host.rs` (`Host.open_bytes`). Site script only, so it ships on the next site day. Not hosted.
+
+**Decision.** Every request a joined member handles holds one open request and its body's `content-length` until it
+ends, by an answer, an error, or its future dropped. An `Ok` answer's body length joins the hold while the handler
+still owns it; an answer that streams after the handler returns counts 0 here because `inFlight.answers` counts it.
+`/stats` `memSplit.open` reports `bytes`, `high`, `requests` and `requestsHigh`. Both peaks survive plain samples and
+restart from what is held now at `/stats?reset=1`. memguard carries it because it copies `memSplit` whole.
+
+**Why.** On lpB the leader's wasm memory rose from 7 to 81.6 MiB while every part memSplit counted stayed flat. Joined
+with the leader's invocations, the first 61 MiB tracked the running peak of open requests (r 0.90 over 391 samples,
+16 to 753 open). No counter said whether a new high-water mark was many requests' buffers or one large buffer.
+
+**What it beat.**
+- **A counter inside each handler.** It needs a line in each of `/commit`, `/outcome`, `/read`, `/raft` and the rest,
+  and a handler that errs or is dropped early is exactly the path such lines miss. One hold around `Routes::fetch`
+  covers every route and every way out.
+- **Counting the decoded trees.** Their size is not known without walking them, which costs CPU on every request. The
+  body length is a cheap lower bound.
+- **Counting streamed answers here too.** `inFlight.answers` already counts them once per shared answer; adding them
+  per request would count a shared answer many times.
+
+**Evidence.** `tests/am1/results/archive-memory.md`, "The per-invocation read of lpB's leader logs" and "The open-bytes
+counter"; tests `a_request_releases_its_bytes_however_it_ends` and
+`the_peaks_hold_until_a_reset_and_restart_from_what_is_held`; plants `tests/m0carried/plant120.py`, 11 of 11 caught.
+
+**Flip.**
+- **Look past request bodies** if, on the next hosted row, a leader `wasmMemMb` step of 2 MiB or more comes with
+  `open.high` flat. Then the memory is a large buffer outside a request body, decoded trees, or allocator growth: read
+  `logPageHigh` and that turn's logs.
+- **Bound open bytes** (a fast 503 with Retry-After past a byte budget) if `open.high` reaches 30 MiB on a leader that
+  then passes memguard's 120 MiB. That is a design change and goes to the design docs first.
+- **Remove it** if a hosted row shows the hold's cost on `Member::fetch` above 1% of member CPU.

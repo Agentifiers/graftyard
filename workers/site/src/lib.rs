@@ -39,6 +39,7 @@ mod logrelay;
 mod lookup;
 mod member;
 mod merge_queue;
+mod openbytes;
 mod prsync;
 // Also in unit tests, which drive a member over its fold (`host::tests`).
 #[cfg(any(test, feature = "test-faults"))]
