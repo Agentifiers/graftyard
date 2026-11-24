@@ -269,7 +269,7 @@ not the install's.
    revoked against the vault, remain.
 2. BF-47 passed hosted on stand-ins (2026-11-24, "BF-47 hosted" below). A real vault account and a real Workflows
    script remain for its rerun.
-3. **Per-org pull caps** (R39 (a)).
+3. **Per-org pull caps** (R39 (a)): closed 2026-11-24 by copies in turns, below; no cap on the export routes.
 
 ## BF-47 hosted (2026-11-24, graft-m4a): pass, on two stand-ins
 
@@ -385,3 +385,23 @@ own token with no install token, which the probe refused before any request. Bot
 the runner account, not isolated from `graft-runners`, and `graft-m4a-workflows` is a minimal Worker that tests the
 order, not Workflows. The export edge day was dropped by ruling, so the vault's pulls failed throughout, which is
 outside BF-47's lines.
+
+## R39 (a): owed copies in turns (2026-11-24, code only, $0)
+
+DESIGN's vault noisy-tenant row said "Pull bandwidth caps per org", and nothing built it. Worse, on origin/main
+`2011060d` one network's backlog held back every other: `Copy`'s derived order put every `Pack`, by network, ahead of
+every `Snapshot`, and a pass copied the first `COPIES_PER_PASS` (40). A copy held back past `CONSUMED_KEEP` or a purge
+is lost, counted missed, and not retried.
+
+- **Built** (`workers/vault/src/lib.rs`, `in_turns`, `Turn`, `VaultState.copy_turn`): a pass takes one owed copy per
+  turn, round and round, up to 40, starting with the turn after the one the last pass tried. A pack's turn is its
+  network; a snapshot's is its chain, since the state holds no chain-to-network map. `copy_turn` is serde-defaulted, so
+  an older `state/vault` reads. A 5xx keeps the copy owed and a 401 stops the pass, as before.
+- **Test** (`workers/vault/tests/vault.rs`,
+  `one_network_s_backlog_waits_its_turn_and_the_next_pass_starts_after_the_last`): network 1 owes 100 packs, networks
+  2 to 60 one each. Pass 1 copies networks 1 to 40 once each and records turn 40; pass 2 starts at 41, copies 41 to 60,
+  then 20 more of network 1. Every network from 2 to 60 is held after 2 passes; the rest of network 1 drains after.
+  Run against origin/main's `lib.rs` (with the new field stubbed), pass 1 copied network 1 forty times and the test
+  failed; in key order networks 2 to 60 need 4 passes.
+- **Ruling:** no per-org cap on the export routes; DESIGN's row and `vault-turns` record it as not built, and its flip
+  names a hosted row that breaks the ⌈networks/40⌉ bound, or a managed tenant whose pulls load the front door.

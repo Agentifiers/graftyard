@@ -8254,6 +8254,43 @@ left at R; another release's folder refused. `tests/m0carried/plant93.py`.
   pointer undo, which needs an operator decision since it widens the vault's failure domain.
 - A vault release needs a container image: the step moves after the `ContainerDay`s.
 
+### `vault-turns`: the vault takes owed copies a network at a time, and the export routes have no per-org cap, 2026-11-24
+
+**Decision.** For OPEN-QUESTIONS R39 (a), with the lead's ruling of 2026-11-24.
+- A pass takes owed copies in turns (`workers/vault/src/lib.rs`, `in_turns`): one copy per turn, round and round, at
+  most `COPIES_PER_PASS`. A pack's turn is its network; a snapshot's is its chain, because `VaultState` holds no
+  chain-to-network map and a lookup only to group them is not worth it.
+- The pass starts with the turn after the one it last tried (`VaultState.copy_turn`, serde-defaulted, so an older
+  `state/vault` reads). A 5xx still keeps a copy owed, and a 401 still stops the pass with nothing moved.
+- No per-org cap on the export routes. DESIGN's vault noisy-tenant row says so. A `RateCounter` bucket on them is left to
+  WK-X13's rate-limit work or Milestone 7.
+
+**Why.**
+- `Copy`'s derived order put every `Pack`, by network, ahead of every `Snapshot`, and a pass took the first 40. So a
+  low-numbered network's backlog held every other network's packs and every snapshot back by its own length, and a
+  copy held past `CONSUMED_KEEP` or a purge is lost: the vault counts it missed and does not retry.
+- In turns, a network's copy waits at most ⌈turns/40⌉ passes whatever another network owes [inference].
+- The vault is the only puller of the install-scoped export, and one account's backlog is the noisy tenant a vault
+  sees. A cap on the routes would slow the vault behind the same backlog and needs counters that are not built.
+
+**What it beat.**
+- **"Pull bandwidth caps per org", as DESIGN said.** Nothing built it, and a per-org rate on the routes the vault
+  alone pulls does not stop one network's backlog from delaying another's copies.
+- **Turns by network for snapshots too.** It needs a chain-to-network map the state does not hold.
+- **A bigger `COPIES_PER_PASS`.** It moves the bound and does not remove it, and the pass's subrequest limit sets it.
+
+**Evidence.** `workers/vault/tests/vault.rs`
+`one_network_s_backlog_waits_its_turn_and_the_next_pass_starts_after_the_last`: network 1 owes 100 packs and networks
+2 to 60 one each. Pass 1 copies networks 1 to 40 once each and records turn 40. Pass 2 starts at 41, takes 41 to 60,
+then gives network 1 the rest, so every network from 2 to 60 is held after 2 passes; then all 100 of network 1's.
+On origin/main 2011060d's pass, the same test's pass 1 copies network 1 forty times and fails; in key order networks 2
+to 60 would need 4 passes. `tests/vaultbed/run.sh` passes on the branch.
+
+**Flip.**
+- A hosted vault row where one network's backlog delays another's copy beyond ⌈networks/40⌉ passes.
+- A managed tenant whose export pulls load the front door: then a `RateCounter` bucket on the export routes, under
+  WK-X13's rate-limit work or Milestone 7.
+
 ### `validate-hedge`: a human push's buffered validate asks every site left after 1 s, beside the first, 2026-11-22
 
 **Status.** Built on branch `validate-fallback`, not yet on a hosted row. Edge only (`workers/edge/src/lib.rs`,
