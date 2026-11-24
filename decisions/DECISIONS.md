@@ -9905,3 +9905,31 @@ counter"; tests `a_request_releases_its_bytes_however_it_ends` and
 - **Bound open bytes** (a fast 503 with Retry-After past a byte budget) if `open.high` reaches 30 MiB on a leader that
   then passes memguard's 120 MiB. That is a design change and goes to the design docs first.
 - **Remove it** if a hosted row shows the hold's cost on `Member::fetch` above 1% of member CPU.
+
+### `archive-scan`: the archive alarm keeps its `SUM(length(row))` scan, with no running sum, 2026-11-24
+
+**Status.** Priced at $0 by LM-1 on 2026-11-24 from raws already kept; nothing built.
+
+**Decision.** The archive alarm's once-a-minute `SELECT COALESCE(SUM(length(row)), 0) FROM log WHERE idx > ?`
+(`workers/site/src/archive.rs`) stays as it is. No running stored-bytes total is kept in apply and archive.
+
+**Why.**
+- `length()` on a blob does not read its content in SQLite, so the scan does not grow with the scanned bytes. Local
+  SQLite 3.54 on the log table's shape: 81.3 MB in 1,628 rows took 0.17 to 1.1 ms (reading the content takes 58 ms);
+  250 MB in 5,000 rows 1.4 to 1.8 ms; LOG_MAX_BYTES (2 GiB, 52,428 rows) 63 ms median, 76 ms max. Once a minute
+  against lpB's 294 ms/s of leader CPU, that worst case is 0.36% [measured, local; inference for a Durable Object].
+- Hosted upper bound, charging the whole CPU of every invocation that logged a scan line: lpB 239 ms of 123,345 ms of
+  leader CPU over 420 s (0.19%); g3A 0.54%. g4B's 1.70% is the pre-`log-page` walks around the reset (179 to 352 ms
+  invocations re-reading 14.7 to 91.5 MB of rows), not the `SUM` [measured, `tests/am1/results/archive-memory.md`].
+- Invocation CPU does not track scanned bytes (48.8 MB in 22 ms, 8.3 MB in 30 ms), so B0-29 merge-front's 161 ms
+  `/raft` turn after a 52 MB scan line was the step's other work.
+
+**What it beat.** A running sum moved by apply and archive, rebuilt by one scan at boot. It saves at most about 1 ms a
+minute at today's log sizes and 63 ms at 2 GiB, for a second source of truth that apply, archive and boot must keep
+equal.
+
+**Flip.**
+- **Build the running sum** if a leader's scan-line invocations pass 1% of its CPU on a row whose stored log is under
+  2 GiB.
+- **Build it** if a Durable Object's SQLite turns out to read overflow pages for `length()`: hosted scan CPU rising
+  with the scanned MB.
