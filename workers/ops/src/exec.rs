@@ -305,7 +305,7 @@ impl Exec for Live<'_> {
         let (Some((site, n1, n)), Some(c)) = (gate::day_versions(fold), fold.current.as_deref()) else {
             return Gate::Pending;
         };
-        let (since, c_start) = (c.since.0, c.intent.issued_at.0);
+        let (since, c_start) = (gate::window_start(fold, c).0, c.intent.issued_at.0);
         let stub = match self.bindings().registry(site, "gate") {
             Ok(s) => s,
             Err(_) => return Gate::Pending,

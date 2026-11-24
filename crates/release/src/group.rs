@@ -157,6 +157,10 @@ pub struct Current {
     /// The time of the entry that last moved it: the intent, its last `IntentStep`, an undo, `Resume`, or `Abort`.
     /// `graft-ops` judges a step that changes no deployment (a drain, the first day) from it.
     pub since: Timestamp,
+    /// `since` as it was before the last `IntentStep`, the start of the step before the current one, or `since` when an
+    /// undo, `Resume` or `Abort` moved it last. A site day's 10% gate counts from it, so its `STEP_MIN_ENTRIES` floor
+    /// pools the 1% step's entries (`gate::window_start`).
+    pub before: Timestamp,
 }
 
 /// What the `Release` group's fold holds. `Noop` and `Config` entries never reach it, so `last` is the digest of the
@@ -811,6 +815,7 @@ impl ReleaseFold {
                     used: Vec::new(),
                     vendor_signed,
                     since: at,
+                    before: at,
                     intent: *i,
                 });
                 if let Some(mut prev) = self.current.take() {
@@ -854,6 +859,7 @@ impl ReleaseFold {
                     self.slots.insert(*secret, (*slot, at));
                 }
                 c.next += 1;
+                c.before = c.since;
                 c.since = at;
                 if let IntentState::Running { step } = &mut c.state {
                     *step = c.next;
@@ -930,7 +936,7 @@ impl ReleaseFold {
                     .find(|c| c.intent.id == parent)
                     .expect("checked");
                 c.used.push(u.clone());
-                c.since = at;
+                (c.since, c.before) = (at, at);
                 if !matches!(c.state, IntentState::Undoing) {
                     c.state = IntentState::Undoing;
                     c.next = 0;
@@ -966,7 +972,7 @@ impl ReleaseFold {
                 if let IntentState::Halted { step } = c.state {
                     c.state = IntentState::Running { step };
                 }
-                c.since = at;
+                (c.since, c.before) = (at, at);
                 if !undo.is_empty() {
                     c.undo = undo;
                     c.undo_key = customer;
@@ -982,7 +988,7 @@ impl ReleaseFold {
                 let c = self.current.as_mut().expect("checked");
                 c.state = IntentState::Aborting { target };
                 c.next = 0;
-                c.since = at;
+                (c.since, c.before) = (at, at);
             }
         }
     }

@@ -392,29 +392,60 @@ fn a_site_day_stuck_an_hour_undrains_its_site_and_resumes() {
     assert_eq!(mode(&next(&o)), Some((1, Mode::Normal)));
 }
 
-/// Under `STEP_MIN_ENTRIES` a step dwells on up to twice `STEP_DWELL`, passes if the entries come, and pages if not.
+/// Under `STEP_MIN_ENTRIES` the 1% step commits after its dwell with no page, and the 10% step's gate counts from the
+/// 1% step's start, so the floor pools both steps (OPEN-QUESTIONS R38). A starved 10% step dwells on up to twice
+/// `STEP_DWELL`, passes if the entries come, and pages if not. A breach at 1% still runs the undo.
 #[test]
-fn a_starved_step_dwells_twice_its_dwell_then_pages() {
+fn a_starved_1pct_step_pools_its_floor_into_10pct_which_dwells_twice_its_dwell_then_pages() {
     let mut o = Ops::new(G::new());
     upload_all(&mut o.g, 1);
     assert!(matches!(o.roll(1), ops::Roll::Next { .. }));
     while o.g.f.current.as_deref().unwrap().next < 1 {
         o.act();
     }
+    let c = o.g.f.current.as_deref().unwrap();
+    let one = c.since;
+    assert_eq!(gate::window_start(&o.g.f, c), one, "1% counts from its own start");
     o.act(); // the 1% deploy
     let start = o.deps[&Script::Site(SiteId(0))].created;
     o.gate = Gate::Starved(10);
+    o.g.at = Timestamp(start.0 + ops::STEP_DWELL - 1);
+    assert!(matches!(next(&o), Action::Wait { why, .. } if &*why == "STEP_DWELL"));
+    o.g.at = Timestamp(start.0 + ops::STEP_DWELL);
+    assert!(matches!(next(&o), Action::Commit { body: ReleaseEntry::IntentStep { step: 1, .. }, .. }));
+    o.act();
+    // 10% judges N+1 from the 1% step's start; 50% from its own.
+    let c = o.g.f.current.as_deref().unwrap();
+    assert!(c.since > one);
+    assert_eq!(gate::window_start(&o.g.f, c), one, "10% counts from the 1% step's start");
+    o.act(); // the 10% deploy
+    let start = o.deps[&Script::Site(SiteId(0))].created;
     o.g.at = Timestamp(start.0 + ops::STEP_DWELL);
     assert_eq!(
         next(&o),
         Action::Wait { until: Some(Timestamp(start.0 + 2 * ops::STEP_DWELL)), why: "STEP_MIN_ENTRIES".into() }
     );
     o.g.at = Timestamp(start.0 + 2 * ops::STEP_DWELL);
-    assert!(matches!(next(&o), Action::Page(why) if why.contains("STEP_MIN_ENTRIES")));
+    assert!(matches!(next(&o), Action::Page(why) if why.contains("10% step") && why.contains("STEP_MIN_ENTRIES")));
     // The entries arrive before the cap: the step passes.
     o.g.at = Timestamp(start.0 + 3 * ops::STEP_DWELL / 2);
     o.gate = Gate::Pass;
-    assert!(matches!(next(&o), Action::Commit { body: ReleaseEntry::IntentStep { step: 1, .. }, .. }));
+    o.act();
+    let c = o.g.f.current.as_deref().unwrap();
+    assert_eq!(c.next, 3);
+    assert_eq!(gate::window_start(&o.g.f, c), c.since, "50% counts from its own start");
+    o.finish();
+
+    // The next release breaches at 1% under the floor: the pre-signed Rollback runs, as at any other step.
+    upload_all(&mut o.g, 2);
+    assert!(matches!(o.roll(2), ops::Roll::Next { .. }));
+    while o.g.f.current.as_deref().unwrap().next < 1 {
+        o.act();
+    }
+    o.act(); // the 1% deploy
+    o.gate = Gate::Breach("GATE_EXCEPTIONS: 1 on N+1".into());
+    let Action::Undo(u) = o.act() else { panic!("a breach at 1% runs the undo") };
+    assert_eq!(u.body, ReleaseEntry::Rollback { target: DayTarget::Site(SiteId(0)), release: rel(1).0 });
 }
 
 /// A `ContainerDay` restarts 10%, 50%, then 100% of the site's shards through the view alone, with no deployment
