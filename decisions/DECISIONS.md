@@ -10081,6 +10081,49 @@ counter"; tests `a_request_releases_its_bytes_however_it_ends` and
   then passes memguard's 120 MiB. That is a design change and goes to the design docs first.
 - **Remove it** if a hosted row shows the hold's cost on `Member::fetch` above 1% of member CPU.
 
+### `heap-count`: the site counts its live heap bytes and their peak with a counting global allocator, 2026-11-24
+
+**Status.** Asked for by the lead on 2026-11-24 after the open-bytes read of B0-33 clA
+(`tests/am1/results/archive-memory.md`, "The open-bytes read on B0-33 clA"). Built on branch `heap-count` from main
+`05ea366d`: `workers/site/src/heapcount.rs` and `workers/site/src/member.rs` (`memSplit.heapLive`, `heapPeak`). Site
+script only, in the normal build too, so it ships on the next site day. Not hosted.
+
+**Decision.** The site's `#[global_allocator]` is the system allocator wrapped in a counter. Each allocation adds its
+size to the live bytes and raises their peak; each free subtracts; a reallocation moves the live bytes by the
+difference between its old and new sizes. On wasm32 the counts are plain statics, since a site isolate runs one
+thread; a native build counts per thread. `/stats` `memSplit` reports `heapLive` and `heapPeak`. The peak is the
+isolate's high-water mark and no read or `/stats?reset=1` resets it, so it compares with `wasmMemMb` directly.
+
+**Why.** On clA the leader's wasm memory climbed to 89.1 MiB while `open.high` stopped at 4.2 MiB, every counted part of
+memSplit stayed under 3 MiB, and the stored log held at about 8 MB after the first 34 s of load. wasm memory never
+shrinks, so `wasmMemMb` cannot tell live bytes (a leak, or an owner memSplit does not count) from freed bytes the
+allocator keeps (fragmentation). The live heap does.
+
+**What it beat.**
+- **More memSplit counters, one per suspected owner.** Each covers only what someone thought to count; clA shows the
+  climb is outside every counter memSplit has. The allocator sees every byte.
+- **Test-faults only.** memguard reads hosted builds, including product-shaped ones, and the cost is two adds and a
+  compare per allocation.
+- **A peak that resets on `/stats?reset=1`.** `wasmMemMb` never resets, and the reading compares the two; a driver's
+  reset at load start would cut the peak the reading needs.
+
+**Evidence.**
+- Tests `heapcount::tests::live_bytes_follow_allocations_reallocations_and_frees` and
+  `the_peak_holds_across_reads_and_rises_past_itself`.
+- `tests/m0carried/plant152.py`: 7 of 7 mutants caught. They are dealloc not subtracted, realloc counted as a new
+  allocation, realloc not counted, a shrinking realloc not subtracted, a read resetting the peak, the peak not raised
+  past itself, and a zeroed allocation not counted.
+- Cost, native bench in `--release`: 2,000 entries of two pushes and one issue command on real members, about 24.9
+  million allocations. The plain system allocator took 2,111 to 2,245 ms over 5 runs and the counted one 2,169 to
+  2,249 ms, inside the run-to-run spread [measured, local].
+
+**Flip.**
+- **Look for an owner** if, on a row longer than 8 minutes, a member's `heapLive` tracks its `wasmMemMb` up: the bytes
+  are live, and memSplit's moving parts name the owner next.
+- **Treat it as fragmentation** if `heapLive` stays flat under a rising `wasmMemMb`: change the allocation pattern or the
+  allocator, not an owner.
+- **Remove it** if a hosted row shows member CPU per request more than 1% above the same shape's row without it.
+
 ### `archive-scan`: the archive alarm keeps its `SUM(length(row))` scan, with no running sum, 2026-11-24
 
 **Status.** Priced at $0 by LM-1 on 2026-11-24 from raws already kept; nothing built.
