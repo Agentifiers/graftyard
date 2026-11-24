@@ -16,6 +16,7 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 LIB = 'workers/vault/src/lib.rs'
 CLI = 'cli/src/vault.rs'
+REPO = 'crates/git/src/repo.rs'  # `stored_packs`, which the vault and the lifeboat share
 OPS = 'crates/release/src/ops.rs'
 VAULT = ['cargo', 'test', '-q', '-p', 'graftyard-vault']
 INIT = ['cargo', 'test', '-q', '-p', 'graftyard', '--', 'vault']
@@ -42,7 +43,7 @@ MUTANTS = [
     ("an archived backfill takes no snapshot", LIB,
      '                st.copies.insert(Copy::Snapshot { chain, at: Index(b.until.0 - 1) });', '', VAULT),
     # What entries name.
-    ("a promotion's pack is not copied", LIB,
+    ("a promotion's pack is not copied", REPO,
      '            RepoEvent::Promoted(p) => all.push(p.pack.clone()),', '            RepoEvent::Promoted(_) => {}', VAULT),
     ("an Archived snapshot is not copied", LIB,
      '                        st.copies.insert(Copy::Snapshot { chain, at: to });', '', VAULT),
