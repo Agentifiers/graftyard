@@ -219,3 +219,93 @@ fn an_abort_to_the_intents_own_release_records_that_release_as_n() {
     o.act();
     assert_eq!(o.deps[&Script::Mcp].split, vec![(vid(5, 0), 1), (m4, 99)]);
 }
+
+/// R47's 1% gap closed: a front or MCP roll's 100% step holds `STEP_DWELL` and is judged on `GATE_ERRORS` against
+/// N's counts from the intent's start, since N serves 0% there. A build that fails 1% of calls, too few answers to
+/// breach at 1%, swaps back at 100% by its pointer; a starved 100% step dwells to twice the dwell and pages; one that
+/// passes commits; a front roll, with no pre-signed undo, pages on a breach.
+#[test]
+fn a_front_or_mcp_rolls_100pct_step_holds_and_is_judged_against_n_from_the_intents_start() {
+    let errs = |rows: &[(VersionId, Answers)]| ScriptErrors {
+        versions: rows.iter().map(|(v, x)| (v.to_string(), *x)).collect(),
+        ..ScriptErrors::default()
+    };
+    // Runs the current roll's 1% step (starved, so it commits after FIRST_DAY) and deploys 100%.
+    let past_1pct = |o: &mut Ops| {
+        o.act();
+        o.gate = Gate::Starved(40);
+        o.g.at = Timestamp(o.g.at.0 + ops::FIRST_DAY);
+        assert!(matches!(o.act(), Action::Commit { body: ReleaseEntry::IntentStep { step: 0, .. }, .. }));
+        o.act();
+    };
+    let mut o = Ops::new(G::new());
+    o.deps.insert(Script::Mcp, Deployment { split: vec![(OLD, 100)], created: T0 });
+    o.deps.insert(Script::Front, Deployment { split: vec![(OLD, 100)], created: T0 });
+    upload(&mut o, 1, &[Script::Mcp, Script::Front]);
+    o.roll_all(1);
+    upload(&mut o, 2, &[Script::Mcp]);
+    assert!(matches!(o.roll(2), ops::Roll::Next { intent: Intent::McpRoll { .. }, .. }));
+    let (v1, v2) = (vid(1, 0), vid(2, 0));
+    past_1pct(&mut o);
+    assert_eq!(o.deps[&Script::Mcp].split, vec![(v2, 100), (v1, 0)]);
+    let start = o.deps[&Script::Mcp].created;
+
+    // A passing read right after the 100% deploy does not end the intent: the step holds STEP_DWELL.
+    o.gate = Gate::Pass;
+    let Action::Wait { until: Some(until), .. } = ops::next(&o.g.f, &o.world(), Dwell::default()) else {
+        panic!("the 100% step commits with no dwell")
+    };
+    assert_eq!(until, Timestamp(start.0 + ops::STEP_DWELL));
+
+    // N served 0% at 100%, so its window is empty; from the intent's start it answered 50,000 at 3%. N+1 at 2.8%
+    // passes against that, and would breach against N's empty window.
+    let whole_n = (v1, a(50_000, 1_500));
+    let window = errs(&[(v2, a(5_000, 140))]);
+    assert_eq!(gate::judge_roll(&window, &errs(&[whole_n]), v2, Some(v1)), Gate::Pass);
+    assert!(breach(&gate::judge_roll(&window, &window, v2, Some(v1))));
+    // Starved after the dwell: dwell on to twice the dwell, then page.
+    o.g.at = until;
+    o.gate = gate::judge_roll(&errs(&[(v2, a(300, 0))]), &errs(&[whole_n]), v2, Some(v1));
+    assert_eq!(o.gate, Gate::Starved(300));
+    let Action::Wait { until: Some(cap), .. } = ops::next(&o.g.f, &o.world(), Dwell::default()) else {
+        panic!("a starved 100% step commits")
+    };
+    assert_eq!(cap, Timestamp(start.0 + 2 * ops::STEP_DWELL));
+    o.g.at = cap;
+    assert!(matches!(ops::next(&o.g.f, &o.world(), Dwell::default()), Action::Page(_)));
+    // Enough answers, passing: the 100% step commits and the intent ends on release 2.
+    o.gate = gate::judge_roll(&window, &errs(&[whole_n]), v2, Some(v1));
+    o.finish();
+    assert_eq!(ops::running(&o.g.f, Script::Mcp), Some(rel(2).0));
+
+    // Release 3 fails 1% of calls: 1 of 80 at 1% is chance, and 20 of 2,000 at 100% against N's clean 7,920 from
+    // the intent's start breaches before the dwell ends, so the run submits the McpPointer to release 2.
+    upload(&mut o, 3, &[Script::Mcp]);
+    assert!(matches!(o.roll(3), ops::Roll::Next { intent: Intent::McpRoll { .. }, .. }));
+    let v3 = vid(3, 0);
+    o.act();
+    assert_eq!(
+        gate::judge_roll(&errs(&[(v3, a(80, 1)), (v2, a(7_920, 0))]), &errs(&[]), v3, Some(v2)),
+        Gate::Starved(80)
+    );
+    o.gate = Gate::Starved(80);
+    o.g.at = Timestamp(o.g.at.0 + ops::FIRST_DAY);
+    assert!(matches!(o.act(), Action::Commit { body: ReleaseEntry::IntentStep { step: 0, .. }, .. }));
+    o.act();
+    assert_eq!(o.deps[&Script::Mcp].split, vec![(v3, 100), (v2, 0)]);
+    o.gate = gate::judge_roll(&errs(&[(v3, a(2_000, 20))]), &errs(&[(v2, a(7_920, 0))]), v3, Some(v2));
+    assert!(breach(&o.gate), "{:?}", o.gate);
+    assert!(matches!(o.act(), Action::Undo(_)));
+    assert_eq!(o.g.f.pointers.mcp, Some(v2), "pinned to N");
+    o.gate = Gate::Pass;
+    o.finish();
+
+    // A front roll breaching at 100% has no pre-signed undo: it pages, and the return needs the API.
+    upload(&mut o, 4, &[Script::Front]);
+    let ops::Roll::Next { intent: Intent::FrontRoll { .. }, undo } = o.roll(4) else { panic!("no FrontRoll") };
+    assert!(undo.is_empty());
+    past_1pct(&mut o);
+    o.gate = Gate::Breach("GATE_ERRORS".into());
+    let Action::Page(why) = ops::next(&o.g.f, &o.world(), Dwell::default()) else { panic!("no page") };
+    assert!(why.contains("no undo left"), "{why}");
+}

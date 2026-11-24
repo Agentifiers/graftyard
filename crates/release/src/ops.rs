@@ -11,7 +11,8 @@
 //!   script's version, reusing one an earlier run uploaded under the same release tag, then commits `ReleaseUploaded`.
 //! - **Forward steps.** `ROLL_STEPS` per kind (`group::roll_steps`, and a site day's drain, 1%, 10%, 50%, 100%,
 //!   undrain, first day). Each deploy step waits `STEP_DWELL` (a 1%-for-a-day roll's first step `FIRST_DAY`) and a
-//!   passing gate, then commits `IntentStep`. A site's 100% commits `SiteRelease` before its `IntentStep`. The last
+//!   passing gate, then commits `IntentStep`; a 100% step waits none, except a front or MCP roll's, which holds
+//!   `STEP_DWELL` and is judged. A site's 100% commits `SiteRelease` before its `IntentStep`. The last
 //!   step's `IntentStep` is followed by `IntentDone`.
 //! - **A breach** submits the intent's first unused pre-signed undo. The group refuses one that cannot read an enabled
 //!   format, and pages; `graft-ops` then pages and moves nothing.
@@ -362,6 +363,12 @@ pub fn steps(fold: &ReleaseFold, c: &Current, dwell: Dwell) -> Result<Vec<Step>,
                 }
                 (Intent::EdgeRoll { .. }, Some(ps)) => {
                     ps.iter().map(|p| pct(*p, if *p < 100 { dwell.step } else { 0 })).collect()
+                }
+                // A front or MCP roll's 100% step holds `STEP_DWELL` and is judged like the others: its 1% step
+                // rarely reaches `STEP_MIN_ANSWERS`, so this is where a build failing under about 1% of calls is
+                // first judged, against N's counts from the intent's start (`gate::judge_roll`; R47's 1% gap).
+                (Intent::FrontRoll { .. } | Intent::McpRoll { .. }, Some(ps)) => {
+                    ps.iter().map(|p| pct(*p, if *p < 100 { dwell.first_day } else { dwell.step })).collect()
                 }
                 (_, Some(ps)) => ps.iter().map(|p| pct(*p, if *p < 100 { dwell.first_day } else { 0 })).collect(),
                 (_, None) => return Err(format!("{} has no roll steps", i.kind()).into()),
