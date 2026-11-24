@@ -82,7 +82,8 @@
 //	                                 none. The archive's promotion stores it beside the promoted pack
 //	POST /connected?net=N[&objects=1|tips]  git rev-list --quiet --all (--objects with objects=1; with objects=tips,
 //	                                 every commit and then each ref tip's whole tree) under the lock shared:
-//	                                 {"connected","ms","refs","error" (only when not connected)}, 200 either way.
+//	                                 {"connected","ms","refs","repack_wait_ms","error" (only when not connected)}, 200
+//	                                 either way.
 //	                                 A rehydrate's backstop after it loaded packs without index-pack
 //	PUT  /refs?net=N[&start=1][&done=1]  body: "<oid> <ref>" lines of the whole ref set, in pages: start=1 on the
 //	                                 first page deletes every ref it does not list, done=1 on the last sets HEAD;
@@ -2152,6 +2153,7 @@ func connectedWalk(net, rp, objects string) (map[string]any, error) {
 	defer l.RUnlock()
 	// A repack holds no network lock and deletes the packs it rolled up as it ends, so this waits for it, as /fsck
 	// does, rather than answer false for a pack that moved.
+	w0 := time.Now()
 	repacking.Lock()
 	defer repacking.Unlock()
 	t0 := time.Now()
@@ -2175,7 +2177,10 @@ func connectedWalk(net, rp, objects string) (map[string]any, error) {
 			break
 		}
 	}
-	out := map[string]any{"connected": err == nil, "refs": len(refs), "ms": time.Since(t0).Milliseconds()}
+	// repack_wait_ms: the wait for a running repack before the walk, which a rehydrate's backstop pays in full
+	// (tests/am1/results/b034-mt24.md, "The home's rehydrate").
+	out := map[string]any{"connected": err == nil, "refs": len(refs), "ms": time.Since(t0).Milliseconds(),
+		"repack_wait_ms": t0.Sub(w0).Milliseconds()}
 	if err != nil {
 		out["error"] = err.Error()
 	}
