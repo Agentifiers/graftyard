@@ -10512,8 +10512,9 @@ option A: `GATE=breach` does not stand in). Not hosted.
 - **The undo.** The isolate builds the intent's pre-signed `OpsPointer` (`undo_entry`) and commits it on the `Release`
   group in `wait_until`, after the reply, at most once per `MINT_RESEND_MS` (10 s), and never once the group holds it.
   No Cloudflare API call. `graft-ops` then returns to N at 100% through the API when it can, as for any undo.
-- **Test-faults.** `OPS_MINT_FAIL=on` (`"mint_fail": true` in the executor file) makes every mint of that version
-  answer 503: the bad `graft-ops` BM-5 rolls at 1%.
+- **Test-faults.** A `graft-ops` built with the `test-mint-fail` feature (`"mint_fail": true` in the executor file)
+  answers every mint 503: the bad `graft-ops` BM-5 rolls at 1%. It is a build, not a variable, because a `graft-ops`
+  upload keeps the running version's bindings (`keep_bindings`), so N and N+1 can differ only in code.
 
 **Why.** DESIGN names this trigger ("Edge isolates whose mint errors pass a compiled ratio submit the pre-signed
 `OpsPointer`") but nothing counted mints, and an `OpsRoll`'s gate stays `Pending` because no front sees its answers
