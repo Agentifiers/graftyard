@@ -29,7 +29,11 @@ if ! grep -q '^DONE' "$L" 2>/dev/null; then
     fi
     echo "sites exit $s"; date -u +%FT%TZ
     e=1
-    if [ $s = 0 ]; then
+    # SITEDAY_EDGE=0: a site day with no edge day (B0-34 mt24, the lead's ruling): the live edge stays, and the
+    # caller checks it against an earlier site day's log (b034go.sh's EDGE_LOG).
+    if [ $s = 0 ] && [ "${SITEDAY_EDGE:-1}" = 0 ]; then
+      e=0; echo "edge not deployed (SITEDAY_EDGE=0)"
+    elif [ $s = 0 ]; then
       node tests/m1/integ/deploy-edge.mjs tests/m3/finish/sites4.json graft-m1-edge --test-faults \
         --genesis tests/m1/wp7/genesis.json --ops graft-m1-ops \
         --var FORMATS_ENABLED=32.1,32.4,32.5,32.6,32.7,32.9,16.2,17.2,18.2,20.1,32.10,18.4,32.8,32.12,32.14,18.3 --var 'LOGINS={}'
