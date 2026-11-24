@@ -18,7 +18,7 @@ MAINT = 'containers/git/server/maint.go'
 MAIN = 'containers/git/server/main.go'
 SHARD = 'crates/git/src/shard.rs'
 GO = ['go', '-C', 'containers/git/server', 'test', '-count=1', '-run',
-      'TestMaintenanceYieldsToMovedLoad|TestAHeldRollAnswers503|TestMaintDeferMaxFitsAFailoverAndThePackLine', '.']
+      'TestMaintenanceYieldsToMovedLoad|TestAHeldRollAnswers503|TestMaintDeferMaxFitsAFailoverAndThePackLine|TestAnOverdueStartWaitsForClientCPUWithinItsCap', '.']
 RS = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard', '--', 'only_a_call_moved_off']
 
 MUTANTS = [
@@ -45,10 +45,10 @@ MUTANTS = [
     ("MAINT_DEFER_MAX shorter than a kill and a rehydrate (the repack lands inside the failover)", MAINT,
      'var maintDeferMax = 6 * time.Minute', 'var maintDeferMax = 5 * time.Minute', GO),
     ("client CPU above FANOUT_UP does not hold a start", MAINT,
-     '\tbusy := cpuP99() > fanoutUp && deferred < maintDeferMax+yieldHold',
-     '\tbusy := false && deferred < maintDeferMax+yieldHold', GO),
-    ("client CPU holds a start past the deferral bound plus one hold", MAINT,
-     '\tbusy := cpuP99() > fanoutUp && deferred < maintDeferMax+yieldHold',
+     '\tbusy := cpuP99() > fanoutUp && deferred < cpuDeferMax',
+     '\tbusy := false && deferred < cpuDeferMax', GO),
+    ("client CPU holds a start past cpuDeferMax (plant162 covers the cap itself)", MAINT,
+     '\tbusy := cpuP99() > fanoutUp && deferred < cpuDeferMax',
      '\tbusy := cpuP99() > fanoutUp', GO),
     ("a stopped repack still writes the commit-graph, holding the slot", MAIN,
      '\t\tif ctx.Err() != nil {\n\t\t\tfmt.Fprintf(os.Stderr, "repack %s: stopped for moved load\\n", net)\n\t\t\treturn\n\t\t}\n',

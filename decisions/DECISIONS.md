@@ -8539,6 +8539,28 @@ is in. So any point is a safe point:
 off `wait` = 15: a call counts only with the edge's `moved=1`, sent after a try on the home failed. The first-try rule
 below is the original decision and no longer holds.
 
+**The overdue start waits for client CPU (2026-11-24), G41 line 3.** On B0-34 mt23 the warm site c's overdue repack
+was granted at client CPU p99 1.0, because client CPU could delay a start only one `YIELD_HOLD` past
+`MAINT_DEFER_MAX`. It ran 166 s at nice 19 and got 0 to 1 CPU-s a sample for its first 105 s, while it held the
+repack slot and the midx lock, so the midx writes after ingests were skipped. Composed misses on c, already 5 to 6 s at
+p50 on a chain frozen while the home's builder rehydrated, went to 16 to 22 s; validates' `v_walk` p50 went from 1,586
+to 3,509 ms [measured, `tests/am1/results/b034-mt23.md`]. How much of that the repack caused is [inference]: the
+chain stayed frozen at its pre-kill base until +454 s, so each composed miss carried a growing diff (G37's open case),
+and both reads recovered within 15 s of the chain's next part, with the repack still running and the home taking its
+validates back. The row does not separate the two. The rule is wrong either way: `maint-yield`'s own evidence (mt18)
+is a starved run holding the slot and the lock under moved load, and that is what main granted here.
+- **Now** client CPU above `FANOUT_UP` delays a start until `CPU_DEFER_MAX` (12 min [guess]) from the same clock, not
+  `MAINT_DEFER_MAX` plus `YIELD_HOLD`. Moved load still holds a start at most `MAINT_DEFER_MAX`. c's client CPU fell
+  under the line between 617 and 632 s after its first refused start, inside the new cap. The deferral stays finite:
+  at the cap one starts whatever the CPU.
+- **It beat a bounded budget** (fewer threads, `--window-memory`). The run already used 2 threads and 256 MB a thread
+  at nice 19, and it was starved, not heavy: what it cost was the slot and the midx lock it held, which a smaller
+  budget holds longer.
+- **The cost** is pack growth: a start deferred to its cap lets the site carrying moved load keep ingesting, which is
+  why the 751 count is now recorded beside the client reads rather than gated (the flip below).
+- **The test.** `TestAnOverdueStartWaitsForClientCPUWithinItsCap` and the third step of
+  `TestMaintenanceYieldsToMovedLoad` fail on main's rule. `tests/m0carried/plant162.py` plants six mutants.
+
 **Shortened to 6 minutes (2026-11-23), by its own flip.** B0-34 mt19 (`tests/am1/results/b034-mt19.md`) was the
 first hosted row. Every-clone passed, at 100% in kill and in second. But site b's shard was held for 517.5 s, and its
 unkept packs reached 786 while held, past the 751 line. That meets "shorten `MAINT_DEFER_MAX` if a held shard's pack
@@ -8600,12 +8622,16 @@ The test is `TestMaintenanceYieldsToMovedLoad` (`containers/git/server/maint_tes
 `TestAHeldRollAnswers503`. Plants are in `tests/m0carried/plant89.py`.
 
 **Flip.**
-- **Back it out** if the next full B0-34 row shows either of:
-  - the every-clone line failing in kill or second while the surviving site's shards run no maintenance, so
-    maintenance was not the cause;
-  - a shard whose unkept packs pass 751 (the measured slow-merge count) while held, or merge p99 on the surviving site
-    above mt17's.
-- **Shorten `MAINT_DEFER_MAX`** if a held shard's pack count reaches 751 within it.
+- **Back it out** if the next full B0-34 row shows the every-clone line failing in kill or second while the surviving
+  site's shards run no maintenance, so maintenance was not the cause.
+- **Reframed (2026-11-24, the lead's ruling on G41 line 3 from B0-34 mt23).** Read on the site carrying moved load (the
+  warm site under `warm-order`): miss `headers_ms` p99 and validate `v_walk` p99 while it is held, against mt17's warm
+  site (kill 2,286 and 3,132 ms, second 1,695 and 2,021 ms). **Shorten `MAINT_DEFER_MAX`** if either passes mt17's
+  while held with no maintenance running. Its unkept-held count is recorded beside them and not gated: 751 is
+  `tests/m2/results/m2-wp6.md`'s merge-tree count, and no B0-34 row runs merges (`mergesPerMin` 0 on mt17, mt19 and
+  mt23), so no B0-34 row measures merge-tree cost. That clause is left to a row that runs merges. On mt23 site c held
+  1,217 with both reads near the kill phase's before its overdue repack; before this reframe, "a shard whose unkept
+  packs pass 751 while held" and "shorten if a held shard's pack count reaches 751" both fired.
 - **Lengthen it** if a site loss outlasts it and the repack that then runs puts the every-clone line under 90%.
 
 ### `exact-prefix`: a fold read by key prefix reads only that prefix's rows, 2026-11-22
