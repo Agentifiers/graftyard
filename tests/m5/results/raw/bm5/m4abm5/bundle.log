@@ -1,0 +1,4 @@
+2026-11-24T05:06:05Z
+stand-ins: a throwaway vendor key (Keys.vendor) and a throwaway R2 token scoped to graft-m4a-releases (the vendor's release-bucket token)
+r12 419303e480221477cbda02fb287750166c1a1924e6c7daa6e3861723e7ee6ad5 signed and verified: ["formats.txt","site/index.js","site/index_bg.wasm","site/marker.js"]
+builds of 05aace32; site wasm f73a6abce9d6003e

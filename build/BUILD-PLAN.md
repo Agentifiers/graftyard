@@ -1458,6 +1458,8 @@ It also carries BM-5's vendor-token revocation mid-roll. Its in-memory half pass
 | --- | --- |
 | BM-5 | A deliberately unreadable format released to `graft-site-a` commits nothing and moves A's groups. With the vendor token revoked mid-roll, `Halt`, `Keys { vendor: None }`, then `Abort { intent, target: N }` returns every site and pinned script to N, and a vendor-signed intent submitted after `Keys { vendor: None }` is refused. A bad `graft-ops` at 1% swaps back by `OpsPointer` with the API blocked |
 
+**Revocation clause passes hosted (2026-11-24, graft-m4a)** (`tests/m5/results/m5-wp6.md`, "BM-5's revocation mid-roll, hosted"). A vendor-signed `release roll R12` finished site a's day and had site b's past 10% when the throwaway vendor bucket token was revoked (a put under it then answered 401). The customer's `Halt`, `Keys { vendor: None }` and `Abort { intent, target: R9 }` committed in that order. `graft-ops` ran the `Abort` to `IntentDone` in 34 s. A vendor-signed intent was then refused `UnknownKey`, and the customer's `release roll R9` returned site a. Every site and the edge ended on the version it ran before. $0.02. Left: the unreadable-format clause (a per-build site `ReleaseTag` and a test-faults format) and the `graft-ops` swap-back clause (`MINT_ERROR_RATIO` in the edge), both code first.
+
 ## AM2: `graft-mcp` (after M5)
 
 Built (`design/AGENT-LAYER.md`, "Milestones"): `graftyard apps init` in the install account, `graft-mcp` with consent, grants, and narrowed refresh, `graft-front` routing shipped as a `FrontRoll`, `McpPointer`, and `McpRoll`. AM2 follows base 5, because `FrontRoll`, `McpRoll`, and `McpPointer` are `Release` group entries that Milestone 5 builds.

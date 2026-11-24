@@ -219,3 +219,57 @@ release tests pass with it.
 
 An `Abort` moves only the intent it ends. Sites that earlier, finished intents moved return to N through customer-signed
 intents, which is what DESIGN's runbook says ("each site the intent touched"). BM-5's hosted half is still M5-WP7's.
+
+## BM-5's revocation mid-roll, hosted (2026-11-24, graft-m4a)
+
+**Pass.** It ran on graft-m4a from 05:06Z to 05:39Z, and the row spent $0.02 (`acctcost.py` on the `graft-m4a` prefix). The driver is `tests/m5/bm5/row.sh` and its logs are in `tests/m5/results/raw/bm5/m4abm5/`. It ran after AM2-WP3 handed `graft-ops` back at 04:37Z, with a $5 stop.
+
+**Stand-ins.** graft-m4a has no vendor:
+- `Keys.vendor` read null at generation 2 before the row.
+- The vendor key is a throwaway Ed25519 seed (`a0aa16b7…`), named by a customer-signed `Keys` (entry 315, generation 3).
+- The vendor's release-bucket token is a throwaway API token, `graft-m4a-bm5-vendor`, with Workers R2 Storage Bucket Item Write on `graft-m4a-releases` only.
+- R12 is R9's `formats.txt` plus the site build of `05aace32` and a marker file, signed with the release key. It is sites only, so no pinned script moves. The vendor token put it under `r12/` over the S3 API: six puts, all 200.
+- `graft-ops` ran test-faults `05aace32` with `GATE=pass`, a 1-minute cron and 60 s dwells (`f33cf37d`), under a fresh deploy token.
+
+**Before:**
+- sites a and b on R9 (`e23f69e9`) and c on R10 (`1a0f0e50`), the "N" of each site;
+- a `75bdd60d`, b `627ed36c`, c `54bbb423`; edge `eef95142` at 100% and `f4e193b9` at 0%;
+- nothing drained and no intent current; group count 315.
+
+**The run, in `Release` group order:**
+
+| Entry | Time (Z) | Signer | What |
+| --- | --- | --- | --- |
+| 316 | 05:13:03 | executor | `ReleaseUploaded` R12 (`419303e4…`) |
+| 317 | 05:13:08 | **vendor** | `SiteDay { a, R12 }` (`release roll R12` under the vendor key) |
+| 318–328 | 05:13–05:21 | drain, executor | site a's day: Drain, 1%, 10%, 50%, 100% with `SiteRelease`, Undrain, Hold, `IntentDone` |
+| 329 | 05:21:41 | **vendor** | `SiteDay { b, R12 }` |
+| 330–333 | 05:22–05:26 | drain, executor | b drained, steps 0 to 2 committed, so b's day stood past 10%. Its deployment read 50/50 at 05:26:19, because `graft-ops` had already deployed the 50% step it was dwelling on |
+| — | 05:26:22 | — | vendor token revoked. A put under it 15 s later answered **401 Unauthorized** |
+| 334 | 05:27:06 | customer | `Halt { intent }` |
+| 335 | 05:27:08 | customer | `Keys { vendor: None }` (generation 4) |
+| 336 | 05:27:10 | customer | `Abort { intent, target: R9 }` |
+| 337–341 | 05:27:35–05:27:44 | executor, drain | the `Abort` runs: b to R9 at 100%, undrain, `IntentDone` |
+| — | 05:27:33 | **vendor** | `release roll R12` signs `SiteDay { b, R12 }`; refused **422 `UnknownKey`**: "signed by key KeyId(a0aa16b7984a), which the latest Keys does not hold" |
+| 342 | 05:28:00 | customer | `release roll R9` signs `SiteDay { a, R9 }`, site a being the one the finished intent moved |
+| 343–353 | 05:28–05:35 | drain, executor | site a's day back to R9, `IntentDone` 05:35:34 |
+
+`release roll R9` would next sign `SiteDay { c, R9 }`. It was written with `--out` and not posted, because c's N is R10 and c never moved.
+
+**After (`checks`, 05:37Z):**
+- a `75bdd60d` (tag R9) and b `627ed36c` (R9), each the version it ran before; c `54bbb423` (R10), never touched;
+- edge `eef95142` 100% and `f4e193b9` 0%, unchanged;
+- `site_release` and `rolled` the same as before the row; nothing drained; no intent current;
+- `Keys` generation 4, vendor null; group count 354.
+
+The `Abort` went from commit to `IntentDone` in 34 s, with the vendor key already gone and the vendor token revoked. Every site and pinned script is at its N.
+
+**Teardown (05:39Z).**
+- The `graft-ops` cron was set yearly, then `[]`.
+- `graft-m4a-ops` was set to `ac4cd9a5` at 100% by version id, the version AM2-WP3 parked.
+- `graft-m4a-bm5-deploy` was revoked (the vendor token already was), and both token files were shredded.
+- `graft-m4a-ops-deploy-token` still holds the revoked bm5 token.
+- `r12/` stays in `graft-m4a-releases`, with R12's `ReleaseUploaded` at 316.
+- The throwaway vendor seed is in `~/.graft-m4a/bm5/`; no `Keys` names it any more.
+
+**Driver fault found and fixed.** The orb has no `xxd`, so setup's first `Keys` entry was never built and vendor stayed null. The driver decodes the hex in Python now, and the `keys` phase posted the entry before the roll.

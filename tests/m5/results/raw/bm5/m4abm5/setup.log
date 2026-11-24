@@ -1,0 +1,24 @@
+2026-11-24T05:06:47Z
+stand-ins: a throwaway vendor key (Keys.vendor) and a throwaway R2 token scoped to graft-m4a-releases (the vendor's release-bucket token)
+graft-m4a's day to now: $8.06
+{"count":315,"current":null,"drained":[],"keys":{"customer":"031923da25f100f1e0586087cd86b749be1ae6d26a75f4fa8cc6112f2dd882bd","drain":"477de5269050c38534d965f1a4d95c17f2f0fe1a4089bfa51c0b598d8c67c70b","executor":"d387253b7e8b191191dfd4508252587bf37f0dcad90ed180e2b8b42d85aaef1b","generation":2,"release":"dbde3befb57425850c8dc215410af552b1a23eede0ecc7c42dd2299076f3893f","vendor":null},"site_release":{"0":"e23f69e9","1":"e23f69e9","2":"1a0f0e50"},"rolled":{"Edge":"e23f69e9","Front":"8ee79012","Mcp":"8ee79012","Ops":"e23f69e9","Site(SiteId(0))":"e23f69e9","Site(SiteId(1))":"e23f69e9","Site(SiteId(2))":"1a0f0e50","Workflows":"e23f69e9"}}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T04:34:33.089999Z","versions":["ac4cd9a5 100"]}
+vendor key a0aa16b7984a…
+tests/m5/bm5/row.sh: line 110: xxd: command not found
+jq: error: writing output failed: Broken pipe
+graftyard: ~/.graft-m4a/bm5/keys.entry: not a graftyard/release/1 entry
+{"count":315,"keys":{"generation":2,"vendor":""}}
+{"mint":"graft-m4a-bm5-vendor","ok":true,"id":"ffe0dc63…","errors":[]}
+{"put": "r12/formats.txt", "status": 200}
+{"put": "r12/release.json", "status": 200}
+{"put": "r12/release.sig", "status": 200}
+{"put": "r12/site/index.js", "status": 200}
+{"put": "r12/site/index_bg.wasm", "status": 200}
+{"put": "r12/site/marker.js", "status": 200}
+R12 419303e480221477cbda02fb287750166c1a1924e6c7daa6e3861723e7ee6ad5
+{"mint":"graft-m4a-bm5-deploy","ok":true,"id":"286cb5b7…","errors":[]}
+{"patch":"graft-m4a-ops-deploy-token","ok":true,"errors":[]}
+{"scripts":{"site/0":"graft-m4a-site-a","site/1":"graft-m4a-site-b","site/2":"graft-m4a-site-c"},"gate":"pass","cron":"* * * * *","step_dwell_ms":60000,"first_day_ms":60000,"step_min_entries":50,"test_faults":true}
+Current Version ID: f33cf37d-6b22-4d81-835d-1565c6f22b5c
+{"script":"graft-m4a-ops","created_on":"2026-11-24T05:07:47.508802Z","versions":["f33cf37d 100"]}
+{"ops_schedules":["* * * * *"]}
