@@ -24,7 +24,4 @@ tests/m3/wp3/plant.sh: live-before-move
 tests/m3/wp4/plant.sh: key-cache-never-lapses
 tests/m3/wp4/plant.sh: claims-not-intersected
 tests/m4/wp1/plant.py: a rebuilt store starts past the committed read (replay_from ignored)
-tests/m4/wp2/plant.py: the actor is notified of its own comment
-tests/m4/wp2/plant.py: an ignored repository still notifies
-tests/m4/wp2/plant.py: watchers are not notified
 tests/nr3/plant.py: cache: the answer is stamped with the floor, not the index it was built at
