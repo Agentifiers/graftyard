@@ -181,6 +181,9 @@ pub struct ReleaseFold {
     pub enabled: BTreeSet<Format>,
     pub drained: BTreeMap<u8, Drained>,
     pub lost: BTreeSet<u8>,
+    /// Each site a `ReplaceMember` moved onto a spare, with its spare, from the intent's commit until its
+    /// `RestorePlacement`'s `IntentDone`, which also clears the site from `lost` ("Install operations", Site loss).
+    pub replaced: BTreeMap<u8, u8>,
     pub site_release: BTreeMap<u8, ReleaseId>,
     pub pointers: Pointers,
     /// Each pinned script's deployment as the rolls left it: the release kept (N) and the one rolled (N+1).
@@ -793,6 +796,9 @@ impl ReleaseFold {
                     let kept = self.deployed.get(&s).map(|(_, cur)| *cur);
                     self.deployed.insert(s, (kept, r));
                 }
+                if let Intent::ReplaceMember { lost, spare } = i.intent {
+                    self.replaced.insert(lost.0, spare.0);
+                }
                 if let Intent::LeaveEvaluation(l) = &i.intent {
                     let (sites, placements) = (&l.sites, &l.placements);
                     let g = self.genesis.as_mut().expect("installed");
@@ -906,6 +912,11 @@ impl ReleaseFold {
                         if let Some(site) = site {
                             self.containers.insert(site, r);
                         }
+                    }
+                    // A restored site is a voter site again: a later loss needs a new `SiteLost` or `ZERO_ACKS`.
+                    if let (Intent::RestorePlacement { site }, IntentState::Running { .. }) = (i, c.state) {
+                        self.lost.remove(&site.0);
+                        self.replaced.remove(&site.0);
                     }
                 }
                 self.current = self.under.take();

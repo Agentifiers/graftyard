@@ -365,6 +365,10 @@ impl Exec for Live<'_> {
                 }));
             }
         }
+        // `silent` and `recovered` (`gate::loss`) stay false here: `site_health` keeps only `UNDRAIN_AFTER` of buckets,
+        // so a `ZERO_ACKS` or `RECOVER_AFTER` read would judge 15 minutes as 24 h. The 24 h per-minute rollups that
+        // feed `loss` ship with M6-WP1's hosted glue. Until then only a customer-signed `SiteLost` replaces a site, and
+        // a lost site's drain holds until an operator undrains it.
         let v = gate::verdict(&voters, &fast, &slow);
         if v.values().any(|x| x.burning) {
             console_log!("graft-ops health: {v:?} from {fast:?}");
@@ -599,6 +603,46 @@ impl Exec for Live<'_> {
             }
             (s, st) => Err(format!("no host step {st:?} for {s:?}")),
         }
+    }
+
+    /// `GET /move/<intent>` on the Workflows script (`WORKFLOWS`, a service binding): the coordinator instance's
+    /// status. No binding, or no answer, reads as a move still running, so a run waits rather than starting another.
+    async fn move_run(&mut self, intent: graftyard_release::IntentId) -> ops::MoveRun {
+        let Ok(svc) = self.env.service("WORKFLOWS") else { return ops::MoveRun::Failed("no WORKFLOWS binding".into()) };
+        let url = format!("https://workflows/move/{}", intent.0);
+        let Some(Ok(mut r)) = within(VIEW_CALL, svc.fetch(url, None)).await else { return ops::MoveRun::Running };
+        let v: Value = r.json().await.unwrap_or(Value::Null);
+        match v["status"].as_str() {
+            Some("absent") => ops::MoveRun::Absent,
+            Some("complete") => ops::MoveRun::Done,
+            Some("errored" | "terminated") => {
+                ops::MoveRun::Failed(v["error"].to_string().chars().take(300).collect::<String>().into())
+            }
+            _ => ops::MoveRun::Running,
+        }
+    }
+
+    /// `POST /move/<intent>` with the spec: the Workflows script creates the instance under the intent's id, and
+    /// answers 200 for one that already exists.
+    async fn start_move(
+        &mut self,
+        intent: graftyard_release::IntentId,
+        spec: ops::MoveSpec,
+    ) -> std::result::Result<(), String> {
+        if self.killed("start_move") {
+            return Err("OPS_KILL".into());
+        }
+        let svc = self.env.service("WORKFLOWS").map_err(|e| e.to_string())?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(Some(json!(spec).to_string().into()));
+        let req = Request::new_with_init(&format!("https://workflows/move/{}", intent.0), &init)
+            .map_err(|e| e.to_string())?;
+        let mut r = svc.fetch_request(req).await.map_err(|e| e.to_string())?;
+        if r.status_code() != 200 {
+            return Err(format!("HTTP {}: {}", r.status_code(), r.text().await.unwrap_or_default()));
+        }
+        console_log!("graft-ops move {} started: {spec:?}", intent.0);
+        Ok(())
     }
 }
 

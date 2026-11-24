@@ -9774,3 +9774,29 @@ reads 0.16 + 0.293 ms, 0.46 ms a call.
 - **Build B** when a row that misses its line on leader CPU has append-reply calls over 5% of leader CPU an entry.
 - **Build F** only when, on such a row, one region's learners together ask more than 40 times a second.
 - **P** stays rejected unless a design keeps confirm-after-arrival for every learner read.
+
+### `replace-member`: graft-ops signs `ReplaceMember` on `SiteLost` or a silent `ZERO_ACKS`, and a lost site's drain ends only on recovery, 2026-11-24
+
+**Decision.** M6-WP1's pure half (`tests/m6/results/m6-wp1.md`):
+- **Who signs.** `graft-ops` signs `ReplaceMember { lost, spare }` with the executor key (`ops::auto_replace`). It signs for a site with a customer-signed `SiteLost` at once, or for a site drained for `ZERO_ACKS` that both other voter sites read silent: each reports at least `MIN_CALLS` calls over the window and every one missed (`gate::loss`). A `SiteLost` site nobody drained is drained with the drain key first.
+- **The spare.** The lowest-id spare on the lost site's continent (`SiteTable::spare_for`). `graft-ops` pages instead of signing when there is none, or when the spare's `SiteRelease` cannot read every enabled format. The intent id is derived from the drain's start, so a retried run signs the same intent.
+- **The run.** The intent is one `Move` step. It starts one coordinator Workflow (`Exec::start_move`, `MoveSpec`) and polls it each `MOVE_POLL`. `Done` ends the step, and `Failed` pages. The coordinator enumerates every chain on the surviving sites' registries at its highest generation (`replace_candidates`). It moves those whose committed config still holds a voter on the lost site (`group_move::holds`) by `group_move::replace_step`: a one-site `Joint` that commits on the two survivors for Tri and for a lost witness, and `Degraded { lost }` then `Normal` for a lost Full member of a `*2w` group. It fills the spare's bucket from surviving buckets, single-copy packs first (`sweep::refill`).
+- **Recovery.** A lost or replaced site undrains only once both other sites read it under `UNDRAIN_BURN` for `RECOVER_AFTER` (24 h), not on the automatic drain's 15-minute calm. Its drain is what holds `RestorePlacement` off. `RestorePlacement` then moves the spare's groups back (`MoveSpec { home }`) and clears `lost` and `replaced`, so the site can be lost again.
+
+**Why.** DESIGN's Site loss rule names both cases, the spare's format check, and the 24 h recovery, but nothing in `graft-ops` signed or ran a replace. An automatic drain ends on calm, so a lost site that came back for 15 minutes would undrain and admit a `RestorePlacement` with a day of its members' writes missing. The fold records `replaced` so a site is replaced once and its restore knows where its groups went.
+
+**What it beat.**
+- **A Workflow per group started by `graft-ops`.** The coordinator enumerates the registries itself, so `graft-ops` makes one call per intent and never holds a list of thousands of groups across cron runs.
+- **Filtering registry rows by `sites` naming the lost site,** as DESIGN words it. A row keeps the record its member joined under, and no config change rewrites it, so a group that moved onto the lost site later names it nowhere. Every chain is a candidate, and the committed config decides.
+- **A `*2w` replace by `Joint`.** Its old half needs both Full members, so it never commits without the lost one.
+
+**Evidence.**
+- `crates/release/src/tests/group/replace.rs`, 8 tests, including: `ZERO_ACKS` needs both the held drain and silence; a spare reading the first enabled format but not the second pages; a replaced site stays drained on calm and undrains on recovered; `RestorePlacement` is refused while drained, then moves back and clears the loss.
+- `crates/identity/tests/group_move.rs`, on real members: Tri with its leader's site blackholed replaces onto the spare and keeps every write; `*2w` goes `Degrade`, `Restore`; a lost witness goes by `Joint`.
+- `graftyard_types::registry`'s and `graftyard_git::sweep`'s tests for the enumerator and the refill order.
+- `tests/m0carried/plant115.py` to `plant118.py`, 11 mutants, all caught. 114 was taken by `gate-pool` on main first, so this package's four are 115 to 118.
+
+**Flip.**
+- **Back the coordinator out for per-group Workflows** if one coordinator instance cannot finish an install's groups within its step limits on graft-m6a.
+- **Undrain on calm again** if BF-50's recovery half shows the 24 h window keeping a recovered site out with no write missing and nothing gained.
+- **Revisit the `*2w` path** when R48 is settled: a `*2w` group whose leader was lost with the site cannot commit `Degraded` on this core.

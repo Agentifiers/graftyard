@@ -33,8 +33,8 @@ use sha2::{Digest as _, Sha256};
 use crate::gate::{STUCK_DAY, Verdict};
 use crate::group::{Current, ReleaseFold, RotateStep, Upload, roll_steps, rotate_steps, undo_entry, verify_raw};
 use crate::types::{
-    DayTarget, Format, FormatSet, ImageRef, Intent, IntentState, ReleaseEntry, ReleaseUploaded, Script, SecretName,
-    Signature, VersionId,
+    DayTarget, Format, FormatSet, ImageRef, Intent, IntentId, IntentState, ReleaseEntry, ReleaseUploaded, Script,
+    SecretName, Signature, VersionId,
 };
 use crate::{Refusal, SignedEntry};
 
@@ -90,7 +90,37 @@ pub struct World {
     /// Each voter site's verdict from both other sites' `SiteHealth` (`crate::gate::verdict`); a site missing here is
     /// one with no verdict, which drains and undrains nothing.
     pub health: BTreeMap<u8, Verdict>,
+    /// The current `ReplaceMember` or `RestorePlacement`'s Workflow instance, by the intent's id (`Exec::move_run`).
+    pub moves: MoveRun,
 }
+
+/// A `ReplaceMember` or `RestorePlacement`'s coordinator Workflow instance, named by the intent's id, as the host
+/// reads it: one instance per intent, which starts one instance per group it moves ("Install operations", Site loss).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum MoveRun {
+    #[default]
+    Absent,
+    Running,
+    /// Every group it enumerated holds `to` as a caught-up voter and no member on `from`.
+    Done,
+    Failed(Box<str>),
+}
+
+/// What a coordinator moves: every group with a voter on `from` gets one on `to` instead, under a new member
+/// generation. `dead` for a lost site, whose members are never asked (a `*2w` group's lost Full member goes out by
+/// `Degraded` first); `home` for a restore, whose groups' leaders move back to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MoveSpec {
+    pub from: SiteId,
+    pub to: SiteId,
+    pub dead: bool,
+    pub home: Option<SiteId>,
+}
+
+/// How long a `ReplaceMember` graft-ops signs stays valid: one hour, so a run that met 409 signs a new one [guess].
+pub const REPLACE_TTL: u64 = 3_600_000;
+/// How often a run looks at a running move again [guess]: the cron's own period.
+pub const MOVE_POLL: u64 = 60_000;
 
 /// The key a commit takes: the executor key, or the drain key for a site day's `SiteMode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +146,9 @@ pub enum Action {
     Page(Box<str>),
     /// Run `step` of a `Rotate` to `slot` on the host; once it succeeds, commit the current step's `IntentStep`.
     Rotate { secret: SecretName, slot: u8, step: RotateStep },
+    /// Start the coordinator Workflow instance named by `intent` (idempotent: an instance of that name that exists is
+    /// left as it is).
+    StartMove { intent: IntentId, spec: MoveSpec },
 }
 
 /// How long a new installation-token signing key's `VerifyingKey` row is published before `graft-ops` signs with it:
@@ -173,6 +206,9 @@ pub enum Step {
     /// A `ContainerDay` step: `pct` of the site's shards, in rendezvous order, restart onto the new image as they read
     /// the view (`ReleaseFold::shard_day`); no API call. Then `dwell` from the step's start and the gate.
     Shards { pct: u8, dwell: u64 },
+    /// A `ReplaceMember`'s or `RestorePlacement`'s one step: its coordinator Workflow, started and run to `Done`.
+    /// `None` for a restore of a site no `ReplaceMember` moved, which moves nothing.
+    Move(Option<MoveSpec>),
 }
 
 pub(crate) fn version(fold: &ReleaseFold, r: &ReleaseId, s: Script) -> Option<VersionId> {
@@ -256,6 +292,13 @@ pub fn steps(fold: &ReleaseFold, c: &Current, dwell: Dwell) -> Result<Vec<Step>,
                 None => Err(format!("an Abort of a {} moves nothing this executor runs", i.kind()).into()),
             },
         },
+        IntentState::Running { .. } | IntentState::Halted { .. } if let Intent::ReplaceMember { lost, spare } = i => {
+            Ok(vec![Step::Move(Some(MoveSpec { from: *lost, to: *spare, dead: true, home: None }))])
+        }
+        IntentState::Running { .. } | IntentState::Halted { .. } if let Intent::RestorePlacement { site } = i => {
+            let spare = fold.replaced.get(&site.0).map(|s| SiteId(*s));
+            Ok(vec![Step::Move(spare.map(|from| MoveSpec { from, to: *site, dead: false, home: Some(*site) }))])
+        }
         IntentState::Running { .. } | IntentState::Halted { .. } if matches!(i, Intent::ContainerDay { .. }) => {
             let ps = roll_steps(i).expect("a ContainerDay has roll steps");
             Ok(ps.iter().map(|p| Step::Shards { pct: *p, dwell: if *p < 100 { dwell.step } else { 0 } }).collect())
@@ -317,6 +360,9 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
     if let Some(a) = auto_drain(fold, w) {
         return a;
     }
+    if let Some(a) = auto_replace(fold, w) {
+        return a;
+    }
     let Some(c) = fold.current.as_deref() else { return Action::Idle };
     if let IntentState::Halted { .. } = c.state {
         return Action::Idle;
@@ -376,6 +422,16 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
             let until = Timestamp(c.since.0.saturating_add(*d));
             if w.now < until { Action::Wait { until: Some(until), why: "first day".into() } } else { done }
         }
+        Step::Move(None) => done,
+        Step::Move(Some(spec)) => match &w.moves {
+            MoveRun::Absent => Action::StartMove { intent: id, spec: *spec },
+            MoveRun::Running => Action::Wait {
+                until: Some(Timestamp(w.now.0.saturating_add(MOVE_POLL))),
+                why: format!("intent {}: groups move from site {} to {}", id.0, spec.from.0, spec.to.0).into(),
+            },
+            MoveRun::Done => done,
+            MoveRun::Failed(why) => Action::Page(format!("intent {}: the move Workflow failed: {why}", id.0).into()),
+        },
         Step::Shards { pct, dwell } => {
             if let Gate::Breach(why) = &w.gate {
                 return breach(fold, c, why);
@@ -494,12 +550,23 @@ fn auto_drain(fold: &ReleaseFold, w: &World) -> Option<Action> {
         signer: Signer::Drain,
     };
     let verdict = |s: &u8| w.health.get(s).copied().unwrap_or_default();
-    if let Some((s, _)) = fold
-        .drained
-        .iter()
-        .find(|(s, d)| d.by_drain_key && day != Some(SiteId(**s)) && verdict(s).calm && !verdict(s).burning)
-    {
+    // A lost or replaced site undrains only once it has recovered (`RECOVER_AFTER` under `UNDRAIN_BURN`), not on the
+    // 15-minute calm of an automatic drain: its drain is what holds `RestorePlacement` off ("Install operations", Site
+    // loss).
+    let ends = |s: &u8| {
+        let v = verdict(s);
+        let loss = fold.lost.contains(s) || fold.replaced.contains_key(s);
+        !v.burning && if loss { v.recovered } else { v.calm }
+    };
+    if let Some((s, _)) = fold.drained.iter().find(|(s, d)| d.by_drain_key && day != Some(SiteId(**s)) && ends(s)) {
         return Some(mode(*s, crate::types::Mode::Normal));
+    }
+    // A customer-signed `SiteLost` site is drained before it is replaced, so its recovery is judged by the drain and
+    // `RestorePlacement` waits for its undrain ("Install operations", Site loss). Once replaced, its undrain is final.
+    if fold.drained.is_empty()
+        && let Some(s) = fold.lost.iter().find(|s| !fold.replaced.contains_key(*s))
+    {
+        return Some(mode(*s, crate::types::Mode::Drain));
     }
     let (sick, _) =
         w.health.iter().find(|(s, v)| v.burning && !fold.drained.contains_key(*s) && !fold.lost.contains(*s))?;
@@ -510,6 +577,54 @@ fn auto_drain(fold: &ReleaseFold, w: &World) -> Option<Action> {
             format!("site {sick} burns DRAIN_BURN, but site {s} is drained, so the drain key cannot drain it").into(),
         ),
     })
+}
+
+/// The executor key's `ReplaceMember` (journey 5; "Install operations", Site loss), before any intent's step, since it
+/// commits over a current intent and halts it: for a site with a customer-signed `SiteLost`, or one drained for
+/// `ZERO_ACKS` that both other sites read as silent over that window, onto the spare on its continent
+/// (`SiteTable::spare_for`), once no `ReplaceMember` runs and the site has none yet. A spare whose last `SiteRelease`
+/// cannot read every enabled format is refused by a page, as is a lost site with no spare: graft-ops signs nothing.
+/// The id derives from the drain's time and the site, so a run that lost its answer signs the same id again, which the
+/// group refuses as used once it committed.
+fn auto_replace(fold: &ReleaseFold, w: &World) -> Option<Action> {
+    let g = fold.genesis.as_ref()?;
+    let replacing = |c: &Option<Box<Current>>| {
+        c.as_deref().is_some_and(|c| matches!(c.intent.intent, Intent::ReplaceMember { .. }))
+    };
+    if replacing(&fold.current) || fold.under.is_some() {
+        return None;
+    }
+    let due = |s: &u8| {
+        let drained_long = fold.drained.get(s).is_some_and(|d| {
+            d.since.0.saturating_add(crate::ZERO_ACKS) <= w.now.0 && w.health.get(s).is_some_and(|v| v.silent)
+        });
+        !fold.replaced.contains_key(s) && (fold.lost.contains(s) || drained_long)
+    };
+    let lost = g.sites.iter().filter(|s| !s.spare).map(|s| s.id).find(|s| due(&s.0))?;
+    let table = graftyard_types::SiteTable(g.sites.to_vec());
+    let Some(spare) = table.spare_for(lost) else {
+        return Some(Action::Page(format!("site {} is lost and its continent has no spare", lost.0).into()));
+    };
+    let reads = fold.site_release.get(&spare.0).and_then(|r| fold.uploads.get(&r.0)).map(|u| &u.reads);
+    if let Some(f) = fold.enabled.iter().find(|f| !reads.is_some_and(|r| r.contains(f))) {
+        return Some(Action::Page(
+            format!(
+                "site {} is lost, but spare {}'s release cannot read format {f}: no ReplaceMember",
+                lost.0, spare.0
+            )
+            .into(),
+        ));
+    }
+    let at = fold.drained.get(&lost.0).map_or(w.now, |d| d.since);
+    let id = IntentId(graftyard_types::Ulid::new(at, [b'R', b'M', lost.0, spare.0, 0, 0, 0, 0, 0, 0]));
+    let intent = crate::types::SignedIntent {
+        id,
+        issued_at: w.now,
+        not_after: Timestamp(w.now.0.saturating_add(REPLACE_TTL)),
+        intent: Intent::ReplaceMember { lost, spare },
+        undo: Vec::new(),
+    };
+    Some(Action::Commit { body: ReleaseEntry::Intent(Box::new(intent)), signer: Signer::Executor })
 }
 
 /// A gate breach on a forward step: the intent's first pre-signed undo not yet committed, or, for an intent that
@@ -898,6 +1013,10 @@ pub trait Exec {
         slot: u8,
         step: RotateStep,
     ) -> Result<(), String>;
+    /// The coordinator Workflow instance named by `intent`, as the Workflow binding reports it.
+    async fn move_run(&mut self, intent: IntentId) -> MoveRun;
+    /// Creates the coordinator Workflow instance named by `intent`; one that exists already is left as it is.
+    async fn start_move(&mut self, intent: IntentId, spec: MoveSpec) -> Result<(), String>;
 }
 
 /// What a run did, one line per action.
@@ -919,6 +1038,8 @@ pub enum Ran {
     },
     Idle,
     Error(Box<str>),
+    /// A move's coordinator Workflow was started for this intent.
+    Moving(IntentId),
 }
 
 /// Most actions one run takes; the next cron run goes on from the group.
@@ -972,7 +1093,13 @@ pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
         }
         let gate = if fold.current.is_some() { e.gate(&fold).await } else { Gate::Pending };
         let health = e.health(&fold).await;
-        let w = World { now: e.now(), deployments, gate, health };
+        let moves = match fold.current.as_deref() {
+            Some(c) if matches!(c.intent.intent, Intent::ReplaceMember { .. } | Intent::RestorePlacement { .. }) => {
+                e.move_run(c.intent.id).await
+            }
+            _ => MoveRun::Absent,
+        };
+        let w = World { now: e.now(), deployments, gate, health, moves };
         let (bytes, kind) = match next(&fold, &w, dwell) {
             Action::Idle => {
                 log.push(Ran::Idle);
@@ -1010,6 +1137,16 @@ pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
             Action::Undo(u) => {
                 let kind = u.body.kind();
                 (u.encode(), kind)
+            }
+            Action::StartMove { intent, spec } => {
+                match e.start_move(intent, spec).await {
+                    Ok(()) => log.push(Ran::Moving(intent)),
+                    Err(x) => {
+                        log.push(Ran::Error(format!("start move {}: {x}", intent.0).into()));
+                        break;
+                    }
+                }
+                continue;
             }
             // A step that fails leaves its `IntentStep` uncommitted and pages, because the new slot's value is the
             // customer's to fix; the next run tries the step again.

@@ -84,15 +84,6 @@ impl Bundle {
     }
 }
 
-/// The continent a spare replaces a lost site on: a spare never votes beside an active site of its own continent.
-fn continent(r: Region) -> u8 {
-    match r {
-        Region::Enam | Region::Wnam => 0,
-        Region::Weur | Region::Eeur => 1,
-        Region::Apac | Region::Oc => 2,
-    }
-}
-
 /// Whether two sites can be voters of one group, so their round trip must clear `MIN_PAIR_RTT`. Two sites in one
 /// region never can (`Placement::new` refuses them; a residency install with spares has more sites than regions).
 /// Active sites of different regions can (`Na3` and `Eu2w` pair sites of one continent). A spare stands in for a lost
@@ -105,7 +96,7 @@ pub fn may_share_a_group(a: &Site, b: &Site) -> bool {
     match (a.spare, b.spare) {
         (false, false) => true,
         (true, true) => false,
-        _ => continent(a.region) != continent(b.region),
+        _ => a.region.continent() != b.region.continent(),
     }
 }
 
