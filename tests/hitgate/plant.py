@@ -16,11 +16,12 @@ COMPOSE = 'crates/git/src/compose.rs'
 T = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard', '--', 'chain', 'a_miss_on', 'a_hits_lookup',
      'a_manifest_line']
 BUILD = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard', '--no-run']
-ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '.worktrees/target-am1')),
+ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
            PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0')
 
 WAIT = """    let wait = match (chain_site, follows) {
         (false, _) => std::time::Duration::ZERO,
+        (true, true) if !holds => std::time::Duration::ZERO,
         (true, true) => left.min(CHAIN_WAIT_FORWARDED),
         (true, false) => left,
     };"""
@@ -43,7 +44,7 @@ BESIDE = """    use futures_util::future::{Either, select};
 MUTANTS = [
     # chain-site
     ("chain-site: main's rule, every site waits as a chain site", COMPOSE, WAIT,
-     "    let _ = chain_site;\n    let wait = if follows { left.min(CHAIN_WAIT_FORWARDED) } else { left };"),
+     "    let _ = (chain_site, holds);\n    let wait = if follows { left.min(CHAIN_WAIT_FORWARDED) } else { left };"),
     ('chain-site: a site with no chain waits the forwarded bound', COMPOSE,
      '        (false, _) => std::time::Duration::ZERO,', '        (false, _) => left.min(CHAIN_WAIT_FORWARDED),'),
     ('chain-site: the last site with no chain answers warming, not its container', COMPOSE,
@@ -103,11 +104,9 @@ def main():
         open(p, 'w').write(s.replace(old, new))
         try:
             # A test that hangs on a mutant (the virtual clock never reaches a future the mutant waits on) is caught:
-            # the rule under test never ends. The build runs first, unbounded, so only the test run is timed.
-            subprocess.run(BUILD, cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=1800)
-            r = subprocess.run(T, cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=120)
-        except subprocess.TimeoutExpired:
-            r = subprocess.CompletedProcess(T, 124, 'hung', '')
+            # the rule under test never ends (README, "Planted bugs"). The build runs first, so only the test is timed.
+            subprocess.run(['timeout', '-k', '10', '600', *BUILD], cwd=ROOT, env=ENV, capture_output=True, text=True)
+            r = subprocess.run(['timeout', '-k', '10', '600', *T], cwd=ROOT, env=ENV, capture_output=True, text=True)
         finally:
             open(p, 'wb').write(orig)
         out = r.stdout + r.stderr
@@ -115,7 +114,7 @@ def main():
             print(f'{i} DID NOT COMPILE  {name}', flush=True)
         elif r.returncode != 0:
             caught += 1
-            print(f'{i} CAUGHT  {name}', flush=True)
+            print(f'{i} CAUGHT  {name}' + ('  (timed out)' if r.returncode == 124 else ''), flush=True)
         else:
             print(f'{i} MISSED  {name}', flush=True)
     print(f'{caught} of {len(MUTANTS)} caught')
