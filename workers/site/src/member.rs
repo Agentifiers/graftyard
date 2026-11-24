@@ -2067,7 +2067,7 @@ impl<F: Family> Routes<F> {
                 Some(a) => self.host.step(|m, t| m.commit_as(t, rid, c.cmd, a.admit()))?,
             };
             if let Ok(a) = &r {
-                self.host.stats.borrow_mut().admitted_bytes(a.class, priced.0, priced.1);
+                self.host.stats.borrow_mut().admitted(a, priced.0, priced.1);
             }
             let w = match r {
                 Ok(a) => Ok((a.ticket, self.host.wait_ticket(a.ticket, Some((rid, at, marked))))),
@@ -2577,6 +2577,7 @@ impl<F: Family> Routes<F> {
                 })),
                 "admitted": self.host.core.borrow().as_ref().map(|c| c.admitted.len()),
                 "admittedBytes": host::admitted_bytes_summary(&s.admitted_bytes),
+                "demoted": host::demoted_summary(&s.demoted),
                 "bigTx": s.big_tx.iter().map(|(n, b, mix)| json!({ "stmts": n, "bytes": b, "mix": mix })).collect::<Vec<_>>(),
                 // narrow-reads-3's leader memory: the log entries in memory, and per learner the messages held for its
                 // next call, their bytes now and at most since the last reset, and its calls open.

@@ -48,6 +48,8 @@ if [ -n "$run" ]; then
   { echo "5xx by reason ($from to $to):"; python3 tests/fanout/fivexxwhy.py "$from" "$to"; } >> $R/rows-$TAG.status 2>&1
   # The refusal-shape line as ruled (FRAME, 2026-11-23): a1's non-2xx answers by class, rule and Retry-After.
   { echo "refusal shape:"; python3 tests/fanout/refusalshape.py "tests/am1/raw/${run/a1-pushes-/a1-}.jsonl" $R/rows-$TAG.status; } >> $R/rows-$TAG.status 2>&1
+  # user-demote: the user-token line (the fast user demoted) and the Human guard (no Human writer demoted).
+  python3 tests/fanout/demoted.py "tests/am1/raw/${run/a1-pushes-/a1-}.jsonl" >> $R/rows-$TAG.status 2>&1
   { echo "push refusals by stage:"; python3 tests/fanout/pushfull.py $py; } >> $R/rows-$TAG.status 2>&1
   # edge-refusal (B0-33 row B): the edge's `edgefull` lines and their join to the leader's cuts, flips 2 to 4
   # (`decisions/DECISIONS.md`, "`edge-refusal`"). An edge without them logs none, and the summary says so.

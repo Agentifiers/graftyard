@@ -1056,10 +1056,11 @@ fn placement_failing(c: &Ctx<'_>) -> bool {
     }
 }
 
-/// The admission a command by `who` carries to its leader (`graftyard_git::agent::admit_class`), or `None` for Human,
-/// which `Member::commit` takes as before. A user token with no App and no `X-Graftyard-Agent-Session` is Human
-/// without reading anything more, so a default request's reads and bodies do not change. The leader's `decide` classes
-/// the actor again from its own fresh read, so this class only orders admission.
+/// The admission a command by `who` carries to its leader (`graftyard_git::agent::admit_class`), or `None` for an
+/// anonymous Human command, which `Member::commit` takes as before. A user token with no App and no
+/// `X-Graftyard-Agent-Session` is Human with its actor, without reading anything more, so a default request's reads
+/// and client-visible replies do not change, and the leader counts its writes toward DEMOTE_PER_MIN. The leader's
+/// `decide` classes the actor again from its own fresh read, so this class only orders admission.
 pub(crate) async fn admission(
     c: &Ctx<'_>,
     who: &Principal,
@@ -1070,7 +1071,8 @@ pub(crate) async fn admission(
     let app = c.token_app.get();
     let user = matches!(who.actor, Actor::User(_) | Actor::Anonymous);
     if user && app.is_none() && !c.agent_session {
-        return None;
+        return graftyard_git::group::AdmitWire::of(graftyard_raft::admit::AdmitClass::Human, who, push, inline)
+            .map(|a| graftyard_git::group::AdmitWire { placement_ok: !placement_failing(c), ..a });
     }
     let install = install_authz(c).await;
     let read = install.as_ref().map(|a| a as &dyn graftyard_identity::AuthzRead);

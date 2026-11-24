@@ -222,6 +222,16 @@ pub fn confirm_split_summary(xs: &[ConfirmSplit]) -> Value {
     Value::Object(out)
 }
 
+/// `/stats?summary=1`'s `demoted`: the actors DEMOTE_PER_MIN classed Agent, the commands it classed so, and per actor
+/// key (a user's account id, an App's id with the top bit set, as text) its count.
+pub fn demoted_summary(by: &BTreeMap<u64, u32>) -> Value {
+    json!({
+        "actors": by.len(),
+        "writes": by.values().map(|&n| u64::from(n)).sum::<u64>(),
+        "by": by.iter().map(|(a, n)| (a.to_string(), json!(n))).collect::<serde_json::Map<_, _>>(),
+    })
+}
+
 /// `/stats?summary=1`'s `admittedBytes`: per class, the count, p50, p99 and max of the priced bytes, their sum, and the
 /// sum of those at or over 10 KB, so a reader sees which commands move `Admission::cmd_bytes`' mean.
 pub fn admitted_bytes_summary(by: &BTreeMap<&'static str, Vec<u32>>) -> Value {
@@ -463,6 +473,10 @@ pub struct Stats {
     /// Leader: each admitted command's priced bytes (`stored_len`, less an Agent inline pack), by the class
     /// it queued under (`admitted_bytes_summary`).
     pub admitted_bytes: BTreeMap<&'static str, Vec<u32>>,
+    /// Leader: commands DEMOTE_PER_MIN classed Agent in place of the edge's Human or Bot, by actor key
+    /// (`demoted_summary`), so B0-33 reads "the user token admitted as `Agent`" and a row sees any Human writer that
+    /// crossed DEMOTE_PER_MIN.
+    pub demoted: BTreeMap<u64, u32>,
     pub alarms: Vec<String>,
     /// Object alarms that fired, and when the last one did.
     pub alarm_runs: u32,
@@ -539,6 +553,15 @@ impl Stats {
         self.test_merge_shed += v["shed"].as_u64().unwrap_or(0) as u32;
     }
 
+    /// One command the leader admitted: its priced bytes (`admitted_bytes`), and, if DEMOTE_PER_MIN classed it Agent in
+    /// place of the edge's class, its actor in `demoted`.
+    pub fn admitted(&mut self, a: &raft::Admitted, len: usize, inline: usize) {
+        self.admitted_bytes(a.class, len, inline);
+        if let Some(actor) = a.demoted {
+            *self.demoted.entry(actor.0).or_insert(0) += 1;
+        }
+    }
+
     /// Records one admitted command's priced bytes: `len` its `stored_len`, less `inline` when it queued as Agent, as
     /// `Admission::cmd_bytes` counts it.
     pub fn admitted_bytes(&mut self, class: raft::admit::AdmitClass, len: usize, inline: usize) {
@@ -576,6 +599,7 @@ impl Stats {
         self.cycle_ms.clear();
         self.last_append_at = None;
         self.admitted_bytes.clear();
+        self.demoted.clear();
         self.read_stages.clear();
         self.narrow_build_ms.clear();
         self.entries = 0;
@@ -4607,6 +4631,31 @@ fn log_take(rows: impl Iterator<Item = Result<(Value, usize)>>, n: usize, cap: u
 
 #[cfg(test)]
 mod tests {
+    /// user-demote: `/stats`' `demoted` counts each write DEMOTE_PER_MIN reclassed, per actor, and nothing for a write
+    /// admitted under the edge's own class, Agent included; `reset` clears it.
+    #[test]
+    fn the_demotion_count_counts_only_reclassed_writes() {
+        use graftyard_raft::admit::{ActorKey, AdmitClass};
+        use graftyard_raft::{Admitted, Term, Ticket};
+        let at = |class, demoted| Admitted { ticket: Ticket { term: Term(2), boot: 1, seq: 9 }, class, demoted };
+        let mut s = super::Stats::default();
+        let user = ActorKey(7100002);
+        let app = ActorKey(1 << 63 | 41);
+        for _ in 0..3 {
+            s.admitted(&at(AdmitClass::Agent, Some(user)), 100, 0);
+        }
+        s.admitted(&at(AdmitClass::Agent, Some(app)), 100, 0);
+        s.admitted(&at(AdmitClass::Agent, None), 100, 0);
+        s.admitted(&at(AdmitClass::Human, None), 100, 0);
+        assert_eq!(
+            super::demoted_summary(&s.demoted),
+            serde_json::json!({ "actors": 2, "writes": 4, "by": { "7100002": 3, (1u64 << 63 | 41).to_string(): 1 } })
+        );
+        assert_eq!(s.admitted_bytes["agent"].len(), 5, "every admitted write is still priced");
+        s.reset();
+        assert_eq!(super::demoted_summary(&s.demoted), serde_json::json!({ "actors": 0, "writes": 0, "by": {} }));
+    }
+
     /// `read-newest`: a learner copies a `ReadIndex` call at HEDGE only while no later batch has left, and copies
     /// every other call as before.
     #[test]

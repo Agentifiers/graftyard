@@ -8,7 +8,9 @@
 //     and leaves a `PathSet` the feed carries.
 //   - Agent side commands: task summary edits, comments (GraphQL `addComment`), labels (REST `issues/{n}/labels`),
 //     draft PR opens, lease acquires, renewals, and releases, at the A1 mix's rates where the edge serves the route.
-//   - Humans: pushes and comments under the seeded admin's PAT; merges: admin PRs merged through `PUT pulls/{n}/merge`.
+//   - Humans: pushes, comments and merges (a PR opened and merged through `PUT pulls/{n}/merge`) spread round-robin
+//     over HUMAN_TOKENS user PATs, the seeded admin's and four org members' (`humanTokens`), so no human writer passes
+//     DEMOTE_PER_MIN, which applies to every user token (`tests/am1/results/b033-user-demote.md`).
 //   - Reads: v2 `ls-refs` (ref reads), REST and GraphQL reads (API reads), and clone time to first byte.
 //   - Feed: `pollers` long-polls straight to the group's followers and learners (`/member` `/feed`, as the edge sends
 //     them, each with its own token and IP hash, because one orb IP is held to FEED_POLLS' 50 per member), each with
@@ -389,8 +391,10 @@ function flip1(what, timing) {
   if (flip1Seen.length === 1) log(`FLIP1: ${what} was refused by the edge's advert (${timing}); load window ended, row stopped for the lead`);
   end = Math.min(end, Date.now());
 }
-// The admin's PAT (humans, merges) and the fast user's are the row's only non-agent tokens; any other is the App's.
-const human = (token) => token === tokens.admin || token === tokens.member;
+// The Human tokens (`humanTokens`, set before load) and the fast user's are the row's only non-agent tokens; any other
+// is the App's.
+let humanSet = new Set([tokens.admin, tokens.member]);
+const human = (token) => humanSet.has(token);
 // The refusal-shape line (FRAME, "Operator decision, 2026-11-23, B0-33's merge-queue and refusal-shape lines"): every
 // non-2xx answer to a request sent in the load window, by route, class, status and `Retry-After`, as the row's
 // `refusals` (`refusals.mjs`; read by `tests/fanout/refusalshape.py`).
@@ -614,6 +618,38 @@ async function seedRequesters(n) {
   }
   return out;
 }
+// The row's Human writers (user-demote): DEMOTE_PER_MIN (60 writes a minute) applies to every user token, as DESIGN's
+// agent block says, so one PAT carrying all of h1A's Human load (166 writes in its busiest minute) would be demoted
+// and stop measuring humans. HUMAN_TOKENS PATs share it round-robin per write: the admin's and org members `a1-h0`..
+// (ids from 7100100, the org's base Write, which pushes, comments, opens PRs and merges need), seeded as
+// `seedRequesters` seeds and minted once into $M3_STATE/a1-human-tokens.txt (0600). On h1A's and h2A's samples five
+// keep each token's busiest 60 s at 37 writes or under, against the 45 the lead set as the cap; four reached 46.
+const HUMAN_TOKENS = 5;
+async function humanTokens(n) {
+  const lib = await import("../hosted/lib.mjs");
+  const { OP, must, accountShard, loginShard, pat } = lib;
+  const file = `${process.env.M3_STATE ?? `${process.env.HOME}/.graft-m3h`}/a1-human-tokens.txt`;
+  const have = existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => l.split(" ")) : [];
+  const TRI = { name: "Tri", sites: [0, 1, 2], home: 0, generation: 1, moving_from: null, at: 5 };
+  for (let k = have.length; k < n - 1; k++) {
+    const [a, login] = [7100100 + k, `a1-h${k}`];
+    await must(`names:${accountShard(a)}`, { cred: OP, op: { PutAccount: { id: a, suspended: false, sessions_not_before: 0 } } });
+    await must(`names:${loginShard(login)}`, { cred: OP, op: { ClaimLogin: { login, kind: "User", account: a } } }, "Taken");
+    await must(`names:${accountShard(a)}`, { cred: OP, op: { SetAccountLogin: { account: a, login } } });
+    await must(`names:${accountShard(a)}`, { cred: OP, op: { InitPlacement: { owner: a, record: TRI } } }, "RecordExists");
+    await must(`authz:${a}`, { cred: OP, op: { Open: { kind: "User", enterprise: null } } }, "AlreadyOpened");
+    await must(`identity:${a}`, { cred: OP, op: { Create: { login, kind: "User", created: Date.now() } } }, "AlreadyCreated");
+    await must(`authz:${state.org}`, { cred: OP, op: { SetMember: { user: a, role: "Member" } } });
+    have.push([login, await pat(a, "a1 human PAT")]);
+    writeFileSync(file, have.map((l) => l.join(" ")).join("\n") + "\n", { mode: 0o600 });
+  }
+  return [admin, ...have.slice(0, n - 1).map(([, t]) => lib.secret(t))];
+}
+const humans = await humanTokens(HUMAN_TOKENS);
+humanSet = new Set([...humans, tokens.member]);
+let humanNext = 0;
+// The next Human writer's token, per write: a merge's push, PR open and merge each take one.
+const humanTok = () => humans[humanNext++ % humans.length];
 // L0-12's overlap probe: pairs of tasks that hand one Exclusive lease back and forth across the run (`probeLeases`).
 const probers = plan.leases ? Array.from({ length: 2 * PROBE_PAIRS }, (_, k) => ({ i: plan.agents + k, task: null })) : [];
 if (plan.leases || plan.side.taskEdit) {
@@ -1009,9 +1045,10 @@ const jobs = hosted ? [] : [
       const from = await tip(ref);
       note("push:human:tip", Date.now() - t, from ? "ok" : "none");
       const [hk, s] = [half("push:human"), Date.now()];
-      const adv = await receiveAdvert(admin);
+      const tok = humanTok();
+      const adv = await receiveAdvert(tok);
       if (adv !== 200) { note(hk, Date.now() - s, `adv ${adv}`); return SAMPLED; }
-      const [res, , , , timing] = await push(admin, ref, from, `a1h/${k}.txt`, randomBytes(20_000));
+      const [res, , , , timing] = await push(tok, ref, from, `a1h/${k}.txt`, randomBytes(20_000));
       note(hk, Date.now() - s, (raced ||= humanInFlight[k] > 1) && res === "stale" ? "stale:race" : res);
       // The edge clock beside the client's: a test edge's `server-timing` `total` for the POST alone (B0-34's
       // latency lines, decisions/OPEN-QUESTIONS.md A33).
@@ -1021,18 +1058,18 @@ const jobs = hosted ? [] : [
     } finally { humanInFlight[k]--; }
   }, 5),
   every("side:human", plan.human / 2 + plan.bot, async () => {
-    const r = await api("POST", "/api/graphql", admin, { query: "mutation($i: AddCommentInput!) { addComment(input: $i) { subject { id } } }", variables: { i: { subjectId: target.id, body: "a1 human" } } });
+    const r = await api("POST", "/api/graphql", humanTok(), { query: "mutation($i: AddCommentInput!) { addComment(input: $i) { subject { id } } }", variables: { i: { subjectId: target.id, body: "a1 human" } } });
     return r.body?.data?.addComment ? "ok" : `gql ${r.status}`;
   }),
   every("merge", plan.mergesPerMin / 60, async () => {
     const ref = `refs/heads/a1m-${RUN}-${Date.now().toString(36)}`;
-    const [res] = await push(admin, ref, null, `a1m/${Date.now()}.txt`, randomBytes(5_000));
+    const [res] = await push(humanTok(), ref, null, `a1m/${Date.now()}.txt`, randomBytes(5_000));
     if (res !== "ok") return `push ${res}`;
-    const [, pr] = await openPr(admin, ref.slice(11), false);
+    const [, pr] = await openPr(humanTok(), ref.slice(11), false);
     if (!pr) return "no pr";
     const s = Date.now();
     const k = half("merge:only");
-    const m = await api("PUT", `/api/v3/repos/${R}/pulls/${pr.number}/merge`, admin, { merge_method: "merge" });
+    const m = await api("PUT", `/api/v3/repos/${R}/pulls/${pr.number}/merge`, humanTok(), { merge_method: "merge" });
     note(k, Date.now() - s, m.status === 200 ? "200" : `${m.status} ${String(m.body?.message ?? "").replace(/\d+/g, "N").slice(0, 70)}`);
     // Where the merge's time went: the edge's phases (`server-timing`) and the shard's own (`x-graft-shard-timing`).
     mergeSteps.push({ ms: Date.now() - s, status: m.status, timing: m.headers["server-timing"] ?? null, shard: m.headers["x-graft-shard-timing"] ?? null });
@@ -1581,6 +1618,9 @@ const v = {
     // Round 14: admitted commands' priced bytes by class (what moves admission's `cmdBytes`), and the statement mix of
     // the leader's newest transactions of 100 KB or more.
     admittedBytes: lstats.admittedBytes ?? null, bigTx: lstats.bigTx ?? null,
+    // user-demote: the actors DEMOTE_PER_MIN classed Agent and their writes, by actor key (`/stats` `demoted`; null
+    // from a site before it). The reader's user-token line and Human guard read it with `humanActors`.
+    demoted: lstats.demoted ?? null,
     depFails: lstats.depFails, depHedges: lstats.depHedges ?? null,
     // `Events` entries the leader appended and the commands in them (commands per entry, rounds 9 and 10).
     entries: lstats.entries, commands: lstats.commands,
@@ -1611,6 +1651,9 @@ const v = {
   ...(admissionSeen.length ? { admission: admissionSeen } : {}),
   leaderChanges,
   api429, flip1: flip1Seen, refusals: refusals.rows(),
+  // The actor keys of the row's user tokens: the fast user's (m3-member) and the Human writers', so the reader names
+  // which ones the leader demoted (`tests/fanout/demoted.py`).
+  humanActors: { fastUser: String(state.member), humans: [String(state.admin), ...Array.from({ length: HUMAN_TOKENS - 1 }, (_, k) => String(7100100 + k))] },
   ...(Object.keys(tierStages).length ? { apiTierBatch: Object.fromEntries(Object.entries(tierStages).map(([k, xs]) => [k, ps(xs)])) } : {}),
   ...(pushMarks.timed ? { pushTiming: { ...pushMarks, stages: Object.fromEntries(Object.entries(pushStages).map(([k, xs]) => [k, ps(xs)])) } } : {}),
   ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),

@@ -734,7 +734,7 @@ fn shed_for(r: Reply, write: bool, class: Option<graftyard_git::group::ClassWire
 }
 
 /// `shed_for` with the writer's class read only when it can change the answer: a shed reply on a write. A plain user
-/// token's write is Human without a read (`crate::admission`), so its 503 stays byte for byte.
+/// token's write is Human without a read (`crate::admission`, its actor only), so its 503 stays byte for byte.
 async fn shed_reply(c: &Ctx<'_>, who: Option<&Principal>, r: Reply) -> Reply {
     if !c.write.get() || r.status != 503 {
         return r;
@@ -1058,8 +1058,10 @@ async fn commit_issue_rid(
             f.family, f.version
         )));
     }
+    let admit = crate::admission(c, who, &[], false, 0).await;
+    let admit = graftyard_git::group::AdmitWire::for_issue(admit, &call.op);
     let mut body = json!({ "rid": rid.to_string(), "cmd": { "issue": call } });
-    if let Some(a) = crate::admission(c, who, &[], false, 0).await {
+    if let Some(a) = admit {
         body["admit"] = serde_json::to_value(a)?;
     }
     // `leader-render`: the first send carries the render without the owner's `Authz`, which the leader fills from its
