@@ -258,7 +258,7 @@ fn pages_in_order_pin_the_controller_only_after_a_committed_controller_pointer()
     assert_eq!((r.view().index(), r.view().fold()), (Index(g.log.len() as u64), &g.fold));
     assert_eq!(r.view().current(), Some(id(2)));
     // The roll to 4 is at 1%, and no pointer has committed: no override, so the deployment's split applies.
-    assert_eq!((r.view().controller(), plan(r.view(), SCRIPT)), (None, None));
+    assert_eq!((r.view().controller(), plan(r.view(), None, SCRIPT).1), (None, None));
     // The pointer commits; the next refresh reads from the view's index and pins N.
     let held = g.log.len();
     g.pin(2, 3);
@@ -267,7 +267,7 @@ fn pages_in_order_pin_the_controller_only_after_a_committed_controller_pointer()
     r.start(t, false);
     r.apply(&a, Ok(vec![g.get(held, 100)]), t, t + 10);
     assert_eq!(r.view().controller(), Some(vid(3)));
-    assert_eq!(plan(r.view(), SCRIPT), Some(format!("{SCRIPT}=\"{}\"", vid(3))));
+    assert_eq!(plan(r.view(), None, SCRIPT).1, Some(format!("{SCRIPT}=\"{}\"", vid(3))));
     // The undo's step and done keep the pin; the next ControllerRoll clears it.
     let held = g.log.len();
     g.step(2, 0);
@@ -278,9 +278,9 @@ fn pages_in_order_pin_the_controller_only_after_a_committed_controller_pointer()
     g.roll(3, 5, &[pointer(3)]);
     let mut kept = r.clone();
     kept.apply(&a, Ok(vec![g.get(held, 100)[..before_roll - held].to_vec()]), 2 * t, 2 * t);
-    assert_eq!(plan(kept.view(), SCRIPT), Some(format!("{SCRIPT}=\"{}\"", vid(3))));
+    assert_eq!(plan(kept.view(), None, SCRIPT).1, Some(format!("{SCRIPT}=\"{}\"", vid(3))));
     r.apply(&a, Ok(vec![g.get(held, 100)]), 2 * t, 2 * t);
-    assert_eq!((r.view().index(), plan(r.view(), SCRIPT)), (Index(g.log.len() as u64), None));
+    assert_eq!((r.view().index(), plan(r.view(), None, SCRIPT).1), (Index(g.log.len() as u64), None));
 }
 
 #[test]
@@ -289,7 +289,7 @@ fn a_failed_or_refused_refresh_keeps_the_view_and_its_pin_and_no_request_waits()
     let mut g = rolling();
     g.pin(2, 3);
     let r0 = read(&g, 0);
-    let pinned = plan(r0.view(), SCRIPT);
+    let pinned = plan(r0.view(), None, SCRIPT).1;
     assert!(pinned.is_some());
     // A blackholed or 503 read, then a page whose next entry does not verify, each at a time the view is due.
     let mut bad = g.entry(ReleaseEntry::IntentStep { intent: id(2), step: 0 }, &AGENTS);
@@ -311,7 +311,7 @@ fn a_failed_or_refused_refresh_keeps_the_view_and_its_pin_and_no_request_waits()
         r.start(t, true);
         r.apply(&a, pages, t, t + 20);
         assert_eq!(r.view(), r0.view(), "case {k}: the view held stays");
-        assert_eq!(plan(r.view(), SCRIPT), pinned, "case {k}: and so does its pin");
+        assert_eq!(plan(r.view(), None, SCRIPT).1, pinned, "case {k}: and so does its pin");
         assert_eq!((r.oks(), r.fails(), r.fresh().failing), (1, 1, true), "case {k}");
         assert!(r.last_error().is_some());
         // Until RETRY_MS the view is served as held; from then on each request refreshes beside itself, however long
@@ -330,13 +330,16 @@ fn a_failed_or_refused_refresh_keeps_the_view_and_its_pin_and_no_request_waits()
         let v = u + 5_000;
         r.start(v, false);
         r.apply(&a, Ok(vec![g.get(g.log.len(), 100)]), v, v + 10);
-        assert_eq!((r.fresh().failing, r.need(v + 10), plan(r.view(), SCRIPT)), (false, Need::Use, pinned.clone()));
+        assert_eq!(
+            (r.fresh().failing, r.need(v + 10), plan(r.view(), None, SCRIPT).1),
+            (false, Need::Use, pinned.clone())
+        );
     }
     // A cold isolate whose first read fails holds no view, forwards unpinned, and does not wait again.
     let mut cold = Reader::default();
     cold.start(0, true);
     cold.apply(&a, Err("401".into()), 0, VIEW_CALL);
-    assert_eq!((cold.view().index(), plan(cold.view(), SCRIPT)), (Index(0), None));
+    assert_eq!((cold.view().index(), plan(cold.view(), None, SCRIPT).1), (Index(0), None));
     assert_eq!(cold.need(VIEW_CALL + RETRY_MS), Need::Refresh);
 }
 
@@ -372,7 +375,7 @@ fn a_page_from_a_member_behind_the_view_moves_nothing() {
     older[n - 1] = (Index(n as u64), g.log[n - 2].0.clone(), g.log[n - 2].1);
     let mut r = r0.clone();
     r.apply(&a, Ok(vec![older]), 1, 1);
-    assert_eq!((r.view(), plan(r.view(), SCRIPT)), (r0.view(), plan(r0.view(), SCRIPT)));
+    assert_eq!((r.view(), plan(r.view(), None, SCRIPT).1), (r0.view(), plan(r0.view(), None, SCRIPT).1));
 }
 
 #[test]
@@ -387,4 +390,40 @@ fn a_refresh_reads_the_next_page_only_after_a_full_one() {
     assert_eq!(next_after(Index(500), &stale), None);
     // The real feed: a short page after the view's index ends it.
     assert_eq!(next_after(Index(3), &g.get(3, 100)), None);
+}
+
+/// LF-7 r1 and OPEN-QUESTIONS A53 (DECISIONS "`controller-default`"): while a `ControllerRoll`'s split is deployed the
+/// front carries N as `CONTROLLER_DEFAULT`. An isolate with no view, or whose first read fails, or whose view predates
+/// the roll, pins N; one whose verified view shows the roll follows the split; a committed pointer wins over both.
+#[test]
+fn an_isolate_with_no_view_under_a_controller_roll_pins_the_default_until_a_view_lands() {
+    let a = agents_anchor();
+    let mut g = rolling();
+    let n = Some(vid(3));
+    let pin_n = (n, Some(format!("{SCRIPT}=\"{}\"", vid(3))));
+    let cold = Reader::default();
+    assert_eq!(plan(cold.view(), n, SCRIPT), pin_n, "no view: N, never the split");
+    let mut failed = Reader::default();
+    failed.start(0, true);
+    failed.apply(&a, Err("blackholed".into()), 0, VIEW_CALL);
+    assert_eq!(plan(failed.view(), n, SCRIPT), pin_n, "a first read that fails keeps N");
+    // A view read before the roll's intent committed (the first 7 entries end on intent 1's done) shows no roll.
+    let mut before = Reader::default();
+    before.start(0, true);
+    before.apply(&a, Ok(vec![g.get(0, 100)[..7].to_vec()]), 0, 10);
+    assert_eq!((before.view().current(), plan(before.view(), n, SCRIPT)), (None, pin_n.clone()));
+    // The view lands: the roll is running, so the deployment's split applies.
+    let mut r = cold.clone();
+    r.start(1, true);
+    r.apply(&a, Ok(vec![g.get(0, 100)]), 1, 10);
+    assert_eq!(r.view().current(), Some(id(2)));
+    assert_eq!(plan(r.view(), n, SCRIPT), (None, None), "a verified view of the roll follows the split");
+    // The pointer commits: the pin is the pointer's, whatever the variable says.
+    let held = g.log.len();
+    g.pin(2, 3);
+    r.start(POINTER_TTL_MS, false);
+    r.apply(&a, Ok(vec![g.get(held, 100)]), POINTER_TTL_MS, POINTER_TTL_MS + 10);
+    assert_eq!(plan(r.view(), Some(vid(4)), SCRIPT).0, Some(vid(3)));
+    // With no roll's split deployed the variable is absent, and nothing pins.
+    assert_eq!(plan(Reader::default().view(), None, SCRIPT), (None, None));
 }

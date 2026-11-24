@@ -196,3 +196,30 @@ fn the_edges_page_parses_back_to_the_feed() {
         assert!(crate::agents::parse_page(bad).is_err(), "{}", String::from_utf8_lossy(bad));
     }
 }
+
+/// DECISIONS "`controller-default`": `CONTROLLER_DEFAULT` is N while no controller version serves 100%, whichever
+/// order the deployments API lists the split in, and absent once one does; a settings change keeps every other binding.
+#[test]
+fn the_front_default_is_n_only_while_a_split_is_deployed_and_keeps_the_fronts_other_bindings() {
+    use crate::agents::{CONTROLLER_DEFAULT, controller_default, front_bindings, front_default};
+    let (n, n1) = (vid(3, 1), vid(4, 1));
+    assert_eq!(controller_default(&[(n, 99), (n1, 1)]), Some(n));
+    assert_eq!(controller_default(&[(n1, 1), (n, 99)]), Some(n));
+    assert_eq!(controller_default(&[(n1, 100)]), None);
+    assert_eq!(controller_default(&[(n, 0), (n1, 100)]), None);
+    assert_eq!(controller_default(&[]), None);
+    let src = serde_json::json!({ "resources": { "bindings": [
+        { "type": "secret_text", "name": "FRONT_TOKEN" },
+        { "type": "plain_text", "name": "CONTROLLER_SCRIPT", "text": "graft-controller" },
+        { "type": "plain_text", "name": CONTROLLER_DEFAULT, "text": n1.to_string() },
+    ] } });
+    assert_eq!(front_default(&src), Some(n1));
+    let set = front_bindings(&src, Some(n));
+    let names: Vec<&str> = set.iter().map(|b| b["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["FRONT_TOKEN", "CONTROLLER_SCRIPT", CONTROLLER_DEFAULT]);
+    assert_eq!(set[0], src["resources"]["bindings"][0], "the secret is sent as read, so it keeps its value");
+    let after = serde_json::json!({ "resources": { "bindings": set } });
+    assert_eq!(front_default(&after), Some(n));
+    let cleared = serde_json::json!({ "resources": { "bindings": front_bindings(&after, None) } });
+    assert_eq!((front_default(&cleared), cleared["resources"]["bindings"].as_array().unwrap().len()), (None, 2));
+}

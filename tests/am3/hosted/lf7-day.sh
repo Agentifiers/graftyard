@@ -17,6 +17,8 @@
 # Steps:
 #   state            the group (count, current, rolled), the install's edge and ops, the runner account's scripts; spend
 #   sweep            teardown.py --sweep: no shard container may run
+#   a54              OPEN-QUESTIONS A54: a fresh Workers-Scripts-Write-only token uploads a script with a Secrets Store
+#                    binding, in the install account and the runner account (a54-probe.mjs; everything deleted after)
 #   edge             edge day from this checkout (test-faults, the live vars kept), the R57 vars diff, the read probe
 #   init             `agents init` into the runner account's store, prefix graft-agents-m4a-; the webhook secret
 #                    replaced by one this row holds in a 0600 file
@@ -33,7 +35,7 @@
 #   pointer          the current ControllerRoll's pre-signed ControllerPointer, posted by hand
 #   fault on|off     the bed's fault plan: site 255, chains release, hang 10 s, for 10 minutes; or cleared
 #   sampler start|stop [conc]   lf7-sample.mjs through graft-agents-front into $O/hooks.jsonl
-#   status           graft-agents-front's and graft-controller's status
+#   status           graft-agents-front's and graft-controller's status, and the front's CONTROLLER_DEFAULT
 #   view             the group's entries since the row's start, the controller's deployment
 #   logs <from> [to] the agents graft-ops's lines in the window
 #   teardown         every graft-agents-m4a- script, secret, token and bucket; the token files shredded
@@ -46,7 +48,7 @@ W=$HOME/.graft-m4a; K=$W/lf7; mkdir -p "$K"; chmod 700 "$K"
 P=graft-agents-m4a
 EDGE_NAME=graft-m4a-edge OPS=graft-m4a-ops
 CTRL=$P-controller FRONT=$P-front AOPS=$P-ops BUCKET=$P-releases
-RSTORE=2b564b906c40496ea9544799904bc93b
+RSTORE=2b564b906c40496ea9544799904bc93b ISTORE=bfaa0c1573de4775b1b92a12fb89acb4
 EDGE_HOST=$EDGE_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev
 FRONT_URL=https://$FRONT.$CF_RUNNER_WORKERS_SUBDOMAIN.workers.dev
 B="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
@@ -58,7 +60,7 @@ runner() { CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_RUNNER_ACCOUNT_ID CLOUDFLARE_API_TO
 scrub() {
   sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CLOUDFLARE_RUNNER_ACCOUNT_ID/<runner-account>/g" \
       -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s/$CF_RUNNER_WORKERS_SUBDOMAIN/<runner-sub>/g" \
-      -e "s/$RSTORE/<runner-store>/g" -e "s#$PWD/#<checkout>/#g" -e "s#$HOME/#~/#g"
+      -e "s/$RSTORE/<runner-store>/g" -e "s/$ISTORE/<install-store>/g" -e "s#$PWD/#<checkout>/#g" -e "s#$HOME/#~/#g"
 }
 N=$(ls "$O" | grep -c "^$STEP" || true)
 L="$O/$STEP$( [ "$N" -gt 0 ] && echo "-$((N + 1))" ).log"
@@ -101,6 +103,12 @@ state)
   } 2>&1 | log ;;
 sweep)
   { python3 tests/fanout/teardown.py --sweep 2>&1 | tail -3; echo "exit ${PIPESTATUS[0]}"; } 2>&1 | log ;;
+a54)
+  { echo "install account (graft-m4a- names):"
+    CF_TOKEN=$CLOUDFLARE_API_TOKEN node tests/am3/hosted/a54-probe.mjs "$CLOUDFLARE_ACCOUNT_ID" "$ISTORE" graft-m4a-
+    echo "runner account ($P- names):"
+    CF_TOKEN=$CLOUDFLARE_RUNNER_API_TOKEN node tests/am3/hosted/a54-probe.mjs "$CLOUDFLARE_RUNNER_ACCOUNT_ID" "$RSTORE" $P-
+  } 2>&1 | log ;;
 edge)
   # The edge day: the live version's vars kept (FORMATS_ENABLED, RUN_SERVICE_PUBLIC, HOST), the ASSETS build of
   # AM2-WP3's day, test-faults so `/_bed/fault` stays, and R57's diff of every var before and after.
@@ -266,7 +274,9 @@ sampler)
   esac ;;
 status)
   { curl -s -H "x-front-token: $(cat "$K/front.token")" "$FRONT_URL/_agents_front/status" | jq -c .
-    deployment $CTRL "$RB" rapi
+    deployment $CTRL "$RB" rapi; deployment $FRONT "$RB" rapi
+    live=$(rapi "$RB/workers/scripts/$FRONT/deployments" | jq -r '.result.deployments[0].versions | max_by(.percentage) | .version_id')
+    echo "front $live CONTROLLER_DEFAULT: $(rapi "$RB/workers/scripts/$FRONT/versions/$live" | jq -c '[.result.resources.bindings[] | select(.name == "CONTROLLER_DEFAULT") | .text]')"
   } 2>&1 | log ;;
 view)
   { deployment $CTRL "$RB" rapi; deployment $FRONT "$RB" rapi; deployment $AOPS "$RB" rapi
@@ -301,5 +311,5 @@ cost)
     echo "graft-m4a day: $(PREFIX=graft-m4a python3 tests/fanout/acctcost.py "$(date -u +%Y-%m-%dT00:00:00Z)" | head -1 | jq -c '{prefix_usd}')"
     echo "runner $P- from $from: $(runner env PREFIX=$P python3 tests/fanout/acctcost.py "$from" | head -1 | jq -c '{prefix_usd}')"
   } 2>&1 | log ;;
-*) echo "step: state sweep edge init register keys infra controller front ops bundles roll abort block unblock pointer fault sampler status view logs teardown cost"; exit 2 ;;
+*) echo "step: state sweep a54 edge init register keys infra controller front ops bundles roll abort block unblock pointer fault sampler status view logs teardown cost"; exit 2 ;;
 esac

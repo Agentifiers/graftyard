@@ -2,7 +2,9 @@
 //! `forward`; `build/BUILD-PLAN.md`, AM3-WP1 and its LF-7 row): the stable Worker on the controller's webhook hostname
 //! in the agents account. It forwards every request to `graft-controller` over the `CONTROLLER` `fetch()` service
 //! binding, and while its view's `Pointers.controller` is `Some` it sets `Cloudflare-Workers-Version-Overrides` to the
-//! pinned version (`plan`); a `None` pointer sets nothing, so the deployment's percentage split picks the version.
+//! pinned version (`plan`). A `None` pointer sets nothing while the view shows a `ControllerRoll` running, so the
+//! deployment's percentage split picks the version; any other `None` pins `CONTROLLER_DEFAULT`, N while a roll's split
+//! is deployed, so an isolate that has not read the roll never follows the split (DECISIONS "`controller-default`").
 //!
 //! - **The view.** One `Reader` per isolate: an `AgentsReleaseView` of the install's `Release` group, read over HTTPS
 //!   from `GET https://<host>/api/graftyard/v1/release/entries` under a `graftyard-agent` App JWT, never through a
@@ -15,7 +17,9 @@
 //! - **Pure here, HTTP in the host.** This file decides; `worker` (wasm32 only) reads the pages, signs the JWT, and
 //!   forwards. No path here calls the Cloudflare API.
 
-use graftyard_release::agents::{AgentsAnchor, AgentsReleaseView, ENTRIES_PER_PAGE, controller_override};
+use graftyard_release::VersionId;
+use graftyard_release::agents::{AgentsAnchor, AgentsReleaseView, ENTRIES_PER_PAGE, controller_pin};
+use graftyard_release::view::version_override;
 use graftyard_release::view::{Freshness, Need};
 use graftyard_types::{Index, Timestamp};
 
@@ -113,8 +117,15 @@ pub fn next_after(after: Index, page: &Page) -> Option<Index> {
     (page.len() >= ENTRIES_PER_PAGE && last > after).then_some(last)
 }
 
-/// The `Cloudflare-Workers-Version-Overrides` value of a forwarded request: `Some` only while the view's
-/// `Pointers.controller` is `Some` (`graftyard_release::agents::controller_override`).
-pub fn plan(view: &AgentsReleaseView, controller_script: &str) -> Option<String> {
-    controller_override(view, controller_script)
+/// The pin and `Cloudflare-Workers-Version-Overrides` value of a forwarded request (`graftyard_release::agents::
+/// controller_pin`): `Pointers.controller` while it is set; the deployment's split while a verified view shows a
+/// `ControllerRoll` running; otherwise `default`, the script's `CONTROLLER_DEFAULT`, which the agents `graft-ops` sets
+/// to N while a roll's split is deployed, so an isolate that has not read the roll yet never reaches N+1.
+pub fn plan(
+    view: &AgentsReleaseView,
+    default: Option<VersionId>,
+    controller_script: &str,
+) -> (Option<VersionId>, Option<String>) {
+    let pin = controller_pin(view, default);
+    (pin, pin.map(|v| version_override(controller_script, v)))
 }

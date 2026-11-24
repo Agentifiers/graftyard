@@ -10927,3 +10927,28 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 **Flip.**
 - An agents release that must ship in the same bundle as an install release, so one `ReleaseUploaded` names both accounts' scripts. Then the group's upload rule changes first.
 - OPEN-QUESTIONS A52's `graft-agents-front` roll: it joins this executor's `ControllerRoll` steps.
+
+#### `controller-default`: while a `ControllerRoll`'s split is deployed, `graft-agents-front` pins N unless its view shows the roll (2026-11-24)
+
+**Status.** Code-only (OPEN-QUESTIONS A53's fix, the lead's ruling (c)); LF-7 r2 is its hosted row.
+
+**Decision.**
+- The agents `graft-ops` sets `graft-agents-front`'s `CONTROLLER_DEFAULT` variable to N before it deploys a `graft-controller` split that serves no version 100%, and removes it after the deploy that serves one version 100%: the roll's 100% step, IntentDone's, and an undo's or `Abort`'s return (`agents::controller_default`). It sets it with the settings call, which deploys a front version that carries the deployed version's bindings and that one change. A controller deployment read while the front's value differs sets it and fails the run, so no step commits before the front carries what the deployment needs.
+- `graft-agents-front` pins `Pointers.controller` while it is set; else nothing while its verified view shows a `ControllerRoll` running or halted, whose split is the canary; else `CONTROLLER_DEFAULT` (`agents::controller_pin`). An isolate that has never read a view, or read one from before the roll, pins N and never follows the split to N+1.
+
+**Why.**
+- LF-7 r1 failed on the cold isolate: with `GET release/entries` blackholed for 10 minutes, isolates that started in the window read no view, set no override, and sent 313 of 31,580 webhooks to the bad c2 at 1% (`tests/am3/results/lf7.md`). The default needs no new store or failure domain, and a fault in the install cannot reach N+1 through it.
+- Cost, accepted by the lead: during a healthy roll, a cold isolate's first 4 to 8 s go to N, not the split, which dilutes the canary slightly.
+
+**Beat.**
+- (a) A copy of the last verified pages kept in the agents account, which a cold isolate extends from. It adds a store in the agents account, a failure domain with a Failure modes row per class, and nothing in r1 needs it.
+- (b) A cold isolate with no view refusing or holding webhooks. GitHub does not redeliver a failed webhook by itself; redelivery is manual or through the API, so a refused delivery is lost without a redelivery loop.
+
+**Evidence.**
+- `workers/agents-front/tests/front.rs`: `an_isolate_with_no_view_under_a_controller_roll_pins_the_default_until_a_view_lands`; `crates/release/src/tests/group/agents.rs`: `the_front_default_is_n_only_while_a_split_is_deployed_and_keeps_the_fronts_other_bindings`.
+- `tests/m0carried/plant227.py`: 5 mutants, all caught.
+- The settings call [measured, the runner account, 2026-11-24, throwaway scripts]: `PATCH /workers/scripts/{name}/settings` with `bindings` deploys a new version at 100%, keeps a `secret_text` binding sent as read, and is refused with error 10214 while a newer uploaded version is not deployed. The settings read answers the newest version's bindings, so `graft-ops` reads the deployed version's.
+
+**Flip.**
+- A canary that needs cold-isolate traffic to judge N+1, such as a gate that counts too few webhooks at 1% without it.
+- OPEN-QUESTIONS A52's own `graft-agents-front` roll: a front split during a `ControllerRoll` changes which version carries the variable, so the default moves to a binding both front versions read.

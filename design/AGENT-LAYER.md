@@ -474,10 +474,10 @@ pub struct AgentsAnchor { pub install: InstallId, pub customer: Ed25519Public, p
 pub struct AgentsReleaseView { pub index: Index, pub keys: Keys, pub controller: Option<VersionId>,
                                pub current: Option<IntentId> }
 /// `graft-agents-front`, on the controller's webhook hostname, forwards every request to `graft-controller` over a
-/// `fetch()`-based service binding. While `controller` is `Some(v)` it sets a version override to `v`. While it is
-/// `None` it sets none, so the deployment's percentage split applies. `graft-agents-front` itself rolls through the
-/// deployments API at 1% for a day under the same `ControllerRoll`, so a control-plane outage freezes its percentage,
-/// as it freezes `graft-front`'s.
+/// `fetch()` binding, pinned to `controller` while it is `Some`. With `None`, a view of a running or halted `ControllerRoll`
+/// follows the split, and any other isolate, one with no view too, pins `CONTROLLER_DEFAULT`, which the agents `graft-ops`
+/// sets to N while a split is deployed (DECISIONS "`controller-default`"; LF-7 r1 [measured]). `graft-agents-front` itself
+/// rolls at 1% for a day under the same `ControllerRoll`, so a control-plane outage freezes its percentage too.
 pub async fn forward(req: Request, view: &AgentsReleaseView, controller: &Fetcher) -> Response;
 pub enum Workspace { Fork(RepoRef /* <org>-agents/<repo> */), InRepo }
 /// `snapshot` is `AgentTask.snapshot`, the issue as of the task's create index, or none for a prompt-only task. A title
@@ -782,7 +782,7 @@ Components are `graft-mcp` (the script, its Secrets Store key, grant rows, the o
 | controller | data-center | Sandboxes and Workflow engines there | As instance |
 | controller | region | Tasks whose Workflow engine sits there may stall for the incident [inference] | Session logs already pushed are chain state. A human can reassign, which starts a new task. Host data is untouched |
 | controller | provider-wide | Every Graftyard-run task pauses | Nothing on the host depends on it |
-| controller | control-plane | New Sandboxes may not start [unknown, as the base]. A bad `graft-agents-front` percentage stays frozen | Running tasks continue. New tasks queue. `ControllerPointer` swap-back is a signed entry that `graft-agents-front` reads from the install over HTTPS and applies as a version override, with no API call. A failed `Release` read keeps the last view |
+| controller | control-plane | New Sandboxes may not start [unknown, as the base]. A bad `graft-agents-front` percentage stays frozen | Running tasks continue. New tasks queue. `ControllerPointer` swap-back is a signed entry that `graft-agents-front` reads from the install over HTTPS and applies as a version override, with no API call. A failed `Release` read keeps the last view, and an isolate with no view pins `CONTROLLER_DEFAULT`, N while a roll's split is deployed, so it never follows the split to N+1 |
 | controller | bad-deploy | A bad or compromised controller holds the `graftyard-agent` and `graftyard-workspace` keys, so it can read every repository they are installed on and push into the prefix of every live Graftyard-run task of its installs [inference]. It can create tasks only from issues whose latest `Assigned` entry names its bot, so only for issues a human assigned | Its `graft-ops` rolls `ControllerRoll` at 1% for a day with a pre-signed `ControllerPointer` back, which `graft-agents-front` applies. `graft-agents-front` rolls under the same intent at 1% for a day through the deployments API. `decide` still refuses approve, merge, dispatch, releases, protected paths, and pushes with no live `AgentTask`, cancel stays final, and `AgentGate` keeps a pushed head from merging without a fresh approval from a human credential. The `Graftyard MCP` and `graftyard-insights` keys are not in the agents account. Managed uses per-tenant App keys, so one tenant's keys reach only that tenant |
 | controller | bad-config | Wrong router rules or a registry that fetches upstream | `decide` and the App ceiling hold whatever the router lets through, and the ceiling row tests them with a raw token. Registries that fetch upstream on demand and unknown Go module paths are refused by default |
 | controller | noisy-tenant | One org's fleet | Per-org concurrency caps, per-task and per-org token budgets, a 60-minute task cap, a separate 15,000 vCPU quota, the agent admission class at each leader |
