@@ -1495,7 +1495,7 @@ struct Ended<F: Family>(Rc<Host<F>>, Option<(SiteId, u64)>);
 impl<F: Family> Drop for Ended<F> {
     fn drop(&mut self) {
         if let Some((to, round)) = self.1 {
-            let _ = self.0.input(|m, t| m.call_ended(t, to, round));
+            let _ = self.0.input_quiet(|m, t| m.call_ended(t, to, round));
         }
     }
 }
@@ -3256,6 +3256,24 @@ impl<F: Family> Host<F> {
         Ok(r)
     }
 
+    /// As `input`, for an input that is not activity: a call of this member's own that failed or ended. It keeps
+    /// `active_until`, as `tick` does, so the ticker winds down. Counted as activity, a peer that refuses every
+    /// AppendEntries (a member not joined answers 409) kept its leader ticking for good: each refusal ran `kick`, and
+    /// the ticker sent the peer its next one every CALL_DEADLINE. On graft-m6a 578 leaders of half-made `Tokens` chains
+    /// on site a stayed active with no client for hours (`decisions/OPEN-QUESTIONS.md`, R55). A waiter or a read keeps
+    /// the ticker up through `has_waiters`, and a leader that served ticks from its drain-check alarm.
+    fn input_quiet<R>(
+        self: &Rc<Self>,
+        f: impl FnOnce(&mut raft::Member<F::C>, Timestamp) -> Ready<F::C, R>,
+    ) -> Result<R> {
+        let until = self.active_until.get();
+        let r = self.step(f);
+        self.active_until.set(until);
+        let (r, out) = r?;
+        self.dispatch(out, None);
+        Ok(r)
+    }
+
     /// The site and object name of the member at raft address `to`: a voter's site, or a learner's slot address.
     fn peer_name(&self, to: SiteId) -> Option<(SiteId, String)> {
         let core = self.core.borrow();
@@ -3449,7 +3467,7 @@ impl<F: Family> Host<F> {
 
     fn call_failed(self: &Rc<Self>, f: Option<raft::CallFailure>) {
         if let Some(f) = f {
-            let _ = self.input(|m, t| m.call_failed(t, f));
+            let _ = self.input_quiet(|m, t| m.call_failed(t, f));
         }
     }
 
