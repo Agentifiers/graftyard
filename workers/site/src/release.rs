@@ -321,6 +321,12 @@ impl Family for Release {
             })),
             "drained": f.drained.iter().map(|(s, d)| json!({ "site": s, "drain_key": d.by_drain_key, "since": d.since.0 })).collect::<Vec<_>>(),
             "uploads": f.uploads.keys().map(|r| hex(r)).collect::<Vec<_>>(),
+            // Each registered lifeboat: when it was last heard and the release its decoder reports, which
+            // `graft-ops` pages on after `LIFEBOAT_SILENT` (`graftyard_release::ops::silent_lifeboats`).
+            "lifeboats": f.lifeboats.keys().map(|h| (h.to_string(), json!({
+                "seen": f.lifeboat_seen.get(h).map(|t| t.0),
+                "release": f.lifeboat_release.get(h).map(|r| hex(&r.0)),
+            }))).collect::<serde_json::Map<_, _>>(),
             "enabled": f.enabled.iter().map(|x| x.to_string()).collect::<Vec<_>>(),
             "pointers": {
                 "edge": f.pointers.edge.map(|v| v.to_string()),
@@ -409,6 +415,10 @@ thread_local! {
 /// `copy` for COPY_WRITE_MS at most, so a registry that does not answer holds the member's alarm, and its Raft tick
 /// after it, no longer than that; the next apply writes again.
 async fn copy_within(host: &crate::host::Host<Release>) {
+    // A lifeboat has no site registry to copy to: its front reads the `Release` copy itself (`graftyard_lookup`).
+    if crate::lifeboat::mode(&host.env) {
+        return;
+    }
     match graftyard_lookup::within(std::time::Duration::from_millis(COPY_WRITE_MS), copy(host)).await {
         Some(Ok(())) => {}
         Some(Err(e)) => worker::console_error!("release copy: {e}"),

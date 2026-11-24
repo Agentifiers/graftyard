@@ -8,6 +8,7 @@ mod apps;
 mod cf;
 mod config;
 mod genesis;
+mod lifeboat;
 mod placement;
 mod release;
 mod runners;
@@ -119,6 +120,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: VaultCmd,
     },
+    /// The lifeboat: a read-only copy of the install off Cloudflare (`cli/src/lifeboat.rs`).
+    Lifeboat {
+        #[command(subcommand)]
+        cmd: LifeboatCmd,
+    },
     /// Sends the signed genesis to the edge, which writes it to the empty Release group.
     Install {
         #[arg(long)]
@@ -186,6 +192,82 @@ enum VaultCmd {
         days: u64,
         #[arg(long)]
         out: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum LifeboatCmd {
+    /// Makes the host's own key, registers it with a `LifeboatAdd` the customer key signs, and writes the bundle's
+    /// lifeboat.json (the install's trust anchor) and lifeboat.key (0600) into --dir.
+    Init {
+        #[arg(long)]
+        host: String,
+        /// The customer's Ed25519 private key: a 64-hex-character seed or a PEM PRIVATE KEY.
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        dir: PathBuf,
+        /// The edge's base URL (default: https://<zone>).
+        #[arg(long)]
+        edge: Option<String>,
+        /// The signed genesis the install committed (install.toml's `genesis` digest).
+        #[arg(long)]
+        genesis: PathBuf,
+    },
+    /// Mints the caller's `lifeboat:read` token from the main host with their own token, and writes it for gh and git.
+    Enroll {
+        #[arg(long)]
+        host: String,
+        /// The main host's base URL.
+        #[arg(long)]
+        edge: String,
+        /// A file holding the developer's own token; never passed on the command line.
+        #[arg(long)]
+        token_file: PathBuf,
+        /// gh's config directory (its hosts.yml gets the lifeboat host).
+        #[arg(long)]
+        gh_config: PathBuf,
+        /// Where the lifeboat token is written (0600), for a git credential helper.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Writes the bundle's workerd config (0600) from --dir's lifeboat.json, lifeboat.key, and feed.json.
+    Bundle {
+        #[arg(long)]
+        dir: PathBuf,
+        /// The release's site/, edge/, and lifeboat/ builds.
+        #[arg(long)]
+        builds: PathBuf,
+        /// The release the decoder reports: the SHA-256 of its release.json, hex.
+        #[arg(long)]
+        release: String,
+        #[arg(long, default_value = "*:443")]
+        listen: String,
+        /// The front's TLS private key and certificate chain (PEM); without them it serves plain HTTP.
+        #[arg(long, requires = "tls_chain")]
+        tls_key: Option<PathBuf>,
+        #[arg(long)]
+        tls_chain: Option<PathBuf>,
+        /// graft-blob's base URL.
+        #[arg(long, default_value = "http://127.0.0.1:8790")]
+        blob: String,
+        /// A localhost socket for the puller's /status and /pass, such as 127.0.0.1:8791.
+        #[arg(long)]
+        admin: Option<String>,
+        /// The copy's directory, fresh for each workerd version.
+        #[arg(long)]
+        state: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Drops a dead or retired lifeboat with a `LifeboatRemove` the customer key signs.
+    Remove {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        edge: Option<String>,
     },
 }
 
@@ -573,6 +655,35 @@ fn run(cli: Cli) -> Res<()> {
                 script: &script,
                 release: vault::Release { dir: &release, release_key: &release_key },
             })
+        }
+        Cmd::Lifeboat { cmd: LifeboatCmd::Init { host, key, dir, edge, genesis } } => lifeboat::init(
+            config,
+            lifeboat::InitArgs { host: &host, key: &key, dir: &dir, edge: edge.as_deref(), genesis: &genesis },
+        ),
+        Cmd::Lifeboat { cmd: LifeboatCmd::Enroll { host, edge, token_file, gh_config, out } } => {
+            lifeboat::enroll(lifeboat::EnrollArgs {
+                host: &host,
+                edge: &edge,
+                token_file: &token_file,
+                gh_config: &gh_config,
+                out: &out,
+            })
+        }
+        Cmd::Lifeboat {
+            cmd: LifeboatCmd::Bundle { dir, builds, release, listen, tls_key, tls_chain, blob, admin, state, out },
+        } => lifeboat::bundle(lifeboat::BundleArgs {
+            dir: &dir,
+            builds: &builds,
+            release: &release,
+            listen: &listen,
+            tls: tls_key.as_deref().zip(tls_chain.as_deref()),
+            blob: &blob,
+            admin: admin.as_deref(),
+            state: &state,
+            out: &out,
+        }),
+        Cmd::Lifeboat { cmd: LifeboatCmd::Remove { host, key, edge } } => {
+            lifeboat::remove(config, &host, &key, edge.as_deref())
         }
         Cmd::Vault { cmd: VaultCmd::Token { key, scope, holder, days, out } } => {
             vault::token(config, &vault::TokenArgs { key: &key, scope: &scope, holder: &holder, days, out: &out })

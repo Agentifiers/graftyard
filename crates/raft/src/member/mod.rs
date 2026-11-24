@@ -1172,6 +1172,13 @@ impl<C: Command> Member<C> {
         self.input_applied = self.fold.applied();
     }
 
+    /// An input that changes nothing, for the importer's feed of no new rows: a host steps every input through one
+    /// path, so it needs a `Ready` there too.
+    pub(crate) fn idle(&mut self, now: Timestamp) -> Ready<C, ()> {
+        self.begin(now);
+        self.finish(())
+    }
+
     fn finish<R>(&mut self, reply: R) -> Ready<C, R> {
         self.check_remote();
         if self.dirty {

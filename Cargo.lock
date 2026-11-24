@@ -758,6 +758,7 @@ dependencies = [
  "graftyard-fold",
  "graftyard-git",
  "graftyard-identity",
+ "graftyard-lifeboat",
  "graftyard-lookup",
  "graftyard-raft",
  "graftyard-release",
@@ -855,12 +856,31 @@ dependencies = [
 name = "graftyard-lifeboat"
 version = "0.1.0"
 dependencies = [
+ "futures-executor",
  "graftyard-git",
+ "graftyard-raft",
  "graftyard-types",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.21",
+ "tiny_http",
+]
+
+[[package]]
+name = "graftyard-lifeboat-worker"
+version = "0.1.0"
+dependencies = [
+ "graftyard-git",
+ "graftyard-identity",
+ "graftyard-lifeboat",
+ "graftyard-lookup",
+ "graftyard-release",
+ "graftyard-types",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "worker",
 ]
 
 [[package]]

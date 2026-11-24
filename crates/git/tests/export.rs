@@ -406,3 +406,26 @@ fn a_lifeboat_request_takes_only_tail_snapshot_and_pack_routes() {
     assert!(!may("GET", &format!("{base}/batches"), q(&[])));
     assert!(!may("DELETE", &format!("{base}/token"), q(&[])));
 }
+
+/// Ruling 1 of M6-WP3 (`decisions/DECISIONS.md`, "`lifeboat-bundle`"): a chain's entries are served from index 1 for
+/// as long as its archive objects exist, which is the chain's life (only a deleted repository's purge removes them),
+/// so a lifeboat needs no snapshot install. A follower that installed a snapshot names no archive below its install;
+/// the edge then finds the object whose range holds the cursor among the chain's archive keys, the narrowest of any
+/// that overlap, and never another chain's.
+#[test]
+fn the_archive_holding_a_cursor_is_found_among_the_chains_keys() {
+    let (c, other) = (repo(5), repo(6));
+    let arch = |chain: ChainId, f: u64, t: u64| R2Key::Archive {
+        chain,
+        from: Index(f),
+        to: Index(t),
+        digest: Digest([f as u8; 32]),
+    };
+    let keys = vec![arch(c, 1, 40), arch(c, 41, 90), arch(c, 30, 60), arch(other, 1, 200)];
+    let at = |i: u64| export::archive_holding(&keys, c, Index(i)).map(|(f, t, _)| (f.0, t.0));
+    assert_eq!(at(1), Some((1, 40)));
+    assert_eq!(at(35), Some((30, 60)), "the narrowest range that holds 35");
+    assert_eq!(at(90), Some((41, 90)));
+    assert_eq!(at(91), None, "past every range: no archive, so the page is the stored log's or 410");
+    assert_eq!(export::archive_holding(&keys, repo(7), Index(1)), None, "another chain's objects never serve");
+}

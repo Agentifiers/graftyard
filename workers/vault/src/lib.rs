@@ -27,8 +27,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use graftyard_git::export::{self, ExportObject, FeedPosition, FeedState};
-use graftyard_git::pack::{PackId, PackRef};
-use graftyard_git::repo::{REPO_FORMAT_V1, RepoEvent, packs_of};
+use graftyard_git::pack::PackId;
+use graftyard_git::repo::{REPO_FORMAT_V1, RepoEvent, stored_packs};
 use graftyard_git::{CONSUMED_KEEP, R2Key};
 use graftyard_raft::{EntryBody, Format, LogEntry, Term, codec};
 use graftyard_types::{ChainId, Digest, Index, NetworkId, Timestamp};
@@ -331,25 +331,6 @@ fn row_format(row: &[u8]) -> Option<Format> {
     let (&v, rest) = row.split_first()?;
     (v == codec::CODEC_VERSION).then_some(())?;
     postcard::take_from_bytes::<(Term, Index, Digest, Format)>(rest).ok().map(|((_, _, _, f), _)| f)
-}
-
-/// Every stored pack a repository entry names: pushes, merges, test merges, and merge-queue groups (`packs_of`), and a
-/// promotion's or a roll's own pack.
-fn stored_packs(events: &[RepoEvent]) -> Vec<(PackId, Digest, u64)> {
-    let mut all = packs_of(events);
-    for ev in events {
-        match ev {
-            RepoEvent::Promoted(p) => all.push(p.pack.clone()),
-            RepoEvent::Compacted(c) => all.push(c.produced.clone()),
-            _ => {}
-        }
-    }
-    all.into_iter()
-        .filter_map(|p| match p {
-            PackRef::Stored { id, checksum, bytes, .. } => Some((id, checksum, bytes)),
-            PackRef::Inline(_) => None,
-        })
-        .collect()
 }
 
 /// Folds one chain's stored rows into what the vault owes: packs and snapshots to copy, packs the install's GC may

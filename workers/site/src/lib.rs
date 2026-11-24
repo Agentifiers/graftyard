@@ -33,6 +33,7 @@ mod heapcount;
 mod hookseq;
 mod host;
 mod inbox;
+mod lifeboat;
 mod live;
 mod load;
 mod logread;

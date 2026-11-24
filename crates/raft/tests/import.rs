@@ -8,10 +8,10 @@ use common::kv::{FUTURE_FORMAT, KV_FORMAT, Kv, KvCmd, KvEvent};
 use common::sim::{CHAIN, SITES, config};
 use graftyard_raft::import::{Halt, IMPORTER, Importer};
 use graftyard_raft::{
-    EntryBody, GroupConfig, GroupFold, Index, InstallSource, LogEntry, Member, Message, RequestId, Role, Stored, Ulid,
-    Verdict, bootstrap, codec, digest,
+    GroupFold, Index, InstallSource, LogEntry, Member, Message, RequestId, Role, Stored, Ulid, Verdict, bootstrap,
+    codec, digest,
 };
-use graftyard_types::{MemberKind, PlacementName, PlacementRecord, SiteId, Timestamp, learner_addr};
+use graftyard_types::{SiteId, Timestamp, learner_addr};
 
 const A: SiteId = SITES[0];
 const B: SiteId = SITES[1];
@@ -38,10 +38,8 @@ impl Copy {
     /// has no peer but the importer.
     fn feed(&mut self, now: Timestamp, rows: &[Vec<u8>]) -> Option<Halt> {
         let fed = self.imp.feed(&mut self.m, now, rows);
-        if let Some(r) = fed.ready {
-            let (_, out) = r.persist(&mut self.disk);
-            assert!(out.messages.iter().chain(&out.early).all(|e| e.to == IMPORTER), "{:?}", out.messages);
-        }
+        let (_, out) = fed.ready.persist(&mut self.disk);
+        assert!(out.messages.iter().chain(&out.early).all(|e| e.to == IMPORTER), "{:?}", out.messages);
         fed.halt
     }
 }
@@ -210,25 +208,14 @@ fn an_install_then_rows_builds_the_group_fold() {
     assert_eq!(l.m.group_fold().fold, m.group_fold().fold);
 }
 
-/// No `ExportObject` carries a chain's `PlacementRecord`, which the member's config needs: one rebuilt from entry 1,
-/// the bootstrap `Config`, gives the same bootstrap bytes, so `verify` accepts entry 1.
+/// No `ExportObject` carries a chain's `PlacementRecord`, which the member's config needs: `record_of` rebuilds it
+/// from entry 1 so that `bootstrap` of it is entry 1's bytes, and `verify` accepts entry 1. A row that is not a
+/// bootstrap config rebuilds nothing.
 #[test]
 fn a_record_rebuilt_from_entry_one_gives_the_same_bootstrap() {
-    let c = group(10, 1);
-    let e1 = c.m(A).entry_at(Index(1)).unwrap().clone();
-    let EntryBody::Config(GroupConfig::Normal(p)) = &e1.body else { panic!("entry 1 is the bootstrap config") };
-    let kinds: Vec<MemberKind> = p.voters().iter().map(|m| m.kind).collect();
-    let name = [PlacementName::Tri, PlacementName::Us2w, PlacementName::Solo]
-        .into_iter()
-        .find(|n| n.kinds() == kinds.as_slice())
-        .unwrap();
-    let rec = PlacementRecord {
-        name,
-        sites: p.voters().iter().map(|m| m.site).collect(),
-        home: p.home(),
-        generation: p.generation(),
-        moving_from: None,
-        at: e1.at,
-    };
-    assert_eq!(digest(&bootstrap::<KvEvent>(CHAIN, &rec).unwrap()), digest(&e1));
+    let c = group(10, 2);
+    let rows = committed(&c, A);
+    let rec = graftyard_raft::import::record_of::<KvEvent>(CHAIN, &rows[0]).expect("entry 1 rebuilds its record");
+    assert_eq!(codec::to_bytes(&bootstrap::<KvEvent>(CHAIN, &rec).unwrap()), rows[0]);
+    assert_eq!(graftyard_raft::import::record_of::<KvEvent>(CHAIN, &rows[1]), None, "entry 2 is no bootstrap");
 }
