@@ -35,6 +35,11 @@ struct Fake {
     /// Each `Rotate` host step run, in order; a step named in `rotate_fails` fails instead.
     rotated: Vec<(SecretName, u8, crate::RotateStep)>,
     rotate_fails: Option<crate::RotateStep>,
+    /// Each coordinator Workflow by its intent, and every start, in order (a start of one that exists changes nothing).
+    moves: BTreeMap<IntentId, ops::MoveRun>,
+    started: Vec<(IntentId, ops::MoveSpec)>,
+    /// What `health` answers.
+    health: BTreeMap<u8, crate::gate::Verdict>,
 }
 
 impl Fake {
@@ -62,6 +67,9 @@ impl Fake {
             next_v: 1,
             rotated: Vec::new(),
             rotate_fails: None,
+            moves: BTreeMap::new(),
+            started: Vec::new(),
+            health: BTreeMap::new(),
         }
     }
 
@@ -124,7 +132,7 @@ impl Exec for Fake {
     }
 
     async fn health(&mut self, _fold: &ReleaseFold) -> BTreeMap<u8, crate::gate::Verdict> {
-        BTreeMap::new()
+        self.health.clone()
     }
 
     async fn deploy(&mut self, s: Script, split: &Split) -> Result<(), String> {
@@ -198,6 +206,19 @@ impl Exec for Fake {
             return Err("the new slot's value was refused".into());
         }
         self.rotated.push((secret, slot, step));
+        Ok(())
+    }
+
+    async fn move_run(&mut self, intent: IntentId) -> ops::MoveRun {
+        self.moves.get(&intent).cloned().unwrap_or_default()
+    }
+
+    async fn start_move(&mut self, intent: IntentId, spec: ops::MoveSpec) -> Result<(), String> {
+        if self.killed() {
+            return Err("killed".into());
+        }
+        self.moves.entry(intent).or_insert(ops::MoveRun::Running);
+        self.started.push((intent, spec));
         Ok(())
     }
 }

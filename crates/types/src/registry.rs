@@ -85,6 +85,22 @@ pub fn no_row_anywhere(reads: &[RowRead]) -> bool {
     !reads.is_empty() && reads.iter().all(|r| *r == RowRead::NoRow)
 }
 
+/// `ReplaceMember`'s groups (`design/DESIGN.md`, "Install operations", Site loss): one row per chain, the highest
+/// generation, from every row the surviving sites' registries hold. Every row counts, not only those whose `sites` name
+/// the lost site: a row keeps the record its member joined under and no config change rewrites it, so a group that
+/// moved onto the lost site after its rows were written names it nowhere. The caller asks each chain's committed config
+/// and replaces only the groups that still hold a voter there (`graftyard_identity::group_move::holds`).
+pub fn replace_candidates<'a>(rows: impl IntoIterator<Item = &'a RegistryRow>) -> Vec<RegistryRow> {
+    let mut by: std::collections::BTreeMap<ChainId, &RegistryRow> = std::collections::BTreeMap::new();
+    for r in rows {
+        let e = by.entry(r.chain).or_insert(r);
+        if r.generation > e.generation {
+            *e = r;
+        }
+    }
+    by.into_values().cloned().collect()
+}
+
 /// A `PUT /row` to a site's registry: `row`, with `replacing` empty for a member's own write, or naming the placement
 /// tries whose rows a restore may replace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +159,30 @@ mod tests {
             seen[MemberRegistry::for_chain(SiteId(0), ChainId::Repo(RepoId(DbId(i)))).shard as usize] += 1;
         }
         assert!(seen.iter().all(|&n| (50..=160).contains(&n)), "{seen:?}");
+    }
+
+    /// M6-WP1: a group created on 1, 2, 3 that later moved onto site 0 has rows on 1 and 2 naming only 1, 2, 3, so a
+    /// filter on rows naming the lost site 0 leaves it out. Every chain on a surviving site is a candidate, once, at
+    /// its highest generation.
+    #[test]
+    fn every_chain_on_a_surviving_site_is_a_candidate_once_at_its_highest_generation() {
+        let row = |n: i64, g: u32, sites: &[u8]| RegistryRow {
+            chain: ChainId::Repo(RepoId(DbId(n))),
+            do_name: format!("repo:{n}#{g}#f0").into(),
+            generation: g,
+            sites: sites.iter().map(|s| SiteId(*s)).collect(),
+        };
+        let on_b = [row(1, 1, &[0, 1, 2]), row(2, 1, &[1, 2, 3]), row(3, 4, &[1, 2, 3])];
+        let on_c = [row(1, 1, &[0, 1, 2]), row(2, 3, &[1, 2, 3]), row(4, 1, &[2, 3, 1])];
+        let got = replace_candidates(on_b.iter().chain(&on_c));
+        let keys: Vec<(i64, u32)> = got
+            .iter()
+            .map(|r| match r.chain {
+                ChainId::Repo(RepoId(DbId(n))) => (n, r.generation),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(keys, vec![(1, 1), (2, 3), (3, 4), (4, 1)], "chain 2 moved onto 0 at generation 3");
     }
 
     /// `repo-gone`: only every site answering 404 proves the chain has no voter; one row, one failed read (a 5xx, a

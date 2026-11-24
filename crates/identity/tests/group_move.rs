@@ -5,7 +5,7 @@
 //! is not in.
 
 use graftyard_identity::group_move::{
-    MoveStep, TransferGate, WARM_BEFORE_TRANSFER, WarmWait, next_step, transfer_gate, warm_site,
+    MoveStep, TransferGate, WARM_BEFORE_TRANSFER, WarmWait, holds, next_step, replace_step, transfer_gate, warm_site,
 };
 use graftyard_identity::{NAMES_FORMAT, NamesCmd, NamesFold, NamesOp, NamesRead};
 use graftyard_raft::{
@@ -74,13 +74,15 @@ struct G {
     next: u128,
     /// Every committed `RepoOwner` this test sent, by request id.
     sent: Vec<(u128, i64)>,
+    /// The record the group was created under.
+    rec: PlacementRecord,
 }
 
-fn config(me: SiteId) -> MemberConfig {
+fn config(me: SiteId, record: &PlacementRecord) -> MemberConfig {
     MemberConfig {
         chain: CHAIN,
         me,
-        record: record([0, 1, 2], 0),
+        record: record.clone(),
         regions: (0..N as u8).map(|s| (SiteId(s), REGIONS[s as usize])).collect(),
         release: ReleaseTag { id: ReleaseId([7; 32]), seq: 1 },
         reads: vec![NAMES_FORMAT],
@@ -89,6 +91,11 @@ fn config(me: SiteId) -> MemberConfig {
 
 impl G {
     fn new() -> G {
+        G::on_record(record([0, 1, 2], 0))
+    }
+
+    /// A group created under `rec`, on its three sites, led from its first.
+    fn on_record(rec: PlacementRecord) -> G {
         let mut g = G {
             now: Timestamp(10_000),
             members: (0..N).map(|_| None).collect(),
@@ -99,14 +106,16 @@ impl G {
             boots: 0,
             next: 1,
             sent: Vec::new(),
+            rec,
         };
-        for s in 0..3u8 {
-            g.start(SiteId(s));
+        let (first, sites) = (g.rec.sites[0], g.rec.sites.clone());
+        for s in sites {
+            g.start(s);
         }
         for _ in 0..3 {
-            g.on(SiteId(0), |m, now| m.campaign(now));
+            g.on(first, |m, now| m.campaign(now));
             g.deliver();
-            if g.m(SiteId(0)).role() == Role::Leader {
+            if g.m(first).role() == Role::Leader {
                 break;
             }
         }
@@ -117,8 +126,8 @@ impl G {
     /// A member on `s` that has stored nothing, as a joining member is.
     fn start(&mut self, s: SiteId) {
         self.boots += 1;
-        let (m, ready) =
-            Member::restore(config(s), self.disks[s.0 as usize].clone(), self.now, self.boots).expect("restore");
+        let (m, ready) = Member::restore(config(s, &self.rec), self.disks[s.0 as usize].clone(), self.now, self.boots)
+            .expect("restore");
         self.members[s.0 as usize] = Some(m);
         let ((), out) = ready.persist(&mut self.disks[s.0 as usize]);
         self.inbox.extend(out.early.into_iter().chain(out.messages));
@@ -254,6 +263,18 @@ impl G {
                 let np = Placement::new(voters, Default::default(), home, &checks).expect("placement");
                 self.start(add);
                 self.change(GroupConfig::Joint { old: p.clone(), new: Box::new(np) }).expect("one-site joint");
+            }
+            (MoveStep::Degrade { lost }, GroupConfig::Normal(p)) => {
+                self.change(GroupConfig::Degraded { placement: p, lost }).expect("degraded");
+            }
+            (MoveStep::Restore { add }, GroupConfig::Degraded { placement: p, lost }) => {
+                let old = p.voters().iter().find(|m| m.site == lost).unwrap().clone();
+                let new = MemberRef::new(CHAIN, add, old.kind, old.slot, p.next_generation());
+                let voters = p.voters().iter().map(|m| if m.site == lost { new.clone() } else { m.clone() }).collect();
+                let home = if p.home() == lost { add } else { p.home() };
+                let np = Placement::new(voters, Default::default(), home, &checks).expect("placement");
+                self.start(add);
+                self.change(GroupConfig::Normal(Box::new(np))).expect("restore");
             }
             (MoveStep::Leave, GroupConfig::Joint { new, .. }) => {
                 self.change(GroupConfig::Normal(new)).expect("leave");
@@ -549,4 +570,98 @@ fn warm_site_names_the_next_leaders_site() {
     assert_eq!(warm_site(&cfg, s(1), &record([3, 1, 2], 3), MoveStep::Swap { add: s(3), drop: s(0) }), Some(s(3)));
     // Home on the leader's own site moves no leader.
     assert_eq!(warm_site(&cfg, s(2), &record([0, 1, 2], 2), MoveStep::Home { home: s(2) }), None);
+}
+
+impl G {
+    /// Site `s` goes dark for good: its member answers nothing and nothing it sent arrives.
+    fn blackhole(&mut self, s: SiteId) {
+        self.members[s.0 as usize] = None;
+        self.inbox.retain(|e| e.from != s);
+    }
+
+    /// `s` campaigns until it leads, as the host campaigns on a request once its leader stops answering.
+    fn elect(&mut self, s: SiteId) {
+        let t0 = self.now.0;
+        while self.m(s).role() != Role::Leader {
+            assert!(self.now.0 - t0 < 30_000, "{s:?} not elected 30 s after the loss");
+            self.pass(1_000);
+            self.on(s, |m, now| m.campaign(now));
+            self.deliver();
+        }
+    }
+}
+
+/// M6-WP1 (BF-50), a Tri group whose leader's site is lost for good: a survivor is elected, and `ReplaceMember`'s
+/// steps move the lost member onto the spare through a one-site `Joint` that commits on the two survivors, then make
+/// the spare the home it took over. Every write acknowledged before and during the loss is on the final members.
+#[test]
+fn a_tri_group_replaces_its_lost_leaders_site_with_the_spare_and_keeps_every_write() {
+    let mut g = G::new();
+    for n in 0..5 {
+        g.write(n);
+    }
+    assert_eq!(g.leader(), SiteId(0));
+    g.blackhole(SiteId(0));
+    g.elect(SiteId(1));
+    g.write(5);
+    let (lost, spare) = (SiteId(0), SiteId(3));
+    let steps = g.move_to(&record([3, 1, 2], 3), |c, l, _| replace_step(c, l, lost, spare));
+    assert!(matches!(steps[0], MoveStep::Swap { add: SiteId(3), drop: SiteId(0) }), "{steps:?}");
+    assert!(!steps.iter().any(|s| matches!(s, MoveStep::Degrade { .. })), "Tri never degrades: {steps:?}");
+    assert_eq!(voters(&g.cfg()), vec![1, 2, 3]);
+    assert_eq!(g.leader(), SiteId(3), "the spare leads, as the lost home did");
+    let GroupConfig::Normal(p) = g.cfg() else { panic!() };
+    assert!(p.voters().iter().all(|m| m.site != spare || m.generation == 2), "the spare's member is a new generation");
+    g.assert_all_kept(&[1, 2, 3]);
+}
+
+/// `*2w`: losing a Full member stops every commit, since `Normal`'s rule and a `Joint`'s old half both need both Full
+/// members. With the leader on the surviving Full site the steps are `Degraded { lost }` first, which commits on that
+/// member and the witness, then `Normal` with the spare in the lost member's slot and kind. A leader lost with the site
+/// is the gap OPEN-QUESTIONS R48 records: its successor's Noop never commits, so `reconfigure` answers `Busy`.
+#[test]
+fn a_2w_group_loses_a_full_member_and_restores_it_on_the_spare_through_degraded() {
+    let rec = PlacementRecord { name: PlacementName::Us2w, ..record([0, 1, 2], 0) };
+    let mut g = G::on_record(rec);
+    for n in 0..5 {
+        g.write(n);
+    }
+    g.blackhole(SiteId(1));
+    let (lost, spare) = (SiteId(1), SiteId(3));
+    let steps = g.move_to(&record([0, 3, 2], 0), |c, l, _| replace_step(c, l, lost, spare));
+    assert_eq!(steps, vec![MoveStep::Degrade { lost }, MoveStep::Restore { add: spare }]);
+    let GroupConfig::Normal(p) = g.cfg() else { panic!() };
+    let kinds: Vec<(u8, MemberKind, u8)> = p.voters().iter().map(|m| (m.site.0, m.kind, m.slot)).collect();
+    assert_eq!(kinds, vec![(0, MemberKind::Full, 0), (3, MemberKind::Full, 1), (2, MemberKind::Witness, 2)]);
+    assert_eq!((p.home(), g.leader()), (SiteId(0), SiteId(0)));
+    g.assert_all_kept(&[0, 3]);
+}
+
+/// `*2w` with its witness lost: the halves of a one-site `Joint` need only the Full members, so the witness moves to
+/// the spare by `Swap` with no `Degraded` in between, and the home stays.
+#[test]
+fn a_2w_group_moves_a_lost_witness_by_joint() {
+    let rec = PlacementRecord { name: PlacementName::Us2w, ..record([0, 1, 2], 0) };
+    let mut g = G::on_record(rec);
+    g.write(1);
+    g.blackhole(SiteId(2));
+    let (lost, spare) = (SiteId(2), SiteId(3));
+    let steps = g.move_to(&record([0, 1, 3], 0), |c, l, _| replace_step(c, l, lost, spare));
+    assert_eq!(steps, vec![MoveStep::Swap { add: spare, drop: lost }, MoveStep::Leave]);
+    assert_eq!(voters(&g.cfg()), vec![0, 1, 3]);
+    g.assert_all_kept(&[0, 1]);
+}
+
+/// `holds`: the groups `ReplaceMember` moves are those still holding a voter on the lost site, including one whose
+/// replace already committed `Degraded { lost }` and one mid-`Joint` in either half. A group that never had one there,
+/// or whose move finished, is left alone.
+#[test]
+fn a_group_is_replaced_while_any_half_of_its_config_holds_the_lost_site() {
+    let p = |sites: [u8; 3]| Box::new(Placement::from_record(CHAIN, &record(sites, sites[0])).unwrap());
+    let s = SiteId;
+    assert!(holds(&GroupConfig::Normal(p([0, 1, 2])), s(0)));
+    assert!(!holds(&GroupConfig::Normal(p([3, 1, 2])), s(0)));
+    assert!(holds(&GroupConfig::Degraded { placement: p([0, 1, 2]), lost: s(0) }, s(0)), "mid-replace");
+    assert!(holds(&GroupConfig::Joint { old: p([0, 1, 2]), new: p([3, 1, 2]) }, s(0)), "the old half");
+    assert!(holds(&GroupConfig::Joint { old: p([3, 1, 2]), new: p([0, 1, 2]) }, s(0)), "the new half");
 }

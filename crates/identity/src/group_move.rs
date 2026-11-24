@@ -36,6 +36,12 @@ pub enum MoveStep {
     Home { home: SiteId },
     /// The config is a `Degraded` one: a lost member is replaced before the group moves.
     Degraded,
+    /// `replace_step` only: commit `Degraded { lost }`, for a lost Full member of a placement with a witness, whose
+    /// `Joint` needs both Full members of its old half and never commits without it.
+    Degrade { lost: SiteId },
+    /// `replace_step` only: under `Degraded { lost }`, join a new member on `add` in the lost member's slot and kind at
+    /// the next generation, then commit `Normal` naming it, with the home on `add` if it was on `lost`.
+    Restore { add: SiteId },
     /// The config's voters and home are the target's, and the leader is on the home.
     Done,
     /// The target's voter count differs from the config's (`Solo` to or from a three-site record), or it names a site
@@ -94,6 +100,47 @@ pub fn next_step(cfg: &GroupConfig, leader: SiteId, to: &PlacementRecord) -> Mov
     MoveStep::Swap { add, drop }
 }
 
+/// The next step of `ReplaceMember { lost, spare }` for one group (`design/DESIGN.md`, "Install operations", Site
+/// loss): its committed voters with `lost`'s member on `spare`, and the home on `spare` if it was on `lost`. A Tri group
+/// goes through `next_step`'s one-site `Joint`, which commits on the two survivors. A lost Full member of a `*2w`
+/// group goes out by `Degrade` and comes back on `spare` by `Restore`, one content copy in between. A lost witness
+/// takes the `Joint`, whose halves need only the Full members. `Done` once the leader is on the target's home.
+pub fn replace_step(cfg: &GroupConfig, leader: SiteId, lost: SiteId, spare: SiteId) -> MoveStep {
+    let base = match cfg {
+        GroupConfig::Degraded { placement, lost: l } if *l == lost => return MoveStep::Restore { add: spare },
+        GroupConfig::Degraded { .. } => return MoveStep::Degraded,
+        GroupConfig::Normal(p) => p,
+        GroupConfig::Joint { old, .. } => old,
+    };
+    let lost_kind = base.voters().iter().find(|m| m.site == lost).map(|m| m.kind);
+    if matches!(cfg, GroupConfig::Normal(_))
+        && lost_kind == Some(graftyard_types::MemberKind::Full)
+        && base.voters().iter().any(|m| m.kind == graftyard_types::MemberKind::Witness)
+    {
+        return MoveStep::Degrade { lost };
+    }
+    let swap = |s: SiteId| if s == lost { spare } else { s };
+    let to = PlacementRecord {
+        name: graftyard_types::PlacementName::Tri,
+        sites: base.voters().iter().map(|m| swap(m.site)).collect(),
+        home: swap(base.home()),
+        generation: base.next_generation(),
+        moving_from: None,
+        at: Timestamp(0),
+    };
+    next_step(cfg, leader, &to)
+}
+
+/// Whether `cfg` still holds a voter on `site`, in either half of a `Joint` or as a `Degraded` config's lost member:
+/// the groups `ReplaceMember` moves, from `graftyard_types::replace_candidates`. Learners there drop out instead.
+pub fn holds(cfg: &GroupConfig, site: SiteId) -> bool {
+    let on = |p: &graftyard_types::Placement| p.voters().iter().any(|m| m.site == site);
+    match cfg {
+        GroupConfig::Normal(p) | GroupConfig::Degraded { placement: p, .. } => on(p),
+        GroupConfig::Joint { old, new } => on(old) || on(new),
+    }
+}
+
 /// The `Joint`'s home after `Swap { add, drop }` on `p`: the home stays unless its site leaves; then the target's home
 /// if the new half holds it as a Full voter, else the new member's site, until `Home` moves it.
 pub fn swap_home(p: &graftyard_types::Placement, add: SiteId, drop: SiteId, to_home: SiteId) -> SiteId {
@@ -116,6 +163,7 @@ pub fn warm_site(cfg: &GroupConfig, leader: SiteId, to: &PlacementRecord, step: 
     let next = match (step, cfg) {
         (MoveStep::Transfer { to }, _) => to,
         (MoveStep::Home { home }, _) => home,
+        (MoveStep::Restore { add }, GroupConfig::Degraded { placement, lost }) if placement.home() == *lost => add,
         (MoveStep::Swap { add, drop }, GroupConfig::Normal(p)) => {
             let home = swap_home(p, add, drop, to.home);
             if home == p.home() {

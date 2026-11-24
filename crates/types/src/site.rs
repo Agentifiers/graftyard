@@ -29,6 +29,16 @@ impl Region {
             Region::Oc => "oc",
         }
     }
+
+    /// The continent a spare replaces a lost site on: a spare never votes beside an active site of its own continent
+    /// (`design/DESIGN.md`, journey 5: the spare is "on A's continent").
+    pub fn continent(self) -> u8 {
+        match self {
+            Region::Enam | Region::Wnam => 0,
+            Region::Weur | Region::Eeur => 1,
+            Region::Apac | Region::Oc => 2,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -109,6 +119,13 @@ impl SiteTable {
     pub fn get(&self, id: SiteId) -> Option<&Site> {
         self.0.iter().find(|s| s.id == id)
     }
+
+    /// The spare a `ReplaceMember` of `lost` moves its members onto: the first spare, by id, on `lost`'s continent.
+    /// `None` for a spare or unknown `lost`, or a continent with no spare.
+    pub fn spare_for(&self, lost: SiteId) -> Option<SiteId> {
+        let l = self.get(lost).filter(|s| !s.spare)?;
+        self.0.iter().filter(|s| s.spare && s.region.continent() == l.region.continent()).map(|s| s.id).min()
+    }
 }
 
 #[cfg(test)]
@@ -123,5 +140,38 @@ mod tests {
         assert_eq!(s.iter().collect::<Vec<_>>(), vec![SiteId(0), SiteId(2), SiteId(63)]);
         assert!(SiteSet::EMPTY.is_empty());
         assert_eq!(serde_json::to_string(&SiteSet::of([SiteId(1)])).unwrap(), "2");
+    }
+
+    fn site(id: u8, region: Region, spare: bool) -> Site {
+        Site {
+            id: SiteId(id),
+            script: format!("s{id}"),
+            account: "a".into(),
+            region,
+            jurisdiction: None,
+            bucket: format!("b{id}"),
+            release: None,
+            link: SiteLink::Binding { member_class: "Member".into() },
+            spare,
+        }
+    }
+
+    /// The spare is on the lost site's continent, not merely another spare: an install with spares in eeur and wnam
+    /// replaces enam with wnam and weur with eeur, and a site with no spare on its continent has none.
+    #[test]
+    fn a_lost_site_is_replaced_by_the_spare_on_its_continent() {
+        let t = SiteTable(vec![
+            site(0, Region::Enam, false),
+            site(1, Region::Weur, false),
+            site(2, Region::Apac, false),
+            site(3, Region::Eeur, true),
+            site(4, Region::Wnam, true),
+            site(5, Region::Wnam, true),
+        ]);
+        assert_eq!(t.spare_for(SiteId(0)), Some(SiteId(4)), "the lowest wnam spare");
+        assert_eq!(t.spare_for(SiteId(1)), Some(SiteId(3)));
+        assert_eq!(t.spare_for(SiteId(2)), None, "no spare in apac or oc");
+        assert_eq!(t.spare_for(SiteId(3)), None, "a spare is never lost");
+        assert_eq!(t.spare_for(SiteId(9)), None);
     }
 }

@@ -15,6 +15,9 @@ pub(super) struct Ops {
     pub(super) deps: BTreeMap<Script, Deployment>,
     pub(super) gate: Gate,
     pub(super) health: BTreeMap<u8, Verdict>,
+    pub(super) moves: ops::MoveRun,
+    /// Every move Workflow started, in order.
+    pub(super) started: Vec<ops::MoveSpec>,
     /// Every deployment created, in order.
     pub(super) deployed: Vec<(Script, ops::Split)>,
     /// The intents `release roll` submitted, in order.
@@ -43,6 +46,8 @@ impl Ops {
             deps,
             gate: Gate::Pass,
             health: BTreeMap::new(),
+            moves: ops::MoveRun::Absent,
+            started: Vec::new(),
             deployed: Vec::new(),
             rolled: Vec::new(),
             next_id: 100,
@@ -50,7 +55,13 @@ impl Ops {
     }
 
     pub(super) fn world(&self) -> World {
-        World { now: self.g.at, deployments: self.deps.clone(), gate: self.gate.clone(), health: self.health.clone() }
+        World {
+            now: self.g.at,
+            deployments: self.deps.clone(),
+            gate: self.gate.clone(),
+            health: self.health.clone(),
+            moves: self.moves.clone(),
+        }
     }
 
     fn seed(s: Signer) -> &'static [u8; 32] {
@@ -80,6 +91,10 @@ impl Ops {
             Action::Wait { until: None, why } => panic!("waits with no time: {why}"),
             Action::Page(why) => panic!("paged: {why}"),
             Action::Rotate { .. } => panic!("a roll runs no Rotate step"),
+            Action::StartMove { spec, .. } => {
+                self.started.push(*spec);
+                self.moves = ops::MoveRun::Running;
+            }
             Action::Idle => {}
         }
         a
@@ -200,7 +215,7 @@ fn release_roll_runs_the_order_and_graft_ops_runs_each_intent_to_done() {
 }
 
 /// `FormatsEnable { f }` signed by the customer key, with the release-signing key's half over the format.
-fn formats_enable(g: &G, f: Format) -> Vec<u8> {
+pub(super) fn formats_enable(g: &G, f: Format) -> Vec<u8> {
     let sk = ed25519_dalek::SigningKey::from_bytes(&RELEASE);
     let half = Signature(ed25519_dalek::Signer::sign(&sk, &formats_enable_message(f)).to_bytes());
     let mut e = SignedEntry::decode(&g.entry(ReleaseEntry::FormatsEnable { format: f }, &[&CUSTOMER])).unwrap();

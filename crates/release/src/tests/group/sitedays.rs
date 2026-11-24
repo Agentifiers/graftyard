@@ -9,8 +9,8 @@ use super::*;
 use crate::gate::{self, HealthLog, Side, SiteHealth, Verdict};
 use crate::ops::{self, Action, Dwell, Gate, Signer};
 
-const BURNING: Verdict = Verdict { burning: true, calm: false };
-const CALM: Verdict = Verdict { burning: false, calm: true };
+const BURNING: Verdict = Verdict { burning: true, calm: false, silent: false, recovered: false };
+const CALM: Verdict = Verdict { burning: false, calm: true, silent: false, recovered: false };
 
 fn health(v: &[(u8, Verdict)]) -> BTreeMap<u8, Verdict> {
     v.iter().copied().collect()

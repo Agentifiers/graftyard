@@ -268,6 +268,40 @@ pub fn decide(
     plan
 }
 
+/// `ReplaceMember`'s fill of the spare's bucket (`design/DESIGN.md`, Failure modes, pack buckets): every committed pack
+/// of every network that `spare` lacks, copied from a surviving bucket, never from `lost`, whose views are dropped.
+/// Packs held in one surviving bucket alone come first across all networks, since a second loss would take them; then
+/// the rest, network by network. Each pack is copied once per network, not once per group. Only fills to `spare`: the
+/// cron's own sweep marks, deletes and aborts as before.
+pub fn refill(
+    networks: &[(NetworkId, Vec<BucketView>)],
+    lost: SiteId,
+    spare: SiteId,
+    now: Timestamp,
+) -> Vec<(NetworkId, Action)> {
+    let (mut single, mut rest) = (Vec::new(), Vec::new());
+    for (network, views) in networks {
+        // The spare's own listing counts, so a refill that ran before copies nothing twice.
+        let mut views: Vec<BucketView> = views.iter().filter(|v| v.site != lost).cloned().collect();
+        if !views.iter().any(|v| v.site == spare) {
+            views.push(BucketView { site: spare, packs: Vec::new(), markers: Vec::new(), uploads: Vec::new() });
+        }
+        let copies = |id: PackId| {
+            let key = R2Key::Pack { network: *network, id }.to_string();
+            views.iter().filter(|v| v.site != spare && v.packs.iter().any(|o| o.key == key)).count()
+        };
+        for a in decide(*network, &views, &BTreeMap::new(), now).actions {
+            if let Action::Fill { to, id, .. } = &a
+                && *to == spare
+            {
+                if copies(*id) == 1 { single.push((*network, a)) } else { rest.push((*network, a)) }
+            }
+        }
+    }
+    single.extend(rest);
+    single
+}
+
 /// The chain a marker put or a fill writes for, from its marker.
 fn write_chain(a: &Action) -> Option<ChainId> {
     match a {
@@ -722,6 +756,61 @@ mod tests {
 
     fn mark_key(id: PackId) -> R2Key {
         R2Key::committed(pack_key(id)).unwrap()
+    }
+
+    /// M6-WP1: site 0 is lost and site 3 is its spare. Network 7 has a pack only in bucket 1 (its other copy was on
+    /// 0) and one in 1 and 2; network 8 has one only in bucket 2 and one in 1 and 2. The single-copy packs of both
+    /// networks are copied first, every fill is from a surviving bucket into the spare, each pack once, and a pack the
+    /// spare already holds is not copied again.
+    #[test]
+    fn a_refill_copies_single_copy_packs_first_from_surviving_buckets_only() {
+        const NET2: NetworkId = NetworkId(DbId(8));
+        let b: [MemBucket; 4] = Default::default();
+        let put = |b: &MemBucket, net: NetworkId, id: PackId, n: u8| {
+            let meta = ObjectMeta { chain: CHAIN, request: rid(n) }.to_pairs().to_vec();
+            b.plant(&R2Key::Pack { network: net, id }.to_string(), &body(n), Timestamp(T0), &meta);
+            b.set_now(Timestamp(T0));
+            block_on(put_marker(b, net, id, &marker(n, u64::from(n)))).unwrap();
+        };
+        let (one7, two7, one8, two8, held) = (pid(1, T0), pid(2, T0), pid(3, T0), pid(4, T0), pid(5, T0));
+        for (id, n) in [(one7, 1), (two7, 2), (held, 5)] {
+            put(&b[0], NET, id, n);
+        }
+        put(&b[1], NET, one7, 1);
+        put(&b[1], NET, two7, 2);
+        put(&b[2], NET, two7, 2);
+        put(&b[0], NET2, one8, 3);
+        put(&b[2], NET2, one8, 3);
+        put(&b[1], NET2, two8, 4);
+        put(&b[2], NET2, two8, 4);
+        put(&b[1], NET, held, 5);
+        put(&b[2], NET, held, 5);
+        put(&b[3], NET, held, 5);
+        let view = |net: NetworkId| -> Vec<BucketView> {
+            b.iter()
+                .enumerate()
+                .map(|(i, b)| BucketView {
+                    site: SiteId(i as u8),
+                    packs: block_on(b.list(&R2Key::pack_prefix(net))).unwrap(),
+                    markers: block_on(b.list(&R2Key::marker_prefix(net))).unwrap(),
+                    uploads: Vec::new(),
+                })
+                .collect()
+        };
+        let plan = refill(&[(NET, view(NET)), (NET2, view(NET2))], SiteId(0), SiteId(3), Timestamp(T0 + H));
+        let got: Vec<(i64, PackId, u8, u8)> = plan
+            .iter()
+            .map(|(n, a)| match a {
+                Action::Fill { to, from, id, .. } => (n.0.0, *id, from.0, to.0),
+                a => panic!("{a:?}"),
+            })
+            .collect();
+        assert_eq!(got.len(), 4, "{got:?}");
+        let firsts: BTreeSet<PackId> = got[..2].iter().map(|g| g.1).collect();
+        assert_eq!(firsts, BTreeSet::from([one7, one8]), "single-copy packs first, across networks: {got:?}");
+        assert_eq!((got[0].2, got[1].2), (if got[0].1 == one7 { (1, 2) } else { (2, 1) }));
+        assert!(got.iter().all(|g| g.2 != 0 && g.3 == 3), "never from the lost bucket, only into the spare");
+        assert!(!got.iter().any(|g| g.1 == held), "the spare already holds it");
     }
 
     /// G9's remainder, not called yet: the sweeper's deletion of consumed packs waits for the keep and for every

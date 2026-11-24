@@ -327,6 +327,30 @@ pub struct Verdict {
     pub burning: bool,
     /// Both other voter sites report under `UNDRAIN_BURN` over `UNDRAIN_AFTER`.
     pub calm: bool,
+    /// Both other voter sites report at least `MIN_CALLS` calls to it over `ZERO_ACKS` and every one missed: the
+    /// "zero acks" a `ZERO_ACKS` `ReplaceMember` needs (`loss`).
+    pub silent: bool,
+    /// Both other voter sites report under `UNDRAIN_BURN` over `RECOVER_AFTER`: a site `ReplaceMember` moved off has
+    /// recovered and may be undrained ("Install operations", Site loss).
+    pub recovered: bool,
+}
+
+/// How long a replaced site must stay under `UNDRAIN_BURN` from both other sites before the drain key undrains it
+/// ("Install operations", Site loss: "under `UNDRAIN_BURN` for 24 h"). Only a test-faults `graft-ops` reads a shorter
+/// window (`OPS_RECOVER_MS`), for a hosted row whose lines do not measure this length.
+pub const RECOVER_AFTER: u64 = 24 * 3_600_000;
+
+/// Adds `silent` and `recovered` to `v` from the reports over `ZERO_ACKS` (`zero`) and over the host's recovery window
+/// (`recover`), with the same rule as `verdict`: both other voter sites, each report at least `MIN_CALLS`.
+pub fn loss(v: &mut BTreeMap<u8, Verdict>, voters: &[SiteId], zero: &[SiteHealth], recover: &[SiteHealth]) {
+    let all = |t: SiteId, reports: &[SiteHealth], ok: &dyn Fn(&SiteHealth) -> bool| {
+        voters.iter().filter(|o| **o != t).all(|o| reports.iter().any(|h| h.observer == *o && h.target == t && ok(h)))
+    };
+    for t in voters {
+        let e = v.entry(t.0).or_default();
+        e.silent = all(*t, zero, &|h| h.evidence() && h.missed == h.calls);
+        e.recovered = all(*t, recover, &|h| h.under(UNDRAIN_BURN));
+    }
 }
 
 /// Each voter site's verdict from the reports of the others. `fast` holds the `DRAIN_WINDOW` reports and `slow` the
@@ -340,7 +364,7 @@ pub fn verdict(voters: &[SiteId], fast: &[SiteHealth], slow: &[SiteHealth]) -> B
         .map(|t| {
             let burning = all(*t, fast, &|h| h.at_least(DRAIN_BURN));
             let calm = all(*t, slow, &|h| h.under(UNDRAIN_BURN));
-            (t.0, Verdict { burning, calm })
+            (t.0, Verdict { burning, calm, ..Verdict::default() })
         })
         .collect()
 }
