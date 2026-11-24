@@ -6,8 +6,6 @@ tests/am1/hosted/plant.py: commits reachable from existing refs reported as new
 tests/am1/wp3/plant.py: a derived final state is not recorded by the next command
 tests/am1/wp4/plant.py: glob overlap ignores a trailing ** after a literal
 tests/am1/wp4/plant.py: a release reports Expired, not Released
-tests/b034reads/plant.py: no record of the pack's objects
-tests/b034reads/plant.py: no multi-pack-index count after an ingest
 tests/hitgate/plant.py: chain-site: main's rule, every site waits as a chain site
 tests/m3/close/plant.sh: cursor-chases-itself
 tests/m3/wp3/plant.sh: live-before-move
