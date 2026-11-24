@@ -19,7 +19,9 @@ IMG=$(grep -o '@sha256:[0-9a-f]\{8\}' "$L" | head -1 | tr -d @)
 st "site day ok, image $IMG"
 bash tests/am1/load34/deploy.sh > "/tmp/$RUN-load34deploy.log" 2>&1 || stop "load34 deploy failed"
 node tests/am1/rest/a1.mjs --selftest > "/tmp/$RUN-selftest.log" 2>&1 || stop "a1 selftest failed"
-python3 tests/fanout/edgever.py "$L" >> "$GO_STATUS" 2>&1 || stop "the edge is not the site day's"
+# EDGE_LOG: the log of the site day whose edge must serve, when this one deployed none (SITEDAY_EDGE=0).
+EL=${EDGE_LOG:-$L}
+python3 tests/fanout/edgever.py "$EL" >> "$GO_STATUS" 2>&1 || stop "the edge is not the site day's"
 # b034setup.mjs keeps any network already in $M3_STATE/b034.json, so a previous row's file left there makes this row
 # reuse that row's networks, retired or held (mt11's first try took mt10's held 1048603 and its retired, purged
 # networks, and stopped at the cold-warm check). The row's networks must be the suffix's.
@@ -29,5 +31,5 @@ B034_SUFFIX=$SUFFIX node tests/fanout/b034setup.mjs >> "tests/fanout/raw/b034-$T
 st "row start"
 export ROWS_ENV=tests/fanout/env-m1.sh
 HOSTED=${HOSTED:-100} ROW=b034 ACCT_FROM=${ACCT_FROM:-2026-11-19T00:00:00Z} STOP=${STOP:-170} RUN_FROM=$(cat "tests/am1/raw/$RUN.start") \
-  RUN_STOP=${RUN_STOP:-8} RUN_PREFIX=graft-m1 EXPECT=${EXPECT:-4} EDGE_LOG=$L IMG=$IMG DRAIN=1 DRAIN_MIN=90 WARM_MIN=45 \
+  RUN_STOP=${RUN_STOP:-8} RUN_PREFIX=graft-m1 EXPECT=${EXPECT:-4} EDGE_LOG=$EL IMG=$IMG DRAIN=1 DRAIN_MIN=90 WARM_MIN=45 \
   POOL_PROBE=2:7 B034_DIR=$HOME/b034 exec bash tests/fanout/costrow.sh
