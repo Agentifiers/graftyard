@@ -33,9 +33,10 @@ AGENT_CMDS_ENTRY = 64
 ADVERT_TTL_MS = 2_000
 # A lapsed full advert holds Agent writes this long (`graftyard_raft::admit::ADVERT_STALE`).
 ADVERT_STALE_MS = 10_000
-# edge-refusal-bound's flip R2b (`decisions/DECISIONS.md`): erBA's agent commands cut a second while refusing, p50, and
-# its agent `ok` pushes. A rerun below either reverts the send check.
-ERBA_CUT_P50, ERBA_AGENT_OK = 78.7, 1_498
+# edge-refusal-bound's flip R2b (`decisions/DECISIONS.md`): the baseline's agent commands cut a second while refusing,
+# p50. A run below it reverts the send check. The baseline is erDA's 114.2 since the lead's ruling of 2026-11-23
+# (erBA's 78.7 was the slow-host rerun's).
+ERDA_CUT_P50 = 114.2
 ms = lambda s: int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
 
 
@@ -164,10 +165,10 @@ def read(path, tag=None):
     print(f"flip 3 (starvation): {starved} refusing windows with the leader's agent lane empty; agent commands cut a "
           f"second while refusing p50 {pct(rates, .5)}, saturated drain before refusing began p50 {pct(pre, .5)} "
           "(compare with the matched baseline's agent commands cut a second at 90%)")
-    # edge-refusal-bound's flip R2b, its drain half (the other half is pushfull.py's agent `ok` against erBA's 1,498).
+    # edge-refusal-bound's flip R2b, its drain half (the other half is pushfull.py's agent `ok` against erDA's 8,369).
     r2b = pct(rates, .5)
-    print(f"flip R2b (drain half): agent commands cut a second while refusing p50 {r2b} against erBA's {ERBA_CUT_P50}: "
-          + ("FLIPPED, revert the send check" if r2b is not None and r2b < ERBA_CUT_P50 else "not met"))
+    print(f"flip R2b (drain half): agent commands cut a second while refusing p50 {r2b} against erDA's {ERDA_CUT_P50}: "
+          + ("FLIPPED, revert the send check" if r2b is not None and r2b < ERDA_CUT_P50 else "not met"))
     so = sum(v["failOpen"] for v in iso.values())
     sr = sum(v["refused"] for v in iso.values())
     print(f"flip 4 (leader still refusing at pfA's counts, read with pushfull.py's admission and expire_agents): "

@@ -72,10 +72,12 @@ for line in open(path):
     for m in ("ask", "stagefirst", "busy", "missed", "suspect"):
         marks[m] += 1 if m in s else 0
 print(json.dumps({"agentPushes": dict(n), "fullBy": dict(where.most_common()), "fullMarks": dict(marks)}))
-# edge-refusal-bound's flip R2b, its push half (`decisions/DECISIONS.md`): agent `ok` pushes under erBA's 1,498 revert
-# the send check. Its drain half is edgefull.py's.
-print(f"flip R2b (push half): agent ok pushes {n['ok']} against erBA's 1498: "
-      + ("FLIPPED, revert the send check" if n["ok"] < 1498 else "not met"))
+# edge-refusal-bound's flip R2b, its push half (`decisions/DECISIONS.md`): agent `ok` pushes under the baseline's revert
+# the send check. The baseline is erDA's 8,369 since the lead's ruling of 2026-11-23 (B0-33's fast-host runs; erBA's
+# 1,498 was the slow-host rerun's). Its drain half is edgefull.py's.
+ERDA_AGENT_OK = 8_369
+print(f"flip R2b (push half): agent ok pushes {n['ok']} against erDA's {ERDA_AGENT_OK}: "
+      + ("FLIPPED, revert the send check" if n["ok"] < ERDA_AGENT_OK else "not met"))
 print("budget left at the first send | ok / full")
 for _, _, label in BANDS:
     print(f"  {label:10s} | {budget[label]['ok']} / {budget[label]['full']}")

@@ -10,7 +10,7 @@ Prints, per shard object (`git#0#net:<NET>` is the home, `git#0#pool:<n>` the po
     part outside every page lap (the log page reads), `pages_ms.ingest` and `pages_ms.refs`;
   - per stored pack: wall, the ingest lap and the container's `index_ms`; and packs a second of wall, the shard's
     capacity while it runs flat out;
-then the home's lag: per 30 s since LOAD_ISO, how far behind the first pool shard to reach the same log index it
+then G39's counters per shard (`room_calls`, stored packs `adopted`, `batches`), then the home's lag: per 30 s since LOAD_ISO, how far behind the first pool shard to reach the same log index it
 reached each index, p50 and max. tests/am1/results/catchup-lag-design.md reads it for erDA and mrB.
 """
 import collections, json, lzma, os, sys, urllib.request
@@ -49,12 +49,20 @@ d = json.load(lzma.open(raw, "rt"))
 names, rows = d["names"], d["rows"]
 home = f"git#0#net:{net}"
 S, seen = collections.defaultdict(collections.Counter), collections.defaultdict(list)
+G = collections.defaultdict(collections.Counter)
 for r in sorted(rows, key=lambda r: r["t"]):
     j = json.loads(r["msg"].split(": ", 1)[1])
     o = names.get(j["obj"].split(":")[0], j["obj"][:6])
     seen[o].append((r["t"], j["to"]))
     s, p, m = j["stored"], j["pages_ms"], dict(j["ms"])
-    if not s["packs"] or not ms(load) <= r["t"] < ms(b):
+    if not ms(load) <= r["t"] < ms(b):
+        continue
+    # G39's counters (a site from g39-catchup on): `make_room` calls per run, stored packs adopted from a validate's
+    # aside, and calls that ingested more than one stored pack. An older site logs none.
+    g = G[o]
+    g["runs"] += 1; g["room_calls"] += j.get("room_calls", 0)
+    g["adopted"] += s.get("adopted", 0); g["batches"] += s.get("batches", 0); g["has"] += "room_calls" in j
+    if not s["packs"]:
         continue
     w = m.get("ingest", 0) - m.get("heads", m.get("cursor", 0))
     c = S[o]
@@ -68,6 +76,9 @@ for o, c in sorted(S.items()):
     print(f"{o:18s} {n:6d} {k / n:11.1f} {c['bytes'] / k / 1e3:7.1f} | {c['wall'] / n:17.0f} {c['room'] / n:4.0f} "
           f"{c['read'] / n:4.0f} {c['ingest'] / n:6.0f} {c['refs'] / n:4.0f} | {c['wall'] / k:12.1f} "
           f"{c['ingest'] / k:6.1f} {c['index'] / k:5.1f} | {1000 * k / c['wall']:7.1f}")
+print("G39 counters, catch-up runs since load: shard runs room_calls adopted batches (none: the site logs no G39 fields)")
+for o, g in sorted(G.items()):
+    print(f"{o:18s} {g['runs']:5d} " + (f"{g['room_calls']:10d} {g['adopted']:7d} {g['batches']:7d}" if g["has"] else "none"))
 first = {}
 for o, s in seen.items():
     if o != home:
