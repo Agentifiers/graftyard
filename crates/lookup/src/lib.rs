@@ -2699,6 +2699,25 @@ pub async fn system_record(
     g.placement(sc).cloned().ok_or_else(|| format!("the genesis has no {sc:?} record"))
 }
 
+/// A system chain's record as its source holds it, for the bootstrap check (`design/DESIGN.md`, Shape, `bootstrap`):
+/// the cached view's genesis, else the genesis this isolate accepted, else one read from the `Release` group. Never a
+/// `MemberRegistry` row, as `system_record`'s cold path takes: a row's record has no `at` (`RegistryRow::record`), so
+/// it never equals the record a joiner was sent, and graft-m6a's cold isolates on sites 1 and 2 refused every
+/// `Tokens` bootstrap join whose site-0 member had already written its row (`tests/m6/results/m6-wp1.md`, "Bootstrap
+/// refusals on cold isolates").
+pub async fn source_record(
+    b: &Bindings<'_>,
+    anchor: &graftyard_release::Anchor,
+    chain: ChainId,
+) -> std::result::Result<PlacementRecord, String> {
+    let sc = system_of(chain).ok_or_else(|| format!("{chain} is not a system chain"))?;
+    let g = match view::with(|v| v.fold.genesis.clone()).or_else(held_genesis) {
+        Some(g) => g,
+        None => genesis(b, anchor).await?,
+    };
+    g.placement(sc).cloned().ok_or_else(|| format!("the genesis has no {sc:?} record"))
+}
+
 pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }

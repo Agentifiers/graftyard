@@ -10564,3 +10564,25 @@ for longer than one `MINT_RESEND_MS` after its errors crossed the line (count ac
 **Flip.**
 - An install whose `Release` history outgrows a cold agents isolate's first read. Then serve the agents view a checkpoint the customer key signs, as the base would need for its own isolates.
 - A need to hide an entry kind from the agents account. Then the view needs a signed digest chain over the filtered feed.
+
+### `source-record`: a bootstrap join of a system chain checks its record against the genesis itself, never a registry row, 2026-11-24
+
+**Decision.** `member.rs`'s `check_source` reads a `Source::Genesis` join's source record through `graftyard_lookup::source_record`: the cached view's genesis, else the genesis the isolate accepted, else one read from the `Release` group. `system_record` keeps its registry-row shortcut, which only finds a group's members.
+
+**Why.** M5-WP2's `system_record` (7e01f24f) answers a cold isolate's ask from the chain's `MemberRegistry` row before it reads the genesis, and a row's record carries `at: 0` (`RegistryRow::record`). `check_source` compares the joiner's record for equality, so once a chain's site-0 member had written its row, a cold isolate on site 1 or 2 refused the same genesis record as `notTheSourcesRecord`. graft-m6a's `Tokens` precreate on main 05ea366d answered 200 for 74 of 384 ranges and left about 2,000 chains with rows but no working group (`tests/m6/results/m6-wp1.md`, "Bootstrap refusals on cold isolates"). graft-m3f and graft-m4a were built from 20147db, before 7e01f24f.
+
+**What it beat.**
+- **Comparing the records without `at`:** it would accept a row's record as the source, which no signed entry wrote, and a later record of the same shape would pass the check.
+- **A registry row carrying the full record:** a row change on every site for a field only this check reads.
+
+**The other callers** (each read for this decision; none compares a `system_record` result with another record):
+- The edge's `Ctx::system_record`, `record_for`, `system_read`, `commit_system`, the `jti` check, `export::record`, `/_bed/*`, `after_genesis` and `/release/entries`, the site's `owner_record`, `repo_owner_row`, `lease_once`, the hooks, activity, actions, audit and export feed callers, and `graft-ops`' `Rotate`: each passes the record to `call`, `commit` or `create`, which use only its sites, home and generation to find members.
+- **Not safe, and left open:** `create`'s own joins send the record they were given. On a cold edge or site isolate, `system_record` hands it the row's record (`at: 0`) for any chain with a row. For a working group that never matters, because `create`'s probe answers first and no join is sent. For a half-made group, with a row and no leader, the joins carry `at: 0`, and with this change every member refuses them. The precreate route (`/api/graftyard/v1/release/tokens`) is not affected: it sends the accepted genesis's own record, so it repairs such a chain. A cold `commit_system` or `jti` create of a half-made `Names` or `Tokens` chain is affected. Before this change that path was refused by every warm member too. Recorded as OPEN-QUESTIONS R54.
+- `Join::record` comparisons inside `join` (`joinedAs`) and `Placement` moves compare a member's own stored join, not a looked-up record.
+
+**Evidence.**
+- `tests/sourcebed/run.sh`: the site's own build in local workerd with a real genesis and no `GRAFTYARD_GENESIS` stand-in. On 05ea366d a cold site-1 isolate refuses `tokens:7`'s genesis record and names `at: 0` (FAIL). With this change it joins, and `tokens:8`'s record with `at` moved by 1 ms is refused naming the genesis's `at` (PASS, 0 wasm traps). Both builds refuse the moved record.
+- Site lib tests with test-faults 126 of 126; `graftyard-lookup` 55 of 55; `tests/edgeboot/run.sh` both builds PASS, 0 traps.
+- `tests/m0carried/plant131.py`, 3 mutants.
+
+**Flip.** None expected: the check's rule is the design's (`design/DESIGN.md`, Shape, `bootstrap`). Revisit if a genesis read on a cold isolate's first bootstrap join shows as join latency on a precreate or a `Names` create.
