@@ -745,9 +745,8 @@ pub const PROTECTED_PATHS: &[&str] = &[".github/workflows/**", ".github/actions/
 pub struct ProtectedHits { pub refname: RefName, pub paths: SmallVec<[Box<str>; 4]> }
 /// From the same tree diff, every changed path, or past PATHS_MAX their directories with `truncated` set. `Push`
 /// carries `changed` beside `protected` and `provenance`, `decide` will match it against live Exclusive leases
-/// (AM1-WP4) and against its own fold's `AgentPolicy.extra_paths`, so a policy change binds on the next entry whatever
-/// policy the edge read, and `PathSet.paths` is copied from it. REST ref writes (`POST` and `PATCH /git/refs`, `POST /merges`) by
-/// an `Agent` or under an agent prefix run `validate` on an empty staged pack, so they get all three outputs.
+/// (AM1-WP4) and its fold's `AgentPolicy.extra_paths` (binding next entry); `PathSet.paths` copies it. REST ref writes
+/// (`POST`/`PATCH /git/refs`, `POST /merges`) by an `Agent` or agent prefix `validate` an empty pack: all 3 outputs.
 pub struct ChangedPaths { pub refname: RefName, pub paths: Vec<Box<str>> /* <= PATHS_MAX */, pub truncated: bool }
 pub const PATHS_MAX: usize = 1_000;
 /// From `validate`, the new commits' trailers and any `refs/notes/ai` update in the same push. A parse failure leaves
