@@ -1,0 +1,6 @@
+2026-11-24T22:46:54Z
+6dc3aed7
+{"agentsFront":"1d05fc0e-ee43-42d4-a025-ae3be44c2745","counts":{"firstMismatch":null,"lastMismatch":null,"mismatches":0,"pinned":0,"requests":0,"thrown":0},"default":null,"now":1795560423769,"view":{"controller":null,"failing":false,"fails":0,"fetchedAgoMs":null,"index":0,"lastError":null,"oks":0}}
+{"script":"graft-agents-m4a-controller","created_on":"2026-11-24T22:46:48.845128Z","versions":["d8b368a1 100","8996a56e 0"]}
+{"script":"graft-agents-m4a-front","created_on":"2026-11-24T22:46:50.068645Z","versions":["1d05fc0e 100"]}
+front 1d05fc0e-ee43-42d4-a025-ae3be44c2745 CONTROLLER_DEFAULT: []
