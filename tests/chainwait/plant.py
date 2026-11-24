@@ -9,24 +9,29 @@ import os, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 RS = 'crates/git/src/compose.rs'
-T = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard', 'a_forwarded_miss']
+# A hang counts as caught (README, "Planted bugs").
+T = ['timeout', '-k', '10', '600', 'cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard', 'a_forwarded_miss']
+ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')))
 
-WAIT = 'let wait = if follows { left.min(CHAIN_WAIT_FORWARDED) } else { left };'
+# The wait is a match on (chain_site, follows) since chain-site; the two arms on a chain site are the rule planted here.
+FWD = '        (true, true) => left.min(CHAIN_WAIT_FORWARDED),\n'
+LAST = '        (true, false) => left,\n'
+BOTH = FWD + LAST
 MUTANTS = [
     # main's behaviour: every site waits the whole deadline.
-    ('every site waits the whole deadline', WAIT, 'let wait = left;'),
+    ('every site waits the whole deadline', FWD, '        (true, true) => left,\n'),
     # the last site loses its deadline, so kill's case would send a miss nowhere.
-    ('the last site waits only the bound', WAIT, 'let wait = left.min(CHAIN_WAIT_FORWARDED);'),
+    ('the last site waits only the bound', LAST, '        (true, false) => left.min(CHAIN_WAIT_FORWARDED),\n'),
     # the bound overruns what is left of the upload-pack's deadline.
-    ('the bound ignores the deadline', WAIT, 'let wait = if follows { CHAIN_WAIT_FORWARDED } else { left };'),
+    ('the bound ignores the deadline', FWD, '        (true, true) => CHAIN_WAIT_FORWARDED,\n'),
     # the rule inverted: the last site gets the bound and a forwarded miss the deadline.
-    ('the rule inverted', WAIT, 'let wait = if !follows { left.min(CHAIN_WAIT_FORWARDED) } else { left };'),
+    ('the rule inverted', BOTH, '        (true, true) => left,\n        (true, false) => left.min(CHAIN_WAIT_FORWARDED),\n'),
     # a timeout read as ready, so the miss goes on to compose on a shard with no chain.
-    ('a timeout counts as ready', 'futures_util::future::Either::Right(_) => false,',
-     'futures_util::future::Either::Right(_) => true,'),
+    ('a timeout counts as ready', '        futures_util::future::Either::Right(_) => !chain_site && !follows,',
+     '        futures_util::future::Either::Right(_) => true,'),
     # a ready chain read as late, so every miss answers warming.
-    ('a ready chain counts as late', 'futures_util::future::Either::Left(_) => true,',
-     'futures_util::future::Either::Left(_) => false,'),
+    ('a ready chain counts as late', '        futures_util::future::Either::Left(_) => true,\n        futures_util::future::Either::Right(_) => !chain_site',
+     '        futures_util::future::Either::Left(_) => false,\n        futures_util::future::Either::Right(_) => !chain_site'),
     # a 20 s bound, COMPOSE_WAIT's value, which waits out the home's whole 15 s as main did.
     ('the bound at 20 s', 'std::time::Duration::from_secs(2);', 'std::time::Duration::from_secs(20);'),
 ]
@@ -41,10 +46,12 @@ def main():
             if orig.count(old) != 1:
                 print(f'ANCHOR {name}: found {orig.count(old)} times'); bad += 1; continue
             open(path, 'w').write(orig.replace(old, new))
-            r = subprocess.run(T, cwd=ROOT, capture_output=True, text=True)
+            r = subprocess.run(T, cwd=ROOT, env=ENV, capture_output=True, text=True)
             out = r.stdout + r.stderr
             if r.returncode == 0:
                 print(f'MISSED   {name}'); bad += 1
+            elif r.returncode == 124:
+                print(f'CAUGHT   {name} (timed out)')
             elif 'error[' in out or 'could not compile' in out:
                 print(f'DID NOT COMPILE {name}'); bad += 1
             else:
