@@ -14,14 +14,16 @@
 //! - **Snapshots.** A range archived out of every source's log comes as an `InstallSnapshot` from the importer
 //!   (`install`); the host loads the objects it copied, calls `Member::install`, and the importer goes on from
 //!   `through`.
+//! - **The record.** No export object carries a chain's `PlacementRecord`, which the member's config needs. `record_of`
+//!   rebuilds it from entry 1, the bootstrap `Config`, and keeps it only if `bootstrap` of it is entry 1's bytes.
 
-use graftyard_types::{SiteId, Timestamp};
+use graftyard_types::{ChainId, PlacementName, PlacementRecord, SiteId, Timestamp};
 
 use crate::codec;
-use crate::encode::digest;
+use crate::encode::{bootstrap, digest};
 use crate::fold::{Command, Ev};
 use crate::member::{AppendReq, InstallSnapshot, InstallSource, Member, Message, Ready, Refusal};
-use crate::types::{Digest, Index, LogEntry, Next, PREV_ZERO, Term};
+use crate::types::{Digest, EntryBody, GroupConfig, Index, LogEntry, Next, PREV_ZERO, Term};
 
 /// The importer's address in the messages it steps into its member: above every learner address, so no placement
 /// can name it.
@@ -150,6 +152,41 @@ impl Importer {
         (self.held, self.digest) = (through, d);
         r
     }
+}
+
+/// The record `chain`'s group was bootstrapped from, rebuilt from `row`, its entry 1's stored bytes: the record whose
+/// `bootstrap` gives entry 1's digest. Several names share a shape (`Tri` and `Na3`), so each is tried and only an
+/// exact match is kept; `None` for a row that is no bootstrap `Config` or that no record rebuilds.
+pub fn record_of<E: serde::de::DeserializeOwned + crate::fold::Record>(
+    chain: ChainId,
+    row: &[u8],
+) -> Option<PlacementRecord> {
+    let e1: LogEntry<E> = codec::from_bytes(row).ok()?;
+    let EntryBody::Config(GroupConfig::Normal(p)) = &e1.body else { return None };
+    if e1.index != Index(1) {
+        return None;
+    }
+    let want = digest(&e1);
+    const NAMES: [PlacementName; 6] = [
+        PlacementName::Tri,
+        PlacementName::Na3,
+        PlacementName::Us2w,
+        PlacementName::Eu2w,
+        PlacementName::Apac2w,
+        PlacementName::Solo,
+    ];
+    NAMES.into_iter().find_map(|name| {
+        let rec = PlacementRecord {
+            name,
+            sites: p.voters().iter().map(|m| m.site).collect(),
+            home: p.home(),
+            generation: p.generation(),
+            moving_from: None,
+            at: e1.at,
+        };
+        let b = bootstrap::<E>(chain, &rec).ok()?;
+        (digest(&b) == want).then_some(rec)
+    })
 }
 
 impl Default for Importer {
