@@ -42,7 +42,7 @@ async fn wrap_keys(env: &Env, ctx: &Context) -> std::result::Result<crate::WrapK
     // A switched slot only; no members, no view yet, or no `Rotate` so far all read the variable.
     let current = match switched {
         Some(Some(Some(s))) => s,
-        _ => env.var("SECRETS_WRAP_KEY_CURRENT").ok().and_then(|v| v.to_string().parse().ok()).unwrap_or(0),
+        _ => crate::exec::wrap_var(env),
     };
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     crate::WrapKeySource::parse(current, &refs).map_err(|e| e.to_string())
