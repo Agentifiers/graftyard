@@ -5036,7 +5036,7 @@ What stays open is GC itself, which will drop objects. GC must not drop an objec
 
 **Decision.** In `on_suspect`, a report about the follower's leader counts toward `SUSPECT`'s two colos only while the follower has accepted no AppendEntries from any leader for CALL_DEADLINE (1 s, `appended_at`, which every accepted append sets, withheld or not). A report that does not count still answers its verdict and marks a stall, and a follower whose promise has lapsed still campaigns on one report. The colo window, the 2 x window bar, pre-vote's refusal and every other `suspect` rule are unchanged. So withholding needs both the edge's evidence (two colos missed a receipt) and the follower's own (the leader stopped reaching it).
 
-**Why.** On B0-33 m44, with colo-unknown deployed, 31,509 reports reached the voters: LAX 18,238, NRT 12,144, VIE 422, UNKNOWN 705. The edge now served from two real colos, so the two-colo rule held without colo 0. Of 61 campaigns, 46 followed LAX+NRT withholding, and terms went from 2 to 20, the first change 35 s into load, while each leader kept appending and committing (follower append gaps in load p50 58 to 123 ms, p90 658 to 730 ms, where the trace is dense). The edge's receipt deadline measures the leader's queue as well as its health, and under 500 agents the queue alone missed it. A follower's append clock measures what a lease needs: whether the leader still reaches it. Replaying the rule on m44's trace (`tests/fanout/latesuspect.py`) cuts the time two followers withheld at once from 293 s to 179 s at a 1 s deadline, and moves the first two-voter withholding from 2.2 s after the first report to 18.8 s. That moment is a 12.9 s gap in the leader's own sends (its event loop lagged 1.6 s), so the follower's evidence was real there, and the rule should withhold [measured, `tests/am1/results/lm1-memory.md`, "late-suspect"]. Those are lower bounds: in the replay a term's real leader changes still came from main's rule, so later terms start from a loop the fix would not have entered.
+**Why.** On B0-33 m44, with colo-unknown deployed, 160,306 reports reached the voters: LAX 98,623, NRT 59,481, VIE 1,217, UNKNOWN 985 (corrected 2026-11-24, `tests/am1/results/trace-dedup.md`; it read 31,509: LAX 18,238, NRT 12,144, VIE 422, UNKNOWN 705; the 61 campaigns are unchanged). The edge now served from two real colos, so the two-colo rule held without colo 0. Of 61 campaigns, 46 followed LAX+NRT withholding, and terms went from 2 to 20, the first change 35 s into load, while each leader kept appending and committing (follower append gaps in load p50 58 to 123 ms, p90 658 to 730 ms, where the trace is dense). The edge's receipt deadline measures the leader's queue as well as its health, and under 500 agents the queue alone missed it. A follower's append clock measures what a lease needs: whether the leader still reaches it. Replaying the rule on m44's trace (`tests/fanout/latesuspect.py`) cuts the time two followers withheld at once from 293 s to 179 s at a 1 s deadline, and moves the first two-voter withholding from 2.2 s after the first report to 18.8 s. That moment is a 12.9 s gap in the leader's own sends (its event loop lagged 1.6 s), so the follower's evidence was real there, and the rule should withhold [measured, `tests/am1/results/lm1-memory.md`, "late-suspect"]. Those are lower bounds: in the replay a term's real leader changes still came from main's rule, so later terms start from a loop the fix would not have entered.
 
 **What it beat.**
 - **(ii) The edge reports only a miss that a ping to the leader confirms:** the edge's ping waits in the same queue as its receipt, so it cannot tell queueing from sickness.
@@ -6908,9 +6908,9 @@ The lead's request after B0-35 m61: attribute f0's `/raft` CPU by call kind and 
 
 **Why.**
 - Learner read-index calls were f0's largest CPU kind on m61: 7,970 of 10,921 learner `/raft` calls in 09:48:00 to 09:49:39 carried one, at 22.9 of the window's 45.5 s of f0's CPU [measured].
-- 9,535 of the 46,250 learner read-index calls f0 received over the load were copies: 7,089 `HEDGE` copies and 2,446 `CALL_DEADLINE` resends. That was 30 to 40% of the calls in each minute once the admission queue built. The base batch rate did not grow with the queue (correlation −0.32), and the hedge rate did (+0.51) [measured, `tsave-m61`].
+- 9,535 of the 50,461 learner read-index calls f0 received over the load (corrected 2026-11-24, `tests/am1/results/trace-dedup.md`; it read 46,250) were copies: 7,089 `HEDGE` copies and 2,446 `CALL_DEADLINE` resends. That was 30 to 40% of the calls in each minute once the admission queue built. The base batch rate did not grow with the queue (correlation −0.32), and the hedge rate did (+0.51) [measured, `tsave-m61`].
 - Each batch waited for its own answer, so every slow batch was copied, although a later batch's answer would have served it. The earlier batches' reads arrived before the later batch left, so before the leader took it and confirmed i. A write acknowledged before any of them is therefore at or below i, which is the same floor rule as one batch.
-- A replay with every call's traced time sends 36,467 calls instead of 46,250 (21% fewer), and batch waits fall from p99 2.26 s to 1.78 s [inference, `tests/fanout/readnewest.py`]. It does not credit the leader's lighter load.
+- A replay with every call's traced time sends 40,678 calls instead of 50,461 (19.4% fewer; corrected 2026-11-24, `tests/am1/results/trace-dedup.md`, it read 36,467 against 46,250, 21%), and batch waits fall from p99 2.26 s to 1.78 s [inference, `tests/fanout/readnewest.py`]. It does not credit the leader's lighter load.
 
 **What it beat.**
 - **A longer `HEDGE` or an adaptive one (p90 of recent calls):** in the same replay, max(500 ms, p90) still copies 4,217 calls and slows the straggler case the hedge exists for.
@@ -9711,3 +9711,38 @@ second site is still refused at the commit send, in the same shape (`bound_at_se
   reaches site b.
 - **Revisit the 60 s wait on later tries** if moved agent validates read `validate` over 5 s on sites b and c. That
   means a later site's catch-up, not its gate, holds them.
+
+### `readindex-batch`: the read-index confirm is already batched; ack riding (B) and region asks (F) priced, not built, pushed grants (P) rejected, 2026-11-23
+
+**Status.** Ruled by the lead on 2026-11-23 from `tests/am1/results/readindex-batch.md`. Not built. Figures for m3fg3
+corrected 2026-11-24 (`tests/am1/results/trace-dedup.md`).
+
+**Decision.** The leader keeps confirming R once per heartbeat round for every read waiting, as it already does
+(`start_read`, `read_round`, `check_reads`). Learners keep one read-index ask per call at the 50 ms floor. Neither ack
+riding (B) nor one ask per region (F) is built. Pushed grants (P) are rejected.
+
+**Why.**
+- Batching on the leader is already there. The per-call bill is the hosted `/raft` request: 0.31 ms a call on mrB, 0.44
+  on m3fsf2 and 0.76 on m3fg3 [measured, plain-slice fit, `tests/fanout/raw/readcalls.out`]. Only fewer learner
+  requests lower it.
+- B and F together save 1.6% of leader CPU an entry on mrB and 9.5 to 14.9% on B0-32's slow leaders, the same order
+  as `encode-once` and `learner-relay`. None of them reaches the ×0.63 commit scale m3fsf2 needs for 450.
+- P removes the calls but gives up confirm-after-arrival: a learner could not tell from a pushed R that the leader
+  confirmed it after the read arrived.
+
+**What it beat.**
+- **B, append replies ride the next ask at the 50 ms floor:** up to 1.6 ms (1.2%) on mrB, 4.5 (3.5%) on m3fsf2, 9.3
+  (7.1%) on m3fg3.
+- **F, a region's learners ask at most 20 times a second between them:** 0.5 (0.4%), 7.7 (6.0%), 10.2 (7.8%). It
+  needs a learner-to-learner hop and must keep `read-newest`.
+- **C, a 100 ms learner floor:** 1.3 to 7.2 ms (1.0 to 5.5%), and `learner-cadence` was reversed on read wait.
+- **P, pushed grants:** up to 5.1 to 21.8 ms (3.8 to 16.6%). Rejected: it rests R on the lease and the clock bound.
+
+**Evidence.** `tests/am1/results/readindex-batch.md`; `tests/fanout/readcalls.py` and `tests/fanout/raw/readcalls.out`.
+m3fg3's fit rests on few slices: one 46 ms slice with 3 calls carries it, and with slices capped at 20 ms of CPU it
+reads 0.16 + 0.293 ms, 0.46 ms a call.
+
+**Flip.**
+- **Build B** when a row that misses its line on leader CPU has append-reply calls over 5% of leader CPU an entry.
+- **Build F** only when, on such a row, one region's learners together ask more than 40 times a second.
+- **P** stays rejected unless a design keeps confirm-after-arrival for every learner read.

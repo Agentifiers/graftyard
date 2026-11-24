@@ -40,7 +40,7 @@ site 1 campaign 20:20:12.937 (report term 16, colo LAX): leader 2 term 17; last 
 site 1 campaign 20:20:32.115 (report term 18, colo LAX): leader 2 term 17; last append 59 ms before; two colos 20:20:02.948 ['LAX', 'NRT'] -> withheld
 site 1 campaign 20:20:32.474 (report term 18, colo LAX): leader 2 term 17; last append 418 ms before; two colos 20:20:02.948 ['LAX', 'NRT'] -> withheld
 site 2 campaign 20:16:06.646 (report term 2, colo LAX): leader 0 term 2; last append 2688 ms before; two colos 20:15:57.302 ['LAX', 'NRT'] -> withheld
-site 2 campaign 20:16:26.583 (report term 2, colo NRT): leader 1 term 2; last append 2499 ms before; two colos 20:16:00.117 ['LAX', 'NRT'] -> withheld
+site 2 campaign 20:16:26.583 (report term 2, colo NRT): leader 1 term 3; last append 2499 ms before; two colos 20:16:08.639 ['LAX', 'NRT'] -> withheld
 site 2 campaign 20:16:37.880 (report term 3, colo LAX): leader 1 term 3; last append 8894 ms before; two colos 20:16:08.643 ['LAX', 'NRT'] -> withheld
 site 2 campaign 20:16:41.743 (report term 3, colo NRT): leader 1 term 3; last append 12757 ms before; two colos 20:16:13.075 ['LAX', 'NRT'] -> gap
 site 2 campaign 20:16:53.651 (report term 4, colo LAX): leader 0 term 5; last append 1329 ms before; two colos 20:16:43.402 ['LAX', 'NRT'] -> withheld

@@ -1,4 +1,6 @@
-import json, lzma, sys, bisect, collections
+import os, sys, bisect, collections
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'fanout')))
+from tracerows import load
 # Per /commit arrival on the leader, under read-ahead's freeze (the next batch freezes W ms after the entry in flight
 # was appended; `cut_early`), one clock (raw): the command rides entry j+1, the batch frozen during entry j's flight.
 #   a: arrival -> freeze               (waiting for the next freeze)
@@ -8,21 +10,14 @@ import json, lzma, sys, bisect, collections
 # Shares of the mean, and of the commands over the p99 (the tail). Also which voter's ack made each round's quorum
 # (AppendEnded 14 per peer, by round), to give append:2's far leg its share.
 path, t0, W = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]); t1 = t0 + 600000
-seen = set(); arr = []; app = {}; aply = []; ended = collections.defaultdict(dict); q12 = {}
-for l in lzma.open(path, 'rt'):
-    d = json.loads(l)
-    if 'rows' not in d or 'learner' in d or d.get('site') != 0: continue
-    for r in d['rows']:
-        t = tuple(r)
-        if t in seen: continue
-        seen.add(t)
-        if not (t0 - 5000 <= r[0] < t1 + 5000): continue
-        if r[1] == 25 and r[4] % 64 == 3 and t0 <= r[0] < t1: arr.append(r[0])
-        if r[1] == 15: app.setdefault(r[4], r[0])
-        if r[1] == 4: aply.append((r[0], r[4]))
-        if r[1] == 12 and r[2] in (1, 2): q12[(r[2], r[3])] = r[4]
-        if r[1] == 14 and r[2] in (1, 2) and r[4] == 0 and (r[2], r[3]) in q12:
-            ended[q12[(r[2], r[3])]].setdefault(r[2], r[0])
+arr = []; app = {}; aply = []; ended = collections.defaultdict(dict); q12 = {}
+for r in load(path, keep=lambda r: t0 - 5000 <= r[0] < t1 + 5000).get(0, []):
+    if r[1] == 25 and r[4] % 64 == 3 and t0 <= r[0] < t1: arr.append(r[0])
+    if r[1] == 15: app.setdefault(r[4], r[0])
+    if r[1] == 4: aply.append((r[0], r[4]))
+    if r[1] == 12 and r[2] in (1, 2): q12[(r[2], r[3])] = r[4]
+    if r[1] == 14 and r[2] in (1, 2) and r[4] == 0 and (r[2], r[3]) in q12:
+        ended[q12[(r[2], r[3])]].setdefault(r[2], r[0])
 aply.sort(); applied_at = {}; prev = 0
 for at, idx in aply:
     for i in range(prev + 1, idx + 1): applied_at.setdefault(i, at)

@@ -14,7 +14,7 @@ voter 2 rule (i)>=2000ms: 10 episodes, 210 s withheld
 voter 2 rule (i)>=3000ms: 2 episodes, 41 s withheld
 voter 2 rule (i)>=5000ms: 0 episodes, 0 s withheld
 rule main: two or more voters withholding at once 299 s
-rule (i)>=1000ms: two or more voters withholding at once 184 s
+rule (i)>=1000ms: two or more voters withholding at once 187 s
 rule (i)>=2000ms: two or more voters withholding at once 65 s
 rule (i)>=3000ms: two or more voters withholding at once 0 s
 rule (i)>=5000ms: two or more voters withholding at once 0 s
@@ -24,7 +24,7 @@ rule (i)>=2000ms: first two-voter withholding 407.097 s after the first report
 rule (i)>=3000ms: first two-voter withholding None s after the first report
 rule (i)>=5000ms: first two-voter withholding None s after the first report
 rule main: terms whose followers would both lapse inside the term 1 of 18: [2]
-rule (i)>=1000ms: terms whose followers would both lapse inside the term 1 of 18: [18]
+rule (i)>=1000ms: terms whose followers would both lapse inside the term 2 of 18: [12, 18]
 rule (i)>=2000ms: terms whose followers would both lapse inside the term 2 of 18: [11, 18]
 rule (i)>=3000ms: terms whose followers would both lapse inside the term 0 of 18: []
 rule (i)>=5000ms: terms whose followers would both lapse inside the term 0 of 18: []

@@ -91,16 +91,18 @@ leader object `repo:N#1#f0` (`durableObjectsInvocationsAdaptiveGroups` and `dura
 `coloCode`, read-only; `tests/fanout/docpumin.py` for CPU a minute). Windows: each row's load on site 0's leadership
 (m64r33 00:11:46 to 00:14:10, ncA 01:32:10 to 01:35:46) [measured unless tagged].
 
+Entry bytes corrected 2026-11-24 (`tests/am1/results/trace-dedup.md`; they read 3,070, 3,269, 908, 1,031 and 1,492 before the trace merge kept equal rows inside one save). The reading below holds.
+
 | Row (build) | Leader colo | Inputs/s | Stalls ≥ 500 ms a minute (stalled s a minute) | Confirm p90 | Turn work per input: entry bytes, statements | Leader CPU-s a loaded minute | CPU per request p50 / p90 µs |
 |---|---|---|---|---|---|---|---|
-| sabA (`c4d5a133`) | **EWR** | 314.2 | **2.0** (1.8) | 379 | 3,070, 1.26 | 33.5 to 40.3 | **298 to 411** / 1,075 to 2,265 |
-| m64r33 (`a1e431a6`, before `colo-gate`) | **IAD** | 224.7 | 10.0 (10.7) | 318 | 3,269, 0.80 | 22.2 to 24.8 | 483 to 486 / 1,599 to 2,080 |
-| chA (`68f1ba32`) | **IAD** | 314.0 | 16.2 (15.6) | 648 | 908, 0.93 | 35.0 to 40.7 | 392 to 516 / 1,260 to 1,600 |
-| crA (`3acfd02a`) | **ORD** | 347.0 | 7.2 (5.9) | 555 | 1,031, 1.03 | 32.2 to 41.3 | 326 to 379 / 994 to 1,695 |
-| ncA (`d6811ee8`) | **ATL** | 306.1 | **19.2** (19.1) | 826 | 1,492, 0.68 | 36.1 to 38.5 | **520 to 589** / 1,709 to 2,292 |
+| sabA (`c4d5a133`) | **EWR** | 314.2 | **2.0** (1.8) | 379 | 3,420, 1.26 | 33.5 to 40.3 | **298 to 411** / 1,075 to 2,265 |
+| m64r33 (`a1e431a6`, before `colo-gate`) | **IAD** | 224.7 | 10.0 (10.7) | 318 | 3,506, 0.80 | 22.2 to 24.8 | 483 to 486 / 1,599 to 2,080 |
+| chA (`68f1ba32`) | **IAD** | 314.0 | 16.2 (15.6) | 648 | 1,129, 0.93 | 35.0 to 40.7 | 392 to 516 / 1,260 to 1,600 |
+| crA (`3acfd02a`) | **ORD** | 347.0 | 7.2 (5.9) | 555 | 1,272, 1.03 | 32.2 to 41.3 | 326 to 379 / 994 to 1,695 |
+| ncA (`d6811ee8`) | **ATL** | 306.1 | **19.2** (19.1) | 826 | 1,731, 0.68 | 36.1 to 38.5 | **520 to 589** / 1,709 to 2,292 |
 
 1. **Inputs against stalls.** ncA's leader took 306 inputs a second against sabA's 314, with less turn work per input
-   (entry bytes encoded 1,492 against 3,070, statements 0.68 against 1.26), and the same CPU-seconds a minute (36 to
+   (entry bytes encoded 1,731 against 3,420, statements 0.68 against 1.26), and the same CPU-seconds a minute (36 to
    39 against 34 to 40). Yet it stalled 19.2 times a minute against 2.0. chA had sabA's input rate exactly (314.0) and
    stalled 16.2 a minute. The same or less work ran slower.
 2. **The leader's colo.** The leader object `#1#f0` (site a, enam) ran in EWR (sabA), IAD (m64r33, chA), ORD (crA) and

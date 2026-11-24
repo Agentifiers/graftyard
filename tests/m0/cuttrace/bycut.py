@@ -7,27 +7,21 @@ after the cut, and the command commits at that entry's apply (Applied 4). Split:
   round    own append -> own apply
 Prints the modelled commit against /stats, shares of mean and of the tail (>= p99), and what the tail's rounds had.
 Usage: bycut.py TSAVE FROM TO"""
-import bisect, collections, datetime, json, lzma, sys
+import bisect, collections, datetime, os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'fanout')))
+from tracerows import load
 P, F, T = sys.argv[1:4]
 iso = lambda s: int(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
 T0, T1 = iso(F), iso(T)
-seen = set(); arr = []; app = {}; aply = []; cuts = []; q12 = {}; ended = collections.defaultdict(dict); byts = collections.defaultdict(int)
-with (lzma.open if P.endswith(".xz") else open)(P, "rt") as f:
-    for l in f:
-        d = json.loads(l)
-        if "rows" not in d or d.get("learner") is not None or d.get("site") != 0: continue
-        for r in d["rows"]:
-            t = tuple(r)
-            if t in seen: continue
-            seen.add(t)
-            if not (T0 - 10000 <= r[0] < T1 + 10000): continue
-            k = r[1]
-            if k == 25 and r[4] % 64 == 3 and T0 <= r[0] < T1: arr.append(r[0])
-            elif k == 15: app.setdefault(r[4], r[0])
-            elif k == 4: aply.append((r[0], r[4]))
-            elif k == 29: cuts.append(r[0])
-            elif k == 12 and r[2] in (1, 2): q12[(r[2], r[3])] = r[4]; byts[r[4]] = max(byts[r[4]], r[5])
-            elif k == 14 and r[2] in (1, 2) and r[4] == 0 and (r[2], r[3]) in q12: ended[q12[(r[2], r[3])]].setdefault(r[2], r[0])
+arr = []; app = {}; aply = []; cuts = []; q12 = {}; ended = collections.defaultdict(dict); byts = collections.defaultdict(int)
+for r in load(P, keep=lambda r: T0 - 10000 <= r[0] < T1 + 10000).get(0, []):
+    k = r[1]
+    if k == 25 and r[4] % 64 == 3 and T0 <= r[0] < T1: arr.append(r[0])
+    elif k == 15: app.setdefault(r[4], r[0])
+    elif k == 4: aply.append((r[0], r[4]))
+    elif k == 29: cuts.append(r[0])
+    elif k == 12 and r[2] in (1, 2): q12[(r[2], r[3])] = r[4]; byts[r[4]] = max(byts[r[4]], r[5])
+    elif k == 14 and r[2] in (1, 2) and r[4] == 0 and (r[2], r[3]) in q12: ended[q12[(r[2], r[3])]].setdefault(r[2], r[0])
 aply.sort(); applied_at = {}; prev = 0
 for at, idx in aply:
     for i in range(prev + 1, idx + 1): applied_at.setdefault(i, at)

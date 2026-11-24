@@ -1,13 +1,9 @@
 import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import *
+from tracerows import load
 for tag in sys.argv[1:]:
-    a = ms(RUNS[tag][0]); rows = collections.defaultdict(list); seen = set()
-    for line in lzma.open(raw_path(tag), 'rt'):
-        d = json.loads(line)
-        if 'rows' not in d or 'learner' in d: continue
-        for r in d['rows']:
-            k = (d['site'],) + tuple(r)
-            if k not in seen and r[0] >= a and r[1] in (8, 28, 31): seen.add(k); rows[d['site']].append(r)
+    a = ms(RUNS[tag][0])
+    rows = load(raw_path(tag), keep=lambda r: r[0] >= a and r[1] in (8, 28, 31))
     rep = sorted({r[0] // 1000 * 1000 for s in (1, 2) for r in rows[s] if r[1] == 28 and r[2] == 0})
     sy = sorted((r[0] - I(r[5]), r[0], I(r[5])) for r in rows[0] if r[1] == 31)
     lg = sorted((r[0] - I(r[5]), r[0], I(r[5])) for r in rows[0] if r[1] == 8 and I(r[5]) >= 500)

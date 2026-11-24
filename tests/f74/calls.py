@@ -13,7 +13,10 @@
 # before the stamp is counted in the leg before it and never shows inside a leg [doc, Workers security model]. lag is
 # the event-loop lag the ticker saw (host.rs `loop_lag`): the caller's at send, the callee's at entry.
 #   python3 tests/f74/calls.py tsave-TAG.jsonl [--from ISO] [--to ISO] [--deadline 1000] [--rows out.tsv]
-import collections, datetime, json, sys
+import collections, datetime, os, sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fanout')))
+from tracerows import load
 
 args = sys.argv[1:]
 path = args[0]
@@ -23,14 +26,8 @@ T0 = iso(opt["--from"]) if "--from" in opt else 0
 T1 = iso(opt["--to"]) if "--to" in opt else 1 << 62
 DEADLINE = int(opt.get("--deadline", 1000))
 
-# Every member's rows, by address, deduplicated: tsave asks `since` its last row, so rows repeat only across resets.
-rows = collections.defaultdict(set)
-for line in open(path):
-    r = json.loads(line)
-    if "rows" not in r:
-        continue
-    addr = r["learner"] if "learner" in r else r["site"]
-    rows[addr].update(tuple(x) for x in r["rows"])
+# Every member's rows, by address, as `tracerows.merge` keeps them.
+rows = {w[1] if isinstance(w, tuple) else w: rs for w, rs in load(path, None).items()}
 
 sent, answer, left, arrived = {}, {}, {}, {}
 for addr, rs in rows.items():

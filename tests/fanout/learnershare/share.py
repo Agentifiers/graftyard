@@ -8,12 +8,10 @@ before the leader change (leader site 0), from the orb-stamped load start 11:16:
 alarm at 11:17:42Z; post-change is 3 minutes on site 1, the window the read gate's retries inflated.
   xz -dc tests/fanout/raw/tsave-m51b33.jsonl.xz > /tmp/m51/tsave.jsonl
   python3 tests/fanout/learnershare/share.py /tmp/m51/tsave.jsonl"""
-import bisect, collections, datetime, json, sys
-rows = collections.defaultdict(set)
-for line in open(sys.argv[1]):
-    r = json.loads(line)
-    if "rows" in r and "learner" in r:
-        rows[r["learner"]].update(tuple(x) for x in r["rows"])
+import bisect, collections, datetime, json, os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')))
+from tracerows import merge, saves
+rows = merge(saves(sys.argv[1], learners=True))
 iso = lambda s: int(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() * 1000)
 W = {"pre-change": ("2026-11-18T11:16:44Z", "2026-11-18T11:17:42Z", 0),
      "post-change": ("2026-11-18T11:18:30Z", "2026-11-18T11:21:30Z", 1)}

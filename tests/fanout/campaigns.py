@@ -14,17 +14,16 @@ renewals for 20 s. For each `started` row this prints, at that member:
     and `leader` verdict rows and from its appends (the leader sending them);
   - neither: a lapse this trace does not explain.
   python3 tests/fanout/campaigns.py tests/fanout/raw/tsave-m44b33.jsonl"""
-import bisect, collections, datetime, json, lzma, sys
+import bisect, collections, datetime, json, lzma, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load
 
 V = ["leader", "resumed", "started", "bootstrapping", "promised", "busy", "won", "lost", "mayNotLead"]
 hm = lambda t: datetime.datetime.fromtimestamp(t / 1000, datetime.UTC).strftime("%H:%M:%S.%f")[:-3]
 colo = lambda c: "UNKNOWN" if c == 0 else c.to_bytes(4, "big").lstrip(b"\0").decode("ascii", "replace")
 path = sys.argv[1]
-rows = collections.defaultdict(set)
-for line in (lzma.open if path.endswith(".xz") else open)(path, "rt"):
-    r = json.loads(line)
-    if "rows" in r and "learner" not in r:
-        rows[r["site"]].update(tuple(x) for x in r["rows"] if x[1] in (17, 28))
+rows = load(path, keep=lambda x: x[1] in (17, 28))
 out = collections.Counter()
 for s in sorted(rows):
     appends = sorted((x[0], x[2]) for x in rows[s] if x[1] == 17)

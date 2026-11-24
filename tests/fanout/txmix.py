@@ -17,7 +17,10 @@ Prints:
   python3 tests/fanout/txmix.py tests/fanout/raw/a1-b0-33-m52.jsonl tests/fanout/raw/tsave-m52b33.jsonl.xz \\
     2026-11-18T14:44:21Z 2026-11-18T14:49:21Z tests/fanout/raw/terms-m52b33.jsonl
 SHIFT_MS moves TERMS onto the trace's clock for runs before srvclock (m50 +7310, m51 +7440)."""
-import bisect, collections, datetime, json, lzma, sys
+import bisect, collections, datetime, json, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load
 
 ROW, P, F, T, TERMS = sys.argv[1:6]
 SHIFT = int(sys.argv[6]) if len(sys.argv) > 6 else 0
@@ -55,11 +58,7 @@ def group(kind):
 row = next(d for d in map(json.loads, open(ROW)) if isinstance(d.get("leader"), dict))
 big_tx = row["leader"].get("bigTx", [])
 
-rows = collections.defaultdict(set)
-for line in (lzma.open if P.endswith(".xz") else open)(P, "rt"):
-    r = json.loads(line)
-    if "rows" in r and "learner" not in r:
-        rows[r["site"]].update(tuple(x) for x in r["rows"] if x[1] in (4, 10, 16))
+rows = load(P, keep=lambda x: x[1] in (4, 10, 16))
 X = {s: sorted(v) for s, v in rows.items()}
 samples = [(iso(r["at"]) + SHIFT, {m[0]: m[1] for m in r["members"]}) for r in map(json.loads, open(TERMS)) if r.get("members")]
 st = [t for t, _ in samples]

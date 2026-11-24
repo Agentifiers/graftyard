@@ -4,19 +4,21 @@
 # Per learner read-index batch: learner IndexSent (1) -> leader IndexTaken (5) -> learner ResStepped (3, own call).
 # Batch numbers exceed 2^53 and lost precision in the JSON trace, so a batch is matched by its rounded number plus time:
 # the leader's IndexTaken from that peer with the same rounded number between send and answer (20 ms skew allowed).
-import json,sys,bisect,collections
+import json,sys,bisect,collections,os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fanout')))
+from tracerows import merge
 D=json.load(open(f"tests/nr3/raw/trace-{sys.argv[1]}.json"))
 # tsave.mjs's minute saves (after gate 16): every voter's rows, kept across its resets, merged into the end-of-run
 # leader's `f<site>` and the voters' `v<site>`.
 try:
     lead_key=next(k for k in D if k.startswith("f"))
+    S=[(k,D[k]) for k in D if k[0] in "fv"]
     for l in open(f"tests/nr3/raw/tsave-{sys.argv[1]}.jsonl"):
         r=json.loads(l)
         if "rows" not in r: continue
         k=lead_key if f"f{r['site']}"==lead_key else f"v{r['site']}"
-        D[k]=D.get(k,[])+r["rows"]
-    for k in D:
-        if k[0] in "fv": D[k]=sorted(dict.fromkeys(tuple(x) for x in D[k]), key=lambda r: r[0])
+        S.append((k,r["rows"]))
+    for k,rs in merge(S).items(): D[k]=sorted(rs, key=lambda r: r[0])
 except FileNotFoundError:
     pass
 def pct(xs,q):

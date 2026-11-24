@@ -254,9 +254,11 @@ of 20 ms or more carry 57% of the CPU.
 |---|---|---|
 | Applying committed entries | 37%, 52.1 (52 events an entry, 1.00 ms an event) | 50% / 44% |
 | Deferred transaction | 25%, 31.6 | 25% / 27% |
-| No traced work (the requests' own handling) | 28%, 0.6 | 17% / 16% |
-| Cuts or sends | 8%, 1.9 | 5% / 3% |
+| No traced work (the requests' own handling) | 24%, 0.5 (28% before the correction) | 16% / 15% |
+| Cuts or sends | 11%, 1.6 (8%) | 6% / 3% |
 | Storage confirm | 2%, 2.4 | 4% / 10% |
+
+Corrected 2026-11-24 (`tests/am1/results/trace-dedup.md`): the trace merge now keeps equal rows inside one save, which moves slices from "no traced work" to "cuts or sends"; apply, transaction and per-event figures are unchanged.
 
 - **Apply plus the transaction is 62% of B0-32's burst CPU, against 70 to 75% on B0-33.** The requests' own share is
   larger here, from the 256 KiB inline `/commit` bodies (the local profile's base64 decode, above) and learner `/raft`.
@@ -606,9 +608,10 @@ The late pushes were over 5 s by 100 ms at p50 and by 823 ms at most.
 - `b032share.py`: a 2 s commit cap gives 499, while commit ×0.5 still gives 262. The front and gate counterfactuals move nothing. The whole loss is the commit stage.
 - **Leader burst CPU** (`heavyturns.py m3fg3-b0-32`, 591 slices; Workers Logs `wl-m3/m3fg3-b0-32-f0.json.xz`, 12:16:50 to 12:17:30Z):
   - apply 51% at **3.97 ms an event** (22 events, 146 KB, 47 statements an entry);
-  - no traced work 25%;
-  - cuts or sends 10%;
-  - deferred transaction 9% at 0.84 ms a statement.
+  - no traced work 18%;
+  - cuts or sends 12%;
+  - deferred transaction 10% at 0.90 ms a statement;
+  - resolutions only 5%. (Corrected 2026-11-24, `tests/am1/results/trace-dedup.md`; it read no traced work 25%, cuts or sends 10%, deferred transaction 9% at 0.84 ms.)
   - The leader's Workers Logs show near-empty seconds between lumps, at 12:17:05, :09 and :11 [measured]. That fits a stalled isolate (A41) [inference].
 
 **A44, read with every B0-32 leader on graft-m3f** [measured, except where marked]:
@@ -726,7 +729,7 @@ The late pushes were over 5 s by 100 ms at p50 and by 823 ms at most.
 |---|---|---|
 | Deferred transaction | 41%, 34.3 ms mean, 0.78 ms a statement | 21%, 0.15 ms a statement |
 | Applying committed entries | 27%, 45.4 ms an entry, 1.11 ms an event, 76 statements and 73 KB queued an entry | 47%, 0.60 ms an event |
-| No traced work | 22% | 22% |
+| No traced work | 18% (22% before the 2026-11-24 trace-dedup correction) | 22% |
 | Storage confirm | 5%, 7.6 ms mean | 5%, 2.7 ms |
 | Workers Logs CPU, first 6 burst seconds | 2,550 ms (then 1,631 over the next 6) | 1,910 ms |
 
@@ -799,8 +802,8 @@ The late pushes were over 5 s by 100 ms at p50 and by 823 ms at most.
 |---|---|---|
 | Applying committed entries | 47%, 25.8 (43 events an entry, 0.60 ms an event) | 37%, 52.1 (1.00 ms an event) |
 | Deferred transaction | 21%, 9.2 (0.15 ms a statement) | 25%, 31.6 |
-| No traced work | 22%, 0.2 | 28%, 0.6 |
-| Cuts or sends | 5% | 8% |
+| No traced work | 22%, 0.2 | 24%, 0.5 (28%, 0.6 before the 2026-11-24 trace-dedup correction) |
+| Cuts or sends | 5% | 11% (8% before the 2026-11-24 trace-dedup correction) |
 | Storage confirm | 5% | 2% |
 
 - Logged leader CPU over 6 burst seconds: 1,910 ms (m3fhs1: 2,555 over its 6), with the same input count (2,241 against 2,257).

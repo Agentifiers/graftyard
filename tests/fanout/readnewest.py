@@ -4,19 +4,14 @@
 # later batch's answer grants the earlier batches, a HEDGE copy goes only for the newest batch in flight, and
 # CALL_DEADLINE resends only the newest.
 # Usage: readnewest.py TRACE.jsonl[.xz] LOAD_START_MS SECONDS
-import json, collections, sys, lzma, bisect
+import json, collections, sys, lzma, bisect, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracerows import load
 path = sys.argv[1]; lo = int(sys.argv[2]); hi = lo + 1000 * int(sys.argv[3])
-op = lzma.open if path.endswith('.xz') else open
-seen=set(); calls=collections.defaultdict(dict); missed=collections.defaultdict(set); hed=0; sent=0
-for l in op(path,'rt'):
-    d=json.loads(l)
-    if 'learner' not in d or 'rows' not in d: continue
-    who=d['learner']
-    for r in d['rows']:
-        k=(who,)+tuple(r)
-        if k in seen: continue
-        seen.add(k)
-        t,kind,peer,b,index,ms=r
+merged=load(path, learners=True)
+calls=collections.defaultdict(dict); missed=collections.defaultdict(set); hed=0; sent=0
+for who, rs in merged.items():
+    for t,kind,peer,b,index,ms in rs:
         if peer!=0: continue
         if kind==2:
             a=t-ms; c=calls[who]; c[a]=max(c.get(a,0),t)

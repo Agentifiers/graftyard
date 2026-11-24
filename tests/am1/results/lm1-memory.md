@@ -4916,7 +4916,7 @@ Learners 0 of 8 caught up in the 120 s wait, as on m43.
 - Memory: memguard peaks 73, 51.8 and 63 MiB; a1's admission samples peaked at 76.5 MB. No 120 MiB stop.
 
 **Why the terms still changed (`Trace::Reported`, `reported-m44b33.txt`, `campaigns-m44b33.txt`).**
-- Reports by colo: LAX 18,238, NRT 12,144, VIE 422, UNKNOWN 705 (2.2%). On m43 every edge request came from LAX; on
+- Reports by colo: LAX 98,623, NRT 59,481, VIE 1,217, UNKNOWN 985 (0.6%), 160,306 in all (corrected 2026-11-24, `tests/am1/results/trace-dedup.md`: the old trace merge dropped equal rows inside one save; it read LAX 18,238, NRT 12,144, VIE 422, UNKNOWN 705, 31,509). The 61 `started` verdicts are unchanged. On m43 every edge request came from LAX; on
   m44 the edge served the same driver from LAX and NRT (edge log events in the load: LAX 367, NRT 194), so the edge
   itself supplied two colos.
 - `tests/fanout/campaigns.py` takes each `started` verdict (a `/suspect` that began a campaign, which needs a lapsed
@@ -5030,11 +5030,11 @@ operations). The short sim suite gave 12.1 s harsh, 20.7 s gray and 16.6 s live.
 |---|---|---|---|
 | Human and merge-queue commit p99 ≤ 1 s | leader commit p99 57,018 ms (p50 3,663, n 11,676; queue p99 62.1 s, round 5.3 s, confirm 7.1 s, deps:all 27.0 s); merges 1 of 57 (32 skipped at the cap); human pushes 6 of 184 (160 skipped) | 19,753 ms; 1 of 56; 4 of 196 | fail |
 | ≥ 140 agent commands/s (≥ 126 at 90%) | 7.6 agent-class ok a second (agent pushes 1,312 ok of 12,397; 6,171 × 503 "access rows … not leader") | 13.2 | fail |
-| Zero leader changes and `suspect` | **term 2 throughout, 0 leader changes**; 8 step-downs (6 `CommitErrors`, 2 `Confirm`), all holds (`to: None`); 24,676 `suspect` reports | term 2 → 20 | leader changes pass; `suspect` fail |
+| Zero leader changes and `suspect` | **term 2 throughout, 0 leader changes**; 8 step-downs (6 `CommitErrors`, 2 `Confirm`), all holds (`to: None`); 128,828 `suspect` reports (corrected 2026-11-24, `tests/am1/results/trace-dedup.md`: the old trace merge dropped equal rows inside one save; it read 24,676) | term 2 → 20 | leader changes pass; `suspect` fail |
 
 **Why the term held (`Trace::Reported` against `AppendStepped`, `raw/reported-m45b33.txt`, `raw/latesuspect-m45b33.txt`).**
-- All 24,461 follower reports were answered `promised`; voter 0, the leader, answered 215 with `leader`.
-- The reports came from **one** real colo: LAX 24,077, UNKNOWN 599. No NRT this run (m44: LAX 18,238 and NRT 12,144).
+- All 123,938 follower reports were answered `promised`; voter 0, the leader, answered 4,890 with `leader` (corrected 2026-11-24, `tests/am1/results/trace-dedup.md`: the old trace merge dropped equal rows inside one save; it read 24,461 and 215).
+- The reports came from **one** real colo: LAX 127,946, UNKNOWN 882 (before the correction LAX 24,077, UNKNOWN 599). No NRT this run (m44: LAX 18,238 and NRT 12,144).
 - Replaying the term-2 reports about leader 0 against each follower's last append: voter 1 had 2,415 timely and 946 late; voter 2 had 8,462 timely and 1,797 late. So the late spells were real: follower append gaps p99 1.9 to 2.6 s, max 16 to 20 s, 51 to 77 gaps of 1 s or more; the leader ticker lag p99 was 10.2 s.
 - Neither rule withheld even once in the replay (0 episodes under main's rule and under late-suspect), because a single colo cannot make two.
 - **So this run does not discriminate late-suspect from colo-unknown.** With one edge colo, colo-unknown alone would also have kept term 2. The flip line's check holds trivially: no follower withheld from a leader whose appends were timely. The two-colo case that m44 showed, and that late-suspect's simulator tests cover, has not yet been seen hosted with the fix.
@@ -5200,7 +5200,7 @@ progress-suspect is not in this build.
 |---|---|---|---|
 | Human and merge-queue commit p99 ≤ 1 s | leader commit p99 22,536 ms (p50 5,209, n 4,533; queue p99 21.1 s, round 6.9 s, confirm 7.1 s); merges 1 of 53 (33 skipped at the cap); human pushes 10 of 207 (183 skipped) | 57,018 ms; 1 of 57; 6 of 184 | fail |
 | ≥ 140 agent commands/s (≥ 126 at 90%) | 17.2 agent-class ok a second (agent pushes 3,252 ok of 12,491; 3,888 × 503 "access rows … not leader", 1,924 fetch failed) | 7.6 | fail |
-| Zero leader changes and `suspect` | **term 2 → 21, 19 changes**, the first 46 s into load; 41,356 `suspect` reports in the voters' traces (LAX 22,163, DFW 15,605, SJC 3,041, UNKNOWN 547) | term 2 throughout | fail |
+| Zero leader changes and `suspect` | **term 2 → 21, 19 changes**, the first 46 s into load; 125,609 `suspect` reports in the voters' traces (LAX 72,641, DFW 42,784, SJC 9,548, UNKNOWN 636; corrected 2026-11-24, `tests/am1/results/trace-dedup.md`: the old trace merge dropped equal rows inside one save, and it read 41,356: LAX 22,163, DFW 15,605, SJC 3,041, UNKNOWN 547). The 49 `started` are unchanged | term 2 throughout | fail |
 
 **Term changes are back, from two real colos.** m45 had one edge colo (LAX), so no rule could withhold. m47's edge
 served from LAX and DFW, and later SJC. `tests/fanout/campaigns.py` puts 39 of 49 campaigns after LAX+DFW withholding,
@@ -5392,10 +5392,11 @@ show whether those reads would retry or move to learners.
 
 **`/suspect`.**
 - Each member saw reports from only 4 colos, `Colo::UNKNOWN` included, at 1.1 to 1.8% of them.
-- 63 to 75% of reports were a `promised` repeat of the same (colo, about, term) within 1 s. Answering those at once
-  leaves 29 to 42% of reports for the raft step.
-- Only 26 to 37% of the `/suspect` requests that entered reached `verdict`. The rest never stepped, whether dropped by
-  their callers or lost to `ready_or`.
+- 37 to 72% of reports were a `promised` repeat of the same (colo, about, term) within 1 s. Answering those at once
+  leaves 28 to 63% of reports for the raft step.
+- Every `/suspect` request that entered reached `verdict` (35,787 of 35,785, 13,439 of 13,439 and 58,263 of 58,268).
+  Corrected 2026-11-24 (`tests/am1/results/trace-dedup.md`): the old trace merge dropped equal rows inside one save; it read 63 to 75% repeats, 29 to 42% left, and only 26 to 37% of entered requests stepped, "the rest never
+  stepped, whether dropped by their callers or lost to `ready_or`". That loss was the merge's, not the members'.
 
 **Open for the design.**
 1. Where the bound counts. The evidence says the leader's open count, not a follower's.

@@ -1,4 +1,6 @@
 import bisect, collections, json, lzma, os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')))
+from tracerows import merge
 # Raw traces: tests/fanout/raw under the current directory (run from the repository root), or $B033_RAW.
 RAW = os.environ.get('B033_RAW', 'tests/fanout/raw')
 def raw_path(tag): return os.path.join(RAW, f'tsave-{tag}.jsonl.xz')
@@ -36,13 +38,9 @@ def pc(xs, q):
     xs = sorted(xs); return round(xs[min(len(xs) - 1, int(q * len(xs)))]) if xs else None
 def load(tag, sites=(0,), pad=0):
     a = ms(RUNS[tag][0]); b = a + 1000 * RUNS[tag][1]
-    rows, seen = collections.defaultdict(list), set()
-    for line in lzma.open(raw_path(tag), 'rt'):
-        d = json.loads(line)
-        if 'rows' not in d or 'learner' in d or d.get('site') not in sites: continue
-        for r in d['rows']:
-            k = (d['site'],) + tuple(r)
-            if k not in seen and a - pad <= r[0] < b + pad: seen.add(k); rows[d['site']].append(r)
+    parsed = (json.loads(line) for line in lzma.open(raw_path(tag), 'rt'))
+    rows = merge((d['site'], [r for r in d['rows'] if a - pad <= r[0] < b + pad])
+                 for d in parsed if 'rows' in d and 'learner' not in d and d.get('site') in sites)
     for s in rows: rows[s].sort(key=lambda r: r[0])
     return a, b, rows
 def I(x): return int(float(x))

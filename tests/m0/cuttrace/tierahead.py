@@ -2,7 +2,9 @@
 edge's Workers Logs merge events (start = ts - wall) by total, then lists the edge-isolate `/read` q3 calls with
 SentBy leader or walk on s0/s1/s2 inside [start, start + tier_ahead + 50], and the leader's confirms there.
 Usage: tierahead.py A1ROW TSAVE MERGEWL"""
-import bisect, collections, json, lzma, re, sys, datetime
+import bisect, collections, json, lzma, re, sys, datetime, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'fanout')))
+from tracerows import load
 A1, P, M = sys.argv[1:4]
 hms = lambda t: datetime.datetime.fromtimestamp(t / 1000, datetime.timezone.utc).strftime("%H:%M:%S.%f")[:12]
 g = lambda m, k: int(re.search(k + r";dur=(\d+)", m["timing"]).group(1)) if m["timing"] and k + ";" in m["timing"] else None
@@ -13,20 +15,14 @@ for m in steps:
     t = g(m, "total"); k = j
     while k < len(wl) and not (t is not None and abs(wl[k]["wall"] - t) <= 60): k += 1
     if k < len(wl): pairs.append((m, wl[k])); j = k + 1
-seen = set(); ent = collections.defaultdict(dict); qry = collections.defaultdict(dict); by = collections.defaultdict(dict); conf = []
-with (lzma.open if P.endswith(".xz") else open)(P, "rt") as f:
-    for l in f:
-        d = json.loads(l)
-        if "rows" not in d or d.get("learner") is not None: continue
-        who = "s" + str(d.get("site"))
-        for r in d["rows"]:
-            t = (who,) + tuple(r)
-            if t in seen: continue
-            seen.add(t)
-            if r[1] == 25: ent[who][r[4] // 64] = (r[0], r[2], r[4] % 64)
-            elif r[1] == 26: qry[who][r[3]] = r[4]
-            elif r[1] == 27: by[who][r[3]] = (r[4], r[5])
-            elif r[1] == 10 and who == "s0": conf.append((r[0], r[5]))
+ent = collections.defaultdict(dict); qry = collections.defaultdict(dict); by = collections.defaultdict(dict); conf = []
+for site, rs in load(P).items():
+    who = "s" + str(site)
+    for r in rs:
+        if r[1] == 25: ent[who][r[4] // 64] = (r[0], r[2], r[4] % 64)
+        elif r[1] == 26: qry[who][r[3]] = r[4]
+        elif r[1] == 27: by[who][r[3]] = (r[4], r[5])
+        elif r[1] == 10 and who == "s0": conf.append((r[0], r[5]))
 calls = []
 for who in ent:
     for n, (t, peer, route) in ent[who].items():
