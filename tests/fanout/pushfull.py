@@ -11,6 +11,8 @@ m3f read B0-32 (`tests/am1/results/lm1-rows-m3f.md`, "Why full grew from 20 to 1
   - admission: sent, and the last `commit` stage under 600 ms, so the leader answered `Full` on arrival;
   - expire: the last `commit` stage 600 ms or more, so the command queued and `expire_agents` answered `Full` when its
     `until` passed (`crates/raft/src/member/leader.rs`);
+  - git cache busy (validate 429): a `validate` stage and no `budget`, `bound`, `advert` or `commit`, so the shard's
+    validate gate had no agent slot within 2 s (`containers/git/server/main.go`, `validateGate`); the leader saw none;
   - untimed: no `server-timing` (a production edge, or no answer).
 Also the budget left at the first send (`budget;dur=`, the edge's AGENT_PUSH_BOUND minus its front) for ok and full
 pushes, in the m3f table's bands, and how many full pushes carried an `ask` or staged first. The window, if given, is
@@ -67,6 +69,10 @@ for line in open(path):
         where["admission"] += 1
     elif s.get("commit"):
         where["expire_agents (queued)"] += 1
+    elif "validate" in s:
+        # The git cache's validate gate: an agent validate waits at most 2 s for a slot, then 429, which the edge
+        # answers `agent admission full` (`ShardRefusal::Busy`, workers/edge/src/lib.rs); no budget was set.
+        where["git cache busy (validate 429)"] += 1
     else:
         where["no commit stage"] += 1
     for m in ("ask", "stagefirst", "busy", "missed", "suspect"):
