@@ -1,7 +1,8 @@
 // exportbed's entry (`run.sh`): the site script's own build (`workers/site`, test-faults) with a driver route in front.
 // `/drive` joins one test-register group (`repo:<n>` with no owner, which `Kind::of` hosts as the register and
 // `Source::Given` trusts) on the three sites' `Member` bindings, campaigns until a member leads, and commits one put.
-// `/abort` resets a group's members, and `/roles` and `/batches` read a group's members and the feed's objects. Every other request, the cron and the queue go
+// `/abort` resets a group's members, `/roles` and `/batches` read a group's members and the feed's objects, and `/hold`
+// sets the test-faults feed hold. Every other request, the cron and the queue go
 // to the site script unchanged. The members' leader report and the
 // feed's round are the product's: `Host::report_commit`, the registry object `export`, `export_feed::kick`.
 import site, * as classes from "./out/index.js";
@@ -86,6 +87,11 @@ export default class extends site {
         out.push({ key: o.key, chains: head.batch.chains, entries: head.entries });
       }
       return Response.json(out);
+    }
+    // The feed hold (test-faults `/export_hold` on the feed site's registry object `export`): `?hold=1|0`.
+    if (url.pathname === "/hold") {
+      const r = await env.REGISTRY_0.getByName("export").fetch(`https://registry/export_hold${url.search}`, { method: "POST" });
+      return new Response(await r.text(), { status: r.status });
     }
     if (url.pathname === "/objects") {
       const l = await env.EXPORT.list({ prefix: url.searchParams.get("prefix") ?? "" });

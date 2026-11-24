@@ -9,6 +9,7 @@ publish.workspace = true
 # `build/BUILD-PLAN.md`, M6-WP3): which source the copy pulls from, its published lag, `graft-blob`'s write and scrub
 # rules over a filesystem trait, and the DNS-01 renewal schedule. The workerd bundle that hosts them is separate.
 [dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 graftyard-git = { path = "../crates/git" }
 graftyard-raft = { path = "../crates/raft" }
 graftyard-types.workspace = true

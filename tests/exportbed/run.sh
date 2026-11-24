@@ -8,7 +8,8 @@
 # must carry it by its probe (the sweep, `decisions/DECISIONS.md`, `export-host`), as m3fx49b's `release` was not. Exits 1 unless the round wrote one `export/` object and the state, a queued round followed
 # it, and workerd logged no feed error or undecodable queue message. m3fx49's reports all failed on SQL no native test ran (`commit` as
 # a column), and m3fx49b's queued next round arrived as `{}`; this is the binding-level check of that path, including
-# the queued round that follows the cron's. Needs worker-build and tests/m0's wrangler. Run from the
+# the queued round that follows the cron's. Last, the test-faults feed hold: held, a commit reaches no object; released,
+# the next round carries it. Needs worker-build and tests/m0's wrangler. Run from the
 # repository root.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/../.." && pwd)
@@ -101,6 +102,18 @@ if [ "$seen" -ge 2 ]; then
 else
   echo "FAIL: fewer than two queued rounds in 35 s"; ok=0
 fi
+# The test-faults feed hold (`lifeboat-turns`): held, a new commit reaches no object while queued rounds and a cron
+# kick come and go; released, the next round carries it.
+h=$(u "/hold?hold=1"); echo "hold: $h"
+grep -q '"held":true' <<<"$h" || { echo "FAIL: the hold did not take"; ok=0; }
+before=$(u "/objects?prefix=export/" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+d3=$(u "/drive?chain=repo:900002"); echo "drive held: $d3"
+sleep 5; u "/__scheduled?cron=*/15+*+*+*+*" >/dev/null; sleep 14
+held=$(u "/objects?prefix=export/" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+[ "$held" = "$before" ] && echo "ok    held: $held objects, none new" || { echo "FAIL: a held feed wrote $((held - before)) objects"; ok=0; }
+u "/hold?hold=0" >/dev/null; u "/__scheduled?cron=*/15+*+*+*+*" >/dev/null; sleep 5
+got=$(u "/batches" | python3 -c 'import json,sys; print(sum(1 for b in json.load(sys.stdin) for e in b["entries"] if e[0] == "repo:900002"))')
+[ "$got" -ge 1 ] && echo "ok    released: repo:900002 carried" || { echo "FAIL: the released feed did not carry repo:900002"; ok=0; }
 grep -E "export (feed|report)|does not decode" "$B/dev.log" | sed 's/^/log: /' | head -8
 if grep -qE "export report .*Error|round claim failed|export feed round failed|does not decode" "$B/dev.log"; then
   echo "FAIL: the feed logged an error"; ok=0

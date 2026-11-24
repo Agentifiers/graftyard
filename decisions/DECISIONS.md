@@ -10374,6 +10374,37 @@ is a new Tokens format.
 
 **Flip.** A retired group that comes back: if a retire ever stops sticking (`retire-sticks` reversed), a 404 would stop a lifeboat on a chain that answers again. Then the puller asks a gone chain again daily.
 
+### `lifeboat-turns`: a stale lifeboat goes round every chain on a turn, with its own probe budget, and owed packs go round by network, 2026-11-24
+
+**Status.** Built at $0 on branch `bf53-prep` from main `1c1ac169`, ruled by the lead on 2026-11-24 (ruling A, and the pack 404 rule) after BF-53's plan found both starvations. Not hosted: BF-53 on graft-m3f runs it.
+
+**Finding.** Two starvations in the puller, each shown by a scratch test on main [measured, native]:
+- **Stale pulls.** `Puller::pulls` listed the held chains from the first in key order on every pass, and a pass stopped at `PAGES_PER_PASS` (40) answers. With 60 chains and the feed stale, 40 reached the install's commit after 5 passes and 20 never did. graft-m3f's export-state names 3,234 chains, so a stopped feed would have moved the same 40 for good and the copy would never be current.
+- **Owed packs.** Packs were tried in `(network, id)` order, 40 a pass, and a 404 stayed owed. With 41 packs the install no longer serves ahead of a live one, the live pack was never copied in 5 passes. graft-m3f's feed still carries stored packs of repositories purged since 2026-11-22.
+
+**Decision.**
+- **Turns.** The edge pulls go round the known chains from the one after `Puller::turn`, `AT_ONCE` (16 [guess]) first pages at once, each chain pulled to its end before the turn passes it. So every chain is asked once a cycle, whatever the budgets.
+- **Two budgets.** Pages that carry rows count against `PAGES_PER_PASS` (40); answers with none, a caught-up chain or any status, against `PROBES_PER_PASS` (400 [guess]). At the bundle's 10 s alarm a round of graft-m3f's 3,234 chains takes about 9 passes, about 80 s.
+- **Current while stale.** Only a cycle in which every chain answered caught up (or gone), with none behind or halted, is current, and as of the cycle's start. A pass alone never is while chains remain to ask. With the feed fresh, current is as before.
+- **Packs.** One network at a time round the turns (`in_turns`, as the vault's). A pack the install answers 404 sends one probe of its repository chain a pass: a 404 there (`export-retired`) marks the chain gone and drops that network's owed packs. On a live chain the pack stays owed, is tried again in turn, and is counted in `State::unserved`; one unserved for `UNSERVED_ALARM_MS` (1 h [guess]) alarms in the pass line (`Report::unserved_alarm`, logged as an error), so a real missing pack is never dropped in silence.
+- **The feed hold** (test-faults). `/_bed/feed?hold=1|0` on the edge sets a row in the feed site's registry object `export`, and a held feed claims no round. BF-53 holds it while a repository archives, so the lifeboat's first copy of that chain reads the archive from index 1 (`decisions/OPEN-QUESTIONS.md`, R59).
+
+**Cost.** Only while the feed is stale: about 40 signed edge requests a second at 400 probes a 10 s pass, and a follower Durable Object wake for each, against graft-m3f's 3,234 chains [inference from the budgets; not measured].
+
+**What it beat.**
+- **Rotation alone, one budget of 40.** A round of 3,234 chains then takes about 81 passes, about 13.5 minutes, past the 5-minute lag alarm, so a stale copy would alarm in every stale window even with nothing to copy.
+- **A chain list from the install.** No endpoint lists chains, and a new one would be a second source the feed already is.
+- **Dropping a pack on its first 404.** A live chain's pack the install lost would vanish from the copy with no alarm.
+
+**Evidence.** `lifeboat/tests/pass.rs`:
+- `a_stale_round_reaches_every_chain_and_is_current_once_a_cycle_ends`: 900 chains, the last in key order moved, caught up in 3 passes with at most `PROBES_PER_PASS + AT_ONCE` answers each; current as of the cycle's start; a 503 inside a cycle holds it back and a later whole cycle moves it.
+- `owed_packs_go_round_by_network_and_a_gone_networks_are_dropped`: 45 dead packs of a purged network dropped after one probe, a live network's pack copied on the first pass, and an unserved pack on a live chain kept and alarming after an hour.
+- `tests/m0carried/plant200.py`: 8 of 8 native mutants caught; the feed hold's mutant by `tests/exportbed/run.sh`.
+
+**Flip.**
+- A hosted stale window in which the copy does not reach current within one alarm period (5 minutes): raise the budgets or the concurrency, or list the chains that moved.
+- A measured probe cost over $1 an hour: probe only chains whose commit moved, from a cheaper source than one read per chain.
+
 ### `user-demote`: the edge sends every authenticated user write with its actor, and the leader counts demotions, 2026-11-24
 
 **Status.** Built and tested at $0. The lead ruled it on 2026-11-24, from B0-33 h1A. It is not deployed; it ships

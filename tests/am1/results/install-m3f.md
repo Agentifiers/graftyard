@@ -38,6 +38,8 @@ Measured member round trips at `sites add`: 0 to 1 103 ms, 0 to 2 182 ms, 2 to 0
 
 Files in `~/.graft-m3f`: `install.toml`, `customer.key` and `release.key` with their `.pub` files, `genesis.unsigned`, `genesis.signed`, `genesis-records.json`, `sites.json`, `site-vars.json`, `bed.token`, `tools.token`, `t0` (the build's start, Unix seconds), `ops/putvk-kid1.json`, and `m3/` (`m3.json`, `m3-tokens.txt`, `app.pem`, `app.secret`).
 
+**Executor and drain keys (BF-53, ruling B, 2026-11-24).** The genesis was made `--offline-keys`, so graft-m3f had no executor or drain key. `~/.graft-m3f/keys2/` (mode 700) holds new seeds made for BF-53: `executor.seed` and `drain.seed` (0600, 32 random bytes as hex) and `public.txt`. Executor public `aaff47966744d8c39d6f6663cfeb9a84475c8843ac392389aa3d23a29c444f9e`, drain public `0fd208e8df468b8dda53ce66c321b8d9e064337eecb9934f38bb0396cbda0916`. BF-53 commits them as the install's first `Keys` entry after the genesis (customer-signed; customer and release keys unchanged) once the lead clears the row; its `Release` index is logged in BF-53's row. The seeds are in the state tarball `.amp/xfer/graft-m3f-keys2.tgz` in AM2-WP1's thread ([thread](https://ampcode.com/threads/T-01a1d805-b0ec-7624-a63c-99341738c925)), sent 2026-11-24. A later customer-signed `Keys` can take them out again.
+
 ## Deployed versions
 
 | Script | Version | Build |
