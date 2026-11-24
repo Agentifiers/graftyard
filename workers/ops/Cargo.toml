@@ -13,6 +13,9 @@ crate-type = ["cdylib", "rlib"]
 # so no variable can kill a run or lower a gate. `node deploy.mjs` builds with it when the executor file sets
 # `test_faults`.
 test-faults = []
+# BM-5's bad `graft-ops` (`src/worker_main.rs`, `mint`): every mint answers 503. A build, not a variable, because a
+# `graft-ops` upload keeps the running version's bindings, so only the code can differ between N and N+1.
+test-mint-fail = ["test-faults"]
 
 [dependencies]
 # Unwraps the installation-token signing key with the `MintWrapKey` wrap key: AES-256-GCM, pure Rust, for wasm32.

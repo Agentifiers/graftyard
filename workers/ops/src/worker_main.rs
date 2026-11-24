@@ -201,11 +201,10 @@ const OPS_VERSION_HEADER: &str = "x-graftyard-ops-version";
 
 /// `POST /mint`: one installation token for the edge's `Grant`.
 async fn mint(mut req: Request, env: &Env, ctx: &Context) -> Result<Response> {
-    // BM-5, test-faults builds only: `OPS_MINT_FAIL=on` makes this version a bad `graft-ops` whose every mint answers
-    // 503, so a test install can roll it at 1% and watch the edge's mint errors swap it back.
-    #[cfg(feature = "test-faults")]
-    if env.var("OPS_MINT_FAIL").is_ok_and(|v| v.to_string() == "on") {
-        return Response::error("OPS_MINT_FAIL: this test version mints nothing", 503);
+    // BM-5: a build with `test-mint-fail` is a bad `graft-ops` whose every mint answers 503, so a test install can roll
+    // it at 1% and watch the edge's mint errors swap it back.
+    if cfg!(feature = "test-mint-fail") {
+        return Response::error("test-mint-fail: this test version mints nothing", 503);
     }
     let grant: Grant = match req.json().await {
         Ok(g) => g,
