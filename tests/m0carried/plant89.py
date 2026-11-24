@@ -19,7 +19,7 @@ MAIN = 'containers/git/server/main.go'
 SHARD = 'crates/git/src/shard.rs'
 GO = ['go', '-C', 'containers/git/server', 'test', '-count=1', '-run',
       'TestMaintenanceYieldsToMovedLoad|TestAHeldRollAnswers503|TestMaintDeferMaxFitsAFailoverAndThePackLine', '.']
-RS = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard', '--', 'only_a_first_try']
+RS = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'shard', '--', 'only_a_call_moved_off']
 
 MUTANTS = [
     ("a hold does not stop a running repack (mt18's repack ran through the kill)", MAINT,
@@ -56,9 +56,8 @@ MUTANTS = [
     ("a held roll-up builds anyway", MAIN,
      '\tctx, end, ok := maintBegin()\n\tif !ok {\n\t\tfail(w, 503, "maint-held")',
      '\tctx, end, ok := maintBegin()\n\tif !ok \u0026\u0026 false {\n\t\tfail(w, 503, "maint-held")', GO),
-    ("a hedge's try (wait 60) counts as moved load", SHARD,
-     '        && wait == Some(FIRST_TRY_WAIT_S)',
-     '        && wait.is_some()', RS),
+    ("a call the edge did not mark moved counts as moved load (G41: mt21's first tries after a hedge pass)", SHARD,
+     '        && moved\n', '        && (moved || !moved)\n', RS),
     ("the home's own first try counts as moved load", SHARD,
      '        && me != home\n', '        && (me != home || me == home)\n', RS),
     ("a derived promotion counts as moved load", SHARD,

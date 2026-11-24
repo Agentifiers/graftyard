@@ -29,7 +29,8 @@ while (Date.now() < until) {
       // measurement (b034-tails), since `uploads` also counts a shard-answered ls-refs.
       shallow: procs.filter((p) => /--shallow-file/.test(p.cmd)).length,
       top: procs.slice(0, 4).map((p) => ({ cmd: p.cmd.slice(0, 80), nice: p.nice, cpu_s: p.cpu_s, rss_mb: p.rss_mb })),
-      // maint-yield's hold (`maintStats`): held/running now, the longest hold, the most unkept packs a hold saw, stops.
+      // maint-yield's hold (`maintStats`): held/running now, the longest hold, the most unkept packs a hold saw, stops,
+      // deferred_s (the clock MAINT_DEFER_MAX bounds) and cpu_p99.
       maint: v?.procs?.maint ?? null,
       packs: v?.procs?.packs ?? null, ...(v ? {} : { error: r.body.slice(0, 120) }),
     }));

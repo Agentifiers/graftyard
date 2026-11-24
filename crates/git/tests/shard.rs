@@ -1451,25 +1451,25 @@ fn a_header_set_answers_only_for_the_head_version_it_was_checked_under() {
     assert_eq!(r, Ok(ChainCheck::Late));
 }
 
-/// Moved load (`maint-yield`): only a client's first try (`wait` = `FIRST_TRY_WAIT_S`) on a push or fetch path, at a
-/// site that is not the record's home, holds maintenance. A hedge's or later try (60 s), the home's own first try, a
-/// derived promotion, a warm call, and a merge do not.
+/// Moved load (`maint-yield`, `moved-mark`): only a client's push or fetch the edge marked moved (`moved=1`, sent
+/// after the home failed a try), at a site that is not the record's home, holds maintenance. An unmarked call holds
+/// nothing whatever its `wait`: on B0-34 mt21 the first tries (`wait` 15) that a hedge's cold mark sent to site b held
+/// its maintenance 573 s with the home alive (G41). The home's own call, a derived promotion, a warm call, and a merge
+/// do not hold either.
 #[test]
-fn only_a_first_try_away_from_home_holds_maintenance() {
+fn only_a_call_moved_off_a_failed_home_holds_maintenance() {
     let (home, other) = (SiteId(0), SiteId(2));
-    let first = Some(FIRST_TRY_WAIT_S);
     for path in ["/validate", "/upload-pack", "/info-refs", "/catchup"] {
-        assert!(maint_hold(path, Caller::Client, false, other, home, first), "{path}");
-        assert!(!maint_hold(path, Caller::Client, false, home, home, first), "{path} at home");
+        assert!(maint_hold(path, Caller::Client, false, other, home, true), "{path}");
+        assert!(!maint_hold(path, Caller::Client, false, home, home, true), "{path} at home");
+        // mt21's case: the edge's first try (wait 15) at site b, sent there by a hedge's cold mark, not a failure.
+        assert!(!maint_hold(path, Caller::Client, false, other, home, false), "{path} unmarked");
     }
-    assert!(!maint_hold("/validate", Caller::Client, false, other, home, Some(60)), "a hedge's try");
-    assert!(!maint_hold("/validate", Caller::Client, false, other, home, None), "no wait");
-    assert!(!maint_hold("/validate", Caller::Client, false, other, home, Some(5)), "a warm ask's wait");
-    assert!(!maint_hold("/validate", Caller::Client, true, other, home, first), "a derived promotion");
-    assert!(!maint_hold("/catchup", Caller::Warm, false, other, home, first), "a warm call");
-    assert!(!maint_hold("/catchup", Caller::PoolWarm, false, other, home, first), "a pool warm");
-    assert!(!maint_hold("/promote", Caller::Start, false, other, home, first), "a due range's promotion");
-    assert!(!maint_hold("/merge", Caller::Client, false, other, home, first), "a merge is not moved load");
+    assert!(!maint_hold("/validate", Caller::Client, true, other, home, true), "a derived promotion");
+    assert!(!maint_hold("/catchup", Caller::Warm, false, other, home, true), "a warm call");
+    assert!(!maint_hold("/catchup", Caller::PoolWarm, false, other, home, true), "a pool warm");
+    assert!(!maint_hold("/promote", Caller::Start, false, other, home, true), "a due range's promotion");
+    assert!(!maint_hold("/merge", Caller::Client, false, other, home, true), "a merge is not moved load");
     // One call per MAINT_HOLD_EVERY keeps the container's 60 s hold renewed with time to spare.
     assert!(MAINT_HOLD_EVERY.as_secs() * 3 <= 60);
 }
