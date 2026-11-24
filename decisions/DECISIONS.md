@@ -10417,8 +10417,10 @@ their lower seq.
 
 ### `warm-order`: a validate or read tries the home, then the network's other warm site, then the other Full sites, 2026-11-24
 
-**Status.** Built and tested at $0. Not deployed; it ships with the next edge day. The lead asked for it on 2026-11-24
-from B0-34 mt22's every-clone collapse.
+**Status.** Built, and hosted on `graft-m1` from main `05ea366d` (edge day plus site day, 2026-11-24). The lead asked for it
+on 2026-11-24 from B0-34 mt22's every-clone collapse and closed G42 on mt23: every clone 100% in kill and 96.4% in second
+on a network warm on a and c, with site c taking the kill's misses at catch-up p50 2,002 ms
+(`tests/am1/results/b034-mt23.md`).
 
 **Decision.** `validate_sites` (`workers/edge/src/lib.rs`) orders the sites after the home with the network's other
 warm site first (`graftyard_git::warm_sites`, the rendezvous-next site among the others, the one `chain_buckets`,
