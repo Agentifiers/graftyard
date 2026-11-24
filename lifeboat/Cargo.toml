@@ -17,5 +17,9 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 
+# `graft-blob`'s HTTP front, native only: the edge links this crate for wasm.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tiny_http = "0.12"
+
 [dev-dependencies]
 futures-executor = "0.3"
