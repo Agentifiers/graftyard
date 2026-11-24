@@ -373,7 +373,9 @@ These are not operator decisions. The run asked them on 2026-10-26 and adopted a
 
 **Evidence.** `design/DESIGN.md`, "Deployment modes", "Install operations", and "Failure modes" (`release control`). `history/review/cloudflare-interrogate.md` CF-ACT-2, CF-ACT-14, CR-ACT-2, and CR-ACT-3. `history/review/cloudflare-rewalk.md`. `history/decisions.tsv` rows 65, 128, and 129.
 
-**Flip.** If Milestone 0 shows an account-owned token with Workers Scripts Edit and Containers Edit cannot deploy a container image, the deploy token moves to a user token held by the customer.
+**Amended 2026-11-24 (OPEN-QUESTIONS A54).** The deploy token also holds Secrets Store Edit: a fresh token with Workers Scripts Edit alone got 10021 "Secrets store binding authorization failed" on a version upload of a script bound to a Secrets Store secret, in the install account and in a second account, while each account's own token uploaded it [measured, `tests/am3/raw/lf7-r2/a54.log`]. Every site script, `graft-mcp`, `graft-ops`, and the agents scripts carry such bindings. Secrets Store Edit also lets the token write the store's secrets, which `graft-ops` reads anyway.
+
+**Flip.** If Milestone 0 shows an account-owned token with Workers Scripts Edit and Containers Edit cannot deploy a container image, the deploy token moves to a user token held by the customer. If a narrower group than Secrets Store Edit (such as a binding-only grant) lets an upload keep a Secrets Store binding, the token takes that instead.
 
 ### Swap-back is a signed pointer, with no API call
 
