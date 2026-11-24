@@ -8,6 +8,10 @@ A refusing 10 s window counts only when its refused writes' budget left at the c
 load start). The larger of the window and the one before it, as edgefull reads the cut clock. It flips over 10% of
 refusing windows.
 
+It then prints `decisions/OPEN-QUESTIONS.md` A50's readings 2 and 3: the refused writes' budget against the refusing
+advert's own wait (0 by construction), and A50's settle reading, each refusing window's advert p50 against the sent
+agent writes' commit p50 (a1's pushes, `a1-pushes-b0-33-<RUNID>.jsonl` or `.xz`).
+
 TAG is the row's tag (`tests/fanout/raw/edgefull-<TAG>.jsonl`, `tsave-<TAG>`); RUNID is a1's run id
 (`tests/am1/raw/a1-b0-33-<RUNID>.jsonl` and `tests/am1/raw/runs/a1-b0-33-f<TAG>-b033.log`). Run from the repository
 root.
@@ -58,3 +62,45 @@ share = over / len(byw) if byw else 0
 print(f"flip 2 (as ruled 2026-11-24, budget left at the check over the leader's expected_wait with each window's own "
       f"round_ms): {over} of {len(byw)} refusing windows ({share:.0%}), {n_over} of {len(ref)} refusals; flips over 10%: "
       + ('FLIPPED' if share > 0.10 else 'not met'))
+# A50's reading 2: budget left against the refusing advert's own wait. advert_says refuses only when that wait passes the
+# budget, so it reads 0 by construction; printed once to close that question.
+own = sum(1 for x in ref if x.get('waitMs') is not None and x['budgetMs'] > x['waitMs'])
+print(f"A50 reading 2 (budget left over the refusing advert's own waitMs): {own} of {len(ref)} refusals "
+      f"(0 by construction)")
+# A50's reading 3, its settle reading (the lead's ruling of 2026-11-24, after clA): per refusing window, the advert's
+# p50 wait against the commit p50 of agent pushes a1 saw sent and committed (`commit` in their server-timing) in the
+# same 10 s window. An advert over what sent writes got refused writes that would have made it. Windows with fewer
+# than MIN_SENT sent agent writes are excluded. Sent writes are only those whose budget passed the advert, so their
+# commit times are a survivor sample: the sent count is printed beside each window.
+MIN_SENT = 10
+try:
+    pf = find(f'a1-pushes-b0-33-{run}.jsonl')
+    pushes = open(pf)
+except SystemExit:
+    pushes = lzma.open(find(f'a1-pushes-b0-33-{run}.jsonl.xz'), 'rt')
+sent = collections.defaultdict(list)
+for line in pushes:
+    p = json.loads(line)
+    if p['kind'] != 'agent' or p['result'] != 'ok' or not p.get('timing'):
+        continue
+    t = dict(a.split(';dur=') for a in p['timing'].split(', ') if ';dur=' in a)
+    if 'commit' in t:
+        sent[p['end'] // W].append(float(t['commit']))
+p50 = lambda v: sorted(v)[len(v) // 2]
+over3 = judged = 0
+ratios = []
+for k, xs in sorted(byw.items()):
+    adv = p50([x['waitMs'] for x in xs if x.get('waitMs') is not None] or [0])
+    cs = sent.get(k, [])
+    if len(cs) < MIN_SENT:
+        print(f"  window {k}: advert p50 {adv} ms, {len(cs)} sent agent writes: excluded (under {MIN_SENT})")
+        continue
+    judged += 1
+    over3 += adv > p50(cs)
+    ratios.append(adv / p50(cs))
+    print(f"  window {k}: advert p50 {adv} ms, sent agent commit p50 {p50(cs):.0f} ms over {len(cs)} sent, "
+          f"{len(xs)} refused")
+share3 = over3 / judged if judged else 0
+print(f"A50 reading 3 (advert p50 over sent agent writes' commit p50): {over3} of {judged} refusing windows "
+      f"({share3:.0%}), {len(byw) - judged} excluded under {MIN_SENT} sent; advert/commit median "
+      f"{p50(ratios) if ratios else 0:.2f}; flips over 10%: " + ('FLIPPED' if share3 > 0.10 else 'not met'))
