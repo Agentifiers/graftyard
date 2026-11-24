@@ -10271,3 +10271,40 @@ counted in `demoted`. That would mean the leader counts writes the edge did not 
 - **Back the coordinator out for per-group Workflows started by `graft-ops`** if one coordinator cannot finish an install's groups within its step limits on graft-m6a (as `replace-member` says).
 - **Drop the probe** if BF-50 shows a recovered site's own traffic reaching `MIN_CALLS` in every recovery window without it, or if its 43,200 pings a day per prober show on the survivors' registry objects.
 - **Sweep removed members instead** if an expiry instance's 35-day sleep is lost or retained past Workflows' limits on a hosted install.
+
+### `warm-order`: a validate or read tries the home, then the network's other warm site, then the other Full sites, 2026-11-24
+
+**Status.** Built and tested at $0. Not deployed; it ships with the next edge day. The lead asked for it on 2026-11-24
+from B0-34 mt22's every-clone collapse.
+
+**Decision.** `validate_sites` (`workers/edge/src/lib.rs`) orders the sites after the home with the network's other
+warm site first (`graftyard_git::warm_sites`, the rendezvous-next site among the others, the one `chain_buckets`,
+`fanout` and `chain-site` call warm), then the record's other Full sites in record order. `shard_order` keeps
+`COLD_SHARD_MS`'s cold-last on top, so validates, streamed validates, shard reads and upload-packs all take it.
+
+**Why.** B0-34 mt22 served every clone 60.6% in the kill phase and 8% in the second, against mt21's 100% and 100%.
+No compose or chain-site code changed between mt21 (a940127a) and mt22 (b587a8cb). mt21's network 1048616 is warm
+on sites a and b and mt22's 1048617 on a and c, by the sha256 rendezvous (50.06% of 10,000 networks with home a pick
+c). The edge fell back in record order, so after the kill of site a mt22's reads went to site b, which held no chain
+and no compose bucket entry (`compose/1048617/` n = 0 all row, against 17 on a and c): in the 120 s after the kill
+site b took 69 misses at catch-up p50 7,260 ms and headers p50 6,767 ms, and site c 8 at 897 and 797 ms. mt21's 36
+misses on its warm site b took catch-up p50 1,629 ms. mt21 passed only because its warm site was also next in record
+order [measured, `tests/am1/results/b034-mt22.md`, "Every clone"]. DESIGN's git caches data-center row already
+assumed "the other warm site already holds k shards"; the order did not use it.
+
+**What it beat.**
+- Recording it as placement chance. Half of networks put the warm site third in record order, so B0-34's kill line
+  would pass or fail on the network's id.
+- Moving the chain to the record's next site. That changes `chain_buckets`, `fanout`'s pool grants and every
+  bucket's chain keys for half of all networks, against one sort at the edge.
+- Pinning B0-34's network to one warm on site b. That hides the fault from the row.
+
+**Evidence.** `workers/edge/src/lib.rs`,
+`a_validate_falls_back_from_the_home_shard_to_the_warm_site_then_the_other_full_sites`: mt22's network with home 0
+tries [0, 2, 1] and mt21's [0, 1, 2]; with home 2, [2, 0, 1] and [2, 1, 0]; 1048608 with home 2 tries [2, 1, 0]. On
+b587a8cb's record order the first case reads [0, 1, 2]. `tests/m0carried/plant161.py`, four mutants: record order,
+the warm site last, the warm site picked with the record's first site as home, and the warm site ahead of the home.
+
+**Flip.** A B0-34-shaped row whose kill phase reads composed misses no faster on the warm site than on the third site
+(catch-up p50 within 2 times), or a placement whose warm site is not where the chain and k live, would mean the order
+buys nothing and record order is as good.

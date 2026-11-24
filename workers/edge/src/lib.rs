@@ -2614,20 +2614,26 @@ fn shard_refusal(e: &ShardRefusal) -> Option<Refusal> {
     }
 }
 
-/// The sites whose shards a validate tries, in order: the home site's, then the record's other Full sites' in record
-/// order (a Witness site holds no content, so it has no git cache), or only the one a test pinned (`x-graft-shard`).
-/// A home shard that rehydrated about 3 GB after a reset took more than 30 min, and every push meanwhile waited on it
-/// until its deadline (`tests/am1/results/hot-shards.md`).
-fn validate_sites(record: &PlacementRecord, pinned: Option<SiteId>) -> Vec<SiteId> {
+/// The sites whose shards a validate or a read tries, in order: the home site's, then the network's other warm site
+/// (`graftyard_git::warm_sites`, which holds the chain, its k and its clone-cache entries), then the record's other
+/// Full sites' in record order (a Witness site holds no content, so it has no git cache), or only the one a test
+/// pinned (`x-graft-shard`). A home shard that rehydrated about 3 GB after a reset took more than 30 min, and every
+/// push meanwhile waited on it until its deadline (`tests/am1/results/hot-shards.md`). In record order, B0-34 mt22's
+/// clones after the kill of site a went to site b, which held no chain, not to the warm site c: miss catch-up p50
+/// 7,260 ms on b against 897 on c (`warm-order`).
+fn validate_sites(record: &PlacementRecord, network: NetworkId, pinned: Option<SiteId>) -> Vec<SiteId> {
     if let Some(s) = pinned {
         return vec![s];
     }
-    let others = record
+    let [_, warm] = graftyard_git::warm_sites(network, record.home, &record.sites);
+    let mut others: Vec<_> = record
         .sites
         .iter()
         .zip(record.name.kinds())
         .filter(|(s, k)| **s != record.home && **k == graftyard_types::MemberKind::Full)
-        .map(|(s, _)| *s);
+        .map(|(s, _)| *s)
+        .collect();
+    others.sort_by_key(|s| *s != warm);
     std::iter::once(record.home).chain(others).collect()
 }
 
@@ -2698,7 +2704,9 @@ fn shard_order(repo: &Repo, pinned: Option<SiteId>) -> Vec<SiteId> {
     let net = repo.id.0.0;
     COLD.with(|m| {
         let m = m.borrow();
-        warm_first(validate_sites(&repo.record, pinned), |s| m.get(&(net, s.0)).is_some_and(|c| c.until > t))
+        warm_first(validate_sites(&repo.record, NetworkId(repo.id.0), pinned), |s| {
+            m.get(&(net, s.0)).is_some_and(|c| c.until > t)
+        })
     })
 }
 
@@ -4663,7 +4671,7 @@ async fn serve(
 mod tests {
     use std::io::Write;
 
-    use graftyard_types::{AccountId, DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
+    use graftyard_types::{AccountId, DbId, NetworkId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
         CommitFail, Cut, Repo, ShardRefusal, beside_rows, bound_at_send, capped, chained, client_push_id,
@@ -5044,17 +5052,26 @@ mod tests {
         }
     }
 
-    /// A validate tries the home site's shard first even when the record lists it last, then the other Full sites in
-    /// record order. A Witness site has no git cache, so it is never tried, and a test-pinned site is tried alone.
+    /// A validate or a read tries the home site's shard first even when the record lists it last, then the network's
+    /// other warm site, which holds its chain, then the other Full sites in record order. A Witness site has no git
+    /// cache, so it is never tried, and a test-pinned site is tried alone. B0-34 mt21's network 1048616 is warm on
+    /// sites 0 and 1 and mt22's 1048617 on 0 and 2 (sha256 rendezvous, checked by hand), so in record order mt22's
+    /// reads after the kill of site 0 went to site 1, which held no chain.
     #[test]
-    fn a_validate_falls_back_from_the_home_shard_to_the_other_full_sites() {
+    fn a_validate_falls_back_from_the_home_shard_to_the_warm_site_then_the_other_full_sites() {
         let ids = |v: Vec<SiteId>| v.into_iter().map(|s| s.0).collect::<Vec<_>>();
-        assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 2), None)), [2, 0, 1]);
-        assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), None)), [0, 1, 2]);
+        let (mt21, mt22) = (NetworkId(DbId(1048616)), NetworkId(DbId(1048617)));
+        let tri = |home| record(PlacementName::Tri, &[0, 1, 2], home);
+        assert_eq!(ids(validate_sites(&tri(0), mt22, None)), [0, 2, 1]);
+        assert_eq!(ids(validate_sites(&tri(0), mt21, None)), [0, 1, 2]);
+        assert_eq!(ids(validate_sites(&tri(2), mt22, None)), [2, 0, 1]);
+        assert_eq!(ids(validate_sites(&tri(2), mt21, None)), [2, 1, 0]);
+        // The rendezvous is among the sites but the home: taken from site 0 as home, 1048608 would pick site 2.
+        assert_eq!(ids(validate_sites(&tri(2), NetworkId(DbId(1048608)), None)), [2, 1, 0]);
         // Us2w: the third slot is the Witness, site 1 here.
-        assert_eq!(ids(validate_sites(&record(PlacementName::Us2w, &[3, 4, 1], 4), None)), [4, 3]);
-        assert_eq!(ids(validate_sites(&record(PlacementName::Solo, &[5], 5), None)), [5]);
-        assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), Some(SiteId(1)))), [1]);
+        assert_eq!(ids(validate_sites(&record(PlacementName::Us2w, &[3, 4, 1], 4), mt22, None)), [4, 3]);
+        assert_eq!(ids(validate_sites(&record(PlacementName::Solo, &[5], 5), mt22, None)), [5]);
+        assert_eq!(ids(validate_sites(&tri(0), mt22, Some(SiteId(1)))), [1]);
     }
 
     /// Only a shard's 422 is the pack's answer and refuses the push. Every shard warming, broken, or unreachable is
