@@ -24,9 +24,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # check_plants compares scripts/plants-baseline.txt with the main this push landed on (HEAD^1).
+          fetch-depth: 2
       - run: python3 scripts/check_design.py
       - run: python3 scripts/check_names.py
       - run: python3 scripts/check_links.py
+      - run: python3 scripts/check_plants.py
 
   runners-js:
     name: graft-runners' Sandbox start (node --test)

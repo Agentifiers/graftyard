@@ -31,7 +31,7 @@ MUTANTS = [
     ("the hedge starts only the next site, not every one left (mt17's two slow shards in turn)", LIB,
      '                due = n - out.started;', '                due = 1;', ED),
     ("a 422 from the hedged shard does not decide", LIB,
-     '            Some((i, r @ (Ok(_) | Err((422 | 429, _))))) => {', '            Some((i, r @ (Ok(_) | Err((429, _))))) => {', ED),
+     '            Some((i, r @ (Ok(_) | Err((422, _))))) => {', '            Some((i, r @ Ok(_))) => {', ED),
 ]
 
 

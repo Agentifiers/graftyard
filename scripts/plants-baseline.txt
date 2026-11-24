@@ -1,0 +1,120 @@
+# Plant mutants whose anchors had drifted when scripts/check_plants.py went in (2026-11-24, main fec11ee1), one
+# `file: name` per line. This file only shrinks: fix a plant's anchors on its own branch and delete its lines, and
+# scripts/check_plants.py fails on a line added here, on new drift, and on a listed mutant that matches again.
+# Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
+tests/lm1mem/plant.py: damping: keyed without the term, so a new term's report is dropped
+tests/lm1mem/plant.py: cap: a plain read on a follower is shed instead of answering NotLeader
+tests/lm1mem/plant.py: cap: narrow reads are never capped (heavy only, as before)
+tests/lm1mem/plant.py: cap: READS_MAX is off by one
+tests/lm1mem/plant.py: follower: HEAVY_READS does not hold on a follower
+tests/lm1mem/plant.py: follower: a follower serves a read it may not (no NotLeader gate)
+tests/lm1mem/plant.py: follower: the NotLeader gate runs after the caps, so a capped follower is retried, not left
+tests/lm1mem/plant.py: lookup: the cached leader is asked as a follower first
+tests/lm1mem/plant.py: lookup: no rotation, every caller hits the same follower
+tests/lm1mem/plant.py: round 4: a read the members shed falls back to the leader
+tests/lm1mem/plant.py: round 4: a member that did not answer counts as declining, so the read goes to the leader
+tests/lm1mem/plant.py: round 4: a 5xx counts as declining
+tests/lm1mem/plant.py: round 4: learners are not asked
+tests/lm1mem/plant.py: round 4: followers before learners
+tests/lm1mem/plant.py: shared: answers keyed by nothing, so another query gets the first answer
+tests/lm1mem/plant.py: rebuilds: a valid cached dump still waits for the next slot
+tests/lm1mem/plant.py: cache: a hit is served without comparing its key, so an applied entry is not in the next read
+tests/lm1mem/plant.py: cache: the key is a constant
+tests/lm1mem/plant.py: round 6: a busy git cache refuses an agent push as an unpacker error
+tests/lm1mem/plant.py: round 6: no refusal at once past 8 per slot
+tests/lm1mem/plant.py: learner: HEAVY_READS still holds on a learner
+tests/lm1mem/plant.py: learner: READS_MAX does not hold on a learner
+tests/lm1mem/plant.py: dump: every read builds its own copy
+tests/lm1mem/plant.py: dump: the cache keeps the bytes of another repository
+tests/lm1mem/plant.py: dump: a narrow rows read is answered with the dump
+tests/lm1mem/plant.py: host: the shared dump is skipped, so every grant serializes its own
+tests/lm1mem/plant.py: round 7: validate spools its pack under the network lock
+tests/lm1mem/plant.py: round 7: POST /refs reads its body under the lock
+tests/lm1mem/plant.py: round 7: the repack holds the network lock alone again
+tests/lm1mem/plant.py: round 7: a merge waits for any catch-up in flight before it tries (2 s merge tails)
+tests/lm1mem/plant.py: round 7: a merge that misses catches up at once, racing the catch-up in flight
+tests/lm1mem/plant.py: merge-p99: a merge's rows read is spaced as a dump rebuild again
+tests/lm1mem/plant.py: merge-p99: a whole-tier dump is no longer spaced
+tests/lm1mem/plant.py: round 18c: the failed copy is ignored, so nothing stops upload-pack
+tests/lm1mem/plant.py: pool-warm: a pool warm starts no stopped shard
+tests/lm1mem/plant.py: promote-stream: a first entry over PROMOTE_MAX is cut to nothing
+tests/lm1mem/plant.py: promote-stream: an entry over PROMOTE_MAX takes the next entries with it
+tests/lm1mem/plant.py: connected-after: the last ref page starts the repack though the check follows (main's order)
+tests/lm1mem/plant.py: connected-after: no rehydrate's last ref page starts the repack
+tests/am1/wp1/plant.py: agent lane starves humans: Agent cut before Human and MergeQueue
+tests/am1/wp1/plant.py: AGENT_SHARE not enforced: the bucket never empties
+tests/am1/wp1/plant.py: AGENT_WAIT never expires agents
+tests/am1/wp1/plant.py: mergeable computed past the budget: pushes always admitted
+tests/am1/wp1/plant.py: GETs ignore the budget
+tests/am1/wp1/plant.py: LOG_MAX_BYTES ignored: only the 30-day rule archives
+tests/am1/hotshards/plant.py: no page is read ahead while one applies
+tests/am1/hotshards/plant.py: a resumed rehydrate ingests the marked packs again
+tests/am1/hotshards/plant.py: a rehydrate loads only the last promotion first, not the earlier ones still in the log
+tests/am1/hotshards/plant.py: the promotions load in marker order, not oldest first
+tests/am1/hotshards/plant.py: ingest never writes a multi-pack-index
+tests/am1/hotshards/plant.py: the multi-pack-index is written once and never again
+tests/am1/hotshards/plant.py: the catch-up that finishes a cut-off rehydrate keeps its place
+tests/am1/hotshards/plant.py: a batch whose packs answer Later is not retried from the pack that did
+tests/am1/hotshards/plant.py: a repack searches no deltas (--window=0)
+tests/composed/plant.py: pack header counts only the chain, not the want's own pack
+tests/composed/plant.py: the diff cap is never applied
+tests/composed/plant.py: no fold
+tests/composed/plant.py: a part holds every new object, the base's too
+tests/composed/plant.py: each pack's trailer is sent with its body
+tests/composed/plant.py: a chain pack is not checked against the manifest's count
+tests/composed/plant.py: the rest of the chunk holding the header is dropped
+tests/fanout/plant.py: go: the sweep deletes a running validate's young quarantine
+tests/fanout/plant.py: go: validate holds the shared lock but ingest takes it shared too
+tests/fanout/plant.py: go: a validate waiting for the lock is not counted in queue_depth
+tests/fanout/plant.py: go: a finished validate stays in queue_depth
+tests/fanout/plant.py: site: the ranges read leaves out k
+tests/fanout/plant.py: site: this release does not read 32.15
+tests/fanout/plant.py: site: a packed rows read still answers the Value tree
+tests/m4/wp4/plant.py: repo-purge: a member that has not applied the tombstone is purged
+tests/m4/wp4/plant.py: repo-purge: an unanswered member counts as retired
+tests/m4/wp4/plant.py: trigger-stream: the cursor settles past an unfinished event (only retries count)
+tests/m4/wp4/plant.py: trigger-stream: an item to be tried again does not hold the cursor
+tests/m4/wp4/plant.py: trigger-stream: the turn is first come, first served (main's line)
+tests/m4/wp4/plant.py: a step of exactly ALARM_STEP_LOG_MS is left out
+tests/m4/wp4/plant.py: a quick alarm logs an empty line
+tests/am1/hosted/plant.py: commits reachable from existing refs reported as new
+tests/am1/pool/plant.py: ledger: leases never expire
+tests/am1/pool/plant.py: ledger: the heartbeat does not run the ledger (m21: torn-down leases never lapse)
+tests/am1/pool/plant.py: ledger: the heartbeat marks the time but drops nothing
+tests/am1/pool/plant.py: ledger: no heartbeat is armed while leases are held
+tests/am1/rest/plant.py: archive: no slack, so the log is cut to exactly the cap
+tests/am1/rest/plant.py: archive: a promotion takes an entry over PROMOTE_MAX
+tests/am1/rest/plant.py: archive: recorded while held in one bucket
+tests/am1/wp2/plant.py: 32.8 chosen for every push (default bytes change)
+tests/am1/wp2/plant.py: the agent check after the permission checks: an App without the permission gets a bare 403
+tests/am1/wp2/plant.py: Push::tiers Core only with provenance (followers refuse the entry)
+tests/am1/wp3/plant.py: a derived final state is not recorded by the next command
+tests/am1/wp4/plant.py: glob overlap ignores a trailing ** after a literal
+tests/am1/wp4/plant.py: a release reports Expired, not Released
+tests/b034reads/plant.py: no record of the pack's objects
+tests/b034reads/plant.py: no multi-pack-index count after an ingest
+tests/budget/plant.py: the catch-up is charged with the merge
+tests/budget/plant.py: A28: no turn, so merges in flight are admitted before the ones ahead are charged
+tests/chainwait/plant.py: every site waits the whole deadline
+tests/chainwait/plant.py: the last site waits only the bound
+tests/chainwait/plant.py: the bound ignores the deadline
+tests/chainwait/plant.py: the rule inverted
+tests/chainwait/plant.py: a timeout counts as ready
+tests/g26/plant.py: a changed default never reaches a warm disk
+tests/g26/plant.py: HEAD named on every catch-up
+tests/hitgate/plant.py: chain-site: main's rule, every site waits as a chain site
+tests/m3/close/plant.sh: cursor-chases-itself
+tests/m3/wp3/plant.sh: live-before-move
+tests/m3/wp4/plant.sh: key-cache-never-lapses
+tests/m3/wp4/plant.sh: claims-not-intersected
+tests/m4/wp1/plant.py: a rebuilt store starts past the committed read (replay_from ignored)
+tests/m4/wp2/plant.py: the actor is notified of its own comment
+tests/m4/wp2/plant.py: an ignored repository still notifies
+tests/m4/wp2/plant.py: watchers are not notified
+tests/nr2/plant.py: through: a write-class request takes the cached entry
+tests/nr2/plant.py: through: a write's fresh answer does not refresh the entry
+tests/nr2/plant.py: an entry is stamped when its answer arrives, not when its read started
+tests/nr3/plant.py: cache: the answer is stamped with the floor, not the index it was built at
+tests/promotewarm/plant.py: promote-ahead asks as a client, as on main
+tests/promotewarm/plant.py: every promotion is warm, so a due range never starts a shard
+tests/promotewarm/plant.py: a skipped promotion is an error, not idle

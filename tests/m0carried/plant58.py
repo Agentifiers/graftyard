@@ -27,14 +27,11 @@ MUTANTS = [
      '        | Route::Rpc { service: Service::UploadPack, .. } => (true, false),',
      '        | Route::Rpc { service: Service::UploadPack, .. } => (true, true),', TESTS),
     ("main's resolve: the reads run in turn whatever is held", LIB,
-     '    let Some((ga, gr)) = guess else {',
-     '    let Some((ga, gr)) = guess.filter(|_| false) else {', TESTS),
+     '    let (ga, gr) = guess.unzip();', '    let (ga, gr) = guess.filter(|_| false).unzip();', TESTS),
     ("the guessed record is kept when the account moved", LIB,
-     '    let r = if a == ga { r } else { second(a).await };',
-     '    let r = r;', TESTS),
-    ("the guessed name is kept when the record moved", LIB,
-     '    if a == ga && r == gr { t } else { third(a, r).await }',
-     '    if a == ga { t } else { third(a, r).await }', TESTS),
+     '        let g = gr.clone().filter(|_| Some(a) == ga)', '        let g = gr.clone().filter(|_| true)', TESTS),
+    # Dropped: "the guessed name is kept when the record moved". `chained` reads the name through `link`, whose keep
+    # rule (a guess is kept only when the read before it answered the guess) plant81 #0 plants.
     ("main's gate: a closed gate on a cached Authz is final", LIB,
      '        (Some(_), Ok(d)) if d != graftyard_identity::Decision::Allow => Ok((decide(fresh().await)?, at)),\n',
      '', TESTS),

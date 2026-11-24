@@ -20,9 +20,9 @@ HOT = ['cargo', 'test', '-q', '-p', 'graftyard-edge', 'hot_tests']
 
 MUTANTS = [
     ('the combined read answers access alone', FAMILY,
-     '                core.extend(graftyard_api::hosted::TierRows::agent_rows(&fold.core));\n', '', SITE),
+     '            core.extend(graftyard_api::hosted::TierRows::agent_rows(&fold.core));\n', '', SITE),
     ('the combined read does not say it carries agent rows', FAMILY,
-     '                v["agent"] = json!(true);\n', '', SITE),
+     '            v["agent"] = json!(true);\n', '', SITE),
     ('an access-only read says it carries agent rows', FAMILY,
      'let both = r.get("agent").is_some();', 'let both = true;', SITE),
     ('a stale term keeps its leader', LOOKUP,
@@ -39,7 +39,7 @@ MUTANTS = [
     ('the hot mark never lapses', EDGE,
      'now.0.saturating_sub(at.0) <= w))', 'now.0.saturating_sub(at.0) <= u64::MAX))', HOT),
     ('a pack the leader keeps inline stages first', EDGE,
-     '        inline > INLINE_MAX_HOT\n', '        inline >= INLINE_MAX_HOT\n', HOT),
+     '            || inline > INLINE_MAX_HOT\n', '            || inline >= INLINE_MAX_HOT\n', HOT),
 ]
 
 

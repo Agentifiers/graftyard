@@ -26,12 +26,13 @@ MUTANTS = [
      'raft::GroupConfig::Normal(Box::new(np)), degraded_at).await', 'raft::GroupConfig::Normal(Box::new(np)), based_on).await', SITE),
     ('a stale change is appended', MEMBER,
      '    if at == Some(based_on) { Ok(()) }', '    if at.is_some() { Ok(()) }', SITE),
+    # `move_placement` takes the committed placement's `next` now, not `Placement::new` with its learners.
     ('a move drops the learners', MEMBER,
-     '    graftyard_types::Placement::new(voters, learners.iter().cloned().collect(), home, checks)',
-     '    graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), home, checks)', SITE),
+     '    p.next(voters, p.learners().iter().cloned().collect(), home, checks).map_err(|e| e.to_string())',
+     '    p.next(voters, arrayvec::ArrayVec::new(), home, checks).map_err(|e| e.to_string())', SITE),
     ('a move out of Joint keeps the old half\'s learners', MEMBER,
-     '        raft::GroupConfig::Joint { new, .. } => new.learners(),\n    };\n    graftyard_types::Placement::new(',
-     '        raft::GroupConfig::Joint { old, .. } => old.learners(),\n    };\n    graftyard_types::Placement::new(', SITE),
+     '        raft::GroupConfig::Joint { new, .. } => new,\n    };\n    p.next(voters,',
+     '        raft::GroupConfig::Joint { old, .. } => old,\n    };\n    p.next(voters,', SITE),
 ]
 
 

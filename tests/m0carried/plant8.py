@@ -41,8 +41,9 @@ MUTANTS = [
     ('LOOP_LAG trips on one clamped confirm', LIB, 'pub const LOOP_LAG: (u32, Duration, u32) = (2,',
      'pub const LOOP_LAG: (u32, Duration, u32) = (1,'),
     ('LOOP_LAG counts confirms that are not whole ticks', HEALTH,
-     'c.1 >= at_least && c.1 % 100 == 0', 'c.1 >= at_least'),
-    ('LOOP_LAG counts 100 ms ticks', HEALTH, 'c.1 >= at_least && c.1 % 100 == 0', 'c.1 >= 100 && c.1 % 100 == 0'),
+     'c.isolate >= at_least && c.isolate % 100 == 0', 'c.isolate >= at_least'),
+    ('LOOP_LAG counts 100 ms ticks', HEALTH, 'c.isolate >= at_least && c.isolate % 100 == 0',
+     'c.isolate >= 100 && c.isolate % 100 == 0'),
     ('LOOP_LAG counts the whole STEP_DOWN window, not 2 s', HEALTH,
      'self.now.0.saturating_sub(within.as_millis() as u64)', 'self.now.0.saturating_sub((within * 5).as_millis() as u64)'),
 ]
