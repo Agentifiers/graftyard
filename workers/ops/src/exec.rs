@@ -369,9 +369,14 @@ impl Exec for Live<'_> {
         // so a `ZERO_ACKS` or `RECOVER_AFTER` read would judge 15 minutes as 24 h. The 24 h per-minute rollups that
         // feed `loss` ship with M6-WP1's hosted glue. Until then only a customer-signed `SiteLost` replaces a site, and
         // a lost site's drain holds until an operator undrains it.
-        let v = gate::verdict(&voters, &fast, &slow);
+        let limited = gate::lead_limited(fold);
+        let v = gate::verdict(&voters, &fast, &slow, limited);
         if v.values().any(|x| x.burning) {
             console_log!("graft-ops health: {v:?} from {fast:?}");
+        }
+        // A drained site's calm judged while a day holds a voter to the lead limit (`calm-one`): its slow reports.
+        if limited.is_some() && !fold.drained.is_empty() {
+            console_log!("graft-ops calm: limited {limited:?} {v:?} from {slow:?}");
         }
         v
     }

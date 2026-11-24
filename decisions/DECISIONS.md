@@ -3549,6 +3549,47 @@ On 1 in 100 steady c read at most 1.0 x from the higher observer and 0.4 x from 
 - A fault that matters and reads under 5 x from either observer, so it never drains.
 - A drained site that stays over 2 x for 15 minutes after a fault lifts.
 
+#### `calm-one`: while a site day holds a voter to the 1% lead limit, a drained site's calm is judged by the other voter (2026-11-24)
+
+**Status.** Code-only, not deployed; `verdict` and `next` run in `graft-ops`, so it ships on an ops deploy. Answers R53 (`decisions/OPEN-QUESTIONS.md`), as the lead chose.
+
+**Decision.**
+- `gate::verdict` takes the site a running site day holds to the 1% lead limit (`gate::lead_limited`), and `Exec::health` passes it. While a voter is limited and another site is drained, `graft-ops` logs `graft-ops calm:` with the verdict and the slow reports it judged.
+- While such a site exists, a drained site's calm is judged by the other voter alone. That voter's report must have at least `MIN_CALLS` over `UNDRAIN_AFTER` and be under `UNDRAIN_BURN`.
+- The limited voter's report is ignored only while it is under `MIN_CALLS`, because that is absence of evidence. With `MIN_CALLS` at 2 x or more, it still holds the drain.
+- Burning is unchanged: it still needs both other voters.
+- A site day's wait on another drained site, at its drain step or before a forward deploy, pages after `STUCK_DAY`. The bound counts from the later of that drain and the day's last entry. Before, the wait had no bound.
+
+**Why.** In M5-WP4's row B, c was drained during b's day, and b was undrained under the lead limit, as journey 5 says. With c drained and b lead-limited, a led every chain. b's members only followed, so they called c 15 to 45 times per 5 minutes. After the fault lifted, a counted 78,637 calls to c with 67 missed (0.09%), and b counted 71. Calm needed both voters with `MIN_CALLS`, so c never undrained. The day waited on c with no bound, so it never ended either. It took a hand `Normal` (entry 370) [measured, `tests/m5/results/m5-wp4.md`, "Row B"].
+
+**Beat.**
+- Letting the day undrain its own lead limit while another site is drained. N+1 would then lead on b while c is out, two sites at risk at once, which the one-drained-at-a-time rule exists to stop.
+- A lower `MIN_CALLS` for the limited voter. b's 71 calls in 15 minutes would still be under any floor that keeps 3 misses from voting.
+- Leaving it to `STUCK_DAY` alone. A page is the right signal, but every drain during a day would then need a human.
+
+**Evidence.**
+- `sitedays.rs`:
+  - `a_lead_limited_voters_thin_report_leaves_calm_to_the_other_voter_with_min_calls`, on row B's numbers. The verdict is not calm with no limited site, as on main. It is calm with b limited, and not calm with a limited. The remaining voter at 299 calls is not calm, and at 2 x is not calm. The limited voter's 300 calls at 2 x hold the drain. Burning still needs both voters.
+  - `a_site_drained_during_a_day_undrains_on_the_other_voters_calm_and_a_long_wait_pages`, through `next`. c undrains on a's calm while b is limited. Under main's rule it waits. Past `STUCK_DAY` it pages. After c's undrain the day finishes.
+  - `a_day_waiting_stuck_day_to_drain_its_site_pages`.
+  - All three fail on main's rule.
+- `tests/m0carried/plant170.py`: 7 of 7 caught.
+  - The mutants are main's two-voter calm, no `MIN_CALLS` on the remaining voter, one-voter calm with no limited site, ignoring the limited voter's evidence, burning that drops the limited voter, no page, and the bound timed from the day's last entry only.
+  - `Exec::health` passing `None` is not planted: no native test runs the host. The hosted row checks it.
+
+**Hosted check (owed).** It rides the next B0-07-shaped row on graft-m4a. That row is row B's setup on an ops build that carries this entry:
+- a test-faults `graft-m4a-ops` with `OPS_STEP_MIN_ENTRIES` 50, `STEP_DWELL_MS` 300000, `FIRST_DAY_MS` 60000 and a 1-minute cron;
+- a `SiteDay{b, R}` with its `Rollback{b, N}`;
+- a gray fault on c at b's 10% (rate 0.3, `hang_ms` 3000), lifted after c drains;
+- 1x load from both observers on c-homed chains.
+
+Pass: b undrains, then c drains, in one run; c undrains on its own about `UNDRAIN_AFTER` after the lift, with `graft-ops calm:` lines showing a's report alone deciding while b is limited; the day then runs to `IntentDone`; and no hand `Normal` is used.
+
+**Flip.**
+- A drained site that undrains on the remaining voter's calm while the limited voter's members still see it failing. Then the limited voter's report counts again, and the fix is more calls from it, for example its edges' calls.
+- A hosted row where the remaining voter itself is under `MIN_CALLS` over `UNDRAIN_AFTER` during a day. Then calm needs a longer window, not a lower floor.
+- `STUCK_DAY` pages on drains that a human would rather let run. Then the bound moves to its own constant.
+
 ### M4-WP2's hosted half, as built (2026-11-13)
 
 #### M4-WP2's consumers run in band on the leader alarm
