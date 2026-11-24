@@ -29,6 +29,7 @@ mod faults;
 mod feed;
 mod fold_audit;
 mod gatecount;
+mod heapcount;
 mod hookseq;
 mod host;
 mod inbox;

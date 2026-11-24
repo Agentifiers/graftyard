@@ -19,17 +19,20 @@ MUTANTS = [
      '        if !lease {\n            self.read_round();\n        }\n',
      '        if !lease {\n            self.broadcast(true);\n        }\n', RAFT),
     ('the read round goes to learners too', LEADER,
-     '        for p in self.peers() {\n            self.send_append(p, true);\n        }\n    }\n\n    fn check_reads',
-     '        for p in self.targets() {\n            self.send_append(p, true);\n        }\n    }\n\n    fn check_reads', RAFT),
+     '        for p in self.peers() {\n            if !self.read_beat(p) {',
+     '        for p in self.targets() {\n            if !self.read_beat(p) {', RAFT),
+    # read-round-gap (plant20) replaced the round shared per clock reading with `free`: a waiting read joins the round
+    # out until it is answered or READ_ROUND_GAP passes. Main's rule, a round per read, is a round whenever one waits.
     ('no round shared: one per read, to the voters', LEADER,
-     '        if lead.read_round == Some(now) {\n            return;\n        }\n',
-     '', RAFT),
+     '        if !waiting || !free {', '        if !waiting {', RAFT),
+    # Distinct from plant20's "a read that arrived after the latest round never gets one": here the first round is
+    # the only one, so every later read waits on it.
     ('a round shared with every later read', LEADER,
-     '        if lead.read_round == Some(now) {',
-     '        if lead.read_round.is_some() {', RAFT),
+     'last.is_none_or(|(t, o)| own > o && (own', 'last.is_none_or(|(t, o)| false && (own', RAFT),
+    # Equivalent since read-round-gap: `check_reads`, called right after, ends in `read_round` too. So the read is
+    # planted as one that never asks for a round, which is what the arrival's call guarded.
     ('no round for a read on an expired lease', LEADER,
-     '        if !lease {\n            self.read_round();\n        }\n',
-     '', RAFT),
+     '        lead.reads.push((id, now, !lease));', '        lead.reads.push((id, now, false));', RAFT),
 ]
 
 

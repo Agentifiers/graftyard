@@ -10081,6 +10081,49 @@ counter"; tests `a_request_releases_its_bytes_however_it_ends` and
   then passes memguard's 120 MiB. That is a design change and goes to the design docs first.
 - **Remove it** if a hosted row shows the hold's cost on `Member::fetch` above 1% of member CPU.
 
+### `heap-count`: the site counts its live heap bytes and their peak with a counting global allocator, 2026-11-24
+
+**Status.** Asked for by the lead on 2026-11-24 after the open-bytes read of B0-33 clA
+(`tests/am1/results/archive-memory.md`, "The open-bytes read on B0-33 clA"). Built on branch `heap-count` from main
+`05ea366d`: `workers/site/src/heapcount.rs` and `workers/site/src/member.rs` (`memSplit.heapLive`, `heapPeak`). Site
+script only, in the normal build too, so it ships on the next site day. Not hosted.
+
+**Decision.** The site's `#[global_allocator]` is the system allocator wrapped in a counter. Each allocation adds its
+size to the live bytes and raises their peak; each free subtracts; a reallocation moves the live bytes by the
+difference between its old and new sizes. On wasm32 the counts are plain statics, since a site isolate runs one
+thread; a native build counts per thread. `/stats` `memSplit` reports `heapLive` and `heapPeak`. The peak is the
+isolate's high-water mark and no read or `/stats?reset=1` resets it, so it compares with `wasmMemMb` directly.
+
+**Why.** On clA the leader's wasm memory climbed to 89.1 MiB while `open.high` stopped at 4.2 MiB, every counted part of
+memSplit stayed under 3 MiB, and the stored log held at about 8 MB after the first 34 s of load. wasm memory never
+shrinks, so `wasmMemMb` cannot tell live bytes (a leak, or an owner memSplit does not count) from freed bytes the
+allocator keeps (fragmentation). The live heap does.
+
+**What it beat.**
+- **More memSplit counters, one per suspected owner.** Each covers only what someone thought to count; clA shows the
+  climb is outside every counter memSplit has. The allocator sees every byte.
+- **Test-faults only.** memguard reads hosted builds, including product-shaped ones, and the cost is two adds and a
+  compare per allocation.
+- **A peak that resets on `/stats?reset=1`.** `wasmMemMb` never resets, and the reading compares the two; a driver's
+  reset at load start would cut the peak the reading needs.
+
+**Evidence.**
+- Tests `heapcount::tests::live_bytes_follow_allocations_reallocations_and_frees` and
+  `the_peak_holds_across_reads_and_rises_past_itself`.
+- `tests/m0carried/plant152.py`: 7 of 7 mutants caught. They are dealloc not subtracted, realloc counted as a new
+  allocation, realloc not counted, a shrinking realloc not subtracted, a read resetting the peak, the peak not raised
+  past itself, and a zeroed allocation not counted.
+- Cost, native bench in `--release`: 2,000 entries of two pushes and one issue command on real members, about 24.9
+  million allocations. The plain system allocator took 2,111 to 2,245 ms over 5 runs and the counted one 2,169 to
+  2,249 ms, inside the run-to-run spread [measured, local].
+
+**Flip.**
+- **Look for an owner** if, on a row longer than 8 minutes, a member's `heapLive` tracks its `wasmMemMb` up: the bytes
+  are live, and memSplit's moving parts name the owner next.
+- **Treat it as fragmentation** if `heapLive` stays flat under a rising `wasmMemMb`: change the allocation pattern or the
+  allocator, not an owner.
+- **Remove it** if a hosted row shows member CPU per request more than 1% above the same shape's row without it.
+
 ### `archive-scan`: the archive alarm keeps its `SUM(length(row))` scan, with no running sum, 2026-11-24
 
 **Status.** Priced at $0 by LM-1 on 2026-11-24 from raws already kept; nothing built.
@@ -10417,8 +10460,10 @@ their lower seq.
 
 ### `warm-order`: a validate or read tries the home, then the network's other warm site, then the other Full sites, 2026-11-24
 
-**Status.** Built and tested at $0. Not deployed; it ships with the next edge day. The lead asked for it on 2026-11-24
-from B0-34 mt22's every-clone collapse.
+**Status.** Built, and hosted on `graft-m1` from main `05ea366d` (edge day plus site day, 2026-11-24). The lead asked for it
+on 2026-11-24 from B0-34 mt22's every-clone collapse and closed G42 on mt23: every clone 100% in kill and 96.4% in second
+on a network warm on a and c, with site c taking the kill's misses at catch-up p50 2,002 ms
+(`tests/am1/results/b034-mt23.md`).
 
 **Decision.** `validate_sites` (`workers/edge/src/lib.rs`) orders the sites after the home with the network's other
 warm site first (`graftyard_git::warm_sites`, the rendezvous-next site among the others, the one `chain_buckets`,
@@ -10451,3 +10496,125 @@ the warm site last, the warm site picked with the record's first site as home, a
 **Flip.** A B0-34-shaped row whose kill phase reads composed misses no faster on the warm site than on the third site
 (catch-up p50 within 2 times), or a placement whose warm site is not where the chain and k live, would mean the order
 buys nothing and record order is as good.
+
+### `mint-ratio`: an edge isolate swaps a bad `graft-ops` back on its own mint errors by version, 2026-11-24
+
+**Status.** Built on branch `bm5-mint` from main `5167e846` for BM-5's `graft-ops` swap-back clause (the lead's
+option A: `GATE=breach` does not stand in). Not hosted.
+
+**Decision.**
+- **The count.** Each `/mint` answer now carries `x-graftyard-ops-version`, from `graft-ops`'s `VERSION` binding
+  (`workers/ops/deploy.mjs` binds it). The edge's `Ctx::ops` counts each mint in a per-isolate
+  `graftyard_release::gate::MintWatch` by that version. A 5xx is an error, a 4xx is not (the grant's fault), and a
+  call whose binding threw counts as N+1's error, as `GATE_ERRORS` counts a throw. The counts start over when the
+  current intent changes.
+- **The trigger.** Only while an `OpsRoll` runs forward, N+1's errors over `MINT_ERROR_RATIO` (1%) past chance, the
+  same Chernoff bound as `GATE_ERRORS` (`GATE_ERRORS_NATS`, ln 10,000), so a few errors among few mints trip it and one
+  error in a quiet isolate does not. N's errors, such as a Secrets Store failure every version shares, never swap back.
+- **The undo.** The isolate builds the intent's pre-signed `OpsPointer` (`undo_entry`) and commits it on the `Release`
+  group in `wait_until`, after the reply, at most once per `MINT_RESEND_MS` (10 s), and never once the group holds it.
+  No Cloudflare API call. `graft-ops` then returns to N at 100% through the API when it can, as for any undo.
+- **Test-faults.** A `graft-ops` built with the `test-mint-fail` feature (`"mint_fail": true` in the executor file)
+  answers every mint 503: the bad `graft-ops` BM-5 rolls at 1%. It is a build, not a variable, because a `graft-ops`
+  upload keeps the running version's bindings (`keep_bindings`), so N and N+1 can differ only in code.
+
+**Why.** DESIGN names this trigger ("Edge isolates whose mint errors pass a compiled ratio submit the pre-signed
+`OpsPointer`") but nothing counted mints, and an `OpsRoll`'s gate stays `Pending` because no front sees its answers
+(`gate-errors`). The edge is the only caller of `/mint`, so it is the one place that sees every answer and every throw.
+
+**What it beat.**
+- **A fixed count floor before judging.** At 1%, one isolate may see a handful of N+1 mints; the bound fires on 2 throws
+  or 7 of 57 errors and never on one.
+- **Counting in `graft-ops`.** A version that throws or never starts cannot count itself.
+- **`graft-ops` submitting from Analytics Engine.** That is an API read the swap-back would wait on in a control-plane
+  outage.
+
+**Evidence.** `crates/release/src/tests/group/errors.rs`,
+`bm5_a_bad_graft_ops_at_1pct_is_swapped_back_by_an_edge_isolates_mint_errors`: release 2's `OpsRoll` at 1%, `GATE`
+pending. N's 503s and N+1's 4xx swap nothing back; N+1's 503s do on the sixth after 1 of 51, and only once per
+`MINT_RESEND_MS`. The group commits the pointer with no deploy, `graft-ops` returns to N at 100% after, two thrown mints
+swap release 3 back, an `EdgeRoll`'s mint errors and a healthy N+1 at exactly 1% do not. It fails on main, where nothing
+submits an `OpsPointer` during an `OpsRoll` with a pending gate. `tests/m0carried/plant211.py`: 6 of 6 caught (a 4xx
+counted, throws ignored, N's errors summed in, no resend gap, counts kept across intents, no chance bound).
+
+**Flip.** A hosted `OpsRoll` swapped back with a healthy N+1 (raise the bound), or one where a bad N+1 served mints
+for longer than one `MINT_RESEND_MS` after its errors crossed the line (count across isolates, as `gate-errors` does).
+
+#### `agents-view`: the agents account reads every committed `Release` entry and replays the group's own check (2026-11-24)
+
+**Status.** Code-only, not deployed (AM3-WP1's first slice). `graftyard_release::agents` and the edge's `GET /api/graftyard/v1/release/entries` ship on the next edge day; no agents account exists yet.
+
+**Decision.**
+- `GET release/entries?after=&per_page=` answers every committed entry after index `after`, in index order, each `{index, entry, at}`: the stored bytes in base64 and the time of the entry it committed in. A `Link` `rel="next"` names the next page while more remain. Any `Release` member answers from what it applied (`/view`), with no read-index round.
+- Only an App JWT of the install's `graftyard-agent` reads it: the App whose `AgentApp` row on the install's own chain is `GraftyardRun` and whose slug is `graftyard-agent`, verified against its record on that chain. Any other JWT or token answers 401.
+- `AgentsReleaseView` replays the entries through `ReleaseFold::check` and `apply` against the `AgentsAnchor`. So another install's entry is `WrongInstall`, a `Keys` not signed by the latest accepted customer key is `UnknownKey` or `WrongSigner`, and the `Keys` chain starts at a genesis the anchored customer key signed. It takes an entry only at the next index; a page that skips one is refused, and one whose entries it holds adds nothing, so it never moves to a lower index. A refused entry stops the page and keeps the view as it was, with the entries taken before it.
+- `controller_override` sets the `graft-controller` override only while `Pointers.controller` is `Some`.
+
+**Why.**
+- The group's `prev` digest and its `Keys` and intent rules read every entry, so a view that checks entries as the group did needs every entry. A feed filtered to the agents' kinds could not be verified, only trusted. The AGENT-LAYER comment listed the agents' kinds as what the feed serves; it now says the feed serves every entry and why.
+- `at` is the group's own time of each entry, which `check` reads for `not_after`; without it the agents view would refuse an intent the group accepted.
+- The entries are signed bytes with no secret, so serving all of them to the agents account exposes nothing new.
+
+**Beat.**
+- A filtered feed of the agents' kinds, which the view could not check against `prev` or the `Keys` chain.
+- A new check written for the agents view, which could drift from the group's.
+
+**Evidence.**
+- `crates/release/src/tests/group/agents.rs`, 3 tests. LF-8's three refusals, 100 of 100 each against a controller-pinned history: 50 entries bound to another install and 50 install-2 geneses offered to a cold view, `WrongInstall`; 100 next-generation `Keys` signed by the vendor, executor, agents executor, a stranger, or a new customer key alone, `UnknownKey` or `WrongSigner`; the group's valid next entry offered 1 to 7 indexes ahead, refused, and accepted at its own index as the control. A view read 3 at a time equals the group's fold. A behind member's pages, and an older history with other bytes at held indexes, add nothing. A refused refresh keeps the view and its pin. The override is set only while the pointer is.
+- `tests/m0carried/plant220.py`: 7 mutants, all caught (each LF-8 refusal removed, out-of-order taken, a held entry replayed, a refused refresh dropping the view, the override set with no pointer).
+- `tests/edgeboot/run.sh` now also sends the GET: 401 with no JWT, and 0 wasm traps, on the test-faults and product builds.
+
+**Flip.**
+- An install whose `Release` history outgrows a cold agents isolate's first read. Then serve the agents view a checkpoint the customer key signs, as the base would need for its own isolates.
+- A need to hide an entry kind from the agents account. Then the view needs a signed digest chain over the filtered feed.
+
+### `source-record`: a bootstrap join of a system chain checks its record against the genesis itself, never a registry row, 2026-11-24
+
+**Decision.** `member.rs`'s `check_source` reads a `Source::Genesis` join's source record through `graftyard_lookup::source_record`: the cached view's genesis, else the genesis the isolate accepted, else one read from the `Release` group. `system_record` keeps its registry-row shortcut, which only finds a group's members.
+
+**Why.** M5-WP2's `system_record` (7e01f24f) answers a cold isolate's ask from the chain's `MemberRegistry` row before it reads the genesis, and a row's record carries `at: 0` (`RegistryRow::record`). `check_source` compares the joiner's record for equality, so once a chain's site-0 member had written its row, a cold isolate on site 1 or 2 refused the same genesis record as `notTheSourcesRecord`. graft-m6a's `Tokens` precreate on main 05ea366d answered 200 for 74 of 384 ranges and left about 2,000 chains with rows but no working group (`tests/m6/results/m6-wp1.md`, "Bootstrap refusals on cold isolates"). graft-m3f and graft-m4a were built from 20147db, before 7e01f24f.
+
+**What it beat.**
+- **Comparing the records without `at`:** it would accept a row's record as the source, which no signed entry wrote, and a later record of the same shape would pass the check.
+- **A registry row carrying the full record:** a row change on every site for a field only this check reads.
+
+**The other callers** (each read for this decision; none compares a `system_record` result with another record):
+- The edge's `Ctx::system_record`, `record_for`, `system_read`, `commit_system`, the `jti` check, `export::record`, `/_bed/*`, `after_genesis` and `/release/entries`, the site's `owner_record`, `repo_owner_row`, `lease_once`, the hooks, activity, actions, audit and export feed callers, and `graft-ops`' `Rotate`: each passes the record to `call`, `commit` or `create`, which use only its sites, home and generation to find members.
+- **Not safe, and left open:** `create`'s own joins send the record they were given. On a cold edge or site isolate, `system_record` hands it the row's record (`at: 0`) for any chain with a row. For a working group that never matters, because `create`'s probe answers first and no join is sent. For a half-made group, with a row and no leader, the joins carry `at: 0`, and with this change every member refuses them. The precreate route (`/api/graftyard/v1/release/tokens`) is not affected: it sends the accepted genesis's own record, so it repairs such a chain. A cold `commit_system` or `jti` create of a half-made `Names` or `Tokens` chain is affected. Before this change that path was refused by every warm member too. Recorded as OPEN-QUESTIONS R54.
+- `Join::record` comparisons inside `join` (`joinedAs`) and `Placement` moves compare a member's own stored join, not a looked-up record.
+
+**Evidence.**
+- `tests/sourcebed/run.sh`: the site's own build in local workerd with a real genesis and no `GRAFTYARD_GENESIS` stand-in. On 05ea366d a cold site-1 isolate refuses `tokens:7`'s genesis record and names `at: 0` (FAIL). With this change it joins, and `tokens:8`'s record with `at` moved by 1 ms is refused naming the genesis's `at` (PASS, 0 wasm traps). Both builds refuse the moved record.
+- Site lib tests with test-faults 126 of 126; `graftyard-lookup` 55 of 55; `tests/edgeboot/run.sh` both builds PASS, 0 traps.
+- `tests/m0carried/plant131.py`, 3 mutants.
+
+**Flip.** None expected: the check's rule is the design's (`design/DESIGN.md`, Shape, `bootstrap`). Revisit if a genesis read on a cold isolate's first bootstrap join shows as join latency on a precreate or a `Names` create.
+
+#### `controller-task`: the controller's `Task` is a pure state machine in `graftyard_git::controller` (2026-11-24)
+
+**Status.** Code-only (AM3-WP1's second slice); no controller runs it yet.
+
+**Decision.**
+- `Task`, `TaskState`, `TaskBudget`, and `Workspace` are the AGENT-LAYER Shape's, in `crates/git/src/controller.rs`, beside the base's `AgentTask` row in `crate::task`. The controller holds one per Graftyard-run task in the agents account. It is no group's fold, so it has no record format and no `decide`; `Task::step` is its rule, and the base's rules stay on `AgentTask`.
+- `Task::new` takes only a `SessionId::Run`, derives `branch` with `task::run_prefix`, and picks `Workspace` from the org's `agents_workspace`: `Fork(<org>-agents/<repo>)`, the fork keeping the base's name, or `InRepo`.
+- `Task::step` moves a task by one event:
+  - `Queued` to `Running` when a Sandbox starts; a push records `last_push`; `Running` to `Draft { pr }` or `Done`.
+  - Any live state to `Failed { reason }`, or to `Failed` when `TaskBudget::over` names a limit: task tokens past their limit, the org's monthly tokens past theirs, or the wall (60 min by default) reached. At a token limit is within it.
+  - Any live state to `Cancelled` on the cancel delivery.
+  - A non-writer's title or body edit pauses a `Queued` or `Running` task, as the host's pause does. Only a writer's reassignment queues it again, and moves `snapshot` to that entry's index.
+  - `Draft`, `Done`, `Failed`, and `Cancelled` are final and take no event. A refused step changes nothing.
+- `TaskState::api` is the `PATCH` state each sends, by the table in "Tasks and the activity feed": `Paused` is `waiting_for_user`, `Draft` and `Done` are `completed`, and `Cancelled` sends none, because only the cancel endpoint sets it and `PATCH` refuses it (`TaskErr::HostState`). A controller state is final exactly when the base state it sends is.
+
+**Why.**
+- The base already holds the task's durable record; the controller's state only decides its next call, so a pure step with no format keeps it testable and adds no failure domain.
+- `Draft { pr }` is final because the table maps it to `completed`, a final base state. Review and merge then go through the PR, not the task.
+
+**Beat.** Storing the controller's `Task` as fields on `AgentTask`, which would put Sandbox ids and budgets on the base's group for a component the base does not run.
+
+**Evidence.**
+- `crates/git/tests/controller.rs`, 5 tests: the prefix and both workspaces, and the 32 and 33 character org logins on either side of the 39-character limit (OPEN-QUESTIONS A51); each budget limit at and past it; every forward step and every refused one; each final state refusing every event; the pause and its resume, with the snapshot moved; and the `api` map with no `cancelled` or `timed_out`.
+- `tests/m0carried/plant221.py`: 11 mutants, all caught.
+
+**Flip.**
+- The controller needs a step this model refuses, such as resuming a failed task. Then add the event here first, with its base `PATCH`.
+- A design choice for long org logins (A51). Then `workspace` follows it.

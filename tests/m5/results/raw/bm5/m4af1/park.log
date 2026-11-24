@@ -1,0 +1,3 @@
+2026-11-24T13:21:19Z park's deployments POST hung past 4 min with no answer (schedules were already []); killed and redone by hand:
+{"deploy":true,"errors":[]} graft-m4a-ops ac4cd9a5 100 at 2026-11-24T13:21:08Z
+{"revoke":"graft-m4a-bm5f-deploy","ok":true} token files shredded

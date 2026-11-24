@@ -14,6 +14,7 @@
 // takes `"ops_kill": n`, `"step_min_entries": n`, `"rotate_published_ms": n` (BF-46: `MintWrapKey`'s publish wait) and
 // `"cron"`, each ignored without it, and M6-WP1's `"recover_ms": n` (`OPS_RECOVER_MS`, the recovery window). M6-WP1's
 // `"workflows": "<name>"` binds the Workflows script (`workers/workflows/deploy.mjs`) as the service `WORKFLOWS`.
+// BM-5's `"mint_fail": true` (test-faults) builds with `test-mint-fail`, so every mint of the version answers 503.
 // M5-WP6's `Rotate`:
 // `"slots": {"DEPLOY_TOKEN": [<slot 0 secret name>, <slot 1 secret name>], "READ_TOKEN": [...], "MINT_WRAP_KEY": [...]}`
 // binds both slots of each as `<NAME>_0` and `<NAME>_1`, and the `Release` view names the active one
@@ -36,7 +37,8 @@ const out = join(here, "build");
 // `"test_faults": true` in the executor file: a test install's build, with BF-39's `ops_kill` and
 // `step_min_entries` (`src/exec.rs`). A product build ignores both variables, and this script sets them only here.
 const faults = executor?.test_faults === true;
-execFileSync("worker-build", ["--release", "--out-dir", out, ...(faults ? ["--features", "test-faults"] : [])],
+const features = faults ? (executor.mint_fail ? "test-mint-fail" : "test-faults") : null;
+execFileSync("worker-build", ["--release", "--out-dir", out, ...(features ? ["--features", features] : [])],
   { cwd: here, stdio: "inherit" });
 const gen = join(here, ".gen");
 mkdirSync(gen, { recursive: true });
@@ -53,6 +55,8 @@ const cfg = {
   ],
   ...(wrapA ? { vars: { SECRETS_WRAP_KEY_CURRENT: current ?? "0" } } : {}),
   observability: { enabled: true },
+  // The version that answers each mint, which the edge counts mint errors by (`MINT_ERROR_RATIO`).
+  version_metadata: { binding: "VERSION" },
 };
 if (executor) {
   const sites = JSON.parse(readFileSync(executor.sites, "utf8"));

@@ -85,6 +85,15 @@ Main's `gate-pool` took 114 before this branch, so these are 115 to 118.
 - a group asking a member on the lost site;
 - a group following a leader named on the lost site instead of asking for a campaign.
 
+## Bootstrap refusals on cold isolates (2026-11-24, before BF-50)
+
+Found building graft-m6a, on its `Tokens` precreate from main 05ea366d. **Origin: M5-WP2's 7e01f24f** ("cached Release view per isolate"), which made `graftyard_lookup::system_record` answer a cold isolate from the chain's `MemberRegistry` row before it reads the genesis.
+
+- **Symptom.** 74 of 384 eight-shard ranges answered 200 across three passes; the rest answered 503, and retries did not converge. Each failed shard was `1 of 3 joined`, with sites 1 and 2 refusing `notTheSourcesRecord`, or `created, but no member leads`. About 2,000 `Tokens` chains were left with a registry row on some site and no working group [measured, `tests/m6/raw/m6a/precreate/`].
+- **Cause.** `member.rs`'s `check_source` read a `Source::Genesis` join's record through `system_record`. On a cold isolate, once the chain's site-0 member had written its row, that returned `RegistryRow::record`, whose `at` is 0, and the check compares records for equality, so the genesis record the joiner sent was refused. Shown by hand on m6a: the same `/join` for `tokens:44` sent with `at: 0` joined on site 1, and site 0, which holds the genesis, refused it and named the real `at` [measured].
+- **Why m3f and m4a never saw it.** Both were built from 20147db, before 7e01f24f.
+- **Fix.** `check_source` takes the record from the genesis alone (`graftyard_lookup::source_record`: the view, else the held genesis, else a genesis read); `system_record` keeps its registry shortcut for reaching existing groups (`decisions/DECISIONS.md`, "`source-record`"). `tests/sourcebed/run.sh` reproduces the refusal on 05ea366d in local workerd and accepts with the fix; `tests/m0carried/plant131.py` plants it. `create`'s own joins on a cold isolate still send the row's record, which only matters for a half-made system group created from a cold isolate (OPEN-QUESTIONS R54).
+
 ## BF-50 (planned)
 
 On graft-m6a, from merged main, after the glue, with the Workflows script deployed beside the sites (`workers/workflows/deploy.mjs`) and named in the executor file: site A lost with every account API token revoked, drained 24 h with zero acks, `ReplaceMember` by the executor, then recovery and `RestorePlacement`. The recovery window is lowered under test-faults only (the deviation above). The row is not run yet.

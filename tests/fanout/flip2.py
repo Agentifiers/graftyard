@@ -34,7 +34,7 @@ def find(name):
 row = json.loads([l for l in open(find(f'a1-b0-33-{run}.jsonl')) if l.strip()][-1])
 log = open(find(f'a1-b0-33-f{tag}-b033.log')).read()
 import re
-t0 = re.search(r'300 s from (\S+Z)', log).group(1)
+t0 = re.search(r'\d+ s from (\S+Z)', log).group(1)
 T0 = int(datetime.fromisoformat(t0.replace('Z', '+00:00')).timestamp() * 1000)
 rounds = sorted((T0 + a['s'] * 1000, a['roundMs']) for a in row['admission'] if a.get('roundMs') is not None)
 def round_at(ms):

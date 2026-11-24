@@ -1,0 +1,6 @@
+2026-11-24T12:55:35Z
+edge live eef95142
+{"script":"graft-m4a-edge","version":"eef95142","percentage":100,"tag":"e23f69e9"}
+{"script":"graft-m4a-edge","version":"f4e193b9","percentage":0,"tag":"63644eb6"}
+{"ok":true,"id":"3443bb26-a53a-49a1-8630-8bba0abb82bf","errors":[]}
+{"vars":["EDGE_CAP_BYTES","FORCE_FORMAT","FORCE_FORMAT_SITE","FORMATS_ENABLED","GRAFTYARD_CUSTOMER_KEY","GRAFTYARD_INSTALL","GRAFTYARD_SITES","HOST","OPS_SCRIPT","PART_BYTES","PLAN","RUN_SERVICE_PUBLIC","SSH_OPTION"],"types":{"assets":1,"durable_object_namespace":24,"plain_text":13,"r2_bucket":3,"secret_text":1,"service":1,"version_metadata":1}}

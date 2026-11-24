@@ -37,12 +37,15 @@ MUTANTS = [
     ('no bound on the delta window', MAIN,
      '"-c", "pack.threads=2", "-c", "pack.windowMemory=256m", "repack"',
      '"-c", "pack.threads=2", "repack"'),
-    ('gitLow at normal priority', MAIN,
-     'args ...string) ([]byte, error) {\n\treturn runGit(exec.Command("nice", append([]string{"-n", "19", "git"}, args...)...), nil,',
-     'args ...string) ([]byte, error) {\n\treturn runGit(exec.Command("git", args...), nil,'),
-    ('the repack through git, not gitLow', MAIN,
-     '\t_, err := gitLow(rp, []string{derivedEnv}, args...)',
-     '\t_, err := git(rp, []string{derivedEnv}, nil, args...)'),
+    # maint-yield (c3ca9048) moved the repack from gitLow to gitMaint (maint.go), and gitLow without the meter has no
+    # caller left, so the priority is planted where the repack takes it.
+    ('gitMaint at normal priority', 'containers/git/server/maint.go',
+     '\tcmd := exec.CommandContext(ctx, "nice", append([]string{"-n", "19", "git"}, args...)...)',
+     '\tcmd := exec.CommandContext(ctx, "git", args...)'),
+    # The repack runs through gitMaint now (nice 19 in its own process group, which ctx's end stops).
+    ('the repack through git, not gitMaint', MAIN,
+     '\t_, err := gitMaint(ctx, rp, []string{derivedEnv}, nil, args...)\n\treturn err\n}',
+     '\t_, err := git(rp, []string{derivedEnv}, nil, args...)\n\t_ = ctx\n\treturn err\n}'),
     ('/procs reads no nice value', MAIN,
      '\t\t\t\tfmt.Sscan(f[16], &p.Nice) // field 19', '\t\t\t\t_ = f[16]'),
     ('/procs misses git run through nice (matches the parent only)', MAIN,

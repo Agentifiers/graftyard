@@ -18,16 +18,16 @@ LEAD = ['cargo', 'test', '-q', '-p', 'graftyard-raft', '--test', 'leadership', '
 
 MUTANTS = [
     ("main's rule: the sample measured from the step again", HEALTH,
-     '        let mut ms: Vec<u32> = lead.health.confirms.iter().map(|c| c.2).collect();\n',
-     '        let mut ms: Vec<u32> = lead.health.confirms.iter().map(|c| c.1).collect();\n', LEAD),
+     '        let mut ms: Vec<u32> = lead.health.confirms.iter().map(|c| c.storage).collect();\n',
+     '        let mut ms: Vec<u32> = lead.health.confirms.iter().map(|c| c.whole).collect();\n', LEAD),
     ("the host's storage time ignored", HEALTH,
-     '            let storage = storage_ms.map_or(ms, |s| s.min(ms));\n',
-     '            let storage = storage_ms.map_or(ms, |_| ms);\n', LEAD),
+     '            let storage = times.map_or(ms, |t| t.storage_ms.min(ms));\n',
+     '            let storage = times.map_or(ms, |_| ms);\n', LEAD),
     ("the own-stall check moved to the flush's begin", HEALTH,
      '            *end = Some(now);\n            let ms = now.0.saturating_sub(began.0) as u32;\n',
      '            *end = Some(now);\n'
-     '            if let Some(s) = storage_ms {\n'
-     '                *began = Timestamp(now.0.saturating_sub(u64::from(s)));\n'
+     '            if let Some(t) = times {\n'
+     '                *began = Timestamp(now.0.saturating_sub(u64::from(t.storage_ms)));\n'
      '            }\n'
      '            let ms = now.0.saturating_sub(began.0) as u32;\n', LEAD),
 ]

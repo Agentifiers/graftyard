@@ -71,6 +71,17 @@ pub async fn system_record(env: &Env, chain: ChainId) -> Result<PlacementRecord,
     graftyard_lookup::system_record(&Bindings { env, sites: &site.sites }, &anchor, chain).await
 }
 
+/// A system chain's record from the genesis alone, for a bootstrap join's check (`graftyard_lookup::source_record`).
+pub async fn source_record(env: &Env, chain: ChainId) -> Result<PlacementRecord, String> {
+    let site = crate::SiteEnv::read(env).map_err(|e| e.to_string())?;
+    #[cfg(feature = "test-faults")]
+    if let Some(r) = site.genesis_shortcut(chain) {
+        return Ok(r);
+    }
+    let anchor = anchor(env).ok_or("this site script has no trust anchor")?;
+    graftyard_lookup::source_record(&Bindings { env, sites: &site.sites }, &anchor, chain).await
+}
+
 /// Any chain's record: a system chain's from the `Release` view, an owner chain's (`Authz(owner)`, `Identity(owner)`)
 /// from the owner's `Placement` row on `Names`.
 pub async fn record_for(env: &Env, chain: ChainId) -> Result<PlacementRecord, String> {

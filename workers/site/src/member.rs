@@ -2548,7 +2548,11 @@ impl<F: Family> Routes<F> {
         let held = self.host.callers.borrow_mut().held_stats(false);
         let (stmts, stmt_bytes) = self.host.queued();
         let open = self.host.open_bytes.sample();
+        let (heap_live, heap_peak) = crate::heapcount::sample();
         json!({
+            // The isolate's live heap bytes and their peak since it started, beside `wasmMemMb` (`crate::heapcount`).
+            "heapLive": heap_live,
+            "heapPeak": heap_peak,
             "fold": { "rows": rows, "rowBytes": row_bytes, "memoRows": memo_rows, "memoBytes": memo_bytes,
                 "memoIsolateBytes": crate::tier::memo_isolate_bytes(),
                 "caches": crate::family::cache_bytes() },
@@ -2938,7 +2942,7 @@ impl<F: Family> Routes<F> {
         let source = match F::source(join) {
             Source::Given => return Ok(()),
             Source::Genesis => {
-                crate::release::system_record(&self.host.env, join.chain).await.map_err(|e| json!({ "noRecord": e }))?
+                crate::release::source_record(&self.host.env, join.chain).await.map_err(|e| json!({ "noRecord": e }))?
             }
             Source::Owner(owner) => owner_record(&self.host.env, owner).await.map_err(|e| json!({ "source": e }))?,
             Source::Repo { repo, owner } => {

@@ -26,7 +26,7 @@ MUTANTS = [
     ('the shed names no forgotten leader, so nothing is reported', LOOKUP,
      '            let f = r.as_ref()?.1.get("forgot")?;', '            let f = r.as_ref()?.1.get("forgotten")?;', LOOKUP_T),
     ('the budget is ignored at admission', LEADER,
-     '        if agent && a.budget.is_some_and(|b| expected_wait(ad.agent().len(), cap, ad.round_ms) > b) {',
+     '        if agent && a.budget.is_some_and(|b| expected_wait(ad.agent().len(), rate, ad.round_ms) > b) {',
      '        if agent && a.budget.is_some_and(|_| false) {', ADMIT_T),
     ('the budget is ignored once queued (expiry at AGENT_WAIT)', LEADER,
      '                    Some(b) if class == AdmitClass::Agent => b.min(AGENT_WAIT),',

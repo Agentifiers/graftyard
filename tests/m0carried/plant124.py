@@ -15,16 +15,15 @@ from plant121 import REL, run  # noqa: E402
 GATE = 'crates/release/src/gate.rs'
 MUTANTS = [
     ("a breach is judged only once N+1 has STEP_MIN_ANSWERS", GATE,
-     '    if a > 0 && (e as f64 / a as f64) > base {', '    if a >= STEP_MIN_ANSWERS && (e as f64 / a as f64) > base {',
-     REL),
+     '    if past_chance(a, e, base) {', '    if a >= STEP_MIN_ANSWERS && past_chance(a, e, base) {', REL),
     ("a thrown binding call is not one of N+1's 5xx", GATE,
      '    judge_errors(window.of(n1), window.threw, n_side)', '    judge_errors(window.of(n1), 0, n_side)', REL),
     ("an answer with no version header counts against N+1", GATE,
      '    judge_errors(window.of(n1), window.threw, n_side)',
      '    judge_errors(window.of(n1), window.threw + window.unversioned.fivexx, n_side)', REL),
     ("an McpRoll's gate stays pending", GATE,
-     '    let (Intent::EdgeRoll { release } | Intent::FrontRoll { release } | Intent::McpRoll { release }) = i else {',
-     '    let (Intent::EdgeRoll { release } | Intent::FrontRoll { release }) = i else {', REL),
+     '    let (Intent::EdgeRoll { .. } | Intent::FrontRoll { .. } | Intent::McpRoll { .. }) = c.intent.intent else {',
+     '    let (Intent::EdgeRoll { .. } | Intent::FrontRoll { .. }) = c.intent.intent else {', REL),
 ]
 
 if __name__ == '__main__':

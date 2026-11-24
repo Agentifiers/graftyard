@@ -41,7 +41,7 @@ MUTANTS = [
     # (3) distinct answer bytes
     ('a shared answer counts per read', HOST, '        *n += 1;\n        if *n == 1 {\n            a.bytes += v.len();',
      '        *n += 1;\n        {\n            a.bytes += v.len();', SITE),
-    ('the gate ignores answer bytes', MEMBER, '        || answers >= ANSWER_BYTES_MAX\n', '', SITE),
+    ('the gate ignores answer bytes', MEMBER, '    if answers >= ANSWER_BYTES_MAX {\n        return Gate::Shed(ShedGate::AnswerBytes);\n    }\n', '', SITE),
 ]
 
 

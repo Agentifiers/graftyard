@@ -750,6 +750,8 @@ fn gets_coalesce_per_pr_a_shed_get_frees_its_slot_and_list_asks_are_counted() {
     for i in 0..7 {
         assert!(!b.admit(MergeCause::List, IssueNumber(i), MERGE_EST_MS, t + 4_000));
     }
+    // `/merge` reaches the budget through `asked`, past `ask`: its budget refuses a list field too.
+    assert!(!b.would(MergeCause::List, MERGE_EST_MS, t + 60_000), "a full bucket still computes no list field");
     let s = b.stats();
     assert_eq!((s.list_asked, s.list_computes, s.shed, s.get_computes), (7, 0, 1, 4));
 }
