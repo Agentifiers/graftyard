@@ -2628,7 +2628,7 @@ fn validate_sites(record: &PlacementRecord, pinned: Option<SiteId>) -> Vec<SiteI
     std::iter::once(record.home).chain(others).collect()
 }
 
-/// After a shard of a network answers anything but 200 or 422, this isolate tries it last for this long, so pushes
+/// After a shard of a network answers anything but 200, 422 or 429, this isolate tries it last for this long, so pushes
 /// during a 30 min rehydrate do not each wait out the home shard first: j9d's pushes took about 21 s each, 15 of them
 /// the home's `wait` (`tests/am1/results/hot-shards.md`). Past it the home is tried first again.
 const COLD_SHARD_MS: u64 = 30_000;
@@ -2687,11 +2687,13 @@ fn shard_url(url: &str, i: usize, n: usize) -> String {
 /// answers each update's new commits and changed paths; with an empty pack it answers only those, and no index.
 /// Without `detail` the call is the one a default push has always made. The pack's trailer rides in the URL, so the
 /// shard picks the fan-out shard without reading the body, which it streams on (LM-1 round 6). A 422 is the pack's
-/// answer and a 429 the container's full slots (an `agent` validate waits at most 2 s for one, then is
-/// `ShardRefusal::Busy`); either ends the tries. A 503 `warming`, another status, or a failed call moves to the next
-/// site. When every site's shard failed that way, the error is `Unavailable`, which a push answers 503 `Retry-After`
-/// so git and the client retry it, not `unpacker error`: 23 pushes in flight at a home-shard kill were refused that
-/// way (`tests/am1/results/hot-shards-2.md`).
+/// answer and ends the tries. A 429 is that container's full slots (an `agent` validate waits at most 2 s for one):
+/// it moves to the next site, without marking the shard cold, and when no site answers 200 the push is
+/// `ShardRefusal::Busy` (`agent-spill`: on B0-33 g4B 99% of agent validates stayed on the home site while its gate
+/// refused 3,722 and site b's shard sat at 0.3 to 0.7 vCPU, G40). A 503 `warming`, another status, or a failed call
+/// moves to the next site. When every site's shard failed that way, the error is `Unavailable`, which a push answers
+/// 503 `Retry-After` so git and the client retry it, not `unpacker error`: 23 pushes in flight at a home-shard kill
+/// were refused that way (`tests/am1/results/hot-shards-2.md`).
 pub(crate) async fn validate(
     c: &Ctx<'_>,
     repo: &Repo,
@@ -2734,7 +2736,6 @@ pub(crate) async fn validate(
     match t.answer {
         None => {}
         Some((_, Ok(r))) => return Ok(r),
-        Some((_, Err((429, s)))) => return Err(ShardRefusal::Busy(s.parse().unwrap_or(1))),
         // The pack's own answer, the same on every shard: no other site is tried.
         Some((i, Err((status, e)))) => tries.push((sites[i], status, e)),
     }
@@ -2765,14 +2766,15 @@ struct Hedged<A> {
     hedged: bool,
 }
 
-/// `n` tries, `start(i)` starting try `i`: an answer, or `(status, body)` with status 0 for a failed call. A 200, 422
-/// or 429 from any try decides and ends the rest; before the hedge any other answer starts the next try at once, as a
-/// failed shard always has. With `hedge`, a try that has run that long unanswered while another try is left is passed:
-/// `passed(i)` is told (the edge marks its shard cold) and every try left starts at once beside it, since the next
-/// shard is often slow too, taking the load the passed one dropped (B0-34 mt17's straddler: home unanswered at 2.8 s,
-/// site b past 1 s, site c answered 0.3 s after its start). Every try started keeps running, so a slow shard that
-/// answers first still decides, and the last try keeps its whole wait, so a push never runs out of shards that would
-/// wait (`chain-wait`, G30).
+/// `n` tries, `start(i)` starting try `i`: an answer, or `(status, body)` with status 0 for a failed call. A 200 or
+/// 422 from any try decides and ends the rest; before the hedge any other answer starts the next try at once, as a
+/// failed shard always has, a 429 included: that shard's gate is full, which another site's may not be
+/// (`agent-spill`). With `hedge`, a try that has run that long unanswered while another try is left is
+/// passed: `passed(i)` is told (the edge marks its shard cold) and every try left starts at once beside it, since the
+/// next shard is often slow too, taking the load the passed one dropped (B0-34 mt17's straddler: home unanswered at
+/// 2.8 s, site b past 1 s, site c answered 0.3 s after its start). Every try started keeps running, so a slow shard
+/// that answers first still decides, and the last try keeps its whole wait, so a push never runs out of shards that
+/// would wait (`chain-wait`, G30).
 async fn hedged<A, F, Fut, P, S, D>(
     n: usize,
     mut start: F,
@@ -2815,11 +2817,12 @@ where
             Either::Right(_) => None,
         };
         match event {
-            Some((i, r @ (Ok(_) | Err((422 | 429, _))))) => {
+            Some((i, r @ (Ok(_) | Err((422, _))))) => {
                 out.answer = Some((i, r));
                 return out;
             }
-            // Before the hedge a failed try starts the next at once; after it every try has started.
+            // Before the hedge a failed try, or a full gate's 429, starts the next at once; after it every try has
+            // started.
             Some((i, Err(e))) => {
                 out.failed.push((i, e));
                 due = usize::from(!out.hedged && out.started < n);
@@ -2920,12 +2923,16 @@ where
     (*last, tries)
 }
 
-/// The tries `validate` made, each `(site, status, body)` with status 0 for a failed call, in order, and none
-/// answered 200 or 429: `Invalid` with the 422's body when a shard answered the pack 422, else `Unavailable` naming
-/// the last.
+/// The tries `validate` made, each `(site, status, body)` with status 0 for a failed call (a 429's body is its
+/// `retry-after`), in order, and none answered 200: `Invalid` with the 422's body when a shard answered the pack 422,
+/// else `Busy` with the least `retry-after` when a shard's gate was full (an agent's push keeps its class's refusal
+/// shape, `agent admission full`, when the sites it moved on to failed too), else `Unavailable` naming the last.
 fn validate_failed(tries: Vec<(SiteId, u16, String)>) -> ShardRefusal {
     if let Some((_, _, e)) = tries.iter().find(|(_, s, _)| *s == 422) {
         return ShardRefusal::Invalid(e.clone());
+    }
+    if let Some(s) = tries.iter().filter(|(_, s, _)| *s == 429).map(|(_, _, e)| e.parse().unwrap_or(1)).min() {
+        return ShardRefusal::Busy(s);
     }
     let last = tries.last().map(|(site, status, e)| match status {
         0 => format!("site {}'s shard: {e}", site.0),
@@ -4992,6 +4999,12 @@ mod tests {
         let u = validate_failed(vec![t(0, 503, "warming"), t(1, 0, "Network connection lost")]);
         assert_eq!(u, ShardRefusal::Unavailable("site 1's shard: Network connection lost".into()));
         assert!(matches!(validate_failed(vec![]), ShardRefusal::Unavailable(_)));
+        // A full gate keeps the agent's refusal shape when the sites it moved on to failed too, with the shortest
+        // `retry-after` any gate gave; a 422 anywhere is still the pack's answer.
+        let b = validate_failed(vec![t(0, 429, "7"), t(1, 503, "warming"), t(2, 429, "3")]);
+        assert_eq!(b, ShardRefusal::Busy(3));
+        assert_eq!(validate_failed(vec![t(0, 0, "reset"), t(1, 429, "x")]), ShardRefusal::Busy(1));
+        assert!(matches!(validate_failed(vec![t(0, 429, "2"), t(1, 422, "bad")]), ShardRefusal::Invalid(_)));
     }
 
     /// A human validate is never held on one shard past `VALIDATE_HEDGE`: every site left is asked beside it and the
@@ -5083,6 +5096,19 @@ mod tests {
         // Every shard fails: each failure is kept, in the order they answered.
         let none = [Some((100, 503)), Some((100, 500)), Some((100, 0))];
         assert_eq!(run(&none, h), (None, vec![(0, 503), (1, 500), (2, 0)], 3, vec![], 300));
+        // An agent's validate (no hedge) whose home gate is full goes to the next site rather than ending the push:
+        // g4B's home refused 3,722 while site b sat idle (`agent-spill`, G40). The gate's 2 s wait is the home try's.
+        let full = [Some((2_000, 429)), Some((600, 200)), Some((300, 200))];
+        assert_eq!(run(&full, None), (Some((1, Ok(()))), vec![(0, 429)], 2, vec![], 2_600));
+        // A 429 at once (the agent queue past 8 a slot) moves on at once; the next site's 422 is the pack's answer.
+        let bad = [Some((0, 429)), Some((200, 422)), Some((300, 200))];
+        assert_eq!(run(&bad, None), (Some((1, Err(422))), vec![(0, 429)], 2, vec![], 200));
+        // Every gate full: each site was asked once, in order, and none decides; `validate_failed` makes it `Busy`.
+        let all = [Some((2_000, 429)), Some((2_000, 429)), Some((2_000, 429))];
+        assert_eq!(run(&all, None), (None, vec![(0, 429), (1, 429), (2, 429)], 3, vec![], 6_000));
+        // A human's 429 (none is sent today: a human waits for a slot) would move on the same way, hedge or not.
+        let human = [Some((100, 429)), Some((300, 200)), Some((50, 200))];
+        assert_eq!(run(&human, h), (Some((1, Ok(()))), vec![(0, 429)], 2, vec![], 400));
     }
 
     /// A streamed pack can be sent once, so it fails over before its first byte: it goes to the first site whose
