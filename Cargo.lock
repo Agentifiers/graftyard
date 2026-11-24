@@ -747,6 +747,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "graftyard-controller"
+version = "0.1.0"
+dependencies = [
+ "graftyard-identity",
+ "serde_json",
+ "worker",
+]
+
+[[package]]
 name = "graftyard-edge"
 version = "0.1.0"
 dependencies = [
