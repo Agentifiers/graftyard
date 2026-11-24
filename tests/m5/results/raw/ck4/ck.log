@@ -1,0 +1,27 @@
+02:13:42 ROW 4 start 02:1xZ. Bundles R10 1a0f0e50 (label ck-r10) and R11 e592682c (ck-r11): R9's site/index.js and index_bg.wasm (sha c2ac2b1b, f73a6abc, from graft-m4a-releases/r9/, bf47-r9 = main 05aace32 test-faults) and R9's formats.txt, plus a site/marker.js each; signed with the install's release key (openssl pkeyutl -rawin); uploaded to r10/ and r11/
+02:14:14 token graft-m4a-ops-deploy-6 (df3894a8) minted 2026-11-24T02:14:38Z, PATCHed into graft-m4a-ops-deploy-token
+02:14:36 plan: config a = override 50 + 12 min dwell (1% passes only on the override, R38); redeploy b (no override, 12 min) when IntentStep 1 (1%) commits, so 10% is judged on the real floor; then c (no override, 60 s) when IntentStep 2 (10%) commits. a and b share the 12 min dwell, so a late redeploy cannot shorten 10%
+02:15:24 REDEPLOY a: graft-m4a-ops fa472388 at 02:15:09Z orb, from 05aace32 (R9's head) test-faults, exec-ck4-a.json: GATE unset, OPS_STEP_MIN_ENTRIES 50, STEP_DWELL_MS 720000, FIRST_DAY_MS 60000, 1-minute cron
+02:16:10 ops cron removed and re-added; scratch Worker deployed; load 2x (4 c-benches, 1 a/b bench) from 02:16:10Z
+02:23:41 ops cron had not fired by 02:22Z (6 min after re-add); removed and re-added again at 02:23:39Z; row 1.08, day 1.26
+02:27:46 ops cron first fired 02:23:36Z; graft-ops itself uploaded R10 and R11 to the three sites from the bucket: ReleaseUploaded R10 at entry 274 (02:25:07Z) and R11 at 275 (02:26:05Z); one run went Stale on a duplicate ReleaseUploaded (a late cron overlap), harmless. Two tagged versions exist per release on c (overlapping runs), the fold records one
+02:27:46 JUDGED: posting SiteDay{c, R10}, GATE unset, undo Rollback{c, R9}; N+1 R10 (R9's code plus marker ck-r10), N R9 4600b130 (site_release c = R9)
+02:27:48 intent-judged4-c-R10 -> {"digest":"7ef3c5d42547be1e48b318bf6fc4b66afeb3e2ef5864bbfab07e27d336a8efbc","index":991,"status":201}
+02:30:13 drain c and 1% split at 02:28:44Z: N+1 54bbb423 (R10) 1%, N 4600b130 (R9, source: running = site_release c) 99%
+02:35:34 load cut to 1x at 02:35:34Z during the override-only 1% step (2x projected over $8); back to 2x when 10% starts. row 3.6
+02:41:52 step 1 (1%) committed at entry 279 (02:41:39Z), on the override; REDEPLOY b on that commit: 8796e3b4 at 02:41:52Z, same 05aace32 build, exec-ck3-b.json: no OPS_STEP_MIN_ENTRIES, STEP_DWELL_MS 720000, FIRST_DAY_MS 60000; load back to 2x
+02:43:50 1% passed on the override only (R38) at the 02:41:41Z run: N+1 52 entries / 96 answers / 0 refused vs N 2,477 / 4,252 / 6 (12 min dwell; N+1 0 for the first ~5 min); 10% split at 02:41:42Z, R10 10% / R9 90%
+02:43:50 redeploy b check: next run 02:42:36Z on 8796e3b4, same intent, 10% split, no step re-committed; 10% now Starved on the real floor (112, 299 entries); dwell to 02:53:40Z
+02:44:06 load cut to 1x at 02:44:06Z in the 10% dwell: row $5.12 at 02:43:52Z, 2x through the dwell projected about $7.5 before 50%, 100% and the first day; 1x still gives N+1 hundreds of entries a minute at 10%
+02:49:29 10% JUDGED on the real floor (R38's open case): first read past STEP_MIN_ENTRIES 02:47:41Z N+1 1,171 / 1,973 / 0 vs N 30,095 / 49,213 / 19, 8 bp over N's p99, 0 bp over 5 s -> Pass; 02:48:40Z 1,577 / 2,669 / 0, 6 bp -> Pass
+02:49:29 slow-apply (R11) NOT RUN: row $6.09 at 02:49Z with the 10% dwell to 02:53:40Z, then 50%, 100% and the first day; a third site day plus cleanup would pass the $8 stop (lead: skip rather than extend)
+02:55:12 step 2 (10%) committed at entry 280 (02:54:40Z); REDEPLOY c on that commit: 466e44cc at 02:55:12Z, same 05aace32 build, exec-ck3-c.json: no override, STEP_DWELL_MS 60000, FIRST_DAY_MS 60000
+02:58:10 load stopped at 02:58:10Z (row $7.46): the first day's 02:57:42Z read passed (N+1 1,938 / 3,331 / 0 vs N 4,027 / 7,020 / 5, 5 bp over N's p99) and its 60 s dwell ended 02:57:53Z; IntentDone is the next run
+02:59:22 IntentDone 02:58:41Z (no breach). CLEANUP: ops cron reset (yearly, then []) at 02:59:21Z; row 7.66
+03:05:55 ops cron still firing Idle at 03:04:36Z; second reset at 03:05:55Z
+03:09:07 ops cron runs stopped: last 03:04:36Z; idle to 03:08:49Z
+03:09:17 graft-m4a-ops parked: ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef at 03:09:17Z, 05aace32 test-faults (R9's build), exec-ck-pending.json (GATE=pending, OPS_STEP_MIN_ENTRIES 50, 60 s dwells); trigger removed
+03:09:18 token graft-m4a-ops-deploy-6 (df3894a8) revoked at 03:09:18Z, file shredded
+03:09:20 scratch Worker deleted
+03:11:20 DONE 03:11Z: ops ac4cd9a5 parked (05aace32 test-faults, GATE=pending, no cron); token revoked; scratch Worker deleted; count 288, nothing current, drained [] (Normal c at 284); a 75bdd60d b 627ed36c c 54bbb423 (R10, site_release c = R10); edge eef95142 100% / f4e193b9 0%, meta 200; c leads 6 of 6 home chains; row $7.67, day $7.85
+03:14:00 CORRECTION to 02:43:50: the 1% step's verdict read was 02:41:38Z, N+1 589 entries / 945 answers / 0 refused vs N 72,399 / 110,169 / 56 -> Pass, on the override (589 < 1,000); the 02:41:39 and 02:41:41 reads (42, 52 entries) are the 10% step's first window in the same run, the 02:41 minute bucket
