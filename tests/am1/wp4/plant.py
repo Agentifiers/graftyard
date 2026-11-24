@@ -95,8 +95,8 @@ MUTANTS = [
      '    (!ids.is_empty()).then_some(crate::repo::RepoEvent::LeaseRelease { ids, by })', '    let _ = (ids, by);\n    None',
      GIT),
     ('glob overlap ignores a trailing ** after a literal', G,
-     '        (Some(&"**"), _) => overlap_segs(&a[1..], b) || (!b.is_empty() && overlap_segs(a, &b[1..])),',
-     '        (Some(&"**"), _) => overlap_segs(&a[1..], b),', ['-p', 'graftyard-identity', *GIT]),
+     '                (Some(&"**"), _) => below[j] || (j < b.len() && row[j + 1]),',
+     '                (Some(&"**"), _) => below[j],', ['-p', 'graftyard-identity', *GIT]),
     ('a lease command on an unloaded metadata tier is refused (L0-16)', C,
      '            None if self.op.is_lease() =>', '            None if false =>', GIT),
     ('wait is not clamped', F,
@@ -118,8 +118,8 @@ MUTANTS = [
     ('a lagging member holds polls', F,
      '        if !f.following() {\n            return Admit::Lagging;\n        }', '', BOTH),
     ('a release reports Expired, not Released', F,
-     '        let change = if released.contains(id) || task_final { LeaseChange::Released } else { LeaseChange::Expired };',
-     '        let change = if task_final { LeaseChange::Released } else { LeaseChange::Expired };', GIT),
+     '        let change = if released.contains(id) || task_final { LeaseChange::Released } else { LeaseChange::Expired };\n        let mut lease',
+     '        let change = if task_final { LeaseChange::Released } else { LeaseChange::Expired };\n        let mut lease', GIT),
     ('the lease list ignores contents: read', A,
      '    if !contents {\n        return Reply::not_found();\n    }\n    let (mut paths', '    let (mut paths', API),
     ('the task GET lists released leases', A,
@@ -131,7 +131,7 @@ MUTANTS = [
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
-           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '..', 'target-am1')),
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
            CARGO_INCREMENTAL='0')
 only = sys.argv[1:] and set(int(x) for x in sys.argv[1:])
 for n, (name, path, old, new, args) in enumerate(MUTANTS):
@@ -143,8 +143,9 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
     assert src.count(old) == 1, (name, 'anchor not unique', src.count(old))
     open(f, 'w').write(src.replace(old, new, 1))
     try:
-        r = subprocess.run(['cargo', 'test', '-j', '3', *args, '--no-fail-fast'], cwd=ROOT, env=env,
-                           capture_output=True, text=True)
+        # A hang counts as caught (README, "Planted bugs").
+        r = subprocess.run(['timeout', '-k', '10', '600', 'cargo', 'test', '-j', '3', *args, '--no-fail-fast'],
+                           cwd=ROOT, env=env, capture_output=True, text=True)
         out = r.stdout + r.stderr
         failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')})
         if ('error[' in out or out.lstrip().startswith('error:') or '\nerror: ' in out) and not failed:
@@ -152,6 +153,8 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
             verdict = 'DID NOT COMPILE'
         else:
             verdict = 'CAUGHT' if r.returncode != 0 else 'MISSED'
+            if r.returncode == 124:
+                failed = ['(timed out)', *failed]
         print(f'{n:2} {verdict:8} {name}: {", ".join(failed)}', flush=True)
     finally:
         open(f, 'wb').write(orig)
