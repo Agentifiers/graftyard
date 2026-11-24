@@ -1,12 +1,13 @@
 //! `MemberRegistry`: one object per (site, shard) on each site script. A member writes its row before it stores its
-//! first entry and rewrites it on each config change. `ReplaceMember` and the owner-placement move enumerate groups
-//! from the rows whose `sites` include a site (`design/DESIGN.md`, Shape, the registry paragraph).
+//! first entry and rewrites it on each config change. The owner-placement move enumerates groups from the rows whose
+//! `sites` include a site, and `ReplaceMember` from every row (`/all_rows`, `crate::replace`) (`design/DESIGN.md`,
+//! Shape, the registry paragraph).
 
 use graftyard_types::{ChainId, RegistryRow, RowPut, SiteId};
 use serde::Deserialize;
 use worker::*;
 
-#[durable_object(fetch)]
+#[durable_object(alarm)]
 pub struct Registry {
     state: State,
     env: Env,
@@ -194,6 +195,12 @@ impl DurableObject for Registry {
                     .collect::<Result<Vec<_>>>()?;
                 Response::from_json(&serde_json::json!({ "count": entries.len(), "entries": entries }))
             }
+            // M6-WP1 (`crate::replace`): every row of this shard, and the refill of a spare's bucket.
+            (Method::Get, "/all_rows") => Response::from_json(&crate::replace::all_rows(&sql)?),
+            (Method::Post, "/refill") => {
+                let body: serde_json::Value = req.json().await?;
+                Response::from_json(&crate::replace::refill(&self.env, body).await?)
+            }
             (Method::Get, "/rows") => {
                 let site = SiteId(query(&url, "site")?.parse().map_err(|_| Error::RustError("site".into()))?);
                 let rows: Vec<Row> = sql.exec("SELECT row FROM registry ORDER BY chain", None)?.to_array()?;
@@ -234,6 +241,10 @@ impl DurableObject for Registry {
             // `REGISTRY_<n>` bindings.
             (m @ (Method::Put | Method::Get), p @ ("/gate" | "/site_health" | "/errors")) => {
                 let body = if m == Method::Put { Some(req.json::<serde_json::Value>().await?) } else { None };
+                // M6-WP1's drained-site probe: `graft-ops`'s read names the lost and replaced sites (`crate::replace`).
+                if let (Method::Get, "/site_health", Ok(q)) = (&m, p, query(&url, "probe")) {
+                    self.probe_until(&sql, &q).await?;
+                }
                 Response::from_json(&crate::gatecount::route(&sql, &p[1..], body, &|k| query(&url, k).ok())?)
             }
             // Test installs only: B0-07's site modes (`crate::faults::SiteModes`), in the object `faults`.
@@ -451,6 +462,57 @@ impl DurableObject for Registry {
             _ => Response::error("not found", 404),
         }
     }
+
+    /// The drained-site probe (`crate::replace::probe`): one round, then again in `PROBE_EVERY_MS` while the last
+    /// `graft-ops` read named a site and is under `PROBE_HOLD_MS` old.
+    async fn alarm(&self) -> Result<Response> {
+        if crate::site_down(&self.env) {
+            return Response::empty();
+        }
+        let sql = self.state.storage().sql();
+        let Some((sites, until)) = probe_row(&sql)? else { return Response::empty() };
+        if sites.is_empty() || crate::now_ms() >= until {
+            return Response::empty();
+        }
+        let counts = crate::replace::probe(&self.env, &sites).await?;
+        crate::gatecount::route(&sql, "site_health", Some(counts), &|_| None)?;
+        self.state.storage().set_alarm(crate::replace::PROBE_EVERY_MS as i64).await?;
+        Response::empty()
+    }
+}
+
+impl Registry {
+    /// Stores the sites `graft-ops` named and how long to probe them, and starts the alarm if none is set.
+    async fn probe_until(&self, sql: &SqlStorage, q: &str) -> Result<()> {
+        let me = crate::SiteEnv::read(&self.env)?.id;
+        let sites = crate::replace::probe_sites(q, me);
+        let csv = sites.iter().map(u8::to_string).collect::<Vec<_>>().join(",");
+        let until = crate::now_ms() + crate::replace::PROBE_HOLD_MS;
+        sql.exec(
+            "CREATE TABLE IF NOT EXISTS probe (k INTEGER PRIMARY KEY CHECK (k = 0), sites TEXT NOT NULL, until INTEGER NOT NULL)",
+            None,
+        )?;
+        sql.exec(
+            "INSERT OR REPLACE INTO probe (k, sites, until) VALUES (0, ?, ?)",
+            vec![csv.into(), (until as i64).into()],
+        )?;
+        if !sites.is_empty() && self.state.storage().get_alarm().await?.is_none() {
+            self.state.storage().set_alarm(crate::replace::PROBE_EVERY_MS as i64).await?;
+        }
+        Ok(())
+    }
+}
+
+/// The probe's stored sites and end, if a `graft-ops` read named any.
+fn probe_row(sql: &SqlStorage) -> Result<Option<(Vec<u8>, u64)>> {
+    sql.exec(
+        "CREATE TABLE IF NOT EXISTS probe (k INTEGER PRIMARY KEY CHECK (k = 0), sites TEXT NOT NULL, until INTEGER NOT NULL)",
+        None,
+    )?;
+    let rows = crate::host::rows(sql, "SELECT sites, until FROM probe WHERE k = 0", vec![])?;
+    let Some(r) = rows.first() else { return Ok(None) };
+    let sites = crate::host::text(&r[0])?.split(',').filter_map(|x| x.parse().ok()).collect();
+    Ok(Some((sites, crate::host::int(&r[1])? as u64)))
 }
 
 /// The sweeper's home cache table, created on first use.

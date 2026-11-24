@@ -273,12 +273,22 @@ pub fn decide(
 /// Packs held in one surviving bucket alone come first across all networks, since a second loss would take them; then
 /// the rest, network by network. Each pack is copied once per network, not once per group. Only fills to `spare`: the
 /// cron's own sweep marks, deletes and aborts as before.
-pub fn refill(
+pub fn refill(networks: &[(NetworkId, Vec<BucketView>)], lost: SiteId, spare: SiteId, now: Timestamp) -> Fills {
+    let (mut single, rest) = refill_parts(networks, lost, spare, now);
+    single.extend(rest);
+    single
+}
+
+/// Fills into a spare, each with its network.
+pub type Fills = Vec<(NetworkId, Action)>;
+
+/// `refill`'s two halves: the fills of packs one surviving bucket alone holds, then the rest.
+pub fn refill_parts(
     networks: &[(NetworkId, Vec<BucketView>)],
     lost: SiteId,
     spare: SiteId,
     now: Timestamp,
-) -> Vec<(NetworkId, Action)> {
+) -> (Fills, Fills) {
     let (mut single, mut rest) = (Vec::new(), Vec::new());
     for (network, views) in networks {
         // The spare's own listing counts, so a refill that ran before copies nothing twice.
@@ -298,8 +308,75 @@ pub fn refill(
             }
         }
     }
-    single.extend(rest);
-    single
+    (single, rest)
+}
+
+/// One call of `ReplaceMember`'s refill (`workers/workflows`, through the site's `/refill` route): the networks of
+/// `buckets` from `from` in id order, listed and filled into `spare` by `refill_parts` until `budget` runs out, the
+/// single-copy half only when `single`. `next` is where the next call starts, `None` once every network was done. The
+/// caller runs the single half over every network first, then the whole.
+pub async fn refill_run<B: Bucket>(
+    buckets: &[(SiteId, &B)],
+    lost: SiteId,
+    spare: SiteId,
+    now: Timestamp,
+    single: bool,
+    from: Option<NetworkId>,
+    budget: CronBudget,
+) -> Result<RefillRun, StoreError> {
+    let live: Vec<(SiteId, &B)> = buckets.iter().filter(|(s, _)| *s != lost).copied().collect();
+    let all = networks(&live).await?;
+    let start = from.map_or(0, |f| all.partition_point(|n| n.0.0 < f.0.0));
+    let bucket = |s: SiteId| live.iter().find(|(x, _)| *x == s).map(|(_, b)| *b).expect("planned site");
+    let mut out = RefillRun::default();
+    let mut left = budget.actions;
+    for (k, n) in all.iter().enumerate().skip(start) {
+        if k - start >= budget.networks || left == 0 {
+            out.next = Some(*n);
+            return Ok(out);
+        }
+        let mut views = Vec::new();
+        for (site, b) in &live {
+            views.push(BucketView {
+                site: *site,
+                packs: b.list(&R2Key::pack_prefix(*n)).await?,
+                markers: b.list(&R2Key::marker_prefix(*n)).await?,
+                uploads: Vec::new(),
+            });
+        }
+        let (mut fills, rest) = refill_parts(&[(*n, views)], lost, spare, now);
+        out.single += fills.len();
+        if !single {
+            fills.extend(rest);
+        }
+        if fills.len() > left {
+            // Cut mid-network: the next call lists it again and skips what this one filled.
+            fills.truncate(left);
+            out.next = Some(*n);
+        }
+        for (_, a) in &fills {
+            let Action::Fill { to, from, id, marker } = a else { unreachable!("refill plans fills only") };
+            match fill(bucket(*from), bucket(*to), *n, *id, marker).await {
+                Ok(()) => out.done += 1,
+                Err(StoreError(e)) => out.failed.push((*n, e)),
+            }
+        }
+        left -= fills.len();
+        if out.next.is_some() {
+            return Ok(out);
+        }
+    }
+    Ok(out)
+}
+
+/// What one `refill_run` call did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RefillRun {
+    pub done: usize,
+    /// Single-copy fills planned over the networks this call listed, whether or not it ran them.
+    pub single: usize,
+    pub failed: Vec<(NetworkId, String)>,
+    pub next: Option<NetworkId>,
 }
 
 /// The chain a marker put or a fill writes for, from its marker.
@@ -811,6 +888,42 @@ mod tests {
         assert_eq!((got[0].2, got[1].2), (if got[0].1 == one7 { (1, 2) } else { (2, 1) }));
         assert!(got.iter().all(|g| g.2 != 0 && g.3 == 3), "never from the lost bucket, only into the spare");
         assert!(!got.iter().any(|g| g.1 == held), "the spare already holds it");
+    }
+
+    /// `refill_run`, as the Workflow drives it: a single-copy pass over both networks with one fill a call copies the
+    /// lone copies only, each call ending where the next starts; the full pass then copies the rest; a pass after
+    /// that copies nothing.
+    #[test]
+    fn refill_runs_copy_single_copy_packs_first_and_resume_from_their_cursor() {
+        const NET2: NetworkId = NetworkId(DbId(8));
+        let b: [MemBucket; 4] = Default::default();
+        let put = |b: &MemBucket, net: NetworkId, id: PackId, n: u8| {
+            let meta = ObjectMeta { chain: CHAIN, request: rid(n) }.to_pairs().to_vec();
+            b.plant(&R2Key::Pack { network: net, id }.to_string(), &body(n), Timestamp(T0), &meta);
+            b.set_now(Timestamp(T0));
+            block_on(put_marker(b, net, id, &marker(n, u64::from(n)))).unwrap();
+        };
+        let (one7, two7, one8) = (pid(1, T0), pid(2, T0), pid(3, T0));
+        put(&b[1], NET, one7, 1);
+        put(&b[1], NET, two7, 2);
+        put(&b[2], NET, two7, 2);
+        put(&b[2], NET2, one8, 3);
+        put(&b[0], NET2, one8, 3);
+        let buckets: Vec<(SiteId, &MemBucket)> = b.iter().enumerate().map(|(i, b)| (SiteId(i as u8), b)).collect();
+        let one = CronBudget { networks: 20, actions: 1, wall_ms: 0 };
+        let run = |single, from, budget| {
+            block_on(refill_run(&buckets, SiteId(0), SiteId(3), Timestamp(T0 + H), single, from, budget)).unwrap()
+        };
+        let r = run(true, None, one);
+        assert_eq!((r.done, r.next), (1, Some(NET2)), "{r:?}");
+        let r = run(true, r.next, one);
+        assert_eq!((r.done, r.next), (1, None), "{r:?}");
+        let has = |id: PackId, n: NetworkId| b[3].keys().contains(&R2Key::Pack { network: n, id }.to_string());
+        assert!(has(one7, NET) && has(one8, NET2) && !has(two7, NET), "only the lone copies so far");
+        let r = run(false, None, CronBudget::SITE_CRON);
+        assert_eq!((r.done, r.next, r.failed.len()), (1, None, 0), "{r:?}");
+        assert!(has(two7, NET));
+        assert_eq!(run(false, None, CronBudget::SITE_CRON).done, 0, "nothing left to copy");
     }
 
     /// G9's remainder, not called yet: the sweeper's deletion of consumed packs waits for the keep and for every

@@ -47,6 +47,7 @@ mod prsync;
 mod register;
 mod registry;
 mod release;
+mod replace;
 mod retire;
 mod search;
 mod shard;
