@@ -18,6 +18,7 @@ test-format = ["test-faults"]
 
 [dependencies]
 arrayvec.workspace = true
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
 graftyard-actions = { path = "../../crates/actions" }

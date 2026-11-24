@@ -56,7 +56,8 @@ pub enum RotateStep {
     Probe,
     /// `MintWrapKey`: the new slot's key unwraps, and its `VerifyingKey` row is committed on `TokenShard(0)`.
     Publish,
-    /// `MintWrapKey`: one installation-token lifetime after the row, so every edge has read it.
+    /// A dwell from the step before: `MintWrapKey`'s one installation-token lifetime after its row, so every edge has
+    /// read it; `SshHostKeys`' `SSH_ANNOUNCE_FOR`, so `UpdateHostKeys` clients have learned the new keys.
     Wait,
     /// The switch: when this step's `IntentStep` commits, the fold's `slots` names the new slot, and every reader of
     /// the secret takes it from its view, with no new script version.
@@ -66,8 +67,8 @@ pub enum RotateStep {
     Retire,
 }
 
-/// A `Rotate`'s steps for `secret`, or why the install's `graft-ops` refuses it by name: a secret it holds no slot
-/// of, or one another account's script rotates (`decisions/OPEN-QUESTIONS.md`, R45). `apply` moves `slots` at the
+/// A `Rotate`'s steps for `secret`, or why the install's `graft-ops` refuses it by name: a secret another account's
+/// script holds, or one whose rotation is not a slot switch (`decisions/DECISIONS.md`, "`rotate-holders`"). `apply` moves `slots` at the
 /// `Switch` step's index, so each list up to and including its `Switch` is a stored format, as the wire enums are: a
 /// release may add steps only after it, and a secret refused here may gain a list (`decisions/DECISIONS.md`,
 /// "`rotate-probe`"). `decide` does not read it.
@@ -77,17 +78,16 @@ pub fn rotate_steps(secret: SecretName) -> Result<&'static [RotateStep], &'stati
         SecretName::DeployToken | SecretName::ReadToken => Ok(&[Probe, Switch]),
         SecretName::MintWrapKey => Ok(&[Publish, Wait, Switch, Retire]),
         SecretName::TunnelToken => Err("retired with Tunnel; nothing binds it"),
-        SecretName::SshHostKeys => {
-            Err("its active slot is the site scripts' SSH_HOST_KEY_ACTIVE variable, so a switch is a site day (R45)")
-        }
-        SecretName::McpAppKey | SecretName::McpClientSecret | SecretName::InsightsAppKey => {
-            Err("graft-ops binds no slot of it: graft-mcp or the site scripts hold it (R45)")
-        }
+        // Every graft-sshd announces both slots as it reads them; the switch waits until clients have learned them.
+        SecretName::SshHostKeys => Ok(&[Probe, Wait, Switch]),
+        // The App must list the new key or secret before the switch; the probe reads its record.
+        SecretName::McpAppKey | SecretName::McpClientSecret | SecretName::InsightsAppKey => Ok(&[Probe, Switch]),
         SecretName::AgentsAppKey | SecretName::WorkspaceAppKey => Err("the agents account's graft-ops rotates it"),
-        SecretName::HostedRunnersAppKey => Err("graft-runners holds it, in the runner account (R45)"),
-        SecretName::SecretsWrapKey => {
-            Err("the rotation table has no row for it; its rotation is the rewrap route (R45)")
+        SecretName::HostedRunnersAppKey => {
+            Err("it lives in the runner account, which holds no Release view: it rotates in that account's store")
         }
+        // The switch picks the slot new values wrap under; each owner's `rewrap-secrets` then moves the old ones.
+        SecretName::SecretsWrapKey => Ok(&[Probe, Switch]),
     }
 }
 

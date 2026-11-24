@@ -663,15 +663,75 @@ fn bf46_mint_wrap_key_publishes_waits_a_token_lifetime_switches_then_retires() {
     assert_eq!(f.g.f.slot(SecretName::MintWrapKey), 0);
 }
 
+/// R45: the App credentials and `SecretsWrapKey` probe the new slot, then switch, with no deploy; the switch moves only
+/// the rotated secret's slot, which each holder reads from its view.
+#[test]
+fn r45_app_credentials_probe_then_switch_with_no_deploy() {
+    let mut f = Fake::new(G::new());
+    let secrets =
+        [SecretName::McpAppKey, SecretName::McpClientSecret, SecretName::InsightsAppKey, SecretName::SecretsWrapKey];
+    for (n, secret) in (40..).zip(secrets) {
+        rotate(&mut f, n, secret, 1, &CUSTOMER);
+        let log = f.cron(5);
+        assert!(f.g.f.current.is_none(), "{secret:?}: {log:?}");
+        assert_eq!(f.rotated.last(), Some(&(secret, 1, crate::RotateStep::Probe)));
+        let steps: Vec<_> = last_intent_entries(&f).into_iter().map(|e| e.kind()).collect();
+        assert_eq!(steps, ["IntentStep", "IntentStep", "IntentDone"], "{secret:?}");
+    }
+    for secret in secrets {
+        assert_eq!(f.g.f.slot(secret), 1, "{secret:?}");
+    }
+    assert_eq!(f.g.f.slot(SecretName::DeployToken), 0, "no other secret moved");
+    assert!(f.deploys.is_empty() && f.uploads.is_empty(), "no new script version");
+    // A probe the App's record fails (the new key is not listed yet): it pages, and the slot stays.
+    rotate(&mut f, 50, SecretName::McpAppKey, 0, &CUSTOMER);
+    f.rotate_fails = Some(crate::RotateStep::Probe);
+    f.cron(3);
+    assert_eq!(f.g.f.slot(SecretName::McpAppKey), 1);
+    assert!(f.pages.iter().any(|p| p.contains("McpAppKey")), "{:?}", f.pages);
+}
+
+/// R45: `SshHostKeys` probes every site's new slot, waits `SSH_ANNOUNCE_FOR` from the probe's commit while each
+/// `graft-sshd` announces both slots, then switches. A day short of it, key exchange still serves the old slot.
+#[test]
+fn r45_ssh_host_keys_wait_the_announce_before_they_switch() {
+    let mut f = Fake::new(G::new());
+    rotate(&mut f, 30, SecretName::SshHostKeys, 1, &CUSTOMER);
+    let log = block_on(ops::run(&mut f, Dwell::default()));
+    assert_eq!(f.rotated, [(SecretName::SshHostKeys, 1, crate::RotateStep::Probe)]);
+    let probed = f.g.f.current.as_deref().unwrap().since;
+    // DESIGN's 30-day announce, written out so a changed constant fails here.
+    let days30 = 30 * 24 * 3_600_000;
+    assert!(matches!(log.last(), Some(Ran::Wait { until: Some(t), .. }) if t.0 == probed.0 + days30), "{log:?}");
+    f.g.at = Timestamp(probed.0 + ops::SSH_ANNOUNCE_FOR - 24 * 3_600_000);
+    block_on(ops::run(&mut f, Dwell::default()));
+    assert_eq!(f.g.f.slot(SecretName::SshHostKeys), 0, "a day short: still slot 0");
+    // `MintWrapKey`'s wait does not stand in for it: a lowered publish wait leaves the announce as it is.
+    block_on(ops::run(&mut f, Dwell { rotate_published: 0, ..Dwell::default() }));
+    assert_eq!(f.g.f.slot(SecretName::SshHostKeys), 0);
+    f.g.at = Timestamp(probed.0 + ops::SSH_ANNOUNCE_FOR);
+    f.cron(5);
+    assert!(f.g.f.current.is_none());
+    assert_eq!(f.g.f.slot(SecretName::SshHostKeys), 1);
+    assert!(f.deploys.is_empty() && f.uploads.is_empty(), "no site day");
+    // A test install's lowered announce (`OPS_SSH_ANNOUNCE_MS`) moves only this wait.
+    let short = Dwell { ssh_announce: 120_000, ..Dwell::default() };
+    rotate(&mut f, 31, SecretName::SshHostKeys, 0, &CUSTOMER);
+    block_on(ops::run(&mut f, short));
+    let probed = f.g.f.current.as_deref().unwrap().since;
+    f.g.at = Timestamp(probed.0 + 120_000);
+    for _ in 0..5 {
+        block_on(ops::run(&mut f, short));
+    }
+    assert_eq!(f.g.f.slot(SecretName::SshHostKeys), 0);
+}
+
 /// A `Rotate` this `graft-ops` does not switch, or one to the active slot, is refused by name: a page each run and no
 /// step, until the customer's `Abort` ends it with the slot unchanged.
 #[test]
 fn bf46_a_rotate_graft_ops_does_not_run_pages_by_name_and_an_abort_ends_it() {
     for (secret, slot, said) in [
-        (SecretName::SshHostKeys, 1, "SSH_HOST_KEY_ACTIVE"),
-        (SecretName::McpAppKey, 1, "binds no slot"),
         (SecretName::HostedRunnersAppKey, 1, "runner account"),
-        (SecretName::SecretsWrapKey, 1, "no row"),
         (SecretName::TunnelToken, 1, "retired"),
         (SecretName::DeployToken, 0, "the active slot"),
     ] {

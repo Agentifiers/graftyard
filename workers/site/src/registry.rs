@@ -247,6 +247,29 @@ impl DurableObject for Registry {
                 }
                 Response::from_json(&crate::gatecount::route(&sql, &p[1..], body, &|k| query(&url, k).ok())?)
             }
+            // The public halves of both SSH host-key slots on this site, `{"A": [{"type", "key", "fingerprint"}, ..],
+            // "B": [..]}`, as deploy/ssh-front/hostkeys.mjs's public JSON lists them: the edge serves them at
+            // /api/graftyard/v1/meta/ssh, and `graft-ops` counts the new slot's as the `SshHostKeys` `Rotate`'s probe,
+            // over its `REGISTRY_<n>` bindings. No private byte leaves.
+            (Method::Get, "/ssh_slots") => {
+                let mut out = serde_json::Map::new();
+                for slot in ["A", "B"] {
+                    let value = match self.env.secret_store(&format!("SSH_HOST_KEY_{slot}")) {
+                        Ok(s) => s.get().await.ok().flatten().unwrap_or_default(),
+                        Err(_) => String::new(),
+                    };
+                    let keys = match ssh_public_keys(&value) {
+                        Ok(k) => k,
+                        Err(e) => return Response::error(format!("SSH_HOST_KEY_{slot}: {e}"), 500),
+                    };
+                    let keys: Vec<_> = keys
+                        .iter()
+                        .map(|k| serde_json::json!({ "type": k.kind, "key": k.key, "fingerprint": k.fingerprint }))
+                        .collect();
+                    out.insert(slot.into(), keys.into());
+                }
+                Response::from_json(&out)
+            }
             // Test installs only: B0-07's site modes (`crate::faults::SiteModes`), in the object `faults`.
             #[cfg(feature = "test-faults")]
             (Method::Get, "/site_modes") | (Method::Put, "/site_modes") => {
@@ -556,4 +579,113 @@ pub(crate) fn query(url: &Url, key: &str) -> Result<String> {
         .find(|(k, _)| k == key)
         .map(|(_, v)| v.into_owned())
         .ok_or_else(|| Error::RustError(format!("missing ?{key}")))
+}
+
+/// One host key's public half, as `ssh-keygen` prints it: its type (`ssh-ed25519`), `"<type> <base64 blob>"`, and
+/// `SHA256:` with the unpadded base64 of the blob's SHA-256.
+#[derive(Debug, PartialEq, Eq)]
+struct SshPublicKey {
+    kind: String,
+    key: String,
+    fingerprint: String,
+}
+
+const OPENSSH_BEGIN: &str = "-----BEGIN OPENSSH PRIVATE KEY-----";
+const OPENSSH_END: &str = "-----END OPENSSH PRIVATE KEY-----";
+
+/// The public half of every OpenSSH private key PEM block in a host-key slot's value (deploy/ssh-front/hostkeys.mjs
+/// writes three), read from each block's unencrypted header: the `openssh-key-v1\0` magic, the cipher, KDF, and KDF
+/// options strings, the key count, then the first public key. An error names what was wrong, never a key's bytes.
+fn ssh_public_keys(value: &str) -> std::result::Result<Vec<SshPublicKey>, String> {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let mut out = Vec::new();
+    let mut rest = value;
+    while let Some(i) = rest.find(OPENSSH_BEGIN) {
+        let body = &rest[i + OPENSSH_BEGIN.len()..];
+        let end = body.find(OPENSSH_END).ok_or("a PEM block has no end line")?;
+        rest = &body[end + OPENSSH_END.len()..];
+        let text: String = body[..end].chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        let raw = base64::engine::general_purpose::STANDARD.decode(text).map_err(|_| "a PEM block is not base64")?;
+        let blob = openssh_public_blob(&raw).ok_or("a PEM block is not an openssh-key-v1 key")?;
+        let kind = ssh_string(blob, &mut 0).and_then(|t| std::str::from_utf8(t).ok()).ok_or("a key has no type")?;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        out.push(SshPublicKey {
+            kind: kind.to_owned(),
+            key: format!("{kind} {}", b64.encode(blob)),
+            fingerprint: format!(
+                "SHA256:{}",
+                base64::engine::general_purpose::STANDARD_NO_PAD.encode(sha2::Sha256::digest(blob))
+            ),
+        });
+    }
+    Ok(out)
+}
+
+/// The first public key blob of a decoded `openssh-key-v1` key, `None` when the bytes are not one.
+fn openssh_public_blob(raw: &[u8]) -> Option<&[u8]> {
+    let mut at = b"openssh-key-v1\0".len();
+    if raw.get(..at)? != b"openssh-key-v1\0" {
+        return None;
+    }
+    for _ in 0..3 {
+        ssh_string(raw, &mut at)?;
+    }
+    let count = u32::from_be_bytes(raw.get(at..at + 4)?.try_into().ok()?);
+    at += 4;
+    if count == 0 {
+        return None;
+    }
+    ssh_string(raw, &mut at)
+}
+
+/// The SSH `string` (a big-endian u32 length, then the bytes) at `*at`, moving `*at` past it.
+fn ssh_string<'a>(b: &'a [u8], at: &mut usize) -> Option<&'a [u8]> {
+    let n = u32::from_be_bytes(b.get(*at..*at + 4)?.try_into().ok()?) as usize;
+    let s = b.get(*at + 4..(*at + 4).checked_add(n)?)?;
+    *at += 4 + n;
+    Some(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SshPublicKey, ssh_public_keys};
+
+    /// A test-only Ed25519 key `ssh-keygen -t ed25519 -N "" -C ""` made, and what its `.pub` and
+    /// `ssh-keygen -l -E sha256` print.
+    const PEM: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACDeZpHRQEtEkpLwgYPbpdEqialwWeThXtwWZrJBCEuZAwAAAIhNRNfPTUTX\nzwAAAAtzc2gtZWQyNTUxOQAAACDeZpHRQEtEkpLwgYPbpdEqialwWeThXtwWZrJBCEuZAw\nAAAEC3S44+BxDU/7zBw1gHB/Z8H/W6UfPhFjmpiPYkc7xtWt5mkdFAS0SSkvCBg9ul0SqJ\nqXBZ5OFe3BZmskEIS5kDAAAAAAECAwQF\n-----END OPENSSH PRIVATE KEY-----\n";
+    const PUB: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN5mkdFAS0SSkvCBg9ul0SqJqXBZ5OFe3BZmskEIS5kD";
+    const FINGERPRINT: &str = "SHA256:CKea7oY7Ys3mkLc347XrzupVUKhVSeA9vn7EU3GMA2U";
+
+    /// A slot's concatenated keys give each key's public half as hostkeys.mjs lists it; an empty or unbound slot and
+    /// other PEM blocks give none.
+    #[test]
+    fn a_host_key_slot_gives_its_public_halves() {
+        let one = SshPublicKey { kind: "ssh-ed25519".into(), key: PUB.into(), fingerprint: FINGERPRINT.into() };
+        assert_eq!(ssh_public_keys(PEM), Ok(vec![one]));
+        let three = ssh_public_keys(&PEM.repeat(3)).unwrap();
+        assert_eq!(three.len(), 3);
+        assert!(three.iter().all(|k| k.key == PUB));
+        assert_eq!(ssh_public_keys(""), Ok(vec![]));
+        assert_eq!(
+            ssh_public_keys("-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n"),
+            Ok(vec![])
+        );
+    }
+
+    /// A block whose bytes are not `openssh-key-v1` is refused, and the error carries none of them.
+    #[test]
+    fn a_block_with_a_bad_magic_is_refused() {
+        use base64::Engine as _;
+        let b = |raw: &[u8]| {
+            let body = base64::engine::general_purpose::STANDARD.encode(raw);
+            format!("{}\n{body}\n{}\n", super::OPENSSH_BEGIN, super::OPENSSH_END)
+        };
+        let e = ssh_public_keys(&b(b"openssh-key-v2\0\0\0\0\x04none")).unwrap_err();
+        assert_eq!(e, "a PEM block is not an openssh-key-v1 key");
+        assert!(ssh_public_keys(&b(b"openssh-key-v1\0\0\0")).is_err(), "a truncated header");
+        let tampered = PEM.replacen("b3BlbnNzaC1rZXktdjE", "b3BlbnNzaC1rZXktdjI", 1);
+        assert!(ssh_public_keys(&tampered).is_err());
+        assert!(ssh_public_keys(&format!("{}\nAAAA\n", super::OPENSSH_BEGIN)).is_err(), "no end line");
+    }
 }

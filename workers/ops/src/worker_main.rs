@@ -22,32 +22,42 @@ fn rand10() -> [u8; 10] {
     b
 }
 
-/// The `SecretsWrapKey` slots: the Secrets Store bindings `SECRETS_WRAP_KEY_A` and `_B`, and `SECRETS_WRAP_KEY_CURRENT`
-/// naming the one new values take [inference: the design names the secret, not its bindings].
-async fn wrap_keys(env: &Env) -> std::result::Result<crate::WrapKeySource, String> {
+/// The `SecretsWrapKey` slots: the Secrets Store bindings `SECRETS_WRAP_KEY_A` (slot 0) and `_B` (slot 1), both
+/// bound and both unwrapping, and the slot new values wrap under [inference: the design names the secret, not its
+/// bindings]. That slot is the one a `Rotate` switched to (`ReleaseFold::slots`) once the view holds an entry for it;
+/// before any, or while a script that binds the members holds no view yet, it is `SECRETS_WRAP_KEY_CURRENT` (default
+/// 0), so an install that set the variable before its first `Rotate` keeps its slot. The variable names a slot both
+/// bindings still hold, so wrapping under it is safe even when the view would name the other: either unwraps.
+async fn wrap_keys(env: &Env, ctx: &Context) -> std::result::Result<crate::WrapKeySource, String> {
     let mut texts = Vec::new();
-    for name in ["SECRETS_WRAP_KEY_A", "SECRETS_WRAP_KEY_B"] {
+    for name in crate::WRAP_KEY_BINDINGS {
         if let Ok(s) = env.secret_store(name)
             && let Some(t) = s.get().await.map_err(|e| e.to_string())?
         {
             texts.push(t);
         }
     }
-    let current = env.var("SECRETS_WRAP_KEY_CURRENT").ok().and_then(|v| v.to_string().parse().ok()).unwrap_or(0);
+    let switched =
+        view_fold(env, ctx, |f| f.slots.get(&graftyard_release::SecretName::SecretsWrapKey).map(|(s, _)| *s)).await;
+    // A switched slot only; no members, no view yet, or no `Rotate` so far all read the variable.
+    let current = match switched {
+        Some(Some(Some(s))) => s,
+        _ => env.var("SECRETS_WRAP_KEY_CURRENT").ok().and_then(|v| v.to_string().parse().ok()).unwrap_or(0),
+    };
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     crate::WrapKeySource::parse(current, &refs).map_err(|e| e.to_string())
 }
 
 /// `POST /wrap` (M4-WP1): a hook secret the edge received, sealed under `SecretsWrapKey`'s current slot. Nothing here
 /// logs the body.
-async fn wrap(mut req: Request, env: &Env) -> Result<Response> {
+async fn wrap(mut req: Request, env: &Env, ctx: &Context) -> Result<Response> {
     use graftyard_identity::sealed::HookSecrets as _;
     #[derive(serde::Deserialize)]
     struct Body {
         secret: String,
     }
     let Ok(b) = req.json::<Body>().await else { return Response::error("not a hook secret", 400) };
-    let src = match wrap_keys(env).await {
+    let src = match wrap_keys(env, ctx).await {
         Ok(s) => s,
         Err(e) => return Response::error(e, 503),
     };
@@ -63,12 +73,12 @@ async fn wrap(mut req: Request, env: &Env) -> Result<Response> {
 /// as hex, which the sequencer signs attempts with and keeps only in its isolate's memory (`design/DESIGN.md`, Shape:
 /// "Only `graft-ops` reads `SecretsWrapKey`: it ... unwraps hook secrets for `HookSequencer`"). The script has no
 /// public route, so only a binding reaches it. Nothing here logs the body or the answer.
-async fn unwrap(mut req: Request, env: &Env) -> Result<Response> {
+async fn unwrap(mut req: Request, env: &Env, ctx: &Context) -> Result<Response> {
     use graftyard_identity::sealed::HookSecrets as _;
     let Ok(w) = req.json::<graftyard_identity::sealed::Wrapped>().await else {
         return Response::error("not a wrapped secret", 400);
     };
-    let src = match wrap_keys(env).await {
+    let src = match wrap_keys(env, ctx).await {
         Ok(s) => s,
         Err(e) => return Response::error(e, 503),
     };
@@ -107,9 +117,9 @@ impl crypto_box::aead::rand_core::CryptoRng for WebRng {}
 /// `POST /actions/open` answers one job's secret plaintexts (`crate::OpenRequest`), to `acquirejob` only; `POST
 /// /actions/reseal` reseals records to a new key for rotation and answers no plaintext; `POST /actions/rewrap` wraps
 /// a hook secret again under the current slot. Nothing here logs a body or an answer.
-async fn actions(mut req: Request, env: &Env, path: &str) -> Result<Response> {
+async fn actions(mut req: Request, env: &Env, ctx: &Context, path: &str) -> Result<Response> {
     use crypto_box::aead::rand_core::RngCore as _;
-    let src = match wrap_keys(env).await {
+    let src = match wrap_keys(env, ctx).await {
         Ok(s) => s,
         Err(e) => return Response::error(e, 503),
     };
@@ -155,34 +165,44 @@ async fn actions(mut req: Request, env: &Env, path: &str) -> Result<Response> {
     }
 }
 
-/// `MintWrapKey`'s active slot (M5-WP6, `Rotate`): from this script's `Release` view, refreshed as the edge refreshes
-/// its own (`view::ensure`), when the script binds the members (`--executor`); slot 0 otherwise. Read only when the
-/// minter needs a key, at most once per `SIGNING_KEY_CACHE`. `None` when the script binds the members but holds no
-/// view yet: a guessed slot would be cached for `SIGNING_KEY_CACHE`, so the mint answers 503 and the edge retries.
-async fn mint_slot(env: &Env, ctx: &Context) -> Option<u8> {
+/// `f` of this script's `Release` fold, refreshed as the edge refreshes its own (`view::ensure`), when the script
+/// binds the members (`--executor`). `Some(None)` when it binds none, `None` when it binds them but holds no view yet.
+async fn view_fold<R>(
+    env: &Env,
+    ctx: &Context,
+    f: impl FnOnce(&graftyard_release::ReleaseFold) -> R,
+) -> Option<Option<R>> {
     let (Ok(sites), Ok(install), Ok(customer)) =
         (env.var("GRAFTYARD_SITES"), env.var("GRAFTYARD_INSTALL"), env.var("GRAFTYARD_CUSTOMER_KEY"))
     else {
-        return Some(0);
+        return Some(None);
     };
     let sites = serde_json::from_str::<graftyard_types::SiteTable>(&sites.to_string()).ok()?;
     let anchor = graftyard_release::Anchor::from_vars(&install.to_string(), &customer.to_string()).ok()?;
     let b = graftyard_lookup::Bindings { env, sites: &sites };
     graftyard_lookup::view::ensure(&b, &anchor, Some(ctx)).await;
-    graftyard_lookup::view::with(|r| (r.count() > 0).then(|| r.fold.slot(graftyard_release::SecretName::MintWrapKey)))
+    graftyard_lookup::view::with(|r| (r.count() > 0).then(|| Some(f(&r.fold))))
+}
+
+/// `secret`'s active slot (M5-WP6, `Rotate`): from this script's `Release` view when the script binds the members;
+/// slot 0 otherwise. `None` when it binds the members but holds no view yet. `MintWrapKey`'s is read only when the
+/// minter needs a key, at most once per `SIGNING_KEY_CACHE`; a guessed slot would be cached that long, so the mint
+/// answers 503 and the edge retries.
+async fn view_slot(env: &Env, ctx: &Context, secret: graftyard_release::SecretName) -> Option<u8> {
+    view_fold(env, ctx, |f| f.slot(secret)).await.map(|s| s.unwrap_or(0))
 }
 
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if req.method() == Method::Post && req.path().starts_with("/actions/") {
         let path = req.path();
-        return actions(req, &env, &path).await;
+        return actions(req, &env, &ctx, &path).await;
     }
     if req.method() == Method::Post && req.path() == "/wrap" {
-        return wrap(req, &env).await;
+        return wrap(req, &env, &ctx).await;
     }
     if req.method() == Method::Post && req.path() == "/unwrap" {
-        return unwrap(req, &env).await;
+        return unwrap(req, &env, &ctx).await;
     }
     if req.method() != Method::Post || req.path() != "/mint" {
         return Response::error("Not Found", 404);
@@ -213,7 +233,7 @@ async fn mint(mut req: Request, env: &Env, ctx: &Context) -> Result<Response> {
     let now = Timestamp(Date::now().as_millis());
     // The secret is read only when the minter's key is missing or `SIGNING_KEY_CACHE` old.
     let text = if MINTER.with(|m| m.borrow().needs_key(now)) {
-        let Some(slot) = mint_slot(env, ctx).await else {
+        let Some(slot) = view_slot(env, ctx, graftyard_release::SecretName::MintWrapKey).await else {
             return Response::error("MintWrapKey: no Release view yet", 503);
         };
         match crate::exec::slot_value(env, graftyard_release::SecretName::MintWrapKey, slot).await {

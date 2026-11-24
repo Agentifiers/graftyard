@@ -8293,7 +8293,8 @@ and one queue message a round: the base moves $1,016 → $1,017 and $9,325 → $
 - A failed host step pages and commits nothing; the next run tries it again. Every probe runs on `graft-ops`' cron,
   never on a request path.
 - A `Rotate` of a secret `graft-ops` switches no slot of, or to the active slot, pages by name and steps nothing until
-  the customer's `Abort`, which ends it with the slot unchanged (R45). The agents account's `AgentsAppKey` and
+  the customer's `Abort`, which ends it with the slot unchanged (R45; since "`rotate-holders`" only
+  `HostedRunnersAppKey`, `TunnelToken` and the agents account's secrets). The agents account's `AgentsAppKey` and
   `WorkspaceAppKey` page in the install's `graft-ops` and are its own `graft-ops`'s to step.
 - `rotate_steps` is a stored format up to each list's switch: `apply` moves the slot at that index, so a release may
   add steps only after it, and a refused secret may gain a list.
@@ -8326,7 +8327,65 @@ carries `location` (https://developers.cloudflare.com/api/resources/r2/subresour
 - BF-46 hosted shows a reader still using the old value after its view moved (A17's question, a Secrets Store `get()`
   that does not see the new slot's value): the switch then needs the reader to re-read on the slot change.
 - A script other than `graft-ops` gains a view and both slots of a refused secret (R45): its row gains a step list.
+  Done for every install-account secret by "`rotate-holders`".
 - A Cloudflare permission change makes either probe pass with a token that cannot deploy or read.
+
+### `rotate-holders`: every install-account holder reads its slot from its view; `HostedRunnersAppKey` rotates in place (R45), 2026-11-24
+
+**Status.** Code-only, not deployed (R45's design route, cleared by the lead at $0). Branch `r45-rotate-holders`.
+
+**Decision.** `rotate_steps` gains a list for every install-account secret `graft-ops` used to refuse:
+- **`SshHostKeys`: probe, wait, switch.** The site script's `SshOutbound` answers `keys.graft/slots` with the active
+  slot from the site's own `Release` view (its `SITE` binding's `GET /_graftyard/ssh/active`), not the
+  `SSH_HOST_KEY_ACTIVE` variable, and `graft-sshd` reads it every 60 s, so it announces a newly written slot and serves a
+  switch within a minute, with no container restart. The probe reads the new slot's public keys from every active
+  site's Registry (`GET /ssh_slots`, public halves only) and needs the same Ed25519, ECDSA P-256 and RSA key on each.
+  The wait is `SSH_ANNOUNCE_FOR`, DESIGN's 30 days [guess], from the probe's commit. The edge's
+  `/api/graftyard/v1/meta/ssh` lists the slots from a site and the active one from its view.
+- **`McpAppKey`, `McpClientSecret`, `InsightsAppKey`: probe, switch.** The probe reads the new slot's value from
+  `graft-ops`' own bindings of the two slots and checks that the App's record on the install's `Authz` chain lists it:
+  the key's public half among `AppRecord.keys`, the secret's hash among `client_secrets`. `graft-mcp` binds
+  `MCP_CLIENT_SECRET_0`/`_1` and reads the slot from its own view (`MEMBER_<n>`/`REGISTRY_<n>` as `graft-front` binds
+  them); a view not yet held answers 503, not a guessed slot.
+- **`SecretsWrapKey`: probe, switch.** The switch names the slot new values wrap under, which `graft-ops` read from the
+  `SECRETS_WRAP_KEY_CURRENT` variable, a redeploy. The probe parses the new slot's key and its slot number. Both slots
+  still unwrap; each owner admin's `rewrap-secrets` moves the old values, and only then is the old slot cleared. Until a
+  first `Rotate` commits, the variable stands, so an install that set it keeps its slot.
+- **`HostedRunnersAppKey`: no `Rotate`.** `graft-runners` lives in the runner account, which holds no `Release` view
+  and no install token. The customer adds a new key to the `graftyard-hosted-runners` App, writes it over the one slot
+  in the runner account's store, which every sweep re-reads, and removes the old key from the App after 24 h.
+
+**Why.** FRAME has no decision that these rows rotate outside `Rotate`, and a slot read from the view keeps the site-day
+invariant: the rotation is a signed `Release` entry, not a variable change. `graft-ops` has the reads each probe needs
+off the request path: the site Registries over its `REGISTRY_<n>` bindings, and the install's `Authz` fold through the
+lookup. A Secrets Store secret is read at run time by `get()`, so a value written over a slot needs no new version
+(https://developers.cloudflare.com/secrets-store/manage-secrets/how-to/, "Edit a secret": "the replacement in all
+services using the secret" [doc]); how soon a running isolate sees it is undocumented [unverified].
+
+**What it beat.**
+- **`graft-runners` reading its slot from the install's view.** It would need the agents-view route
+  (`release/entries`, readable only by `graftyard-agent`) or member bindings across accounts, a new failure domain for
+  one key that rotates rarely.
+- **A site day for `SshHostKeys`.** It resets every member of the site, for a change of which key serves.
+- **Keeping `SecretsWrapKey` outside `Rotate`.** Its switch was a `graft-ops` redeploy with a new variable: a version
+  with no signed record.
+
+**Evidence.** `crates/release` `run.rs`: `r45_app_credentials_probe_then_switch_with_no_deploy`,
+`r45_ssh_host_keys_wait_the_announce_before_they_switch`, and the refusal test now for `HostedRunnersAppKey` and
+`TunnelToken` only; plant213 (`tests/m0carried/plant213.py`) catches 7 of 7, and plant95's refusal mutant now plants a
+`HostedRunnersAppKey` that runs. `workers/ops` (native): `an_app_key_or_client_secret_passes_only_when_the_app_lists_it`,
+`a_wrap_key_slot_passes_only_naming_its_slot_with_a_32_byte_key`,
+`an_ssh_slot_passes_only_with_the_same_three_keys_on_every_site`. `workers/mcp`: `r45_the_client_secret_follows_the_view_s_slot`
+and two more. `workers/site`: the `/ssh_slots` parser's tests against an `ssh-keygen` key, and
+`workers/site/tests/ssh.test.mjs` (slot B after a switch, 503 while the slot is unknown). `graft-sshd`:
+`TestRefreshServesTheSwitchedSlot`. No hosted row yet.
+
+**Flip.**
+- A hosted switch that a holder serves late past one view refresh or one `graft-sshd` re-read: the holder re-reads on the
+  slot change.
+- The runner account gains a view of the install's `Release` group: `HostedRunnersAppKey` gains a step list.
+- A client population that does not use `UpdateHostKeys`: the announce wait buys nothing for it, and the switch needs a
+  customer notice instead.
 
 ### `vault-roll`: `vault upgrade` is a step of `release roll` on the operator's machine, not a group intent, 2026-11-23
 

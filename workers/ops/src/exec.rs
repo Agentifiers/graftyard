@@ -36,6 +36,12 @@
 //!   unslotted binding an install before M5-WP6 has. The probes call nothing on a request path
 //!   (`decisions/DECISIONS.md`, "`rotate-probe`"): `DeployToken` lists the install's scripts, `ReadToken` reads one
 //!   site bucket's `location`, and `MintWrapKey`'s steps commit and retire its `VerifyingKey` rows on `TokenShard(0)`.
+//!   R45's holders: `SshHostKeys` reads every non-spare site Registry's `ssh_slots` and wants the same three public
+//!   halves in the new slot everywhere (`crate::ssh_slot_ready`); `McpAppKey`, `McpClientSecret` and `InsightsAppKey`
+//!   read their App's record in the install account's `Authz` fold and want it to list the new value
+//!   (`crate::app_lists`); `SecretsWrapKey` wants its new slot's binding (`SECRETS_WRAP_KEY_A` or `_B`) to name that
+//!   slot with a 32-byte key (`crate::wrap_slot_ok`). A test-faults build's `OPS_SSH_ANNOUNCE_MS` lowers
+//!   `SshHostKeys`' announce wait.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -249,6 +255,9 @@ pub fn slot_binding(secret: SecretName, slot: u8) -> std::result::Result<String,
         SecretName::DeployToken => "DEPLOY_TOKEN",
         SecretName::ReadToken => "READ_TOKEN",
         SecretName::MintWrapKey => "MINT_WRAP_KEY",
+        SecretName::McpAppKey => "MCP_APP_KEY",
+        SecretName::McpClientSecret => "MCP_CLIENT_SECRET",
+        SecretName::InsightsAppKey => "INSIGHTS_APP_KEY",
         s => return Err(format!("graft-ops binds no slot of {s:?}")),
     };
     Ok(format!("{base}_{slot}"))
@@ -386,6 +395,55 @@ impl<'a> Live<'a> {
             n.map(|n| whole.of(n))
         );
         g
+    }
+
+    /// The App `slug`'s record in the install account's `Authz` fold: the account's `Placement` row on its `Names`
+    /// shard, then a `dep` read of its `Authz` group, as the edge's `placement` and `authz_read_as` read them.
+    async fn install_app(&self, slug: &str) -> std::result::Result<graftyard_identity::AppRecord, String> {
+        let account = graftyard_identity::install_account();
+        let b = self.bindings();
+        let names = ChainId::Names(graftyard_identity::account_shard(account));
+        let record = graftyard_lookup::system_record(&b, &self.anchor, names).await?;
+        let q = json!({ "q": { "placement": account.0.0 } }).to_string();
+        let (v, _, _) = graftyard_lookup::call_opt(&b, names, &record, "/read", q.as_bytes())
+            .await?
+            .ok_or_else(|| format!("{names} holds no group"))?;
+        let placement: graftyard_types::PlacementRecord = serde_json::from_value(v["value"]["placement"].clone())
+            .map_err(|e| format!("the install account's placement on {names}: {e}"))?;
+        let authz = ChainId::Authz(account);
+        let q = json!({ "q": { "dep": true } }).to_string();
+        let (v, _, _) = graftyard_lookup::call_opt(&b, authz, &placement, "/read", q.as_bytes())
+            .await?
+            .ok_or_else(|| format!("{authz} holds no group"))?;
+        let bytes = v["value"].as_str().and_then(graftyard_lookup::unhex).ok_or("authz dep: not hex")?;
+        let fold: graftyard_identity::AuthzFold =
+            graftyard_raft::codec::from_bytes(&bytes).map_err(|e| format!("{authz}: {e}"))?;
+        fold.more
+            .apps
+            .into_values()
+            .find(|a| a.slug.as_str() == slug)
+            .ok_or_else(|| format!("the install account registers no App {slug}"))
+    }
+
+    /// The new `SshHostKeys` slot's public halves on every non-spare site: its Registry object `ssh`'s `ssh_slots`.
+    async fn ssh_slots(&self, slot: u8) -> std::result::Result<Vec<(u8, Vec<crate::SshHostPublic>)>, String> {
+        let name = if slot == 0 { "A" } else { "B" };
+        let mut out = Vec::new();
+        for site in self.sites.0.iter().filter(|s| !s.spare) {
+            let id = site.id.0;
+            let stub = self.bindings().registry(site.id, "ssh").map_err(|e| format!("site {id}: {e}"))?;
+            let mut r = within(VIEW_CALL, stub.fetch_with_str("https://registry/ssh_slots"))
+                .await
+                .ok_or_else(|| format!("site {id}: ssh_slots did not answer"))?
+                .map_err(|e| format!("site {id}: {e}"))?;
+            if r.status_code() != 200 {
+                return Err(format!("site {id}: ssh_slots answered HTTP {}", r.status_code()));
+            }
+            let mut slots: BTreeMap<String, Vec<crate::SshHostPublic>> =
+                r.json().await.map_err(|e| format!("site {id}: ssh_slots: {e}"))?;
+            out.push((id, slots.remove(name).unwrap_or_default()));
+        }
+        Ok(out)
     }
 }
 
@@ -613,8 +671,9 @@ impl Exec for Live<'_> {
         self.api.upload(s, tag, modules).await
     }
 
-    /// One host step of a `Rotate` (`decisions/DECISIONS.md`, "`rotate-probe`"). Every call is to the Cloudflare API or
-    /// a `Tokens` leader from this cron, never on a request path, and each is safe to repeat.
+    /// One host step of a `Rotate` (`decisions/DECISIONS.md`, "`rotate-probe`"). Every call is to the Cloudflare API, a
+    /// `Tokens` leader, a site Registry, or the install account's `Names` and `Authz` groups from this cron, never on a
+    /// request path; each is safe to repeat, and none logs a secret value.
     async fn rotate(
         &mut self,
         fold: &ReleaseFold,
@@ -625,10 +684,10 @@ impl Exec for Live<'_> {
         if self.killed("rotate") {
             return Err("OPS_KILL".into());
         }
-        let new = slot_value(self.env, secret, slot).await?;
         match (secret, step) {
             // The deploy token's own scope: the call `graft-ops` makes before every deploy.
             (SecretName::DeployToken, RotateStep::Probe) => {
+                let new = slot_value(self.env, secret, slot).await?;
                 let v = self.api.call(&new, Method::Get, "/workers/scripts", None, false).await?;
                 let n = v["result"].as_array().map_or(0, Vec::len);
                 console_log!("graft-ops Rotate DeployToken slot {slot} probe: {n} scripts listed");
@@ -636,6 +695,7 @@ impl Exec for Live<'_> {
             }
             // Workers R2 Storage Read, the read token's scope, on the first site's bucket.
             (SecretName::ReadToken, RotateStep::Probe) => {
+                let new = slot_value(self.env, secret, slot).await?;
                 let site = fold.genesis.as_ref().and_then(|g| g.sites.first()).ok_or("no site in the view")?;
                 let v = self.api.call(&new, Method::Get, &format!("/r2/buckets/{}", site.bucket), None, false).await?;
                 let at = v["result"]["location"].as_str().ok_or("no bucket location in the answer")?;
@@ -643,6 +703,7 @@ impl Exec for Live<'_> {
                 Ok(())
             }
             (SecretName::MintWrapKey, RotateStep::Publish | RotateStep::Retire) => {
+                let new = slot_value(self.env, secret, slot).await?;
                 // The old key is the other slot's: at `Retire` the switch has already made `slot` the active one.
                 let old = match step {
                     RotateStep::Retire => slot_value(self.env, secret, 1 - slot).await?,
@@ -660,6 +721,31 @@ impl Exec for Live<'_> {
                     return Err(format!("tokens:0 refused the key row: {done}"));
                 }
                 console_log!("graft-ops Rotate MintWrapKey slot {slot} {step:?}: tokens:0 committed {cmd}");
+                Ok(())
+            }
+            // Every graft-sshd announces what its site binds in the slot, so each must bind the same three keys.
+            (SecretName::SshHostKeys, RotateStep::Probe) => {
+                let fps = crate::ssh_slot_ready(&self.ssh_slots(slot).await?)?;
+                console_log!("graft-ops Rotate SshHostKeys slot {slot} probe: every site holds {fps:?}");
+                Ok(())
+            }
+            // The App must already list the new value, or the switch would move every holder to one it refuses.
+            (SecretName::McpAppKey | SecretName::McpClientSecret | SecretName::InsightsAppKey, RotateStep::Probe) => {
+                let new = slot_value(self.env, secret, slot).await?;
+                let slug = if secret == SecretName::InsightsAppKey { "graftyard-insights" } else { "graftyard-mcp" };
+                let rec = self.install_app(slug).await?;
+                crate::app_lists(secret, &new, &rec).map_err(|e| format!("{slug}: {e}"))?;
+                console_log!("graft-ops Rotate {secret:?} slot {slot} probe: {slug} lists the new value");
+                Ok(())
+            }
+            // The slot new values wrap under: its binding's text must name it, since each wrapped value carries it.
+            (SecretName::SecretsWrapKey, RotateStep::Probe) => {
+                let binding = crate::WRAP_KEY_BINDINGS.get(usize::from(slot)).ok_or("no such wrap key slot")?;
+                let text = secret_opt(self.env, binding)
+                    .await?
+                    .ok_or_else(|| format!("{binding} is not bound or is empty"))?;
+                crate::wrap_slot_ok(&text, slot).map_err(|e| format!("{binding}: {e}"))?;
+                console_log!("graft-ops Rotate SecretsWrapKey slot {slot} probe: {binding} holds slot {slot}'s key");
                 Ok(())
             }
             (s, st) => Err(format!("no host step {st:?} for {s:?}")),
@@ -764,7 +850,8 @@ fn recover_window(env: &Env) -> u64 {
     gate::RECOVER_AFTER
 }
 
-/// The dwells: the design's, or a test install's `STEP_DWELL_MS` and `FIRST_DAY_MS`.
+/// The dwells: the design's, or a test install's `STEP_DWELL_MS` and `FIRST_DAY_MS`, and a test-faults build's
+/// `OPS_ROTATE_PUBLISHED_MS`, `OPS_SSH_ANNOUNCE_MS` and `OPS_LIFEBOAT_SILENT_MS`.
 pub(crate) fn dwell(env: &Env) -> Dwell {
     let ms = |n: &str| env.var(n).ok().and_then(|v| v.to_string().parse().ok());
     let d = Dwell::default();
@@ -778,10 +865,16 @@ pub(crate) fn dwell(env: &Env) -> Dwell {
     let lifeboat_silent = ms("OPS_LIFEBOAT_SILENT_MS").unwrap_or(d.lifeboat_silent);
     #[cfg(not(feature = "test-faults"))]
     let lifeboat_silent = d.lifeboat_silent;
+    // An `SshHostKeys` `Rotate`'s announce wait on a test install, read only by a test-faults build.
+    #[cfg(feature = "test-faults")]
+    let ssh_announce = ms("OPS_SSH_ANNOUNCE_MS").unwrap_or(d.ssh_announce);
+    #[cfg(not(feature = "test-faults"))]
+    let ssh_announce = d.ssh_announce;
     Dwell {
         step: ms("STEP_DWELL_MS").unwrap_or(d.step),
         first_day: ms("FIRST_DAY_MS").unwrap_or(d.first_day),
         rotate_published,
+        ssh_announce,
         lifeboat_silent,
     }
 }

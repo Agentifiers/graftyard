@@ -256,6 +256,104 @@ pub fn rewrap(src: &WrapKeySource, w: &Wrapped, nonce: [u8; 12]) -> Result<Wrapp
     src.wrap(&src.unwrap(w)?.0, nonce)
 }
 
+// ---- `Rotate` probes (`decisions/DECISIONS.md`, "`rotate-probe`"; OPEN-QUESTIONS R45)
+
+/// The Secrets Store bindings of `SecretsWrapKey`'s slots 0 and 1. Both stay bound, so a value wrapped under either
+/// unwraps whichever slot new values take.
+pub const WRAP_KEY_BINDINGS: [&str; 2] = ["SECRETS_WRAP_KEY_A", "SECRETS_WRAP_KEY_B"];
+
+/// The `SecretsWrapKey` `Rotate`'s probe: the new slot's text is a `WrapKeySlot` naming that slot, since a value
+/// wrapped under it carries the number, with a 32-byte key. The error never holds the key.
+pub fn wrap_slot_ok(text: &str, slot: u8) -> Result<(), &'static str> {
+    let s: WrapKeySlot = serde_json::from_str(text).map_err(|_| "not a SecretsWrapKey slot")?;
+    if s.slot != slot {
+        return Err("its text names another slot number");
+    }
+    unhex(&s.key).filter(|k| k.len() == 32).ok_or("its key is not 32 bytes of hex")?;
+    Ok(())
+}
+
+/// The App-key `Rotate`s' probe: the App's record in the install account's `Authz` fold already lists the new slot's
+/// value, so the switch moves no holder to a key or client secret the App refuses. For `McpAppKey` and
+/// `InsightsAppKey`, `value` is a PEM RSA private key (PKCS#1 or PKCS#8) whose public half, as DER
+/// `SubjectPublicKeyInfo`, is one of `rec.keys`; for `McpClientSecret`, its hash is one of `rec.client_secrets`. The
+/// error says which check failed and never holds the value.
+pub fn app_lists(
+    secret: graftyard_release::SecretName,
+    value: &str,
+    rec: &graftyard_identity::AppRecord,
+) -> Result<(), &'static str> {
+    use graftyard_release::SecretName as S;
+    match secret {
+        S::McpClientSecret => graftyard_identity::appauth::client_secret_ok(&rec.client_secrets, value)
+            .then_some(())
+            .ok_or("the App lists no client secret with the new slot's hash"),
+        S::McpAppKey | S::InsightsAppKey => {
+            let public = rsa_public_der(value)?;
+            rec.keys
+                .iter()
+                .any(|k| k.public.0[..] == public[..])
+                .then_some(())
+                .ok_or("the App lists no key with the new slot's public half")
+        }
+        _ => Err("not an App's key or client secret"),
+    }
+}
+
+/// A PEM RSA private key's public half as DER `SubjectPublicKeyInfo`. The PEM armour is stripped by hand, as
+/// `workers/runners` does, so `rsa` needs no `pem` feature.
+fn rsa_public_der(pem: &str) -> Result<Vec<u8>, &'static str> {
+    use base64::Engine as _;
+    use rsa::pkcs1::DecodeRsaPrivateKey as _;
+    use rsa::pkcs8::{DecodePrivateKey as _, EncodePublicKey as _};
+    let body: String = pem.lines().map(str::trim).filter(|l| !l.starts_with("-----")).collect();
+    let der = base64::engine::general_purpose::STANDARD.decode(body).map_err(|_| "the new slot's key is not PEM")?;
+    let key = rsa::RsaPrivateKey::from_pkcs1_der(&der)
+        .or_else(|_| rsa::RsaPrivateKey::from_pkcs8_der(&der))
+        .map_err(|_| "the new slot's key is not an RSA private key in PKCS#1 or PKCS#8")?;
+    let spki = key.to_public_key().to_public_key_der().map_err(|_| "the new slot's public half does not encode")?;
+    Ok(spki.as_bytes().to_vec())
+}
+
+/// One public half a site Registry's `GET /ssh_slots` lists for a slot.
+#[derive(Clone, Debug, Deserialize)]
+pub struct SshHostPublic {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub key: String,
+    pub fingerprint: String,
+}
+
+/// The host-key types every `SshHostKeys` slot holds, one key each.
+pub const SSH_HOST_KEY_TYPES: [&str; 3] = ["ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa"];
+
+/// The `SshHostKeys` `Rotate`'s probe over each non-spare site's new slot, by site id: exactly one key of each
+/// `SSH_HOST_KEY_TYPES` and no other, and the same fingerprints on every site, so a client that learned the slot from
+/// one site trusts every other. Answers the fingerprints in `SSH_HOST_KEY_TYPES` order.
+pub fn ssh_slot_ready(sites: &[(u8, Vec<SshHostPublic>)]) -> Result<Vec<String>, String> {
+    let mut first: Option<(u8, Vec<String>)> = None;
+    for (site, keys) in sites {
+        let mut fps = Vec::new();
+        for t in SSH_HOST_KEY_TYPES {
+            match keys.iter().filter(|k| k.kind == t).count() {
+                1 => fps.extend(keys.iter().filter(|k| k.kind == t).map(|k| k.fingerprint.clone())),
+                n => return Err(format!("site {site} holds {n} {t} keys in the new slot, not 1")),
+            }
+        }
+        if keys.len() != SSH_HOST_KEY_TYPES.len() {
+            return Err(format!("site {site} holds {} keys in the new slot, not 3", keys.len()));
+        }
+        match &first {
+            None => first = Some((*site, fps)),
+            Some((s0, f0)) if *f0 != fps => {
+                return Err(format!("site {site}'s new-slot fingerprints {fps:?} differ from site {s0}'s {f0:?}"));
+            }
+            Some(_) => {}
+        }
+    }
+    first.map(|(_, f)| f).ok_or_else(|| "no non-spare site to probe".into())
+}
+
 #[cfg(target_arch = "wasm32")]
 mod agents;
 #[cfg(target_arch = "wasm32")]
@@ -395,5 +493,116 @@ mod tests {
         assert!(rotate_command(RotateStep::Retire, &new, &text(4, 9), switched).is_err());
         assert!(rotate_command(RotateStep::Probe, &new, &old, switched).unwrap().is_none());
         assert!(rotate_command(RotateStep::Publish, "not a key", &old, switched).is_err());
+    }
+
+    /// `SecretsWrapKey`'s probe: the slot's text must name the Rotate's slot and hold a 32-byte key.
+    #[test]
+    fn a_wrap_key_slot_passes_only_naming_its_slot_with_a_32_byte_key() {
+        let text = |slot: u8, key: &str| serde_json::to_string(&WrapKeySlot { slot, key: key.into() }).unwrap();
+        assert_eq!(wrap_slot_ok(&text(1, &hex(&[4; 32])), 1), Ok(()));
+        assert!(wrap_slot_ok(&text(0, &hex(&[4; 32])), 1).is_err(), "names the other slot");
+        assert!(wrap_slot_ok(&text(1, &hex(&[4; 31])), 1).is_err(), "31 bytes");
+        assert!(wrap_slot_ok(&text(1, "zz"), 1).is_err(), "not hex");
+        assert!(wrap_slot_ok("not json", 1).is_err());
+    }
+
+    fn pem(label: &str, der: &[u8]) -> String {
+        use base64::Engine as _;
+        let b = base64::engine::general_purpose::STANDARD.encode(der);
+        let lines: Vec<&str> = b.as_bytes().chunks(64).map(|c| std::str::from_utf8(c).unwrap()).collect();
+        format!("-----BEGIN {label}-----\n{}\n-----END {label}-----\n", lines.join("\n"))
+    }
+
+    fn app(keys: &[&rsa::RsaPrivateKey], secrets: &[&str]) -> graftyard_identity::AppRecord {
+        use graftyard_identity::{AppId, AppKey, AppRecord, ClientId, RsaPublic, Slug};
+        use graftyard_types::{DbId, Timestamp};
+        use rsa::pkcs8::EncodePublicKey as _;
+        AppRecord {
+            id: AppId(DbId(7)),
+            slug: Slug::parse("graftyard-mcp").unwrap(),
+            name: "Graftyard MCP".into(),
+            client: ClientId::parse("Iv1.0123456789abcdef").unwrap(),
+            keys: keys
+                .iter()
+                .map(|k| AppKey {
+                    id: DbId(1),
+                    public: RsaPublic(k.to_public_key().to_public_key_der().unwrap().as_bytes().into()),
+                    created: Timestamp(0),
+                })
+                .collect::<Vec<_>>()
+                .into(),
+            permissions: Default::default(),
+            events: Vec::new().into(),
+            webhook: None,
+            webhook_secret: None,
+            client_secrets: secrets
+                .iter()
+                .map(|s| graftyard_identity::appauth::secret_hash(s))
+                .collect::<Vec<_>>()
+                .into(),
+            callbacks: Vec::new().into(),
+            public: false,
+        }
+    }
+
+    /// The App-key probes: a key passes, as PKCS#8 or PKCS#1 PEM, only when the App lists its public half; a client
+    /// secret only when the App lists its hash; a PEM that does not parse fails, and no error holds the value.
+    #[test]
+    fn an_app_key_or_client_secret_passes_only_when_the_app_lists_it() {
+        use graftyard_release::SecretName as S;
+        use rand::SeedableRng as _;
+        use rsa::pkcs1::EncodeRsaPrivateKey as _;
+        use rsa::pkcs8::EncodePrivateKey as _;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(45);
+        let listed = rsa::RsaPrivateKey::new(&mut rng, 1024).unwrap();
+        let other = rsa::RsaPrivateKey::new(&mut rng, 1024).unwrap();
+        let rec = app(&[&other, &listed], &["old secret", "new secret"]);
+        let pkcs8 = |k: &rsa::RsaPrivateKey| pem("PRIVATE KEY", k.to_pkcs8_der().unwrap().as_bytes());
+        let pkcs1 = pem("RSA PRIVATE KEY", listed.to_pkcs1_der().unwrap().as_bytes());
+        for s in [S::McpAppKey, S::InsightsAppKey] {
+            assert_eq!(app_lists(s, &pkcs8(&listed), &rec), Ok(()));
+            assert_eq!(app_lists(s, &pkcs1, &rec), Ok(()));
+        }
+        let unlisted = pkcs8(&rsa::RsaPrivateKey::new(&mut rng, 1024).unwrap());
+        assert_eq!(
+            app_lists(S::McpAppKey, &unlisted, &rec),
+            Err("the App lists no key with the new slot's public half")
+        );
+        assert_eq!(app_lists(S::McpClientSecret, "new secret", &rec), Ok(()));
+        assert_eq!(
+            app_lists(S::McpClientSecret, "another secret", &rec),
+            Err("the App lists no client secret with the new slot's hash")
+        );
+        let broken = pkcs8(&listed).replacen('M', "!", 1);
+        assert_eq!(app_lists(S::McpAppKey, &broken, &rec), Err("the new slot's key is not PEM"));
+        let not_rsa = pem("PRIVATE KEY", b"not a key at all");
+        assert!(app_lists(S::InsightsAppKey, &not_rsa, &rec).unwrap_err().contains("not an RSA private key"));
+        assert!(app_lists(S::DeployToken, "new secret", &rec).is_err());
+    }
+
+    fn ssh(kind: &str, fp: &str) -> SshHostPublic {
+        SshHostPublic { kind: kind.into(), key: format!("AAAA{fp}"), fingerprint: format!("SHA256:{fp}") }
+    }
+
+    fn slot(rsa_fp: &str) -> Vec<SshHostPublic> {
+        vec![ssh("ssh-ed25519", "ed"), ssh("ecdsa-sha2-nistp256", "ec"), ssh("ssh-rsa", rsa_fp)]
+    }
+
+    /// `SshHostKeys`' probe: three sites holding the same three keys pass and name the fingerprints; a site missing
+    /// its RSA key, a site with an extra key, or two sites with different fingerprints fail, naming the site.
+    #[test]
+    fn an_ssh_slot_passes_only_with_the_same_three_keys_on_every_site() {
+        let good: Vec<_> = (0..3).map(|s| (s, slot("rsa"))).collect();
+        assert_eq!(ssh_slot_ready(&good).unwrap(), vec!["SHA256:ed", "SHA256:ec", "SHA256:rsa"]);
+        let mut missing = good.clone();
+        missing[1].1.pop();
+        assert_eq!(ssh_slot_ready(&missing).unwrap_err(), "site 1 holds 0 ssh-rsa keys in the new slot, not 1");
+        let mut extra = good.clone();
+        extra[2].1.push(ssh("ssh-dss", "dss"));
+        assert_eq!(ssh_slot_ready(&extra).unwrap_err(), "site 2 holds 4 keys in the new slot, not 3");
+        let mut differ = good.clone();
+        differ[2].1 = slot("rsa2");
+        assert!(ssh_slot_ready(&differ).unwrap_err().starts_with("site 2's new-slot fingerprints"));
+        assert!(ssh_slot_ready(&[]).is_err());
     }
 }

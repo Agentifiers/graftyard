@@ -19,6 +19,11 @@
 // `"slots": {"DEPLOY_TOKEN": [<slot 0 secret name>, <slot 1 secret name>], "READ_TOKEN": [...], "MINT_WRAP_KEY": [...]}`
 // binds both slots of each as `<NAME>_0` and `<NAME>_1`, and the `Release` view names the active one
 // (`src/exec.rs`, `slot_binding`), so a `Rotate` ships no new version. Without it the unslotted bindings stand for slot 0.
+// R45's `"MCP_APP_KEY"`, `"MCP_CLIENT_SECRET"` and `"INSIGHTS_APP_KEY"` take the same two names: `graft-ops` reads the
+// new slot only for its `Rotate` probe, which checks the App's record lists it. `SecretsWrapKey`'s slots stay the
+// fourth and fifth arguments (`_A` is slot 0, `_B` slot 1); once a `Rotate` switches it, the view's slot, not the
+// sixth argument, names the slot new values wrap under. BF-46-style `"ssh_announce_ms": n` (test-faults) lowers an
+// `SshHostKeys` `Rotate`'s announce wait (`OPS_SSH_ANNOUNCE_MS`).
 // AM3-WP1's agents account (`src/agents.rs`): `--agents <agents.json>` binds the agents `graft-ops` instead, with no
 // minting route in use. The file holds `{"anchor": <install.toml path>, "host": "<install host>", "app_id": <graftyard-
 // agent App id>, "app_key": <secret name>, "executor_key": <secret name>, "deploy_token": <secret name>, "scripts":
@@ -77,7 +82,8 @@ if (executor) {
     ...(executor.drain_key ? [{ binding: "DRAIN_KEY", store_id: storeId, secret_name: executor.drain_key }] : []),
   );
   for (const [base, names] of Object.entries(executor.slots ?? {})) {
-    if (!["DEPLOY_TOKEN", "READ_TOKEN", "MINT_WRAP_KEY"].includes(base) || names.length !== 2) {
+    const bases = ["DEPLOY_TOKEN", "READ_TOKEN", "MINT_WRAP_KEY", "MCP_APP_KEY", "MCP_CLIENT_SECRET", "INSIGHTS_APP_KEY"];
+    if (!bases.includes(base) || names.length !== 2) {
       throw new Error(`slots: ${base} takes two secret names`);
     }
     names.forEach((n, i) => cfg.secrets_store_secrets.push({ binding: `${base}_${i}`, store_id: storeId, secret_name: n }));
@@ -103,6 +109,7 @@ if (executor) {
     ...(faults && executor.step_min_entries != null ? { OPS_STEP_MIN_ENTRIES: String(executor.step_min_entries) } : {}),
     ...(faults && executor.rotate_published_ms != null ? { OPS_ROTATE_PUBLISHED_MS: String(executor.rotate_published_ms) } : {}),
     ...(faults && executor.recover_ms != null ? { OPS_RECOVER_MS: String(executor.recover_ms) } : {}),
+    ...(faults && executor.ssh_announce_ms != null ? { OPS_SSH_ANNOUNCE_MS: String(executor.ssh_announce_ms) } : {}),
   };
   // `"cron": "* * * * *"` for BF-39's kills on a test install; the design's cadence otherwise.
   cfg.triggers = { crons: [faults && executor.cron ? executor.cron : "*/5 * * * *"] };

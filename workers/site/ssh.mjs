@@ -8,7 +8,8 @@
 //   `graft-sshd`'s banner arrives, so the edge can still try another site's front: a cold container's first
 //   connection closes with no bytes (B0-24d, tests/m6/results/m6-wp2.md), and a connection is retried until the banner
 //   comes or BANNER_WAIT_MS ends.
-// - `SshOutbound`: `keys.graft/slots` answers both host-key slots from Secrets Store, and `git.graft` forwards to the
+// - `SshOutbound`: `keys.graft/slots` answers both host-key slots from Secrets Store and the active one from the
+//   `Release` view, through the script's own `SITE` binding (`src/lib.rs`, `ssh_active`), and `git.graft` forwards to the
 //   edge over the `EDGE` service binding, whose `props` (`{"ssh": true}`) are what tells the edge the call is the
 //   front's. The container never holds a secret or reaches the public zone.
 //
@@ -81,9 +82,16 @@ export async function outbound(props, env, request) {
   const url = new URL(request.url);
   if (props?.host === "keys") {
     if (url.pathname !== "/slots" || request.method !== "GET") return new Response("Not Found", { status: 404 });
+    // The active slot is the `Release` view's (`/_graftyard/ssh/active` on this script's own fetch handler), so a
+    // committed `Rotate { SshHostKeys }` switch is served with no new version. Without it, 503: graft-sshd retries.
+    if (!env.SITE) return new Response("this site has no SITE binding", { status: 503 });
+    const a = await env.SITE.fetch("https://site/_graftyard/ssh/active");
+    if (a.status !== 200) return new Response(`the active host-key slot did not answer (HTTP ${a.status})`, { status: 503 });
+    const { active } = await a.json();
+    if (active !== "A" && active !== "B") return new Response(`no host-key slot ${active}`, { status: 503 });
     const slot = async (b) => (b ? await b.get() : "");
     const slots = { A: await slot(env.SSH_HOST_KEY_A), B: await slot(env.SSH_HOST_KEY_B) };
-    return Response.json({ active: env.SSH_HOST_KEY_ACTIVE ?? "A", slots });
+    return Response.json({ active, slots });
   }
   if (props?.host === "git") {
     if (!env.EDGE) return new Response("this site has no EDGE binding", { status: 503 });
