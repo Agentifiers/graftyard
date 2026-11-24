@@ -99,7 +99,13 @@ MUTANTS = [
      '    let artifact = verified(&a.release)?;\n    let release = hex(&artifact.release.0);\n    let (versions, _) = cf.deployed(a.script)?;',
      '    let (versions, _) = cf.deployed(a.script)?;\n    let artifact = verified(&a.release)?;\n    let release = hex(&artifact.release.0);', INIT),
     ("upgrade resets the bindings", CLI,
-     '        "keep_bindings": ["r2_bucket", "plain_text", "secret_text"],', '        "keep_bindings": [],', INIT),
+     '    let mut meta = ops::upload_metadata(&cf.version(a.script, live)?, "entry.js", &release);',
+     '    let mut meta = ops::upload_metadata(&json!({}), "entry.js", &release);', INIT),
+    ("upgrade keeps every binding from the newest upload, as before R57", CLI,
+     '    meta["annotations"]["workers/message"] = json!("graftyard vault upgrade");',
+     '    meta["annotations"]["workers/message"] = json!("graftyard vault upgrade");\n'
+     '    meta["keep_bindings"] = json!(["r2_bucket", "plain_text", "secret_text"]);\n'
+     '    meta.as_object_mut().unwrap().remove("bindings");', INIT),
     ("upgrade uploads again a release already at 100%", CLI,
      '    if serving(cf, a.script)?.as_deref() == Some(release.as_str()) {',
      '    if false && serving(cf, a.script)?.as_deref() == Some(release.as_str()) {', INIT),
