@@ -20,11 +20,6 @@ tests/b034reads/plant.py: no record of the pack's objects
 tests/b034reads/plant.py: no multi-pack-index count after an ingest
 tests/budget/plant.py: the catch-up is charged with the merge
 tests/budget/plant.py: A28: no turn, so merges in flight are admitted before the ones ahead are charged
-tests/chainwait/plant.py: every site waits the whole deadline
-tests/chainwait/plant.py: the last site waits only the bound
-tests/chainwait/plant.py: the bound ignores the deadline
-tests/chainwait/plant.py: the rule inverted
-tests/chainwait/plant.py: a timeout counts as ready
 tests/g26/plant.py: a changed default never reaches a warm disk
 tests/g26/plant.py: HEAD named on every catch-up
 tests/hitgate/plant.py: chain-site: main's rule, every site waits as a chain site
