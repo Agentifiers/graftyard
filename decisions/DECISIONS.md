@@ -10457,7 +10457,7 @@ is a new Tokens format.
 - **Owed packs.** Packs were tried in `(network, id)` order, 40 a pass, and a 404 stayed owed. With 41 packs the install no longer serves ahead of a live one, the live pack was never copied in 5 passes. graft-m3f's feed still carries stored packs of repositories purged since 2026-11-22.
 
 **Decision.**
-- **Turns.** The edge pulls go round the known chains from the one after `Puller::turn`, `AT_ONCE` (16 [guess]) first pages at once, each chain pulled to its end before the turn passes it. So every chain is asked once a cycle, whatever the budgets.
+- **Turns.** The edge pulls go round the known chains from the one after `Puller::turn`, `AT_ONCE` (64 [guess], 16 until the measurement below) first pages at once, each chain pulled to its end before the turn passes it. So every chain is asked once a cycle, whatever the budgets.
 - **Two budgets.** Pages that carry rows count against `PAGES_PER_PASS` (40); answers with none, a caught-up chain or any status, against `PROBES_PER_PASS` (400 [guess]). At the bundle's 10 s alarm a round of graft-m3f's 3,234 chains takes about 9 passes, about 80 s.
 - **Current while stale.** Only a cycle in which every chain answered caught up (or gone), with none behind or halted, is current, and as of the cycle's start. A pass alone never is while chains remain to ask. With the feed fresh, current is as before.
 - **Packs.** One network at a time round the turns (`in_turns`, as the vault's). A pack the install answers 404 sends one probe of its repository chain a pass: a 404 there (`export-retired`) marks the chain gone and drops that network's owed packs. On a live chain the pack stays owed, is tried again in turn, and is counted in `State::unserved`; one unserved for `UNSERVED_ALARM_MS` (1 h [guess]) alarms in the pass line (`Report::unserved_alarm`, logged as an error), so a real missing pack is never dropped in silence.
@@ -10474,6 +10474,15 @@ is a new Tokens format.
 - `a_stale_round_reaches_every_chain_and_is_current_once_a_cycle_ends`: 900 chains, the last in key order moved, caught up in 3 passes with at most `PROBES_PER_PASS + AT_ONCE` answers each; current as of the cycle's start; a 503 inside a cycle holds it back and a later whole cycle moves it.
 - `owed_packs_go_round_by_network_and_a_gone_networks_are_dropped`: 45 dead packs of a purged network dropped after one probe, a live network's pack copied on the first pass, and an unserved pack on a live chain kept and alarming after an hour.
 - `tests/m0carried/plant200.py`: 8 of 8 native mutants caught; the feed hold's mutant by `tests/exportbed/run.sh`.
+
+**`AT_ONCE` 16 to 64, 2026-11-24 (lead's ruling after BF-53).** BF-53's hosted stale window met the first flip below: a stale pass took about 30 s, a cycle of 3,236 chains about 4.5 min, and the worst lag was 767 s, because the 400 probes queued 16 at a time. Measured on a local bed with the feed stopped: BF-53's own lifeboat state (3,236 chains, copied from the row), the feed answering 503, and an edge stand-in that answers each probe caught up after a delay drawn from BF-53's 1,697 hosted `entries` wall times (p50 341 ms, p90 607 ms, max 7,394 ms) plus 30 ms (`tests/m6/raw/lifeboat-turns/`: `run.sh`, `stub.mjs`, `an.py`, each run's pass lines, status and stand-in counts) [measured, local]:
+
+| `AT_ONCE` | Probes a busy second | A pass's 400 probes | Cycle | Worst lag once current |
+| --- | --- | --- | --- | --- |
+| 16 | 18.5 | about 21.6 s | 268 s | 508 s |
+| 64 | 52.3 | about 7.6 s | 131 s and 150 s | 298 s |
+
+At 16 the bed agrees with BF-53 (a 4.5-minute cycle). At 64 a cycle takes about 2.5 minutes, so the copy is current within the 5-minute alarm, with about 2 seconds to spare at its worst. Measuring moved chains first is not needed yet. The request rate while stale rises with it: about 22 edge requests a second over the run (52 while a pass probes) against about 12 at 16. Each is one Worker request and one follower wake, of the order of $0.05 an hour at list prices [inference, not costed by `scripts/cost.py`], well under the $1 cost flip below, which stays. It is not re-measured hosted; the next lifeboat row re-reads it.
 
 **Flip.**
 - A hosted stale window in which the copy does not reach current within one alarm period (5 minutes): raise the budgets or the concurrency, or list the chains that moved.
