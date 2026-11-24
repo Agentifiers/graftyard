@@ -1,0 +1,19 @@
+2026-11-24T22:04:46Z
+a495234b
+2026-11-24T22:04:48.723Z ClaimSlug (graftyard-agent) on names:873: Taken
+graftyard-agent 3801088
+2026-11-24T22:04:50.752Z ClaimSlug (graftyard-workspace) on names:233: Taken
+graftyard-workspace 3866624
+wrote 8 commands to ~/.graft-m4a/lf7/agents/agents-register.request.json: graftyard-agent is App 3801088, graftyard-workspace App 3866624
+once they commit, set graftyard-agent's webhook secret: PATCH /app/hook/config under its App JWT with {"secret": <the value of graft-agents-m4a-AGENTS_WEBHOOK_SECRET_A>}
+2026-11-24T22:04:54.404Z PutApp (graftyard-agent) on authz:1: ok
+2026-11-24T22:04:56.091Z RegisterApp (graftyard-agent) on names:7: ok
+2026-11-24T22:04:57.838Z RegisterClient (graftyard-agent) on names:208: ok
+2026-11-24T22:04:58.224Z PutAgentApp (graftyard-agent) on authz:1: ok
+2026-11-24T22:04:58.670Z PutApp (graftyard-workspace) on authz:1: ok
+2026-11-24T22:05:00.438Z RegisterApp (graftyard-workspace) on names:445: ok
+2026-11-24T22:05:02.423Z RegisterClient (graftyard-workspace) on names:368: ok
+2026-11-24T22:05:02.826Z PutAgentApp (graftyard-workspace) on authz:1: ok
+{"app":3801088,"slug":"graftyard-agent","callbacks":[],"client_secrets":0}
+{"app":3866624,"slug":"graftyard-workspace","callbacks":[],"client_secrets":0}
+GET release/entries, no JWT: 401

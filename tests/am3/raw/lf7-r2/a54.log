@@ -1,0 +1,20 @@
+2026-11-24T22:01:45Z
+a495234b
+install account (graft-m4a- names):
+{"step":"secret","ok":true,"errors":[]}
+{"step":"script","ok":true,"errors":[]}
+{"step":"token","scope":"Workers Scripts Write","ok":true,"errors":[]}
+{"step":"upload","token":"Workers Scripts Write alone","status":400,"ok":false,"errors":[[10021,"Secrets store binding authorization failed. Check your permissions and secret scopes."]]}
+{"step":"upload","token":"the account's own","status":200,"ok":true,"version":"574668da","errors":[]}
+{"step":"revoke","ok":true}
+{"step":"delete script","ok":true}
+{"step":"delete secret","ok":true}
+runner account (graft-agents-m4a- names):
+{"step":"secret","ok":true,"errors":[]}
+{"step":"script","ok":true,"errors":[]}
+{"step":"token","scope":"Workers Scripts Write","ok":true,"errors":[]}
+{"step":"upload","token":"Workers Scripts Write alone","status":400,"ok":false,"errors":[[10021,"Secrets store binding authorization failed. Check your permissions and secret scopes."]]}
+{"step":"upload","token":"the account's own","status":200,"ok":true,"version":"b8f8278e","errors":[]}
+{"step":"revoke","ok":true}
+{"step":"delete script","ok":true}
+{"step":"delete secret","ok":true}

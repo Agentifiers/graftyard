@@ -10930,7 +10930,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 #### `controller-default`: while a `ControllerRoll`'s split is deployed, `graft-agents-front` pins N unless its view shows the roll (2026-11-24)
 
-**Status.** Code-only (OPEN-QUESTIONS A53's fix, the lead's ruling (c)); LF-7 r2 is its hosted row.
+**Status.** Built (OPEN-QUESTIONS A53's fix, the lead's ruling (c)); LF-7 r2 passed it hosted on graft-m4a, 2026-11-24 (`tests/am3/results/lf7.md`).
 
 **Decision.**
 - The agents `graft-ops` sets `graft-agents-front`'s `CONTROLLER_DEFAULT` variable to N before it deploys a `graft-controller` split that serves no version 100%, and removes it after the deploy that serves one version 100%: the roll's 100% step, IntentDone's, and an undo's or `Abort`'s return (`agents::controller_default`). It sets it with the settings call, which deploys a front version that carries the deployed version's bindings and that one change. A controller deployment read while the front's value differs sets it and fails the run, so no step commits before the front carries what the deployment needs.

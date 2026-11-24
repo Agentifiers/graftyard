@@ -1,0 +1,6 @@
+2026-11-24T22:05:20Z
+a495234b
+{"count":478,"prev":"d1798e8c93223d7b389aec0fe8ed6c8aa1df689de7fc74766965683da4f9b5aa"}
+wrote unsigned Keys to ~/.graft-m4a/lf7/keys.unsigned, prev d1798e8c93223d7b389aec0fe8ed6c8aa1df689de7fc74766965683da4f9b5aa
+{"digest":"7be04bef4592aeb0e9c1be576a0a41962bf4bbba820198c8dd32a938ba27f888","index":1276,"status":201}
+{"count":479,"keys":{"agents_executor":"400908f0a700cd4dce2bb05a667ce2152a76f6d902233e39ae5cbd797149bfed","customer":"031923da25f100f1e0586087cd86b749be1ae6d26a75f4fa8cc6112f2dd882bd","drain":"477de5269050c38534d965f1a4d95c17f2f0fe1a4089bfa51c0b598d8c67c70b","executor":"d387253b7e8b191191dfd4508252587bf37f0dcad90ed180e2b8b42d85aaef1b","generation":6,"release":"dbde3befb57425850c8dc215410af552b1a23eede0ecc7c42dd2299076f3893f","vendor":null}}
