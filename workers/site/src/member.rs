@@ -2405,6 +2405,12 @@ impl<F: Family> Routes<F> {
             let core = self.host.core.borrow();
             let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
             let s = c.m.stale();
+            // A `dep` read is the whole fold in the crate's codec, hex, as the read-index path answers it: a lifeboat
+            // answers every read here, and the edge's `Authz` gate decodes it (`authz_read`).
+            if q.get("dep").is_some() {
+                let v = json!(graftyard_lookup::hex(&F::fold_bytes(s.fold())));
+                return self.reply(json!({ "value": v, "index": s.index().0, "stale": { "until": until.0 } }));
+            }
             let v = match host::fold_answer::<F>(s.fold(), q, s.index().0, now_ms(), family::dump_every(c.m.me())) {
                 host::ReadBody::Json(b) => b,
                 host::ReadBody::Shed(ms, _) => return self.reply(graftyard_lookup::overloaded_reply(ms)),

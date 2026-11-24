@@ -78,7 +78,8 @@ impl S3 {
     /// A signed `GET` of `key` in the bucket (or of the bucket itself) with `query` pairs, at `now_ms`.
     pub fn get(&self, key: Option<&str>, query: &[(&str, &str)], now_ms: u64) -> Signed {
         // The endpoint's authority is the signed host; a path on it (a bed's stand-in) prefixes the canonical path.
-        let rest = self.endpoint.split_once("://").map_or(self.endpoint.as_str(), |(_, r)| r).trim_end_matches('/');
+        let (scheme, rest) = self.endpoint.split_once("://").unwrap_or(("https", self.endpoint.as_str()));
+        let rest = rest.trim_end_matches('/');
         let (host, base) = rest.split_once('/').map_or((rest, String::new()), |(h, b)| (h, format!("/{b}")));
         let path = match key {
             Some(k) => format!("{base}/{}/{}", uri_encode(&self.bucket, true), uri_encode(k, true)),
@@ -104,11 +105,7 @@ impl S3 {
             "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature={sig}",
             self.key_id
         );
-        let url = format!(
-            "{}{path}{}",
-            self.endpoint.trim_end_matches('/'),
-            if qs.is_empty() { String::new() } else { format!("?{qs}") }
-        );
+        let url = format!("{scheme}://{host}{path}{}", if qs.is_empty() { String::new() } else { format!("?{qs}") });
         Signed {
             url,
             headers: vec![

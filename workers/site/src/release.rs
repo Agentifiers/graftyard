@@ -404,6 +404,10 @@ thread_local! {
 /// `copy` for COPY_WRITE_MS at most, so a registry that does not answer holds the member's alarm, and its Raft tick
 /// after it, no longer than that; the next apply writes again.
 async fn copy_within(host: &crate::host::Host<Release>) {
+    // A lifeboat has no site registry to copy to: its front reads the `Release` copy itself (`graftyard_lookup`).
+    if crate::lifeboat::mode(&host.env) {
+        return;
+    }
     match graftyard_lookup::within(std::time::Duration::from_millis(COPY_WRITE_MS), copy(host)).await {
         Some(Ok(())) => {}
         Some(Err(e)) => worker::console_error!("release copy: {e}"),

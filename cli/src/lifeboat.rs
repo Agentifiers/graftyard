@@ -189,3 +189,165 @@ pub fn enroll(a: EnrollArgs) -> Res<()> {
     );
     Ok(())
 }
+
+/// What `bundle` reads beside `lifeboat.json`: the builds and where the host's own services listen.
+pub struct BundleArgs<'a> {
+    /// `lifeboat init`'s directory: `lifeboat.json`, `lifeboat.key`, and the feed's `feed.json` (`FEED_URL`,
+    /// `FEED_BUCKET`, `FEED_KEY_ID`, `FEED_SECRET`, optional `FEED_REGION`), which the operator writes from the
+    /// bucket-scoped R2 read token.
+    pub dir: &'a Path,
+    /// The release's `site/`, `edge/`, and `lifeboat/` builds (`worker-build --release` each).
+    pub builds: &'a Path,
+    /// The release the decoder reports: the SHA-256 of its `release.json`.
+    pub release: &'a str,
+    /// The front's listen address, and its TLS key and chain (PEM) if it serves HTTPS.
+    pub listen: &'a str,
+    pub tls: Option<(&'a Path, &'a Path)>,
+    /// graft-blob's base URL.
+    pub blob: &'a str,
+    /// A localhost-only socket for the puller's `GET /status` and `POST /pass`, for the host's own checks.
+    pub admin: Option<&'a str>,
+    /// Where workerd keeps the copy: a directory created fresh for each workerd version.
+    pub state: &'a Path,
+    pub out: &'a Path,
+}
+
+/// Cap'n Proto text for a string.
+fn capnp(s: &str) -> String {
+    serde_json::to_string(s).expect("json")
+}
+
+/// `to` as the config's `embed` takes it: relative to the config file's directory `from`, since capnp resolves an
+/// absolute embed path against its import roots, not the filesystem.
+fn relative(from: &Path, to: &Path) -> Res<String> {
+    let abs = |p: &Path| fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()));
+    let (from, to) = (abs(from)?, abs(to)?);
+    let common = from.components().zip(to.components()).take_while(|(a, b)| a == b).count();
+    let up = from.components().count() - common;
+    let mut out: Vec<String> = std::iter::repeat_n("..".to_string(), up).collect();
+    out.extend(to.components().skip(common).map(|c| c.as_os_str().to_string_lossy().into_owned()));
+    Ok(out.join("/"))
+}
+
+/// `graftyard lifeboat bundle`: the workerd config of the bundle (`decisions/DECISIONS.md`, "`lifeboat-bundle`"). Three
+/// Workers in one process: the site build as `member` (`GRAFTYARD_LIFEBOAT=1`, the class `Member` on `localDisk`
+/// under `unique_key`), the edge build as `front` in lifeboat mode, the only socket, and the lifeboat build as `puller`
+/// on its own alarm. The front reaches `MEMBER` and `PULLER` by binding; the puller reaches `MEMBER`, and the install
+/// (the feed, the edge) and graft-blob over the network. The copies and the puller's state live under `state`; a new
+/// workerd version gets a fresh `state` and rebuilds from the feed.
+pub fn bundle(a: BundleArgs) -> Res<()> {
+    let read = |p: &Path| -> Res<Value> {
+        serde_json::from_slice(&fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?)
+            .map_err(|e| format!("{}: {e}", p.display()))
+    };
+    let cfg = read(&a.dir.join("lifeboat.json"))?;
+    let feed = read(&a.dir.join("feed.json"))?;
+    let seed = fs::read_to_string(a.dir.join("lifeboat.key")).map_err(|e| format!("lifeboat.key: {e}"))?;
+    let s = |v: &Value, k: &str| v[k].as_str().map(str::to_string).ok_or_else(|| format!("no {k}"));
+    let unique = s(&cfg, "unique_key")?;
+    for b in ["site", "edge", "lifeboat"] {
+        let p = a.builds.join(b).join("index.js");
+        if !p.exists() {
+            return Err(format!("{} is missing", p.display()));
+        }
+    }
+    fs::create_dir_all(a.state).map_err(|e| format!("{}: {e}", a.state.display()))?;
+    let base = a.out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let embed = |p: &Path| relative(base, p).map(|r| format!("embed {}", capnp(&r)));
+    let text = |name: &str, v: &str| format!("    (name = {}, text = {}),\n", capnp(name), capnp(v));
+    let anchor =
+        text("GRAFTYARD_INSTALL", &s(&cfg, "install")?) + &text("GRAFTYARD_CUSTOMER_KEY", &s(&cfg, "customer_key")?);
+    let sites = text("GRAFTYARD_SITES", &cfg["sites"].to_string());
+    let modules = |b: &str| -> Res<String> {
+        let d = a.builds.join(b);
+        Ok(format!(
+            "  modules = [\n    (name = \"index.js\", esModule = {}),\n    (name = \"index_bg.wasm\", wasm = {}),\n  ],\n",
+            embed(&d.join("index.js"))?,
+            embed(&d.join("index_bg.wasm"))?
+        ))
+    };
+    let compat = "  compatibilityDate = \"2026-10-01\",\n";
+    let socket = match a.tls {
+        Some((key, chain)) => format!(
+            "https = (options = (), tlsOptions = (keypair = (privateKey = {}, certificateChain = {})))",
+            embed(key)?,
+            embed(chain)?
+        ),
+        None => "http = ()".into(),
+    };
+    let feed_vars = ["FEED_URL", "FEED_BUCKET"]
+        .iter()
+        .chain(feed.get("FEED_REGION").map(|_| &"FEED_REGION"))
+        .map(|k| s(&feed, k).map(|v| text(k, &v)))
+        .collect::<Res<String>>()?;
+    let feed_secrets =
+        ["FEED_KEY_ID", "FEED_SECRET"].iter().map(|k| s(&feed, k).map(|v| text(k, &v))).collect::<Res<String>>()?;
+    let config = format!(
+        r#"# Written by `graftyard lifeboat bundle`. Holds the host's key and the feed token: keep it 0600.
+using Workerd = import "/workerd/workerd.capnp";
+const config :Workerd.Config = (
+  services = [
+    (name = "front", worker = .front),
+    (name = "member", worker = .member),
+    (name = "puller", worker = .puller),
+    (name = "state", disk = (path = {state}, writable = true)),
+    (name = "internet", network = (allow = ["public", "private"])),
+  ],
+  sockets = [ (name = "front", address = {listen}, {socket}, service = "front"){admin} ],
+);
+const member :Workerd.Worker = (
+{member_modules}{compat}  bindings = [
+    (name = "SITE_ID", text = "0"),
+{sites}    (name = "GRAFTYARD_LIFEBOAT", text = "1"),
+{anchor}    (name = "MEMBER", durableObjectNamespace = "Member"),
+  ],
+  durableObjectNamespaces = [ (className = "Member", uniqueKey = {member_key}, enableSql = true) ],
+  durableObjectStorage = (localDisk = "state"),
+);
+const front :Workerd.Worker = (
+{edge_modules}{compat}  bindings = [
+{sites}    (name = "GRAFTYARD_LIFEBOAT", text = "1"),
+{anchor}    (name = "GRAFTYARD_GENESIS_SIGNED", text = {genesis}),
+    (name = "HOST", text = {host}),
+    (name = "PLAN", text = "pro"),
+    (name = "SSH_OPTION", text = "off"),
+    (name = "MEMBER", durableObjectNamespace = (serviceName = "member", className = "Member")),
+    (name = "PULLER", durableObjectNamespace = (serviceName = "puller", className = "Puller")),
+  ],
+);
+const puller :Workerd.Worker = (
+{lifeboat_modules}{compat}  bindings = [
+{feed_vars}{feed_secrets}    (name = "EDGE_URL", text = {edge}),
+    (name = "LIFEBOAT_HOST", text = {host}),
+    (name = "LIFEBOAT_KEY", text = {seed}),
+    (name = "BLOB_URL", text = {blob}),
+    (name = "LIFEBOAT_RELEASE", text = {release}),
+{anchor}    (name = "MEMBER", durableObjectNamespace = (serviceName = "member", className = "Member")),
+    (name = "PULLER", durableObjectNamespace = "Puller"),
+  ],
+  durableObjectNamespaces = [ (className = "Puller", uniqueKey = {puller_key}) ],
+  durableObjectStorage = (localDisk = "state"),
+);
+"#,
+        state = capnp(&fs::canonicalize(a.state).map_err(|e| e.to_string())?.display().to_string()),
+        listen = capnp(a.listen),
+        member_modules = modules("site")?,
+        edge_modules = modules("edge")?,
+        lifeboat_modules = modules("lifeboat")?,
+        member_key = capnp(&format!("{unique}-member")),
+        puller_key = capnp(&format!("{unique}-puller")),
+        genesis = capnp(&s(&cfg, "genesis_signed")?),
+        host = capnp(&s(&cfg, "host")?),
+        edge = capnp(&s(&cfg, "edge")?),
+        seed = capnp(seed.trim()),
+        blob = capnp(a.blob),
+        release = capnp(a.release),
+        admin = a
+            .admin
+            .map(|x| format!(",\n    (name = \"admin\", address = {}, http = (), service = \"puller\")", capnp(x)))
+            .unwrap_or_default(),
+    );
+    write_secret(a.out, &config)?;
+    println!("wrote {} (0600): serve it with `workerd serve {} --experimental`", a.out.display(), a.out.display());
+    Ok(())
+}

@@ -9997,6 +9997,67 @@ same code as the sites, which is what `formats:enable` waiting on every lifeboat
 **ACME.** DNS-01 is built against a stub (`lifeboat/src/acme.rs`). Real ACME is owed until the operator creates the
 validation-zone account (`decisions/OPEN-QUESTIONS.md`, R50); BF-53 uses a local CA.
 
+### `lifeboat-bundle`: the lifeboat is one workerd process of the site, edge, and puller builds, with graft-blob beside it, 2026-11-24
+
+**Status.** M6-WP3's second branch, ruled by the lead on 2026-11-24 (D1, D2, and the three open points). Built on
+branch `lifeboat-bundle` from main `7b76a671`: `workers/lifeboat` (the puller), `lifeboat/src/feed.rs` and `pass.rs`,
+`lifeboat/src/bin/graft-blob.rs`, `cli/src/lifeboat.rs` (`init`, `enroll`, `remove`, `bundle`), the site's
+`lifeboat.rs` and `/import`, the edge's lifeboat front (`workers/edge/src/lifeboat.rs`), `graftyard_lookup`'s lifeboat
+binding, and `tests/lifeboatbed`. Not hosted.
+
+**Decision.**
+- **One process.** `graftyard lifeboat bundle` writes one workerd config of three Workers: the site build as `member`
+  (`GRAFTYARD_LIFEBOAT=1`, class `Member` on `localDisk` under the kept `unique_key`), the edge build as `front`, the
+  only public socket, in lifeboat mode, and the lifeboat build as `puller`, one Durable Object on its own alarm (every
+  10 s [guess]), since workerd has no cron trigger. `graft-blob` runs beside it, because a Worker has no `fsync`.
+- **Whole `Tokens` learners** (D1). The copy holds every `Tokens` shard whole, so the importer's chain check covers it.
+  The front authenticates a token only through its `LifeboatRead` row (`{"lifeboat": hash}` on its own shard), never a
+  `Stored` row, so a main-host token is no caller there.
+- **The front is the edge.** Every member call goes to the chain's one learner (`graftyard_lookup::set_lifeboat`), so
+  the edge's own read routes answer from the copy; every read there is the stale path, `dep` included. Writes, GraphQL
+  mutations, the export and release endpoints, token mints, and test routes answer 503. Every response carries
+  `X-Graftyard-Lifeboat-Lag`, and `/api/v3/meta` the status, from the puller.
+- **The trust anchor at init** (open point 2). `lifeboat init` writes the install's anchor and its signed genesis,
+  checked against install.toml's digest and the anchor, into `lifeboat.json`. The copy's `Release` learner verifies
+  every entry against that anchor; the front binds the genesis as an edge does (`GRAFTYARD_GENESIS_SIGNED`). The daily
+  `LifeboatDecoder` is bound to the group's last digest, which a 409 names.
+- **The puller's sources.** The feed over R2's S3 API (SigV4 by hand) while it moved within `FEED_STALE_MS`, else
+  signed tail pulls from the edge for every known chain. A copy that took fewer rows than it was sent, such as a
+  repository whose `Names` copy has no owner yet, is behind and the edge fills it; a feed that did not answer confirms
+  no current moment. A chain whose copy refuses rows halts, and the others go on.
+- **No snapshot install** (open point 1). The entries endpoint serves every chain from index 1: only the `Repo` family
+  archives, archive objects are deleted only by a purge, and a member that installed a snapshot gets its range from a
+  listing of the record's buckets (`export::archive_holding`). The hosted read that confirms it is owed before BF-53
+  (`decisions/OPEN-QUESTIONS.md`, R53).
+- **Clones on a third branch** (D2): `decisions/OPEN-QUESTIONS.md`, R52.
+
+**Why.** The bed runs the products' own builds, so what it shows is what a customer host runs: the site classes in
+workerd off Cloudflare (`lifeboat-learner`'s first flip does not hold), the edge's read routes over the copy, and gh
+against it. The puller in a Durable Object keeps its state in the same `localDisk` as the copy, so one directory is
+the host's whole state beside `lifeboat.json` and `lifeboat.key`.
+
+**What it beat.**
+- **Only `lifeboat:read` hashes from `Tokens`.** A filtered copy is no learner of the group, so the importer's chain
+  check could not hold it; and a hash of a 178-bit secret is no credential.
+- **A separate front Worker.** That is a second router of every read route to keep byte-identical to the edge's.
+- **The puller as a host process.** That is a second runtime and a second state directory to back up.
+
+**Evidence.** `tests/lifeboatbed/run.sh`, at $0 on the site, edge, and lifeboat builds: the genesis, a `Keys`, and a
+`ReleaseUploaded` through the release endpoint; `lifeboat init`; an owner, a repository, two stored packs, and a pull
+request; `lifeboat enroll`. Then the copy at the repository leader's commit with both packs in graft-blob; the main edge
+refuses the lifeboat token and the lifeboat refuses the PAT, both 401; REST and GraphQL writes and receive-pack 503;
+the `Release` group names the lifeboat's release with a fresh `seen`; with the feed stopped, a third push reaches the
+copy through tail and pack pulls, and no leader of any copied chain took a `/log_rows`; with the edge blocked, enrolled
+`gh pr list` reads the pull request from the lifeboat; a planted undecodable row halts its chain alone; 0 wasm traps.
+Natively: `a_stored_tokens_hash_is_no_lifeboat_credential` (site), `the_lifeboat_front_serves_reads_and_fetches_and_nothing_else`
+(edge), `lifeboat/tests/pass.rs`, and the SigV4 signature against an independent Python vector.
+
+**Flip.**
+- **A host-process puller** if a workerd version drops `localDisk` alarms, or the bundle's alarm misses a pass by
+  more than `FEED_STALE_MS` under load.
+- **Filtered `Tokens`** if a customer's security review refuses token metadata (owner, scopes, expiry) on the host.
+- **A snapshot install path** if R53's hosted read answers 410 for any chain.
+
 ### `lifeboat-revoke`: each lifeboat enroll revokes the developer's earlier lifeboat tokens, in Tokens 0x11.5, 2026-11-24
 
 **Status.** M6-WP3, ruled by the lead on 2026-11-24 (option (ii-a)). Built as its own commit on branch `lifeboat-pure`,

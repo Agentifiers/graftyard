@@ -39,7 +39,13 @@ pub async fn mint(c: &Ctx<'_>, req: &mut Request) -> Result<Reply> {
     let Some(host) = body["host"].as_str() else { return Ok(Reply::error(422, "host is required", "rest")) };
     let Some(anchor) = c.anchor else { return Ok(crate::api::unavailable("no trust anchor")) };
     Box::pin(graftyard_lookup::view::ensure(&c.bindings(), &anchor, Some(c.ctx))).await;
-    if !graftyard_lookup::view::with(|r| r.fold.lifeboats.contains_key(host)) {
+    let registered = || graftyard_lookup::view::with(|r| r.fold.lifeboats.contains_key(host));
+    // A host the cached view does not hold gets one more look after a refresh, as a signer does on the release
+    // endpoint: its `LifeboatAdd` may have committed since.
+    if !registered() {
+        Box::pin(graftyard_lookup::view::refresh_now(&c.bindings(), &anchor)).await;
+    }
+    if !registered() {
         return Ok(Reply::error(422, &format!("no lifeboat {host} is registered"), "rest"));
     }
     let Some(tok) = draw(me.0) else { return Ok(crate::api::unavailable("no token landed on the lifeboat shard")) };

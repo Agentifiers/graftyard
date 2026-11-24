@@ -231,6 +231,35 @@ enum LifeboatCmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Writes the bundle's workerd config (0600) from --dir's lifeboat.json, lifeboat.key, and feed.json.
+    Bundle {
+        #[arg(long)]
+        dir: PathBuf,
+        /// The release's site/, edge/, and lifeboat/ builds.
+        #[arg(long)]
+        builds: PathBuf,
+        /// The release the decoder reports: the SHA-256 of its release.json, hex.
+        #[arg(long)]
+        release: String,
+        #[arg(long, default_value = "*:443")]
+        listen: String,
+        /// The front's TLS private key and certificate chain (PEM); without them it serves plain HTTP.
+        #[arg(long, requires = "tls_chain")]
+        tls_key: Option<PathBuf>,
+        #[arg(long)]
+        tls_chain: Option<PathBuf>,
+        /// graft-blob's base URL.
+        #[arg(long, default_value = "http://127.0.0.1:8790")]
+        blob: String,
+        /// A localhost socket for the puller's /status and /pass, such as 127.0.0.1:8791.
+        #[arg(long)]
+        admin: Option<String>,
+        /// The copy's directory, fresh for each workerd version.
+        #[arg(long)]
+        state: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Drops a dead or retired lifeboat with a `LifeboatRemove` the customer key signs.
     Remove {
         #[arg(long)]
@@ -640,6 +669,19 @@ fn run(cli: Cli) -> Res<()> {
                 out: &out,
             })
         }
+        Cmd::Lifeboat {
+            cmd: LifeboatCmd::Bundle { dir, builds, release, listen, tls_key, tls_chain, blob, admin, state, out },
+        } => lifeboat::bundle(lifeboat::BundleArgs {
+            dir: &dir,
+            builds: &builds,
+            release: &release,
+            listen: &listen,
+            tls: tls_key.as_deref().zip(tls_chain.as_deref()),
+            blob: &blob,
+            admin: admin.as_deref(),
+            state: &state,
+            out: &out,
+        }),
         Cmd::Lifeboat { cmd: LifeboatCmd::Remove { host, key, edge } } => {
             lifeboat::remove(config, &host, &key, edge.as_deref())
         }

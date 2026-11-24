@@ -3723,7 +3723,15 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                     None => repo_by_id(c, id).await.map_err(Error::RustError)?.record,
                 }
             }
-            _ => c.system_record(chain).await.map_err(Error::RustError)?,
+            // A system chain; `"create": true` creates its group first, as `commit_system` does (an install with a real
+            // genesis creates only its own shards: `tests/lifeboatbed/seed.mjs`).
+            _ => {
+                let r = c.system_record(chain).await.map_err(Error::RustError)?;
+                if b["create"].as_bool() == Some(true) {
+                    graftyard_lookup::create(&c.bindings(), chain, &r, &json!({})).await.map_err(Error::RustError)?;
+                }
+                r
+            }
         };
         if path == "/_bed/identity_arrivals" {
             let since = qp("since").unwrap_or_else(|| "0".into());
