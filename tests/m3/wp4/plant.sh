@@ -2,18 +2,21 @@
 # M3-WP4's planted bugs: each is applied alone to a clean tree, the gate tests run, and the plant is reverted. A plant
 # passes the check only if at least one gate test fails on it. Run from the worktree root.
 set -u
-export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0
+export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$PWD/target/plants}
 # Each plant is undone with `git checkout`, which would also drop uncommitted work.
 if [ -n "$(git status --porcelain -- crates)" ]; then
 	echo "commit or stash changes under crates/ first" >&2
 	exit 1
 fi
-# Prints each failing test's name and every binary's result line.
+# Prints each failing test's name and every binary's result line; a run the timeout ended counts as caught
+# (README, "Planted bugs").
 run() {
-	cargo test -j 4 -q --no-fail-fast -p graftyard-identity --lib --test wp4 --test m3 --test wp3 2>&1 |
+	timeout -k 10 600 cargo test -j 4 -q --no-fail-fast -p graftyard-identity --lib --test wp4 --test m3 --test wp3 2>&1 |
 		grep -E "^    [a-z0-9_:]+$|test result" | sort -u
-	cargo test -j 4 -q --no-fail-fast -p graftyard-git --test push 2>&1 |
+	[ "${PIPESTATUS[0]}" = 124 ] && echo "    (timed out)"
+	timeout -k 10 600 cargo test -j 4 -q --no-fail-fast -p graftyard-git --test push 2>&1 |
 		grep -E "^    [a-z0-9_]+$|test result" | sort -u
+	[ "${PIPESTATUS[0]}" = 124 ] && echo "    (timed out)"
 }
 plant() {
 	local name=$1 file=$2 old=$3 new=$4
@@ -47,8 +50,8 @@ plant retired-key-honored crates/identity/src/stateless.rs \
 	'    if row.retired.is_some_and(|r| r < Timestamp(0)) {'
 # `graft-ops` caches the unwrapped key forever.
 plant key-cache-never-lapses crates/identity/src/stateless.rs \
-	'now.0.saturating_sub(at.0) < ms(SIGNING_KEY_CACHE));' \
-	'now.0.saturating_sub(at.0) < u64::MAX);'
+	'now.0.saturating_sub(at.0) < ms(SIGNING_KEY_CACHE))' \
+	'now.0.saturating_sub(at.0) < u64::MAX)'
 # Rotation signs with the new key the moment it is published, before every edge can verify it.
 plant rotation-signs-early crates/identity/src/stateless.rs \
 	'None if now.0 >= new.published.0 + ms(INSTALLATION_TOKEN_TTL) => RotationStep::SignWithNew,' \
@@ -83,5 +86,5 @@ plant not-before-unchecked crates/identity/src/access.rs \
 	'    if row.app != c.app {'
 # `authorize` honors the claims alone, not the installation's current selection.
 plant claims-not-intersected crates/identity/src/access.rs \
-	'    if !reaches(&row.repos) || !reaches(&c.repos) {' \
-	'    if !reaches(&c.repos) {'
+	'    (reaches(&row.repos) && reaches(&c.repos)).then_some(row)' \
+	'    reaches(&c.repos).then_some(row)'

@@ -4,5 +4,3 @@
 # Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
 tests/m3/close/plant.sh: cursor-chases-itself
 tests/m3/wp3/plant.sh: live-before-move
-tests/m3/wp4/plant.sh: key-cache-never-lapses
-tests/m3/wp4/plant.sh: claims-not-intersected
