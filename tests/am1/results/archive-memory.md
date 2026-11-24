@@ -177,6 +177,26 @@ reach memguard's 120 MiB around minute 8 of a load like this one, and the 128 MB
 continues. This row cannot say whether it levels off. A run longer than 300 s, or the per-invocation split taken over
 this row's leader logs, would settle it [inference].
 
+**The per-invocation read of lpB's leader logs (2026-11-24, $0).** `wasmMemMb` is `memory_size`, which only grows, so the
+climb is a series of new high-water marks, not memory still held. memSplit counts what a member keeps; a request's own
+buffers (its body, the JSON tree built from it, its answer) are counted nowhere. Joined with the leader's invocations
+from `raw/leaderlogs-lpB.json.xz` (start plus wall):
+- **To 61.3 MiB, the climb tracks how many requests the leader had open at once** [measured]. Across the 391 memguard
+  samples, leader MiB against the running peak of open invocations reads r 0.90. Open requests went from 16 before
+  load to 589 at 04:43:44Z, then 691 and 753 at 04:44:58Z, mostly `/commit` and `/outcome`. Each step of 2 MiB or more
+  in that stretch has 352 to 753 requests open in the 3 s before it.
+- **The last 20 MiB came at lower concurrency** [measured]. They came in three steps: 61.3 to 67.9 at 04:45:50, 67.9 to
+  74.9 at 04:46:41, and 74.9 to 81.6 at 04:48:39. Those windows had 189, 231 and 3 requests open, with single turns of
+  116 to 137 ms CPU (`/raft`, `/commit`, `/read`), or with `/entries?bytes=4000000` pages (from=1403..1790 and
+  1426..1790) just before the last step. A freshly fragmented heap needing a new 4 MB page would grow the memory this
+  way [inference; nothing logs the allocator].
+- **So a longer run does not climb at 15 MiB a minute by itself.** Memory rises when a new peak of open requests or a
+  new large buffer arrives, not with time. Whether a 600 s B0-33 load would reach 120 MiB depends on its peak open
+  count, which edge refusal's bound limits [inference].
+- **The counter memSplit lacks:** the request bytes the member holds open, meaning the sum of open request and answer
+  body lengths, with its peak since the last `/stats` reset, beside the open count's peak. It would show whether a new
+  high-water mark is concurrency or one large buffer. It is not built.
+
 **B0-33's lines on lpB, for the record** [measured, `raw/rows-lpB.status`; read under the 4040b083 rulings]:
 - human commit stage p99 2,641 ms (n 137, 19 over 2 s);
 - merge commit stage p99 2,406 ms (n 31, 4 over 2 s);
