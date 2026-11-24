@@ -10198,9 +10198,13 @@ with the next site day plus an edge day.
 - The leader's `Admitted.demoted` names the actor when `DEMOTE_PER_MIN` reclassed a newly queued command. The site
   counts it per actor in `/stats?summary=1`'s `demoted` (`{actors, writes, by}`), so B0-33's "user token admitted as
   `Agent`" line reads from the leader (`tests/fanout/demoted.py`).
-- A Human push that now carries an admission is staged on a hot group past `INLINE_MAX_HOT`, as DESIGN's "Commit and
-  read paths" already says for any class's push ("a push with an admission class"); `Member::commit` had read every
-  Human push as `push: false`. a1's Human pushes (20 KB) and merge pushes (5 KB) are under it.
+- **Behaviour change, accepted by the lead on 2026-11-24:** a plain user's Human push with an inline pack over
+  `INLINE_MAX_HOT` (64 KiB) on a hot group is now asked to stage its pack (`AdmitError::Stage`), at the leader
+  (`hot_stage`) and at the edge (`hot::stage_first`). Before, it carried no admission, `Member::commit` read every Human
+  push as `push: false`, and it stayed inline. This follows DESIGN's "Commit and read paths" for any push with an
+  admission class, and `crates/raft/tests/admission.rs`, `hot_is_read_from_the_log_so_a_new_leader_stages_at_once`,
+  expects a Human push to stage. Staging costs such a push a bucket place before its commit. a1's Human pushes (20 KB)
+  and merge pushes (5 KB) are under the limit.
 - Only the edge-to-member `/commit` body changes. No client reply does, so the GHES byte-diff row stands. A bytediff
   run on the edge build confirms that before it is hosted.
 
