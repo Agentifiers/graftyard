@@ -392,6 +392,73 @@ stable uncounted live heap on the leader); the climb levels off at 90.9 MiB; log
 heap-count's flips all hold. No 30-minute row (the lead, 2026-11-24). Next, at $0: a native leader sim's allocation
 census of the leader's uncounted live heap.
 
+## The census of the leader's uncounted heap (2026-11-24, $0)
+
+**Result: 19.4 MiB of the leader-only live heap is test-faults' BF-14 arrival ring, which product builds do not have.**
+- **The leader-only uncounted live heap after load is 27.5 MiB, not 22.** The 22 MiB came from comparing heapLive with
+  heapLive, and each follower's 5.9 MiB of dump caches is counted while the leader holds none.
+- **8.1 MiB is left after the ring.** About 3 MiB of it is the site host's leader-side `Stats` sample arrays
+  [inference, from their counts]. About 5 MiB is not attributed.
+- **Under load, the core's resolved tickets add up to about 3.9 MB,** which OUTCOME_KEEP frees.
+- **Nothing in the core grows with the stored log or the open-PR set.**
+
+**1. The arrival ring** [measured, hosted ln and a wasm32 allocation count]. Every B0-33 row since 2026-11-18 sets
+test-faults `/stats?arrival=mem` on every voter (`tests/fanout/README.md`, "B0-33 runs with `arrival=mem`"). In that
+mode, each `/commit` a member receives pushes one `serde_json::Value` row `{rid, at, role, fault, answer}` onto
+`Host::arrivals_mem`, which keeps up to `ARRIVALS_MEM_MAX` 40,000 rows and drops none until it is full
+(`workers/site/src/member.rs`, `receipt_fault`). On B0-33 only the leader receives `/commit`s, so only the leader's
+ring fills. memSplit does not count it, and archive-memory's "Why memSplit missed it" names it as a blind spot.
+- **Bytes a row.** 40,000 rows built as `receipt_fault` builds them, with a 26-character request id and the counting
+  allocator: 509 B a row on `wasm32-wasip1` (19.4 MiB in all), and 746 B native. It is a scratch count, not committed:
+  a `serde_json::Value` object of five keys, its `BTreeMap` nodes and the key and value strings.
+- **ln's shape.** The leader received 87,341 `/commit`s in the leader logs from 13:45:21Z (a1's own reset, 86,368 in the
+  load window). The leader's uncounted live heap less the followers' (heapLive minus every counted memSplit part, the
+  log, `open.bytes`, admitted, calls out, answers, held, dumps and memo) rose at 555 B a `/commit` until 35,250 logged
+  `/commit`s (about 13:51Z), then stayed flat to the end (a two-line fit). Fitting the ring itself, 509 B a row
+  filling until 40,000 with about 3,000 setup `/commit`s before the log window, leaves a flat 9.0 MiB, rms 2.2 MiB.
+  After load the difference is 27.5 MiB, of which 19.4 is the full ring.
+- **Why it plateaus.** The ring is full once 40,000 `/commit`s arrived, at about 13:51Z, which is where heapLive stopped
+  rising on ln's leader. It is not a leak: a full ring replaces its oldest row.
+- **What it changes.** Every heapLive and wasm memory figure from a B0-33 or `arrival=mem` row includes up to 19.4 MiB
+  on the leader that a product build does not hold. ln's leader at 39.8 MiB live after load would be about 20.4 on a
+  product build, beside each follower's 17.8 [inference: the ring's count is measured, the subtraction is not].
+
+**2. The core's resolved tickets** [measured, a native leader sim, scratch]. Three real members through
+`crates/git/tests/common` with 50 open PRs, then 1,216 commands admitted at one clock (38 batches of 32: agent pushes to
+new branches, and comments carrying an 18-login render without the owner's `Authz`, as `leader-render` sends a first
+send), about OUTCOME_KEEP at ln's rate. Each member's live bytes by dropping it:
+- right after the window: leader 5.98 MB, each follower 2.09 MB, so 3.9 MB leader-only;
+- after 20 s of ticks past OUTCOME_KEEP: OUTCOME_KEEP freed 3.58 MB, and the leader held 2.39 MB against 2.09.
+- So the core's leader-only bytes are `Lead::done` (an `Acked` outcome per ticket, priced by DONE_BYTES only on its
+  `unstored` bytes) plus about 0.3 MB of other `Lead` state. At ln's 81.5 commands a second, 15 s of tickets is about
+  1,220, which is the window above. It is within its bounds and frees itself.
+- After load the tickets are gone, so none of the 27.5 MiB is theirs.
+- Not covered natively, so it holds the 8.1 MiB left after the ring:
+  - The site host's leader-side `Stats` sample arrays, each under SAMPLES_MAX 200,000 `u32`s. a1's
+    `/stats?reset=1` at load start clears them. At ln's counts, `queue_ms` and its two splits are 73,364 samples each,
+    `commit_ms` 77,284 and `admitted_bytes` 77,286. With the call times, that is about 1.5 MB, and up to twice that in
+    `Vec` capacity, so about 3 MiB [inference].
+  - The leader-only `thread_local!`s: `merge_queue`, `prsync`, `hookseq`, `activity`, and `split`'s cache of at most
+    CACHE_BYTES 32 MiB.
+  - The test-faults trace ring is TRACE_MAX 60,000 × 48 B, 2.9 MB at most. tsave read 661,291 rows from the leader
+    over the row, and 52,883 and 79,245 from the followers. So the leader's ring was full, and the followers' rings were
+    nearly full or full, so at most a small part of it is leader-only.
+  - About 5 MiB stays unattributed.
+
+**3. What per-call cost tracks** (F115) [measured, native and ln's leader logs]. The native sim's per-command decide,
+apply and replicate time did not move with either candidate:
+- with 50 open PRs and 0 to 11,520 commands committed: 0.089 to 0.097 ms a command;
+- with 50, 1,000, 1,600 and 3,200 open PRs: 0.096, 0.088, 0.090 and 0.090 ms a command, and opening a PR 0.178 to
+  0.190 ms.
+- On ln the leader's CPU per entry did not climb either: 133 ms an entry in the first load minute, 96 to 219 in the
+  middle and 122 to 139 in the last five, at 142 to 208 entries a minute. What climbed is CPU per invocation, because
+  the invocations per entry fell from 132 to 41: fewer `/commit`s per entry as agent side writes were answered 429
+  (side and push ok went from 7,752 to 3,302 a minute against about 9,300 offered). `/entries` per call went from 5.4
+  to 29 ms because it went from 2.8 to 56 entries a call, while its CPU per entry fell from 1.94 to 0.52 ms.
+- So neither the stored log nor the open-PR set shows in the core's per-command cost natively, and the leader's per-entry
+  CPU on ln held level: the per-call climb is the same work spread over fewer, larger calls [inference: the native sim
+  has no SQLite and no host, so a storage-side cost of a larger log is not ruled out].
+
 ## Replay script
 
 The page-rule replay is a few lines over the row sizes; it is not committed. It took per-index sizes from `culag`'s
