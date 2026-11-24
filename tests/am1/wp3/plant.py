@@ -44,7 +44,7 @@ MUTANTS = [
      '    if t.state.is_final() {\n        return Some(Err(TaskErr::Final(t.state)));\n    }',
      '    if false {\n        return Some(Err(TaskErr::Final(t.state)));\n    }', BOTH),
     ('a derived final state is not recorded by the next command', T,
-     '        return Some(Ok((smallvec::smallvec![updated(id, now, actor)], out)));',
+     '        let mut evs = smallvec::smallvec![updated(id, now, actor)];\n        evs.extend(release(ctx, core, id, p));\n        return Some(Ok((evs, out)));',
      '        return Some(Ok((smallvec::smallvec![], out)));', BOTH),
     ('any writer may cancel any task', T,
      '                TaskActor::User(u) => t.requester == Some(u) || ctx.perm >= Some(RepoPermission::Admin),',
@@ -86,7 +86,7 @@ MUTANTS = [
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
-           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '..', 'target-am1')),
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
            CARGO_INCREMENTAL='0')
 only = sys.argv[1:] and set(int(x) for x in sys.argv[1:])
 for n, (name, path, old, new, args) in enumerate(MUTANTS):
@@ -98,14 +98,17 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
     assert src.count(old) == 1, (name, 'anchor not unique', src.count(old))
     open(f, 'w').write(src.replace(old, new, 1))
     try:
-        r = subprocess.run(['cargo', 'test', '-j', '3', *args, '--no-fail-fast'], cwd=ROOT, env=env,
-                           capture_output=True, text=True)
+        # A hang counts as caught (README, "Planted bugs").
+        r = subprocess.run(['timeout', '-k', '10', '600', 'cargo', 'test', '-j', '3', *args, '--no-fail-fast'],
+                           cwd=ROOT, env=env, capture_output=True, text=True)
         out = r.stdout + r.stderr
         failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')})
         if 'error[' in out and not failed:
             verdict = 'DID NOT COMPILE'
         else:
             verdict = 'CAUGHT' if r.returncode != 0 else 'MISSED'
+            if r.returncode == 124:
+                failed = ['(timed out)', *failed]
         print(f'{n:2} {verdict:8} {name}: {", ".join(failed)}', flush=True)
     finally:
         open(f, 'wb').write(orig)
