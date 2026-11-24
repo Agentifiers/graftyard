@@ -2,8 +2,9 @@
 // Every figure here comes from tests/RESULTS.md, tests/m2/results/m2-edge.md, tests/m2/results/m2-wp6.md,
 // tests/m3/results/m3-close.md, m3-hosted.md, m3-finish.md, m3-rows.md, m3-repos.md, m3-wp5.md, tests/am1/results/am1-wp2.md,
 // am1-wp5.md, am1-rest.md, lf4-rest.md, merge-p99.md, tests/m0/results/carried.md, carried-8.md, f67.md,
-// tests/m4/results/m4-wp1-hosted.md, m4-wp2.md, m4-wp3.md and design/DESIGN.md ("Scale"), as of
-// 2026-11-15. The Rust test count is a full `cargo test --workspace` run. Update this page when those files change.
+// tests/m4/results/m4-wp1-hosted.md, m4-wp2.md, m4-wp3.md, m4-wp4.md, tests/am1/results/b029-m3fmf.md, lm1-rows-m3f.md,
+// b033-closing.md, b033-h1-set.md, b034-mt19.md, tests/m5/results/m5-wp3.md to m5-wp6.md, m5-wp5-hosted.md and
+// design/DESIGN.md ("Scale"), as of 2026-11-24. The Rust test count is a full `cargo test --workspace` run. Update this page when those files change.
 import Page from '../layouts/Page.astro';
 import Film from '../components/Film.astro';
 import Table from '../components/Table.astro';
@@ -76,13 +77,32 @@ const actionsRows = [
   ['Hosted runners on Cloudflare Sandboxes, cap 20 per owner, from a cold start (BF-60)', '50 <code>ubuntu-latest</code> jobs for one owner', ok('50 of 50') + ' succeeded; at most 20 Sandboxes at once; none left 10 minutes after the last job; $0.59'],
   ['The Milestone 4 gate: a site taken down mid-matrix (BM-4)', 'A 2 by 4 matrix of 5-minute jobs', ok('8 of 8') + ' legs succeeded, each matched, run and finished exactly once'],
 ];
+const agentRows = [
+  ['500 agents pushing distinct refs to one repository, 10 merges a minute, 200 API reads/s (B0-29)', '3 ten-minute runs', ok('p99 756 ms') + ' commit and ' + ok('1,663 ms') + ' merge on the median run; every API read served; 0 leader changes'],
+  ['A burst of 500 agent pushes of 256 KiB in one second, with merges queued (B0-32)', '1 run, a 28.5 ms leader host', ok('495 of 500') + ' acknowledged within 5 s or refused as full; 23 of 24 merges within 2 s; met at 90%'],
+  ['5,000 agents on one repository, plus people pushing and merging (B0-33)', '3 five-minute runs, then a closing run', ok('115.3') + ' agent commands/s admitted against 110; human commit p99 ' + ok('1,372 ms') + ' against 3,912; 0 leader changes'],
+  ['A user token writing like an agent, in the same load (B0-33)', 'The closing run', ok('Demoted') + ' to the agent lane on 265 writes; none of the 5 human writers demoted'],
+  ['One 5 GB repository under the fleet, a warm site killed, then a hostile owner (B0-34)', '1 run', ok('100%') + ' of clones started within 5 s in both phases; human push p99 2,573 ms against 3 s; 0 Cloudflare API calls'],
+  ['500 open pull requests, the base moving 10 times a minute, 500 clients polling (B0-35)', '3 ten-minute runs', 'Actions dispatch ' + ok('p99 7.2 s') + ' on the median run against 10 s; test merges within budget; 0 computes from list fields'],
+];
+const releaseRows = [
+  ['A rollback to a version that can\'t read an enabled format (BF-7)', 'The customer\'s abort and the pre-signed rollback', ok('Both refused') + ' and both paged; no traffic moved'],
+  ['A bad edge with the Cloudflare API blocked (BF-43)', '99,936 requests sampled', ok('Pinned in 5.6 s') + '; 0 requests off the last good version until the next roll'],
+  ['<code>graft-ops</code> killed at every step of a rollout (BF-39)', '134 kills across two site days and an edge roll', ok('Every step once') + ', in order, with one finish per intent'],
+  ['A release roll end to end, then the vault upgraded (BF-47)', 'Three site days, the Workflows script, edge and ops', ok('In order') + '; the vault upgraded under its own token; an install token refused with 0 requests made'],
+  ['The vault pulls every export endpoint, then its token is revoked (BF-49)', '100 probes after the revoke', ok('Refused within 8.7 s') + ' against a 10 s cache'],
+  ['Deploy, read and mint keys rotated under live traffic (BF-46)', '6 rotations, 235 mints', ok('0 failed calls') + '; no new script version'],
+  ['A deliberately unreadable format sent to one site (BM-5)', '3 repositories homed there', ok('Nothing committed') + '; the site handed its groups to another, and pushes landed there'],
+  ['The vendor\'s token revoked mid-roll (BM-5)', 'Halt, remove the vendor key, abort', ok('Every site back') + ' on its earlier version in 34 s; a vendor-signed intent refused'],
+];
 const latencyRows = [
   ['One cross-region round, enam to weur, under 100 commands/s', 'p50 107 to 189 ms', 'p99 283 to 473 ms', 'B0-01, Milestone 0'],
   ['Idle ping, leader to the weur member', 'p50 135 ms', 'p99 151 to 216 ms', 'B0-01, Milestone 0'],
   ['Commit, one entry in flight, 15 runs', 'p50 172 to 370 ms', 'p99 399 to 690 ms', 'B0-01, Milestone 0'],
   ['Commit on the production Rust host, 6 runs at 100 commands/s', 'p50 165 to 280 ms', ok('p99 244 to 377 ms'), 'B0-01 rerun, 2026-11-11'],
   ['Group commit on the production Rust host, 16 runs at 300 and 330 commands/s', ok('16 of 16') + ' under 600 ms', ok('p99 249 to 579 ms'), 'B0-02, 2026-11-13'],
-  ['A pull request merge while 500 agents push to the same repository, 3 ten-minute runs', 'p50 838 to 944 ms', ok('p99 1,208 to 1,571 ms'), 'B0-29 merge line, 2 s'],
+  ['Commit while 500 agents push to the same repository, 3 ten-minute runs', 'p50 344 to 432 ms', ok('p99 651 to 797 ms'), 'B0-29 commit line, 800 ms'],
+  ['A pull request merge while 500 agents push to the same repository, the same 3 runs', 'p50 782 to 933 ms', ok('p99 1,254 to 1,664 ms'), 'B0-29 merge line, 2 s'],
   ['Learner reads, 16 learners at 1,000 reads/s each, Milestone 0', '16,000 reads/s, 0 failed', 'p99 683 to 743 ms', 'B0-18'],
   ['The same on the production host, under 10 pushes/s, 6 runs', '0 failed reads', 'worst learner p99 560 to 853 ms', 'B0-18 rerun, BM-3'],
   ['Merge on a newly elected leader, client in its region, 300 samples', '0 over 2 s', 'p99 1.36 s', 'BM-2'],
@@ -99,7 +119,7 @@ const latencyRows = [
       <div class="doc-head">
         <p class="eyebrow">Evidence overview</p>
         <h1 id="ev-h">What we tested, and what it showed</h1>
-        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 18 November 2026, failures included.</p>
+        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 24 November 2026, failures included.</p>
         <p class="more"><a class="link" href="/evidence/all/">Every check, benchmark and baseline, in full<Fragment set:html={ARROW} /></a></p>
       </div>
       <ul class="kpis">
@@ -177,6 +197,30 @@ const latencyRows = [
     </div>
   </section>
 
+  <section class="section" id="agents-scale" aria-labelledby="agents-scale-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Agents at scale</p>
+        <h2 id="agents-scale-h">Hundreds of agents on one repository, people still first</h2>
+        <p>The AM1 gate runs an agent fleet against a single repository on a hosted test install, then checks that people's commits and merges stay fast and the leader never changes.</p>
+      </div>
+      <Table head={['Check', 'Runs', 'Result']} rows={agentRows} />
+      <p class="note">On hosted test installs, 18 to 24 November 2026. A row with three runs is judged on its median run. B0-32, B0-33 and B0-34 are met on the lead's rulings, which the operator accepted by closing AM1 on 24 November.</p>
+    </div>
+  </section>
+
+  <section class="section" id="release" aria-labelledby="release-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Release control</p>
+        <h2 id="release-h">A bad release always has a way back</h2>
+        <p>New versions roll out one site a day under releases the customer signs. Each check breaks a rollout on purpose, then reads back where every site ended up.</p>
+      </div>
+      <Table head={['Check', 'Runs', 'Result']} rows={releaseRows} />
+      <p class="note">On the hosted test installs <code>graft-m4a</code> and <code>graft-m3f</code>, 22 to 24 November 2026. The vault ran on the runner account as a stand-in. Milestone 5's gate has one clause left, a bad <code>graft-ops</code> swapping back with the API blocked.</p>
+    </div>
+  </section>
+
   <section class="section" id="identity aria-labelledby="identity-h">
     <div class="wrap">
       <div class="sec-head">
@@ -209,7 +253,7 @@ const latencyRows = [
         </div>
         <div class="prose span-7 start-6">
           <ul>
-            <li>SSH git sessions held at 99.59% to 99.89% through container kills, between the 99% and 99.9% lines. SSH is opt-in, and its gate is carried to Milestone 6.</li>
+            <li>The retired SSH path through Cloudflare Tunnel held 99.59% to 99.89% of sessions through container kills, between the 99% and 99.9% lines. SSH now runs through Spectrum, where stock clone and push pass. Its day-long kill test has not run yet and is carried to Milestone 6.</li>
             <li>In Milestones 0 and 1, one planted bug of 85 went uncaught: a resumed leader sending entries before they were durable. Later rounds catch every plant, though some needed a new test after a first run missed one; each results file records which.</li>
           </ul>
           <p class="muted">Sources: <a href="https://github.com/Agentifiers/graftyard/blob/main/tests/RESULTS.md"><code>tests/RESULTS.md</code></a>, the results files it cites, and <code>tests/m2</code>, <code>tests/m3</code>, <code>tests/m4</code> and <code>tests/am1</code>'s results, in the <a href="https://github.com/Agentifiers/graftyard">Graftyard repository</a> on GitHub. <a href="/evidence/all/">All results</a> lists every row of the ledger and every gate.</p>
