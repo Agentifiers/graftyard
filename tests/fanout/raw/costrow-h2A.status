@@ -1,0 +1,29 @@
+edge: graft-m2b-edge serves e35640fd at 100% (rev dc880f1d), as tests/am1/raw/runs/fanout-h1b-edge.log deployed
+2026-11-24T07:22:41Z meter (account, run) 33.81 0.01 before b033, expected +$2.5, stop $170 account, $10 run
+2026-11-24T07:23:43Z meter (account, run) 33.82 0.01
+2026-11-24T07:24:44Z meter (account, run) 33.86 0.02
+2026-11-24T07:25:46Z meter (account, run) 33.91 0.03
+2026-11-24T07:26:48Z meter (account, run) 33.93 0.03
+2026-11-24T07:27:49Z meter (account, run) 34.01 0.06
+2026-11-24T07:28:51Z meter (account, run) 34.05 0.08
+2026-11-24T07:29:53Z meter (account, run) 34.2 0.2
+2026-11-24T07:30:55Z meter (account, run) 34.35 0.3
+2026-11-24T07:32:00Z meter (account, run) 34.47 0.39
+2026-11-24T07:33:05Z meter (account, run) 34.66 0.55
+2026-11-24T07:34:07Z meter (account, run) 35.19 1.08
+2026-11-24T07:35:10Z meter (account, run) 35.75 1.64
+2026-11-24T07:36:12Z meter (account, run) 36.33 2.2
+2026-11-24T07:37:14Z meter (account, run) 36.88 2.74
+2026-11-24T07:38:17Z meter (account, run) 37.31 3.17
+2026-11-24T07:39:36Z meter (account, run) 37.39 3.23
+2026-11-24T07:40:39Z meter (account, run) 37.41 3.24
+2026-11-24T07:41:42Z meter (account, run) 37.43 3.24
+2026-11-24T07:42:43Z meter (account, run) 37.44 3.24
+2026-11-24T07:43:47Z meter (account, run) 37.45 3.24
+2026-11-24T07:44:12Z b033 ended: reask-read top-ups (Trace::TopUp rows on the leader): 207
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-24T07:44:28Z sweep exit 0 (kept: none)
+2026-11-24T07:44:29Z meter (account, run) 37.46 3.24 after b033 and the sweep
+DONE

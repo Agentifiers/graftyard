@@ -9191,8 +9191,18 @@ tool-overhead p50 run on the second hosted day.
 push log:
 1. **A Human, Bot or MergeQueue write answered `full` by the edge.** It must be 0. This one is an invariant, not a
    90% gate.
-2. **Over-refusal.** In more than 10% of 10 s windows with edge refusals, the leader's own cuts show an agent wait
-   under half the bound.
+2. **Over-refusal.** In more than 10% of 10 s windows with edge refusals, the edge refused writes that would have
+   committed in time. As the lead ruled on 2026-11-24 from B0-33 h1A, a refusing window counts only when its refused
+   writes' budget left at the check (p50) exceeds the leader's agent wait in that window: its `expected_wait`, the
+   agent queue at the cut drain plus that window's own `round_ms` (`tests/fanout/flip2.py`). The first reading, an
+   agent wait under half the bound, flipped on every refusing run while each refusal would have expired anyway: on
+   h1A the 856 advert refusals had a p50 budget left of 51 ms against a leader wait of 236 ms, and 3,225 of 4,211 fulls
+   were `bound_at_send`. Readings on dc880f1d (`tests/am1/results/b033-h1-set.md`):
+   - **h1A:** 0 of 31 refusing windows (63 of 869 refusals) on each window's own round. At the run's p50 round,
+     4 of 31 (13%).
+   - **h2A:** 3 of 30 (10.0%), 170 of 564 refusals. This is at the line, not over it, so it does not flip.
+   - **h3A:** 3 of 31 (9.7%), 77 of 968 refusals.
+   - The first reading gave 31 of 31, 29 of 30 and 31 of 31.
 3. **Starvation.** The edge refuses while the leader's agent lane is empty (cuts ending `Empty` with fewer than
    AGENT_CMDS_ENTRY agent commands taken), or agent commands admitted a second fall below the drain measured before
    refusing began.
