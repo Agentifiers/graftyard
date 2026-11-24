@@ -24,7 +24,7 @@
 //!   deleted only `RESTORE_WINDOW` after the install first answered 404 for it. A 410 (marked and in no bucket) is a
 //!   loss at the install, never a deletion.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use graftyard_git::export::{self, ExportObject, FeedPosition, FeedState};
 use graftyard_git::pack::{PackId, PackRef};
@@ -98,6 +98,45 @@ pub enum Copy {
     Snapshot { chain: ChainId, at: Index },
 }
 
+/// Whose turn a copy waits in (`decisions/DECISIONS.md`, "`vault-turns`"): a pack's network, or a snapshot's chain,
+/// since the state holds no chain-to-network map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Turn {
+    Network(NetworkId),
+    Chain(ChainId),
+}
+
+impl Copy {
+    pub fn turn(&self) -> Turn {
+        match self {
+            Copy::Pack { network, .. } => Turn::Network(*network),
+            Copy::Snapshot { chain, .. } => Turn::Chain(*chain),
+        }
+    }
+}
+
+/// The owed copies one pass takes: one per turn, round and round, starting with the first turn after `after` (where
+/// the last pass stopped), at most `n`. So one network's backlog delays another's copy by at most
+/// ceil(turns / `COPIES_PER_PASS`) passes, not by the backlog.
+fn in_turns(copies: &BTreeSet<Copy>, after: Option<Turn>, n: usize) -> Vec<Copy> {
+    let mut turns: BTreeMap<Turn, VecDeque<&Copy>> = BTreeMap::new();
+    for c in copies {
+        turns.entry(c.turn()).or_default().push_back(c);
+    }
+    let (later, earlier): (Vec<_>, Vec<_>) = turns.into_iter().partition(|(t, _)| after.is_some_and(|a| *t > a));
+    let mut queue: VecDeque<VecDeque<&Copy>> = later.into_iter().chain(earlier).map(|(_, q)| q).collect();
+    let mut out = Vec::new();
+    while out.len() < n {
+        let Some(mut q) = queue.pop_front() else { break };
+        out.extend(q.pop_front().cloned());
+        if !q.is_empty() {
+            queue.push_back(q);
+        }
+    }
+    out
+}
+
 /// A chain whose first carry in the feed started past index 1: entries `next..until` are still to fill.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Backfill {
@@ -121,6 +160,9 @@ pub struct VaultState {
     pub feed: FeedState,
     pub backfill: BTreeMap<ChainId, Backfill>,
     pub copies: BTreeSet<Copy>,
+    /// The turn of the last copy a pass tried: the next pass starts after it (`in_turns`).
+    #[serde(default)]
+    pub copy_turn: Option<Turn>,
     /// GC candidates by pack key (`pack_key`).
     pub gc: BTreeMap<String, Gc>,
     /// Deleted repositories and their `retain_until`, until their packs join `gc`.
@@ -656,13 +698,12 @@ pub async fn pass<H: Host>(h: &H) -> Result<(Report, VaultState), String> {
         }
     }
 
-    // Owed copies.
-    let owed: Vec<Copy> = st.copies.iter().cloned().collect();
-    for (n, c) in owed.into_iter().enumerate() {
-        if n == COPIES_PER_PASS {
-            r.more = true;
-            break;
-        }
+    // Owed copies, a turn at a time.
+    let turn_before = st.copy_turn;
+    let owed = in_turns(&st.copies, st.copy_turn, COPIES_PER_PASS);
+    r.more |= owed.len() < st.copies.len();
+    for c in owed {
+        st.copy_turn = Some(c.turn());
         let got = match &c {
             Copy::Pack { network, id, checksum, bytes } => h.copy_pack(*network, *id, *checksum, *bytes).await,
             Copy::Snapshot { chain, at } => h.copy_snapshot(*chain, *at).await,
@@ -733,7 +774,8 @@ pub async fn pass<H: Host>(h: &H) -> Result<(Report, VaultState), String> {
         }
     }
 
-    if r.backfilled + r.packs + r.snapshots + r.existed + r.missed + r.probes + r.deleted > 0
+    if (r.backfilled + r.packs + r.snapshots + r.existed + r.missed + r.probes + r.deleted > 0
+        || st.copy_turn != turn_before)
         && h.put_state(&st.encode(), etag.as_deref()).await?.is_none()
     {
         r.lost = true;

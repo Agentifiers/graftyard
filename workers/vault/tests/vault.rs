@@ -151,6 +151,8 @@ struct Vault<'a> {
     race: Cell<bool>,
     refused_deletes: Cell<u32>,
     probes: RefCell<Vec<String>>,
+    /// The network of each pack copy tried, in order.
+    copied: RefCell<Vec<NetworkId>>,
 }
 
 impl<'a> Vault<'a> {
@@ -166,6 +168,7 @@ impl<'a> Vault<'a> {
             race: Cell::new(false),
             refused_deletes: Cell::new(0),
             probes: RefCell::default(),
+            copied: RefCell::default(),
         }
     }
 
@@ -219,6 +222,7 @@ impl Host for Vault<'_> {
         })
     }
     async fn copy_pack(&self, network: NetworkId, id: PackId, checksum: Digest, bytes: u64) -> Result<Copied, String> {
+        self.copied.borrow_mut().push(network);
         if self.revoked_packs.get() {
             return Ok(Copied::Status(401));
         }
@@ -557,6 +561,53 @@ fn a_refused_token_stops_the_pass_and_moves_nothing() {
     v.revoked.set(false);
     v.drain();
     assert_eq!(kept_from_1(&v, &[])[&ChainId::Release].len(), 7);
+}
+
+/// One network's backlog does not hold back another's copies (`vault-turns`): owed copies go a network at a time, and
+/// each pass starts after the network where the last one stopped. Network 1 owes 100 packs and networks 2 to 60 one
+/// each: all of 2 to 60 are copied in 2 passes, where taking copies in key order would need 4.
+#[test]
+fn one_network_s_backlog_waits_its_turn_and_the_next_pass_starts_after_the_last() {
+    let inst = RefCell::new(Install::default());
+    let v = Vault::new(&inst);
+    let pack = |net: i64, n: u128| PackId(Ulid((u128::from(T0) << 80) | (net as u128) << 16 | n));
+    let bytes = |net: i64, n: u128| format!("PACK {n} of network {net}").into_bytes();
+    {
+        let mut i = inst.borrow_mut();
+        for net in 1..=60 {
+            let owed = if net == 1 { 100 } else { 1 };
+            let events = (1..=owed)
+                .map(|n| {
+                    i.packs.insert(pack(net, n), (NetworkId(DbId(net)), bytes(net, n)));
+                    push(n as u64, Some(stored(pack(net, n), &bytes(net, n))))
+                })
+                .collect();
+            i.add(repo(net), entry(1, T0, events));
+        }
+        i.feed(T0);
+    }
+    v.now.set(T0 + 30_000);
+    let held = |net: i64| v.keys(&format!("pack/{net}/")).len();
+    let nets = |from: usize| v.copied.borrow()[from..].iter().map(|n| n.0.0).collect::<Vec<i64>>();
+
+    let one = v.run();
+    assert!(one.more);
+    assert_eq!(nets(0), (1..=40).collect::<Vec<_>>(), "one copy per network, network 1 once");
+    assert_eq!(v.state().copy_turn, Some(graftyard_vault::Turn::Network(NetworkId(DbId(40)))));
+
+    let two = v.run();
+    assert!(two.more);
+    let mut want: Vec<i64> = (41..=60).collect();
+    want.extend([1; 20]);
+    assert_eq!(nets(40), want, "pass 2 starts after network 40, then network 1 takes the rest of the pass");
+    for net in 2..=60 {
+        assert_eq!(held(net), 1, "network {net} copied within 2 passes");
+    }
+    assert_eq!(held(1), 21);
+
+    v.drain();
+    assert_eq!(held(1), 100);
+    assert!(v.state().copies.is_empty());
 }
 
 /// A pack the install deleted and then served again (a restore put it back) stays: the vault probes it again before

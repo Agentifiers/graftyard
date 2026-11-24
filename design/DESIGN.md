@@ -1660,7 +1660,7 @@ Components are `chain groups` (voters and learners of every group), `pack bucket
 | vault | control-plane | None | It needs only HTTPS to the install's edge and its own R2 |
 | vault | bad-deploy | A bad vault release | `graftyard vault upgrade` deploys only a release whose signature verifies, under the vault account's own token. Bucket lock rules stop deletes and overwrites for 35 days, so a bad release cannot destroy the copy |
 | vault | bad-config | Wrong scope exported | The export is install-scoped, signed by the customer key, and covers every `ChainId`. The vault alarms on a missed copy, an undecodable row, or feed lag over 5 min [guess]; the install cannot read the vault's cursors. Managed tenants' own exports use per-org tokens |
-| vault | noisy-tenant | One huge org saturating the pull | Pull bandwidth caps per org |
+| vault | noisy-tenant | One huge org saturating the pull | Each pass takes owed pack and snapshot copies one network (a snapshot: one chain) at a time, starting after the one where the last pass stopped, so one network's backlog delays another's copy by at most ⌈networks/40⌉ passes [inference] (`decisions/DECISIONS.md`, `vault-turns`). The export routes have no per-org cap; one is not built |
 | lifeboat | instance | The lifeboat host | Two lifeboat hosts per install recommended, each with its own copy and key. A dead or retired host is removed by `LifeboatRemove`, and one silent for 7 days alarms |
 | lifeboat | data-center | The customer's site | As instance |
 | lifeboat | region | The customer's region | As instance |
