@@ -2,18 +2,21 @@
 # M3-WP3's planted bugs: each is applied alone to a clean tree, the gate tests run, and the plant is reverted. A plant
 # passes the check only if at least one gate test fails on it. Run from the worktree root.
 set -u
-export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0
+export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$PWD/target/plants}
 # Each plant is undone with `git checkout`, which would also drop uncommitted work.
 if [ -n "$(git status --porcelain -- crates)" ]; then
 	echo "commit or stash changes under crates/ first" >&2
 	exit 1
 fi
-# Prints each failing test's name and every binary's result line.
+# Prints each failing test's name and every binary's result line; a run the timeout ended counts as caught
+# (README, "Planted bugs").
 run() {
-	cargo test -j 4 -q --no-fail-fast -p graftyard-identity --test wp3 --test m3 --test access 2>&1 |
+	timeout -k 10 600 cargo test -j 4 -q --no-fail-fast -p graftyard-identity --test wp3 --test m3 --test access 2>&1 |
 		grep -E "^    [a-z0-9_]+$|test result" | sort -u
-	cargo test -j 4 -q --no-fail-fast -p graftyard-git --test push --test issues 2>&1 |
+	[ "${PIPESTATUS[0]}" = 124 ] && echo "    (timed out)"
+	timeout -k 10 600 cargo test -j 4 -q --no-fail-fast -p graftyard-git --test push --test issues 2>&1 |
 		grep -E "^    [a-z0-9_]+$|test result" | sort -u
+	[ "${PIPESTATUS[0]}" = 124 ] && echo "    (timed out)"
 }
 plant() {
 	local name=$1 file=$2 old=$3 new=$4
@@ -49,7 +52,7 @@ plant stale-owner-in-deps crates/git/src/repo.rs \
 	'        d.extend(authz_chains(fold.owner, fold.authz_enterprise()));'
 # BF-30: the transfer's names go live before the group moved, so a route through the new owner misses the group.
 plant live-before-move crates/identity/src/finish.rs \
-	'    if !same_place(v.from_placement, v.to_placement) && !same_place(v.group_at, v.to_placement) {' \
+	'    if !same_place(v.from_placement, v.to_placement) && !group_at(v.group, v.to_placement) {' \
 	'    if false {'
 # BF-33: a used code is spent again, so one code yields two tokens.
 plant code-redeemable-twice crates/identity/src/tokens.rs \
