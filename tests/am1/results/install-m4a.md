@@ -199,6 +199,22 @@ After a row, remove every Cron Trigger first (`PUT …/schedules` with `[]` on `
 
 A mid-day `graft-ops` redeploy that changes a step's dwell (a test-ops change, same build, only `STEP_DWELL_MS` or `OPS_STEP_MIN_ENTRIES`) waits on the prior step's commit, not on a guess. To give step k a long dwell, deploy it as soon as step k − 1's `IntentStep` commits, then confirm in Workers Logs that the next run is on the new version and still waits on step k before its old dwell could end. A step's dwell runs from when its split took effect, so the old config's short dwell can end first: in gate check row 3 the 10% step committed on the 60 s dwell 18 s before the 12-minute config served a run, so its long dwell fell on 50%. Log each redeploy with its time, version id and vars, and stop the row if a run re-executes a committed step or the cron stops.
 
+## Before the next `FrontRoll` or `McpRoll` here
+
+AM2-WP3's day d1 (2026-11-24, site-day log above) left the `Release` group recording `graft-m4a-front` and
+`graft-m4a-mcp` at release w3 (`8ee79012…`): `rolled` names Front and Mcp at w3, so w3 is N for the next roll of each
+(for Mcp, the next `McpRoll` keeps w3 and its pre-signed undo is an `McpPointer` to w3). Both scripts were deleted at
+teardown, so w3's versions (front `57581ba4`, mcp `016538f0`) and the earlier ones no longer exist. From the code (`crates/release/src/ops.rs`, `next_code` and `steps`;
+`workers/ops/src/exec.rs`, `tagged` and `upload`) [inference, not run]:
+
+- A bundle with `front/` or `mcp/` cannot get its `ReleaseUploaded` until the script it carries exists again and
+  `graft-ops`'s `OPS_SCRIPTS` names it (the parked `ac4cd9a5` names only the sites), because `graft-ops` uploads
+  each script's version into the script. Redeploy them first (`workers/front/deploy.mjs` and
+  `workers/mcp/deploy.mjs`, as `tests/am2/hosted/wp3-day.sh` does).
+- Even then, the next `FrontRoll`'s and `McpRoll`'s 1% split names w3's deleted versions as N, so its first deploy
+  fails, and an undo or `Abort` to w3 would fail the same way. Before either roll runs here, the operator
+  decides how N is replaced. Bundles without `front/` and `mcp/` skip both rolls and are unaffected.
+
 ## Proof it works
 
 - `install` committed the genesis at `Release` index 3, through the edge's first, test-faults build. All 3,072 `Tokens` groups exist (row above).
