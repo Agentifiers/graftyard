@@ -5,7 +5,7 @@ byte. Each line prints CAUGHT with the failing tests, MISSED, or DID NOT COMPILE
     python3 tests/m4/wp1/plant.py          # every mutant
     python3 tests/m4/wp1/plant.py 0 3      # by number
 
-`$CARGO_TARGET_DIR` defaults to `../target-m4a`.
+`$CARGO_TARGET_DIR` defaults to `target/plants`.
 """
 import os, subprocess, sys
 
@@ -39,8 +39,8 @@ MUTANTS = [
      '            Some(((c, i), _)) if *c == chain => *i,', '            Some(((c, _), _)) if *c == chain && false => Index(0),',
      GIT),
     ('a rebuilt store starts past the committed read (replay_from ignored)', S,
-     '        None => Index(cursor.replay_from.0.saturating_sub(1).min(cursor.read.0)),',
-     '        None => cursor.read,', GIT),
+     '        None => from_replay,\n    }\n}',
+     '        None => cursor.read,\n    }\n}', GIT),
     ('an unreported attempt is never re-sent', S,
      '            if q.running.is_some_and(|r| now.0 >= r.started.0 + RESEND_AFTER_MS) {',
      '            if q.running.is_some_and(|r| now.0 >= r.started.0 + RESEND_AFTER_MS * 1_000_000) {', BOTH),
@@ -118,7 +118,7 @@ MUTANTS = [
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
-           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '..', 'target-m4a')),
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
            CARGO_INCREMENTAL='0')
 only = sys.argv[1:] and set(int(x) for x in sys.argv[1:])
 for n, (name, path, old, new, args) in enumerate(MUTANTS):
@@ -130,8 +130,9 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
     assert src.count(old) == 1, (name, 'anchor not unique', src.count(old))
     open(f, 'w').write(src.replace(old, new, 1))
     try:
-        r = subprocess.run(['cargo', 'test', '-j', '3', *args, '--no-fail-fast'], cwd=ROOT, env=env,
-                           capture_output=True, text=True)
+        # A hang counts as caught (README, "Planted bugs").
+        r = subprocess.run(['timeout', '-k', '10', '600', 'cargo', 'test', '-j', '3', *args, '--no-fail-fast'],
+                           cwd=ROOT, env=env, capture_output=True, text=True)
         out = r.stdout + r.stderr
         failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')})
         if ('error[' in out or out.lstrip().startswith('error:') or '\nerror: ' in out) and not failed:
@@ -139,6 +140,8 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
             verdict = 'DID NOT COMPILE'
         else:
             verdict = 'CAUGHT' if r.returncode != 0 else 'MISSED'
+            if r.returncode == 124:
+                failed = ['(timed out)', *failed]
         print(f'{n:2} {verdict:8} {name}: {", ".join(failed)}', flush=True)
     finally:
         open(f, 'wb').write(orig)
