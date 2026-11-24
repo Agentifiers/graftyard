@@ -1,0 +1,46 @@
+edge: graft-m2b-edge serves 31854782 at 100% (rev e77c3a08), as tests/am1/raw/runs/fanout-lv-edge.log deployed
+2026-11-24T13:39:10Z meter (account, run) 67.16 0.01 before b033, expected +$8.5, stop $170 account, $10 run
+2026-11-24T13:40:14Z meter (account, run) 67.23 0.01
+2026-11-24T13:41:16Z meter (account, run) 67.31 0.02
+2026-11-24T13:42:18Z meter (account, run) 67.4 0.04
+2026-11-24T13:43:21Z meter (account, run) 67.51 0.07
+2026-11-24T13:44:23Z meter (account, run) 67.66 0.15
+2026-11-24T13:45:26Z meter (account, run) 67.87 0.27
+2026-11-24T13:46:29Z meter (account, run) 68.08 0.39
+2026-11-24T13:47:31Z meter (account, run) 68.38 0.58
+2026-11-24T13:48:33Z meter (account, run) 69.04 1.14
+2026-11-24T13:49:36Z meter (account, run) 69.49 1.49
+2026-11-24T13:50:39Z meter (account, run) 70.07 1.98
+2026-11-24T13:51:41Z meter (account, run) 70.52 2.34
+2026-11-24T13:52:43Z meter (account, run) 70.98 2.7
+2026-11-24T13:53:46Z meter (account, run) 71.49 3.11
+2026-11-24T13:54:48Z meter (account, run) 71.96 3.46
+2026-11-24T13:55:51Z meter (account, run) 72.43 3.84
+2026-11-24T13:56:53Z meter (account, run) 72.93 4.24
+2026-11-24T13:57:55Z meter (account, run) 73.36 4.58
+2026-11-24T13:58:57Z meter (account, run) 73.79 4.92
+2026-11-24T14:00:00Z meter (account, run) 74.26 5.33
+2026-11-24T14:01:05Z meter (account, run) 74.69 5.63
+2026-11-24T14:02:07Z meter (account, run) 75.16 6.01
+2026-11-24T14:03:10Z meter (account, run) 75.39 6.16
+2026-11-24T14:04:13Z meter (account, run) 75.5 6.21
+2026-11-24T14:05:15Z meter (account, run) 75.59 6.24
+2026-11-24T14:06:18Z meter (account, run) 75.64 6.24
+2026-11-24T14:07:21Z meter (account, run) 75.7 6.24
+2026-11-24T14:08:24Z meter (account, run) 75.73 6.24
+2026-11-24T14:09:26Z meter (account, run) 75.76 6.24
+2026-11-24T14:10:30Z meter (account, run) 75.78 6.24
+2026-11-24T14:11:34Z meter (account, run) 75.79 6.24
+2026-11-24T14:12:36Z meter (account, run) 75.79 6.24
+2026-11-24T14:13:39Z meter (account, run) 75.79 6.24
+2026-11-24T14:14:42Z meter (account, run) 75.8 6.24
+2026-11-24T14:15:44Z meter (account, run) 75.8 6.24
+2026-11-24T14:16:48Z meter (account, run) 75.8 6.24
+2026-11-24T14:17:51Z meter (account, run) 75.8 6.24
+2026-11-24T14:18:01Z b033 ended: leaderlogs: repo:131418#1#f0 on graft-m2b-site-a, 2026-11-24T13:45:21Z to 2026-11-24T14:02:21Z, in the background -> tests/fanout/raw/leaderlogs-lnA.json.xz
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-24T14:18:17Z sweep exit 0 (kept: none)
+2026-11-24T14:18:19Z meter (account, run) 75.8 6.24 after b033 and the sweep
+DONE
