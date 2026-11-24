@@ -278,6 +278,7 @@ impl G {
             protected: Vec::new(),
             changed: Vec::new(),
             leases: false,
+            test_format: false,
         };
         self.commit(RepoCmd::Push(p))
     }
@@ -301,6 +302,7 @@ impl G {
             protected: Vec::new(),
             changed: Vec::new(),
             leases: false,
+            test_format: false,
         })
         .deps(&self.m(SITES[0]).group_fold().fold)
         .to_vec()

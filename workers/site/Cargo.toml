@@ -12,6 +12,9 @@ crate-type = ["cdylib"]
 # Test-only routes, fields, and fault injection (kills, resets, retired members, vote probes, call faults). Only
 # test installs build with it: `worker-build --release -- --features test-faults`.
 test-faults = ["graftyard-lookup/test-faults"]
+# BM-5: a test-faults build that also reads `REPO_FORMAT_TEST`, which no other release reads, so its site day writes
+# entries the other sites refuse (`Repo::reads`).
+test-format = ["test-faults"]
 
 [dependencies]
 arrayvec.workspace = true

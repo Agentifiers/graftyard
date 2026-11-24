@@ -226,7 +226,7 @@ async fn step(h: &Rc<Host<Repo>>) -> Result<bool> {
                 &mut st,
                 schema(t),
                 chain,
-                crate::host::RELEASE.id,
+                crate::host::cached_release().id,
                 graftyard_git::repo::REPO_FORMAT_V1,
             )
             .map_err(|e| Error::RustError(e.to_string()))?;

@@ -79,6 +79,10 @@ pub const REPO_FORMAT_ROLLUP: Format = Format { family: 0x20, version: 25 };
 /// keeps no `PathSet` and stores no `Leased` refusal [inference: leases are AM1-WP4's HTTPS agent path]. An edge sends
 /// it only once `FormatsEnable` has enabled it; a push under any other credential never takes it.
 pub const REPO_FORMAT_SSH: Format = Format { family: 0x20, version: 26 };
+/// BM-5's deliberately unreadable format: a push laid out as 32.2 under any principal 32.2 carries, which no product
+/// release reads (`Push::test_format`). Only a test-faults edge sends it (`FORCE_FORMAT`), and only a site built with
+/// the `test-format` feature reads it, so a site day onto such a build writes entries the other sites refuse.
+pub const REPO_FORMAT_TEST: Format = Format { family: 0x20, version: 0xfff0 };
 /// The format a scratch view (`RepoScratch`, `crate::issue_ops::RepoView`) writes events at: the newest. `decide`
 /// sees the entry's format only once its last command is in, and `verify` writes stored entries above `applied` at the
 /// checked entry's time, not theirs. Only `promoted_log` depends on the format (F88), and only `check_compacted`
@@ -110,6 +114,9 @@ pub struct Push {
     /// Format 32.14 (`REPO_FORMAT_LEASES`): the edge enabled it, so the push's entry may carry `PathSet` and a
     /// `Leased` refusal. Not encoded: the format tag carries it.
     pub leases: bool,
+    /// Format `REPO_FORMAT_TEST` (BM-5): set only by a test-faults edge, on a push 32.2 could carry. Not encoded: the
+    /// format tag carries it.
+    pub test_format: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1354,6 +1361,7 @@ impl Push {
             REPO_FORMAT_TASKS,
             REPO_FORMAT_LEASES,
             REPO_FORMAT_SSH,
+            REPO_FORMAT_TEST,
         ];
         if !reads.contains(&format) {
             return Err(WireError::Format(format));
@@ -1402,8 +1410,21 @@ impl Push {
             return Err(WireError::Malformed("trailing bytes"));
         }
         let leases = format == REPO_FORMAT_LEASES;
-        let push =
-            Push { updates, atomicity, pack, actor, options, request, agent, provenance, protected, changed, leases };
+        let test_format = format == REPO_FORMAT_TEST;
+        let push = Push {
+            updates,
+            atomicity,
+            pack,
+            actor,
+            options,
+            request,
+            agent,
+            provenance,
+            protected,
+            changed,
+            leases,
+            test_format,
+        };
         // One form per command, so its digest is one: a format that does not match the command is malformed.
         if push.format() != format {
             return Err(WireError::Malformed("format does not match the command"));
@@ -1988,6 +2009,8 @@ impl Command for Push {
             REPO_FORMAT_AGENT
         } else if stateless {
             REPO_FORMAT_STATELESS
+        } else if self.test_format {
+            REPO_FORMAT_TEST
         } else if self.agent.is_some() {
             REPO_FORMAT_V2
         } else {

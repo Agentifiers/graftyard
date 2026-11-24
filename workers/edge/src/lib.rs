@@ -103,6 +103,9 @@ struct Config {
     enabled: Vec<Format>,
     /// Test fault for BF-16: send every push in this format whatever is enabled. Read only with `test-faults`.
     force_format: Option<Format>,
+    /// BM-5's aim for `force_format` (`FORCE_FORMAT_SITE`): only a push to a chain whose leader this isolate last saw
+    /// on this site is forced; the rest go in their own format. Read only with `test-faults`.
+    force_site: Option<SiteId>,
     /// Multipart part size of the tee.
     part: usize,
 }
@@ -138,13 +141,18 @@ impl Config {
             force_format: var("FORCE_FORMAT").as_deref().and_then(parse_format),
             #[cfg(not(feature = "test-faults"))]
             force_format: None,
+            #[cfg(feature = "test-faults")]
+            force_site: var("FORCE_FORMAT_SITE").and_then(|v| v.parse().ok()).map(SiteId),
+            #[cfg(not(feature = "test-faults"))]
+            force_site: None,
             part: var("PART_BYTES").and_then(|v| v.parse().ok()).unwrap_or(PART_SIZE),
         })
     }
 
-    /// The format a push is sent in: format 2 carries the client's agent, and is used only once enabled.
-    fn push_format(&self) -> Format {
-        if let Some(f) = self.force_format {
+    /// The format a push is sent in: format 2 carries the client's agent, and is used only once enabled. A forced format
+    /// applies to every push, or with `force_site` only to one whose chain's leader was last seen on that site.
+    fn push_format(&self, leader: Option<SiteId>) -> Format {
+        if let Some(f) = self.force_format.filter(|_| self.force_site.is_none_or(|s| leader == Some(s))) {
             return f;
         }
         if self.enabled.contains(&REPO_FORMAT_V2) { REPO_FORMAT_V2 } else { REPO_FORMAT_V1 }
@@ -2271,6 +2279,7 @@ async fn receive_pack(
         protected: Vec::new(),
         changed: Vec::new(),
         leases: false,
+        test_format: false,
     };
     // A push under a `ghs_` token is format 32.7, sent only once `FormatsEnable` enabled it (M3-WP4); one whose token
     // carries a `task` claim is 32.12 (AM1-WP3), on the same terms; one over SSH is 32.26 (M6-WP2).
@@ -2284,10 +2293,13 @@ async fn receive_pack(
         return after_body(c, &mut tail, path, unsupported(c.rid, f.family, f.version)).await;
     }
     // Format 2 carries the client's agent. A forced unknown format is sent with format 2's fields and its own tag.
-    let format = c.cfg.push_format();
+    let leader = graftyard_lookup::cached_leader(ChainId::Repo(repo.id)).map(|t| t.site);
+    let format = c.cfg.push_format(leader);
     if format != REPO_FORMAT_V1 {
         push.agent = Some(rp.caps.agent.clone().unwrap_or_default().into());
     }
+    // BM-5's test format is 32.2's layout under its own tag, which a `test-format` site decodes as itself.
+    push.test_format = format == graftyard_git::repo::REPO_FORMAT_TEST;
     // `design/SHARED.md`, "Refs and pushes", Size: the updates alone over the cap refuse the whole push.
     let alone = push.encoded_len_without_pack();
     if alone > COMMAND_MAX {
@@ -2447,7 +2459,7 @@ async fn receive_pack(
         body["admit"] = serde_json::to_value(a)?;
     }
     // BF-16's forced unknown variant: the same command, its format tag rewritten to one no release reads.
-    if format != REPO_FORMAT_V1 && format != REPO_FORMAT_V2 {
+    if format != REPO_FORMAT_V1 && format != REPO_FORMAT_V2 && !push.test_format {
         let mut wire = push.to_wire();
         wire[..2].copy_from_slice(&format.family.to_be_bytes());
         wire[2..4].copy_from_slice(&format.version.to_be_bytes());
@@ -3098,6 +3110,7 @@ pub(crate) async fn push_init(
         changed: Vec::new(),
         // A new repository has no lease, so the README push keeps its earlier format.
         leases: false,
+        test_format: false,
     };
     let body = serde_json::to_value(CommitReq { rid: rid.to_string(), cmd: push }).map_err(|e| e.to_string())?;
     match commit(c, repo, &body, None, None, None).await.map_err(|e| e.to_string())? {
@@ -3882,6 +3895,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                 protected: Vec::new(),
                 changed: Vec::new(),
                 leases: false,
+                test_format: false,
             };
             let t0 = now().0;
             if let Some(n) = b.get("stored").and_then(serde_json::Value::as_u64) {
@@ -4934,6 +4948,7 @@ mod tests {
             protected: Vec::new(),
             changed: Vec::new(),
             leases: false,
+            test_format: false,
         };
         let body = super::lookup_body(rid, &push);
         assert!(body.len() < 4 << 10, "{} bytes: the pack went with it", body.len());
@@ -5549,5 +5564,27 @@ mod tests {
         let r = crate::api::read_failed("the repository's access rows did not answer; retry", &e);
         assert_eq!((r.status, r.header("retry-after")), (503, Some("5")), "{e}");
         assert!(super::gate_owner(Ok(Some(graftyard_identity::AuthzFold::default()))).is_ok());
+    }
+
+    /// BM-5: `FORCE_FORMAT_SITE` forces the test format only on a push whose chain's leader sits on that site; any other
+    /// leader, or one this isolate has not seen, gets the newest enabled format.
+    #[test]
+    fn bm5_a_forced_format_aimed_at_a_site_reaches_only_that_site_s_leaders() {
+        let test = graftyard_git::repo::REPO_FORMAT_TEST;
+        let c = |force_site| super::Config {
+            plan: super::Plan::Pro,
+            ssh_option: false,
+            cap: 1,
+            host: String::new(),
+            enabled: vec![graftyard_git::repo::REPO_FORMAT_V2],
+            force_format: Some(test),
+            force_site,
+            part: 1,
+        };
+        let aimed = c(Some(SiteId(1)));
+        assert_eq!(aimed.push_format(Some(SiteId(1))), test);
+        assert_eq!(aimed.push_format(Some(SiteId(2))), graftyard_git::repo::REPO_FORMAT_V2);
+        assert_eq!(aimed.push_format(None), graftyard_git::repo::REPO_FORMAT_V2);
+        assert_eq!(c(None).push_format(Some(SiteId(2))), test, "unaimed, BF-16 forces every push");
     }
 }

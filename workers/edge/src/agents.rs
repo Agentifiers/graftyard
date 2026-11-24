@@ -555,6 +555,7 @@ pub(crate) async fn write_ref(
         protected: Vec::new(),
         changed: Vec::new(),
         leases: false,
+        test_format: false,
     };
     let agent = push_context(c, &rd.repo, &push).await;
     let lines = graftyard_git::agent::detail_lines(&push.updates, true);
@@ -893,6 +894,7 @@ mod tests {
             protected: Vec::new(),
             changed: Vec::new(),
             leases: false,
+            test_format: false,
         }
     }
 

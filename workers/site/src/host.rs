@@ -1590,18 +1590,49 @@ fn seed() -> u64 {
     (a << 32) ^ b ^ now_ms()
 }
 
-/// The release this build is. Milestone 1 has no release registry, so every build names the same one; `Unsupported`
-/// carries it.
+/// The release of a version whose tag names none: a wrangler deploy's, or one `graft-ops` uploaded before tags carried
+/// a seq. Seq 1 is the lowest a tagged release has, so such a member counts as the oldest release (`design/DESIGN.md`,
+/// Shape, `verify`).
 pub const RELEASE: ReleaseTag = ReleaseTag { id: ReleaseId([1; 32]), seq: 1 };
 
-pub fn member_config<F: Family>(site: &SiteEnv, join: &Join) -> MemberConfig {
+/// The release a version tag names (`graftyard_release::ops::version_tag`, `<seq>-<release id>`), else `RELEASE`. A
+/// release's seq is its place in the `Release` group's uploads, so every site on one release has the same tag, and a
+/// version made later for an older release (a secret's site day) keeps that release's seq.
+pub fn release_of(tag: Option<&str>) -> ReleaseTag {
+    tag.and_then(graftyard_release::ops::parse_version_tag).map_or(RELEASE, |(seq, id)| ReleaseTag { id, seq })
+}
+
+thread_local! {
+    static THIS_RELEASE: Cell<Option<ReleaseTag>> = const { Cell::new(None) };
+}
+
+/// This isolate's release, from its `VERSION` binding's tag, read once. A tag that names none logs it once.
+pub fn this_release(env: &Env) -> ReleaseTag {
+    if let Some(r) = THIS_RELEASE.with(Cell::get) {
+        return r;
+    }
+    let tag = env.get_binding::<WorkerVersionMetadata>("VERSION").ok().map(|v| v.tag());
+    let r = release_of(tag.as_deref());
+    if r == RELEASE {
+        console_log!("release: version tag {tag:?} names no release seq; this member runs as the oldest release");
+    }
+    THIS_RELEASE.with(|c| c.set(Some(r)));
+    r
+}
+
+/// The release `this_release` read, or `RELEASE` before any member of this isolate restored.
+pub fn cached_release() -> ReleaseTag {
+    THIS_RELEASE.with(Cell::get).unwrap_or(RELEASE)
+}
+
+pub fn member_config<F: Family>(site: &SiteEnv, join: &Join, release: ReleaseTag) -> MemberConfig {
     MemberConfig {
         chain: join.chain,
         // A learner's address is its slot's, not its site's (`graftyard_types::learner_addr`).
         me: join.me.addr(),
         record: join.record.clone(),
         regions: site.sites.0.iter().map(|s| (s.id, s.region)).collect(),
-        release: RELEASE,
+        release,
         reads: F::reads(),
     }
 }
@@ -2313,9 +2344,13 @@ impl<F: Family> Host<F> {
         let applied = stored.state.as_ref().map_or(Index(0), |s| s.applied);
         // Everything `load` read back is durable.
         *self.synced.borrow_mut() = VecDeque::from([(stored.base.index.0 + stored.log.len() as u64, now_ms())]);
-        let (mut m, ready) =
-            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), stored, Timestamp(self.now()), seed())
-                .map_err(|e| err(e.to_string()))?;
+        let (mut m, ready) = raft::Member::<F::C>::restore(
+            member_config::<F>(&site, &join, this_release(&self.env)),
+            stored,
+            Timestamp(self.now()),
+            seed(),
+        )
+        .map_err(|e| err(e.to_string()))?;
         m.set_request_retention(retention);
         m.set_log_window_bytes(raft::LOG_WINDOW, raft::LOG_BYTES);
         let mut store = SqlStore::<F> {
@@ -4701,6 +4736,21 @@ mod tests {
         // One entry over the cap still reads, alone.
         let huge = vec![Ok((json!(1), cap + 1)), Ok((json!(2), 1))];
         assert_eq!(super::log_take(huge.into_iter(), 10, cap).unwrap().len(), 1);
+    }
+
+    /// BM-5: a member's release is what its version's tag names, the same seq on every site of one release; any tag
+    /// that names none (a wrangler deploy's, a bare release id from before seqs, junk) runs as `RELEASE`, never panics.
+    #[test]
+    fn a_member_s_release_is_its_version_tag_s_and_any_other_tag_is_the_oldest() {
+        let id = "12".repeat(32);
+        let r = super::release_of(Some(&format!("9-{id}")));
+        assert_eq!(r.seq, 9);
+        assert_eq!(r.id.0, [0x12; 32]);
+        assert_eq!(super::release_of(Some(&format!("9-{id}"))), r, "one tag, one release on every site");
+        assert!(r.seq > super::RELEASE.seq);
+        for t in [None, Some(id.clone()), Some("v1.0.1".into()), Some(format!("0-{id}")), Some(format!("x-{id}"))] {
+            assert_eq!(super::release_of(t.as_deref()), super::RELEASE, "{t:?}");
+        }
     }
 
     /// A voter with leader-only work acts once it has seen no leader for 2 x ELECTION_AFTER: ELECTION_AFTER after its

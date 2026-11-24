@@ -12,7 +12,7 @@
 //!   versions and deployments API is called with that token only.
 //! - **Uploads.** The `RELEASES` R2 binding is the release bucket: one prefix per release, `<label>/`, holding
 //!   `release.json`, `release.sig` (64 raw bytes, Ed25519), and every file `release.json` lists. A version uploads with
-//!   the release id as its `workers/tag` and `keep_bindings` for every binding type, so it carries the deployed
+//!   `<seq>-<release id>` as its `workers/tag` (`ops::version_tag`) and `keep_bindings` for every binding type, so it carries the deployed
 //!   version's bindings and changes only code [inference: a release that changes a binding is a separate operation].
 //! - **Pages** are `console_error!("PAGE graft-ops ...")` lines, which the install's log alert matches.
 //! - **Dwell.** `STEP_DWELL_MS` and `FIRST_DAY_MS` lower the dwells on a test install only, and a test-faults build's
@@ -39,7 +39,7 @@ use std::collections::BTreeMap;
 use graftyard_lookup::{Bindings, Hooks, commit_hedged, now_ms, view, within};
 use graftyard_release::ops::{self, Deployment, Dwell, Exec, Gate, Ran, RawBundle, Signer, Split, Submit};
 use graftyard_release::{Anchor, ReleaseFold, RotateStep, Script, SecretName, Signature, SignedEntry, VersionId, gate};
-use graftyard_types::{ChainId, ReleaseId, SiteId, SiteTable, Timestamp, TokenShard};
+use graftyard_types::{ChainId, SiteId, SiteTable, Timestamp, TokenShard};
 use serde_json::{Value, json};
 use worker::wasm_bindgen::JsValue;
 use worker::*;
@@ -480,10 +480,9 @@ impl Exec for Live<'_> {
 
     async fn tagged(
         &mut self,
-        release: ReleaseId,
+        tag: &str,
         scripts: &[Script],
     ) -> std::result::Result<BTreeMap<Script, VersionId>, String> {
-        let tag = graftyard_lookup::hex(&release.0);
         let mut out = BTreeMap::new();
         for s in scripts {
             let name = self.name(*s)?.to_string();
@@ -494,7 +493,7 @@ impl Exec for Live<'_> {
             for item in v["result"]["items"].as_array().into_iter().flatten() {
                 let Some(id) = item["id"].as_str() else { continue };
                 let one = self.api(Method::Get, &format!("/workers/scripts/{name}/versions/{id}"), None, false).await?;
-                if one["result"]["annotations"]["workers/tag"].as_str() == Some(tag.as_str()) {
+                if one["result"]["annotations"]["workers/tag"].as_str() == Some(tag) {
                     out.insert(*s, id.parse().map_err(|_| format!("version id {id}"))?);
                     break;
                 }
@@ -503,12 +502,7 @@ impl Exec for Live<'_> {
         Ok(out)
     }
 
-    async fn upload(
-        &mut self,
-        s: Script,
-        release: ReleaseId,
-        modules: &[(String, Vec<u8>)],
-    ) -> std::result::Result<(), String> {
+    async fn upload(&mut self, s: Script, tag: &str, modules: &[(String, Vec<u8>)]) -> std::result::Result<(), String> {
         let name = self.name(s)?.to_string();
         let main = modules
             .iter()
@@ -527,7 +521,7 @@ impl Exec for Live<'_> {
             "keep_bindings": ["plain_text", "secret_text", "json", "durable_object_namespace", "service", "r2_bucket",
                               "queue", "secrets_store_secret", "pipelines", "version_metadata", "assets", "workflow"],
             "keep_assets": true,
-            "annotations": { "workers/tag": graftyard_lookup::hex(&release.0), "workers/message": "graft-ops upload" },
+            "annotations": { "workers/tag": tag, "workers/message": "graft-ops upload" },
         });
         for k in ["compatibility_date", "compatibility_flags", "limits", "containers"] {
             if !rt[k].is_null() {
