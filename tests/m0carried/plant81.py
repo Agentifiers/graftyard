@@ -28,8 +28,7 @@ BED = ['bash', 'tests/composed/edgebed/run.sh']
 MUTANTS = [
     # beside
     ("a guessed read is kept when the resolve named another repository or record", LIB,
-     '    if a != g {\n        return Ok(next(a.clone()).await?.map(|t| (a, t)));\n    }',
-     '    if false {\n        return Ok(next(a.clone()).await?.map(|t| (a, t)));\n    }', ED),
+     '    if a != g {\n        drop(started);', '    if false {\n        drop(started);', ED),
     ("a guess is served as the answer when the fresh read fails", LIB,
      '    let Some(a) = a? else { return Ok(None) };\n    if a != g {',
      '    let Some(a) = a.unwrap_or(Some(g.clone())) else { return Ok(None) };\n    if a != g {', ED),

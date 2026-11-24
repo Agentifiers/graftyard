@@ -33,9 +33,9 @@ MUTANTS = [
     ('the floor is never applied', CLOCK,
      'self.last = self.last.max(own).max(self.floor);', 'self.last = self.last.max(own);', SITE),
     ('a shed read is never retried', LOOKUP,
-     'Err((_, ms)) if now() + ms < until => wait(ms).await,', 'Err((_, ms)) if false => wait(ms).await,', LOOK),
+     '                if now() + ms >= until {\n                    return Err(why);', '                if true {\n                    return Err(why);', LOOK),
     ('a shed read is retried past its deadline', LOOKUP,
-     'Err((_, ms)) if now() + ms < until => wait(ms).await,', 'Err((_, ms)) if now() < until => wait(ms).await,', LOOK),
+     '                if now() + ms >= until {\n                    return Err(why);', '                if now() >= until {\n                    return Err(why);', LOOK),
     ('the retry ignores the members\' wait', LOOKUP,
      'Spread::Shed(wait.max().unwrap_or(OVERLOAD_RETRY_MS).clamp(50, 2_000))', 'Spread::Shed(OVERLOAD_RETRY_MS)', LOOK),
 ]

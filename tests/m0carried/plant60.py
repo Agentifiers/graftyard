@@ -14,13 +14,17 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 HEALTH = 'crates/raft/src/member/health.rs'
 TESTS = ['cargo', 'test', '-q', '-p', 'graftyard-raft', '--test', 'leadership', '--test', 'liveness']
-GUARD = '        if self.hot() && !self.site_sick {\n'
+# step-busy (later) widened `hot` to `hot || (errors_trip && busy)`; these mutants plant step-agree's half of it.
+GUARD = '        if (self.hot() || (errors_trip && self.busy())) && !self.site_sick {\n'
 
 MUTANTS = [
-    ("main's rule: every trip moves the leader, hot or not", HEALTH, GUARD, '        if false {\n', TESTS),
-    ("the other sites' verdict is ignored", HEALTH, GUARD, '        if self.hot() {\n', TESTS),
-    ("every group holds, hot or not", HEALTH, GUARD, '        if !self.site_sick {\n', TESTS),
-    ("the hold is for a quiet group, not a hot one", HEALTH, GUARD, '        if !self.hot() && !self.site_sick {\n', TESTS),
+    ("main's rule: every trip moves the leader, hot or not", HEALTH, GUARD, '        if false && errors_trip {\n', TESTS),
+    ("the other sites' verdict is ignored", HEALTH, GUARD,
+     '        if self.hot() || (errors_trip && self.busy()) {\n', TESTS),
+    ("every group holds, hot or not", HEALTH, GUARD,
+     '        if (true || (errors_trip && self.busy())) && !self.site_sick {\n', TESTS),
+    ("the hold is for a quiet group, not a hot one", HEALTH, GUARD,
+     '        if (!self.hot() || (errors_trip && self.busy())) && !self.site_sick {\n', TESTS),
     ("the host's verdict is never stored", HEALTH, '        self.site_sick = sick;\n', '        let _ = sick;\n', TESTS),
     ("a held trip is a transfer to nobody, with no hold window", HEALTH,
      '            self.hold(why);\n            return;\n        }\n        let failing',
