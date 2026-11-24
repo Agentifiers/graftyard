@@ -40,8 +40,38 @@ pub struct Bindings<'a> {
     pub sites: &'a SiteTable,
 }
 
+/// The object a lifeboat holds a chain's copy in (`design/DESIGN.md`, "Install operations", Lifeboat): one learner per
+/// chain, whatever member of the install a caller names.
+pub fn lifeboat_object(chain: ChainId) -> String {
+    format!("{chain}#lifeboat")
+}
+
+/// The chain a member's object name (`{chain}#{generation}#{kind}{slot}`) or a lifeboat object's name belongs to.
+pub fn chain_of_object(do_name: &str) -> Option<ChainId> {
+    do_name.split_once('#')?.0.parse().ok()
+}
+
+thread_local! {
+    /// Set once per isolate by an edge built into the lifeboat (`GRAFTYARD_LIFEBOAT=1`): every member call goes to the
+    /// chain's one local learner on the `MEMBER` binding, so the edge's own read paths run against the copy.
+    static LIFEBOAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This isolate is the lifeboat's front: `Bindings::member` names every chain's lifeboat object.
+pub fn set_lifeboat(on: bool) {
+    LIFEBOAT.with(|l| l.set(on));
+}
+
+pub fn lifeboat() -> bool {
+    LIFEBOAT.with(|l| l.get())
+}
+
 impl Bindings<'_> {
     fn stub(&self, class: &str, site: SiteId, do_name: &str) -> Result<Stub> {
+        if lifeboat() && class == "MEMBER" {
+            let chain = chain_of_object(do_name).ok_or_else(|| Error::RustError(format!("no chain in {do_name}")))?;
+            return self.env.durable_object("MEMBER")?.get_by_name(&lifeboat_object(chain));
+        }
         let region = self.sites.get(site).ok_or_else(|| Error::RustError(format!("unknown site {site:?}")))?.region;
         self.env.durable_object(&format!("{class}_{}", site.0))?.get_by_name_with_location_hint(do_name, region.hint())
     }

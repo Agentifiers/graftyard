@@ -580,6 +580,21 @@ pub fn snapshot_at(keys: &[R2Key], chain: ChainId, at: Index) -> Option<Vec<R2Ke
     Some(ks)
 }
 
+/// The archive object among `keys` whose range holds `from` for `chain`, for a page below a member's stored log that
+/// names no archive: a member that installed a snapshot never applied the `Archived` entries below its install, so its
+/// `archive_keys` lack them, while the objects stay in the buckets (none is deleted but by a deleted repository's
+/// purge). Any object whose range holds `from` holds the committed entries there; the narrowest is taken.
+pub fn archive_holding(keys: &[R2Key], chain: ChainId, from: Index) -> Option<(Index, Index, R2Key)> {
+    keys.iter()
+        .filter_map(|k| match k {
+            R2Key::Archive { chain: c, from: f, to, .. } if *c == chain && *f <= from && from <= *to => {
+                Some((*f, *to, k.clone()))
+            }
+            _ => None,
+        })
+        .min_by_key(|(f, t, _)| t.0 - f.0)
+}
+
 /// The digest a client checks a pack against: `X-Graftyard-Checksum`, the `PackRef.checksum`'s hex.
 pub fn checksum_header(d: &Digest) -> String {
     d.hex()

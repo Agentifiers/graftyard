@@ -223,7 +223,12 @@ async fn log(c: &Ctx<'_>, chain: ChainId, from: Index, limit: u64) -> std::resul
     let (_, bytes) = Box::pin(graftyard_lookup::log_rows(&c.bindings(), chain, &record, from.0, to))
         .await
         .ok_or_else(|| unavailable(format!("no learner or follower of {chain} answered; retry")))?;
-    let page = export::decode_log_page(&bytes).map_err(unavailable)?;
+    let mut page = export::decode_log_page(&bytes).map_err(unavailable)?;
+    // A member that installed a snapshot names no archive below its install: its `Archived` entries were never applied
+    // there. The objects are still in the record's buckets, so the range comes from the one that holds `from`.
+    if page.archive.is_none() && from < page.first {
+        page.archive = Box::pin(listed_archive(c, &record, chain, from)).await?;
+    }
     let mut rows: Vec<(Index, Vec<u8>)> = Vec::new();
     let archived = page.archive.is_some();
     if let Some((first, last, key)) = &page.archive
@@ -237,6 +242,37 @@ async fn log(c: &Ctx<'_>, chain: ChainId, from: Index, limit: u64) -> std::resul
         rows.extend(page.rows.into_iter().enumerate().map(|(n, r)| (Index(first.0 + n as u64), r)));
     }
     Ok(StoredLog { first: page.first, archived, to: page.commit, rows })
+}
+
+/// The archive object of `chain` whose range holds `from`, listed in the record's first two buckets, which hold every
+/// archive object (`export::archive_holding`).
+async fn listed_archive(
+    c: &Ctx<'_>,
+    record: &PlacementRecord,
+    chain: ChainId,
+    from: Index,
+) -> std::result::Result<Option<(Index, Index, String)>, Fail> {
+    let prefix = format!("archive/{chain}/");
+    for s in record.sites.iter().take(2) {
+        let Ok(bucket) = c.env.bucket(&format!("BUCKET_{}", s.0)) else { continue };
+        let (mut keys, mut cursor) = (Vec::new(), None);
+        loop {
+            let mut l = bucket.list().prefix(prefix.clone());
+            if let Some(k) = cursor.take() {
+                l = l.cursor(k);
+            }
+            let Ok(listed) = l.execute().await else { break };
+            keys.extend(listed.objects().iter().filter_map(|o| o.key().parse::<R2Key>().ok()));
+            match listed.cursor().filter(|_| listed.truncated()) {
+                Some(k) => cursor = Some(k),
+                None => break,
+            }
+        }
+        if let Some((f, t, k)) = export::archive_holding(&keys, chain, from) {
+            return Ok(Some((f, t, k.to_string())));
+        }
+    }
+    Ok(None)
 }
 
 /// The rows `from..=to` of the archive object `key` (whose range starts at `first`), read as it streams from the
