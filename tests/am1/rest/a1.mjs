@@ -452,9 +452,21 @@ const humanInFlight = {};
 let app = null;
 const admin = tokens.admin;
 // `--as-admin`: pushes are Human class, so the run measures the test-merge budget, not B0-35's admission.
+// Each refresh tries three times, 5 s apart: mt22's first try stopped on one `ghs 503` at 08:24Z right after the warm,
+// and three calls from the orb at 08:27Z answered 201. Every answer that is not 201 is a `ghs` row (its status, try,
+// time, and which refresh), so a token-path 503 under load is counted, not hidden (`tests/am1/results/b034-mt22.md`).
+let refreshes = 0;
 const refreshApp = async () => {
   if (opt["as-admin"]) { app = admin; return; }
-  const r = await ghs({}); if (r.status !== 201) throw new Error(`ghs ${r.status}`); app = r.body.token;
+  const which = refreshes++;
+  for (let t = 1; ; t++) {
+    const r = await ghs({}).catch((e) => ({ status: 0, body: { message: String(e).slice(0, 160) } }));
+    if (r.status === 201) { app = r.body.token; return; }
+    writeRow(OUT, { step: "ghs", refresh: which, try: t, status: r.status, at: new Date().toISOString(),
+      why: String(r.body?.message ?? "").slice(0, 160) });
+    if (t === 3) throw new Error(`ghs ${r.status} after ${t} tries`);
+    await sleep(5_000);
+  }
 };
 // The fleet's App is the confined vendor App, as B0-36 ran it: every push and command it sends is Agent class.
 if (!opt["as-admin"]) {
