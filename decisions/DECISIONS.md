@@ -9655,3 +9655,59 @@ MiB, and its isolate reset with that `/entries` page in flight. In local workerd
 - **Not enough** if a hosted B0-33 leader still passes 100 MiB with `logPageHigh` at or under 4,194,304. Then the
   memory is elsewhere: read `memSplit` and the alarm-step scan lines for the climb, and count what several walks in one
   turn hold.
+
+### `agent-spill`: a full gate's 429 moves an agent validate to the next Full site, and does not mark the shard cold, 2026-11-24
+
+**Status.** Built on branch `g40-validate` from main `1b59d7ce` for G40 (`decisions/OPEN-QUESTIONS.md`). Edge only
+(`workers/edge/src/lib.rs`, `hedged` and `validate_failed`), so it ships on an edge day. Not hosted: it rides on the
+next B0-33 set.
+
+**Decision.** In a buffered validate's tries (`hedged`), a 429 from a shard's validate gate is no longer a deciding
+answer. It moves the push to the next site in `shard_order` at once, as a 503 or a failed call does, and does not
+mark that shard cold. Only a 200 or a 422 decides. When no site answers 200 and none answered 422, the tries end
+`ShardRefusal::Busy` with the shortest `retry-after` any gate gave, so an agent push keeps its class's refusal,
+`ng <ref> agent admission full, retry after <n>s`, even when the sites it moved on to failed. Rules that stay:
+- **Agents get no hedge.** Each site's gate still bounds an agent's wait at 2 s, and a second site is asked only after
+  the first refused.
+- **The last site keeps its whole wait** (`chain-wait`, G30).
+- **Streamed packs** (over `INLINE_MAX`) keep `streamed_site`: their body is read once, so a 429 there is still `Busy`.
+- **Humans** never get a 429 (the gate holds a human until it has a slot), so nothing changes for them.
+
+**Why.** On B0-33 g4B (5bed46af) 99% of agent validates answered on site a, its gate refused 3,722 there, and site
+b's net shard used 0.3 to 0.7 vCPU a minute. On erDA 24% left site a, because a home that failed its 15 s first try
+was marked cold [measured, `tests/am1/results/b033-g39.md`, "The validate slowdown, bisected"]. G39 keeps the home
+caught up, so nothing fails there now and nothing moves. A 429 is the gate's answer, not the pack's: another site's
+gate may have room. Moving the one refused push uses that room without moving the pushes that the home can take.
+
+**Beat.**
+- **Counting a 429 toward `COLD_SHARD_MS`.** A full gate frees a slot within seconds (its `retry-after` is 1 to 2 s).
+  Marking the home cold for 30 s would send every push of that isolate, humans' and merges' validates included, to
+  sites b and c first. It would swing load between sites in 30 s waves, in each of the edge's isolates.
+- **A hedge for agents.** It doubles the tries of most agent validates, whose p50 is 1.5 s (`validate-hedge`).
+
+**The cost.** A refused agent push makes one more call per site it moves to, and waits each gate's 2 s at most. On
+g4B that is at most about 3,722 more tries over the row, under one in three of its 11,458 agent validates. Each try
+that moves spends 2 s of the push's `AGENT_PUSH_BOUND` (5 s) on the home's gate. A push whose bound runs out on the
+second site is still refused at the commit send, in the same shape (`bound_at_send`) [inference].
+
+**Evidence.**
+- `workers/edge/src/lib.rs`, `a_human_validate_asks_every_shard_left_beside_a_slow_one_and_the_last_try_keeps_its_wait`:
+  - an unhedged validate whose home answers 429 at 2 s goes to site b and decides at 2.6 s;
+  - a 429 at once followed by site b's 422 is the pack's answer;
+  - three full gates are three tries in order, with no answer.
+  On main's rule the first case decides on the home's 429.
+- `only_a_shards_422_refuses_a_push_and_shards_that_all_fail_are_unavailable`: 429, 503, 429 is `Busy` with the
+  shortest `retry-after`; a 422 anywhere is still `Invalid`.
+- `tests/m0carried/plant113.py`, four mutants, all caught: main's rule; tries that end on full gates as `Unavailable`;
+  the longest `retry-after`; a 429 that starts every site left at once.
+- The settle reading is one B0-33 row against g4B, as G40 names: site a's share of agent validates (`validate_site`),
+  git-cache-busy by site (`tests/fanout/pushfull.py`), per-shard vCPU (`tests/fanout/instcpu.py`) and agent ok pushes.
+
+**Flip.**
+- **Back it out** if agent ok pushes fall against g4B while site a's share falls. That means the moved tries run out
+  the push's bound on sites b and c instead of committing.
+- **Count a 429 toward the cold mark instead** if site a still answers over 90% of agent validates with git-cache-busy
+  mostly on site a. That means a per-push move is too late: the home's gate fills again before each refused push
+  reaches site b.
+- **Revisit the 60 s wait on later tries** if moved agent validates read `validate` over 5 s on sites b and c. That
+  means a later site's catch-up, not its gate, holds them.
