@@ -38,6 +38,16 @@ pub fn roll_steps(i: &Intent) -> Option<&'static [u8]> {
 /// The secrets the agents account's `graft-ops` rotates, whose `Rotate` the agents executor key may step.
 const AGENTS_SECRETS: [SecretName; 2] = [SecretName::AgentsAppKey, SecretName::WorkspaceAppKey];
 
+/// Whether the agents account's `graft-ops` runs `i`, and so whether the agents executor key may step it: a
+/// `ControllerRoll`, or a `Rotate` of an agents-account secret (`design/DESIGN.md`, Shape, Release group, Signers).
+pub fn agents_intent(i: &Intent) -> bool {
+    match i {
+        Intent::ControllerRoll { .. } => true,
+        Intent::Rotate { secret, .. } => AGENTS_SECRETS.contains(secret),
+        _ => false,
+    }
+}
+
 /// One step of a `Rotate` as the install's `graft-ops` runs it (`design/DESIGN.md`, "Install operations", Rotation
 /// runbook; `decisions/DECISIONS.md`, "`rotate-probe`").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -426,11 +436,7 @@ impl ReleaseFold {
                 if agents { need(&[Executor, AgentsExecutor]) } else { need(&[Executor]) }
             }
             ReleaseEntry::IntentStep { intent, .. } | ReleaseEntry::IntentDone { intent } => {
-                let agents = self.intent_of(*intent).is_some_and(|c| match &c.intent.intent {
-                    Intent::ControllerRoll { .. } => true,
-                    Intent::Rotate { secret, .. } => AGENTS_SECRETS.contains(secret),
-                    _ => false,
-                });
+                let agents = self.intent_of(*intent).is_some_and(|c| agents_intent(&c.intent.intent));
                 if agents { need(&[Executor, AgentsExecutor]) } else { need(&[Executor]) }
             }
             ReleaseEntry::SiteRelease { .. } => need(&[Executor]),

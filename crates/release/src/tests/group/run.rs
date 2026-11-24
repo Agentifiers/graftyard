@@ -40,6 +40,8 @@ struct Fake {
     started: Vec<(IntentId, ops::MoveSpec)>,
     /// What `health` answers.
     health: BTreeMap<u8, crate::gate::Verdict>,
+    /// The account this `graft-ops` runs in: the install's, or the agents account's, which signs with `AGENTS`.
+    account: ops::Account,
 }
 
 impl Fake {
@@ -47,7 +49,7 @@ impl Fake {
         let mut deps = BTreeMap::new();
         for s in [Script::Site(SiteId(0)), Script::Site(SiteId(1)), Script::Site(SiteId(2)), Script::Site(SiteId(3))]
             .into_iter()
-            .chain([Script::Edge, Script::Ops])
+            .chain([Script::Edge, Script::Ops, Script::AgentsFront, Script::Controller])
         {
             deps.insert(s, Deployment { split: vec![(VersionId([0xee; 16]), 100)], created: T0 });
         }
@@ -70,6 +72,7 @@ impl Fake {
             moves: BTreeMap::new(),
             started: Vec::new(),
             health: BTreeMap::new(),
+            account: ops::Account::Install,
         }
     }
 
@@ -105,12 +108,19 @@ impl Fake {
 }
 
 impl Exec for Fake {
+    fn account(&self) -> ops::Account {
+        self.account
+    }
+
     fn now(&self) -> Timestamp {
         self.g.at
     }
 
     fn scripts(&self) -> Vec<Script> {
-        vec![Script::Edge, Script::Ops]
+        match self.account {
+            ops::Account::Install => vec![Script::Edge, Script::Ops],
+            ops::Account::Agents => vec![Script::AgentsFront, Script::Controller],
+        }
     }
 
     async fn view(&mut self) -> Result<ReleaseFold, String> {
@@ -162,9 +172,11 @@ impl Exec for Fake {
     }
 
     fn sign(&self, signer: Signer, e: &mut SignedEntry) -> Result<(), String> {
-        e.sign(match signer {
-            Signer::Executor => &EXECUTOR,
-            Signer::Drain => &DRAIN,
+        e.sign(match (self.account, signer) {
+            (ops::Account::Agents, Signer::Executor) => &AGENTS,
+            (ops::Account::Agents, Signer::Drain) => return Err("no drain key".into()),
+            (_, Signer::Executor) => &EXECUTOR,
+            (_, Signer::Drain) => &DRAIN,
         });
         Ok(())
     }
@@ -797,4 +809,134 @@ fn r57_an_upload_takes_the_deployed_version_s_bindings_not_the_newest_upload_s()
     assert_eq!(meta["annotations"]["workers/tag"], json!("7-ab"));
     assert_eq!(meta["main_module"], json!("index.js"));
     assert_ne!(read(stray)["resources"], read(n)["resources"], "the newest upload is configured otherwise");
+
+// ---- AM3-WP1: the agents account's `graft-ops` ----
+
+/// A signed bundle carrying the agents account's scripts, tagged `tag`, beside a site and an edge script the agents
+/// account must not upload.
+fn agents_raw(tag: &str) -> RawBundle {
+    let files: Vec<(String, Vec<u8>)> = vec![
+        ("formats.txt".into(), reads(3).file().into_bytes()),
+        ("site/index.js".into(), format!("site {tag}").into_bytes()),
+        ("edge/index.js".into(), format!("edge {tag}").into_bytes()),
+        ("agents-front/index.js".into(), format!("agents-front {tag}").into_bytes()),
+        ("controller/index.js".into(), format!("controller {tag}").into_bytes()),
+    ];
+    let listed: Vec<String> = files
+        .iter()
+        .map(|(f, b)| format!(r#"{{"name":"{f}","sha256":"{}"}}"#, crate::types::hex(&Sha256::digest(b))))
+        .collect();
+    let record = format!(r#"{{"label":"{tag}","files":[{}]}}"#, listed.join(",")).into_bytes();
+    RawBundle { sig: sign_record(&RELEASE, &record), record, files }
+}
+
+/// Every entry after the first `ReleaseUploaded` of the agents scripts, with the key that signed it.
+fn signers_since(f: &Fake, from: usize) -> Vec<(&'static str, KeyId)> {
+    f.g.log[from..]
+        .iter()
+        .map(|b| {
+            let e = SignedEntry::decode(b).unwrap();
+            (e.body.kind(), e.sigs[0].0)
+        })
+        .collect()
+}
+
+/// The agents account's `graft-ops` uploads only `graft-agents-front` and `graft-controller` and commits their
+/// `ReleaseUploaded` under `Keys.agents_executor`; `release roll` signs a `ControllerRoll`, which it alone runs, 1%
+/// then 100% with N kept at 0%, every step under the agents key. The install's `graft-ops` sits idle while it is
+/// current, and the agents one sits idle while any other intent is, drains no site, and pages for no lifeboat.
+#[test]
+fn the_agents_graft_ops_runs_controller_rolls_alone_under_the_agents_key() {
+    let mut f = Fake::new(G::new());
+    f.account = ops::Account::Agents;
+    let b1 = agents_raw("c1");
+    let r1 = release_of(&b1);
+    f.bucket.push(b1);
+    let from = f.g.log.len();
+    f.cron(5);
+    assert_eq!(f.uploads, [Script::AgentsFront, Script::Controller]);
+    assert!(roll(&mut f, r1, 40), "release roll signs the ControllerRoll");
+    assert!(matches!(f.g.f.current.as_deref().unwrap().intent.intent, Intent::ControllerRoll { .. }));
+    // The install's graft-ops leaves it alone: no deploy, no step.
+    f.account = ops::Account::Install;
+    assert_eq!(block_on(ops::run(&mut f, Dwell::default())), vec![Ran::Idle]);
+    assert!(f.deploys.is_empty());
+    f.account = ops::Account::Agents;
+    // A burning site with no drain: the agents account drains nothing, and the roll goes on.
+    f.health.insert(1, crate::gate::Verdict { burning: true, ..Default::default() });
+    f.cron(10);
+    assert!(f.g.f.current.is_none(), "{:?}", f.pages);
+    assert!(f.g.f.drained.is_empty(), "the agents graft-ops drained a site");
+    let c1 = ops::version(&f.g.f, &r1, Script::Controller).unwrap();
+    let old = VersionId([0xee; 16]);
+    let ctl: Vec<_> = f.deploys.iter().filter(|(s, _)| *s == Script::Controller).map(|(_, x)| x.clone()).collect();
+    assert_eq!(ctl, vec![vec![(c1, 1), (old, 99)], vec![(c1, 100)]]);
+    assert!(f.deploys.iter().all(|(s, _)| *s == Script::Controller), "{:?}", f.deploys);
+    assert_eq!(f.g.f.rolled.get(&Script::Controller), Some(&r1));
+    let agents = public_key(&AGENTS);
+    let entries = signers_since(&f, from);
+    let mine: Vec<_> = entries.iter().filter(|(k, _)| *k != "Intent").collect();
+    assert_eq!(
+        mine.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+        ["ReleaseUploaded", "IntentStep", "IntentStep", "IntentDone"]
+    );
+    assert!(mine.iter().all(|(_, key)| *key == agents), "every graft-ops entry is under Keys.agents_executor");
+    // Any other intent: the agents graft-ops is idle and moves nothing.
+    f.g.upload(5);
+    let b = f.g.intent(41, Intent::EdgeRoll { release: rel(5).0 }, &[], &VENDOR);
+    f.g.ok(b);
+    let deploys = f.deploys.len();
+    assert_eq!(block_on(ops::run(&mut f, Dwell::default())), vec![Ran::Idle]);
+    assert_eq!(f.deploys.len(), deploys);
+    assert!(f.pages.is_empty(), "{:?}", f.pages);
+}
+
+/// LF-7's in-memory half: a bad `graft-controller` at 1% breaches while the agents account's API is down. The run
+/// submits the pre-signed `ControllerPointer` to N, a signed entry, so `Pointers.controller` pins N at once and an
+/// `AgentsReleaseView` of the feed carries the pin; the return to N at 100%, N+1 kept at 0%, waits for the API.
+#[test]
+fn lf7_a_controller_breach_with_the_api_down_commits_the_pointer_and_deploys_later() {
+    let mut f = Fake::new(G::new());
+    f.account = ops::Account::Agents;
+    let (b1, b2) = (agents_raw("c1"), agents_raw("c2"));
+    let (r1, r2) = (release_of(&b1), release_of(&b2));
+    f.bucket.push(b1);
+    f.cron(5);
+    assert!(roll(&mut f, r1, 40));
+    f.cron(10);
+    f.bucket.push(b2);
+    f.cron(5);
+    assert!(roll(&mut f, r2, 41));
+    let c = f.g.f.current.as_deref().unwrap();
+    assert_eq!(c.undo.len(), 1, "the ControllerRoll carries its ControllerPointer back to N");
+    block_on(ops::run(&mut f, Dwell { step: HOUR, first_day: HOUR, ..Dwell::default() }));
+    let (c1, c2) = (
+        ops::version(&f.g.f, &r1, Script::Controller).unwrap(),
+        ops::version(&f.g.f, &r2, Script::Controller).unwrap(),
+    );
+    assert_eq!(f.deps[&Script::Controller].split, vec![(c2, 1), (c1, 99)]);
+    f.api_down = true;
+    f.gate = Gate::Breach("test-bad".into());
+    let deploys = f.deploys.len();
+    let log = block_on(ops::run(&mut f, Dwell { step: HOUR, first_day: HOUR, ..Dwell::default() }));
+    assert!(log.contains(&Ran::Committed("ControllerPointer")), "{log:?}");
+    assert_eq!(f.g.f.pointers.get(Script::Controller), Some(c1), "pinned to N with the API down");
+    assert_eq!(f.deploys.len(), deploys);
+    let a = crate::agents::AgentsAnchor { install: f.g.a.install, customer: f.g.a.customer, host: "h".into() };
+    let page: Vec<_> =
+        f.g.log
+            .iter()
+            .zip(&f.g.ats)
+            .enumerate()
+            .map(|(i, (b, at))| (graftyard_types::Index(i as u64 + 1), b.clone(), *at))
+            .collect();
+    let mut v = crate::agents::AgentsReleaseView::default();
+    v.extend(&a, &page).unwrap();
+    assert_eq!(v.controller(), Some(c1), "graft-agents-front's view pins N from the feed alone");
+    f.api_down = false;
+    f.gate = Gate::Pass;
+    f.cron(10);
+    assert!(f.g.f.current.is_none());
+    assert_eq!(f.deps[&Script::Controller].split, vec![(c1, 100), (c2, 0)]);
+    assert!(f.pages.is_empty(), "{:?}", f.pages);
 }

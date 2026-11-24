@@ -76,7 +76,7 @@ fn floor_override(_env: &Env, g: Gate) -> Gate {
     g
 }
 
-fn var(env: &Env, name: &str) -> std::result::Result<String, String> {
+pub(crate) fn var(env: &Env, name: &str) -> std::result::Result<String, String> {
     env.var(name).map(|v| v.to_string()).map_err(|_| format!("{name} is not set"))
 }
 
@@ -94,15 +94,138 @@ fn parse_utc(s: &str) -> Option<u64> {
     u64::try_from(days * 86_400 + hh * 3600 + mm * 60 + ss).ok().map(|t| t * 1000 + frac)
 }
 
+/// The versions and deployments API under one account's deploy token, for the scripts `OPS_SCRIPTS` names: the
+/// install's `graft-ops` and the agents account's (`agents`) both call it, and nothing on a request path does.
+pub struct Api {
+    pub account: String,
+    pub token: String,
+    pub scripts: BTreeMap<String, String>,
+}
+
+impl Api {
+    pub fn name(&self, s: Script) -> std::result::Result<&str, String> {
+        self.scripts.get(&key(s)).map(String::as_str).ok_or_else(|| format!("OPS_SCRIPTS names no {}", key(s)))
+    }
+
+    async fn api(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<JsValue>,
+        json_body: bool,
+    ) -> std::result::Result<Value, String> {
+        self.call(&self.token, method, path, body, json_body).await
+    }
+
+    pub async fn call(
+        &self,
+        token: &str,
+        method: Method,
+        path: &str,
+        body: Option<JsValue>,
+        json_body: bool,
+    ) -> std::result::Result<Value, String> {
+        let h = Headers::new();
+        h.set("authorization", &format!("Bearer {token}")).map_err(|e| e.to_string())?;
+        if json_body {
+            h.set("content-type", "application/json").map_err(|e| e.to_string())?;
+        }
+        let mut init = RequestInit::new();
+        init.with_method(method.clone()).with_headers(h).with_body(body);
+        let url = format!("{API}/accounts/{}{path}", self.account);
+        let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
+        let mut r = Fetch::Request(req).send().await.map_err(|e| format!("{method:?} {path}: {e}"))?;
+        let status = r.status_code();
+        let v: Value = r.json().await.unwrap_or(Value::Null);
+        if !(200..300).contains(&status) || v["success"] == json!(false) {
+            let errs = v["errors"].to_string();
+            return Err(format!("{method:?} {path}: HTTP {status}: {}", errs.chars().take(300).collect::<String>()));
+        }
+        Ok(v)
+    }
+
+    pub async fn deployment(&self, s: Script) -> std::result::Result<Deployment, String> {
+        let v = self.api(Method::Get, &format!("/workers/scripts/{}/deployments", self.name(s)?), None, false).await?;
+        let d = &v["result"]["deployments"][0];
+        let mut split = Vec::new();
+        for x in d["versions"].as_array().into_iter().flatten() {
+            let id: VersionId =
+                x["version_id"].as_str().and_then(|i| i.parse().ok()).ok_or("a deployment version id")?;
+            split.push((id, x["percentage"].as_f64().unwrap_or(0.0).round() as u8));
+        }
+        let created = d["created_on"].as_str().and_then(parse_utc).ok_or("a deployment with no created_on")?;
+        Ok(Deployment { split, created: Timestamp(created) })
+    }
+
+    pub async fn deploy(&self, s: Script, split: &Split) -> std::result::Result<(), String> {
+        let body = json!({
+            "strategy": "percentage",
+            "versions": split.iter().map(|(v, p)| json!({ "version_id": v.to_string(), "percentage": p })).collect::<Vec<_>>(),
+            "annotations": { "workers/message": "graft-ops" },
+        });
+        let path = format!("/workers/scripts/{}/deployments", self.name(s)?);
+        self.api(Method::Post, &path, Some(body.to_string().into()), true).await.map(|_| ())
+    }
+
+    pub async fn tagged(
+        &self,
+        tag: &str,
+        scripts: &[Script],
+    ) -> std::result::Result<BTreeMap<Script, VersionId>, String> {
+        let mut out = BTreeMap::new();
+        for s in scripts {
+            let name = self.name(*s)?.to_string();
+            let v =
+                self.api(Method::Get, &format!("/workers/scripts/{name}/versions?per_page=10"), None, false).await?;
+            // The list, newest first, carries no annotations, so each of the ten newest versions is read until one
+            // carries the tag: a run uploads at most one version per script before the next reads it back.
+            for item in v["result"]["items"].as_array().into_iter().flatten() {
+                let Some(id) = item["id"].as_str() else { continue };
+                let one = self.api(Method::Get, &format!("/workers/scripts/{name}/versions/{id}"), None, false).await?;
+                if one["result"]["annotations"]["workers/tag"].as_str() == Some(tag) {
+                    out.insert(*s, id.parse().map_err(|_| format!("version id {id}"))?);
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub async fn upload(&self, s: Script, tag: &str, modules: &[(String, Vec<u8>)]) -> std::result::Result<(), String> {
+        let name = self.name(s)?.to_string();
+        let main = modules
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .find(|n| *n == "index.js" || *n == "entry.js" || *n == "worker.js")
+            .ok_or("the script's modules have no index.js")?;
+        // The deployed version's bindings and runtime settings, read and sent: `keep_bindings` would take them from
+        // the newest upload, deployed or not, and an upload keeps no runtime setting at all (`ops::upload_metadata`).
+        let d = self.deployment(s).await?;
+        let live = ops::upload_source(&d.split).ok_or("a deployment with no versions")?;
+        let one = self.api(Method::Get, &format!("/workers/scripts/{name}/versions/{live}"), None, false).await?;
+        let meta = ops::upload_metadata(&one["result"], main, tag);
+        let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
+        form.append_with_str("metadata", &meta.to_string()).map_err(|e| format!("{e:?}"))?;
+        for (n, b) in modules {
+            let ct = if n.ends_with(".wasm") { "application/wasm" } else { "application/javascript+module" };
+            let opts = web_sys::BlobPropertyBag::new();
+            opts.set_type(ct);
+            let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(b.as_slice()));
+            let blob =
+                web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(|e| format!("{e:?}"))?;
+            form.append_with_blob_and_filename(n, &blob, n).map_err(|e| format!("{e:?}"))?;
+        }
+        self.api(Method::Post, &format!("/workers/scripts/{name}/versions"), Some(form.into()), false).await.map(|_| ())
+    }
+}
+
 pub struct Live<'a> {
     env: &'a Env,
     sites: SiteTable,
     anchor: Anchor,
-    account: String,
-    token: String,
-    /// The `DeployToken` slot `token` came from.
+    api: Api,
+    /// The `DeployToken` slot `api.token` came from.
     token_slot: u8,
-    scripts: BTreeMap<String, String>,
     executor: [u8; 32],
     drain: Option<[u8; 32]>,
     /// `OPS_KILL`'s draw for this run: calls left before the kill.
@@ -110,7 +233,7 @@ pub struct Live<'a> {
     kill_after: Option<usize>,
 }
 
-async fn secret(env: &Env, binding: &str) -> std::result::Result<String, String> {
+pub(crate) async fn secret(env: &Env, binding: &str) -> std::result::Result<String, String> {
     env.secret_store(binding)
         .map_err(|e| format!("{binding}: {e}"))?
         .get()
@@ -147,7 +270,7 @@ async fn secret_opt(env: &Env, binding: &str) -> std::result::Result<Option<Stri
     s.get().await.map_err(|e| format!("{binding}: {e}"))
 }
 
-async fn seed(env: &Env, binding: &str) -> std::result::Result<[u8; 32], String> {
+pub(crate) async fn seed(env: &Env, binding: &str) -> std::result::Result<[u8; 32], String> {
     let s = secret(env, binding).await?;
     unhex(&s).and_then(|b| b.try_into().ok()).ok_or_else(|| format!("{binding} is not a 32-byte seed in hex"))
 }
@@ -166,10 +289,12 @@ impl<'a> Live<'a> {
             env,
             sites,
             anchor,
-            account: var(env, "CF_ACCOUNT")?,
-            token: slot_value(env, SecretName::DeployToken, deploy_slot).await?,
+            api: Api {
+                account: var(env, "CF_ACCOUNT")?,
+                token: slot_value(env, SecretName::DeployToken, deploy_slot).await?,
+                scripts,
+            },
             token_slot: deploy_slot,
-            scripts,
             executor: seed(env, "EXECUTOR_KEY").await?,
             // A drain key is needed only at a site day's drain and undrain; a missing one fails those steps alone.
             drain: seed(env, "DRAIN_KEY").await.ok(),
@@ -200,55 +325,14 @@ impl<'a> Live<'a> {
         Bindings { env: self.env, sites: &self.sites }
     }
 
-    fn name(&self, s: Script) -> std::result::Result<&str, String> {
-        self.scripts.get(&key(s)).map(String::as_str).ok_or_else(|| format!("OPS_SCRIPTS names no {}", key(s)))
-    }
-
-    async fn api(
-        &self,
-        method: Method,
-        path: &str,
-        body: Option<JsValue>,
-        json_body: bool,
-    ) -> std::result::Result<Value, String> {
-        self.api_as(&self.token, method, path, body, json_body).await
-    }
-
     /// The deploy token of the slot the view names now: after a `Rotate`'s switch commits, the next call uses it.
     async fn follow_deploy_slot(&mut self) -> std::result::Result<(), String> {
         let slot = view::with(|r| r.fold.slot(SecretName::DeployToken));
         if slot != self.token_slot {
-            self.token = slot_value(self.env, SecretName::DeployToken, slot).await?;
+            self.api.token = slot_value(self.env, SecretName::DeployToken, slot).await?;
             self.token_slot = slot;
         }
         Ok(())
-    }
-
-    async fn api_as(
-        &self,
-        token: &str,
-        method: Method,
-        path: &str,
-        body: Option<JsValue>,
-        json_body: bool,
-    ) -> std::result::Result<Value, String> {
-        let h = Headers::new();
-        h.set("authorization", &format!("Bearer {token}")).map_err(|e| e.to_string())?;
-        if json_body {
-            h.set("content-type", "application/json").map_err(|e| e.to_string())?;
-        }
-        let mut init = RequestInit::new();
-        init.with_method(method.clone()).with_headers(h).with_body(body);
-        let url = format!("{API}/accounts/{}{path}", self.account);
-        let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
-        let mut r = Fetch::Request(req).send().await.map_err(|e| format!("{method:?} {path}: {e}"))?;
-        let status = r.status_code();
-        let v: Value = r.json().await.unwrap_or(Value::Null);
-        if !(200..300).contains(&status) || v["success"] == json!(false) {
-            let errs = v["errors"].to_string();
-            return Err(format!("{method:?} {path}: HTTP {status}: {}", errs.chars().take(300).collect::<String>()));
-        }
-        Ok(v)
     }
 
     /// An edge, front, or MCP roll's gate (`gate::judge_errors`, OPEN-QUESTIONS R47): `graft-front`'s counts of the
@@ -312,7 +396,7 @@ impl Exec for Live<'_> {
 
     fn scripts(&self) -> Vec<Script> {
         let mut out = Vec::new();
-        for k in self.scripts.keys() {
+        for k in self.api.scripts.keys() {
             let s = match k.as_str() {
                 "workflows" => Script::Workflows,
                 "front" => Script::Front,
@@ -348,16 +432,7 @@ impl Exec for Live<'_> {
     }
 
     async fn deployment(&mut self, s: Script) -> std::result::Result<Deployment, String> {
-        let v = self.api(Method::Get, &format!("/workers/scripts/{}/deployments", self.name(s)?), None, false).await?;
-        let d = &v["result"]["deployments"][0];
-        let mut split = Vec::new();
-        for x in d["versions"].as_array().into_iter().flatten() {
-            let id: VersionId =
-                x["version_id"].as_str().and_then(|i| i.parse().ok()).ok_or("a deployment version id")?;
-            split.push((id, x["percentage"].as_f64().unwrap_or(0.0).round() as u8));
-        }
-        let created = d["created_on"].as_str().and_then(parse_utc).ok_or("a deployment with no created_on")?;
-        Ok(Deployment { split, created: Timestamp(created) })
+        self.api.deployment(s).await
     }
 
     /// A site day's gate from the site's `gate` object (`graftyard_release::gate::judge_site`), N+1's version against
@@ -470,13 +545,7 @@ impl Exec for Live<'_> {
         if self.killed("deploy") {
             return Err("OPS_KILL".into());
         }
-        let body = json!({
-            "strategy": "percentage",
-            "versions": split.iter().map(|(v, p)| json!({ "version_id": v.to_string(), "percentage": p })).collect::<Vec<_>>(),
-            "annotations": { "workers/message": "graft-ops" },
-        });
-        let path = format!("/workers/scripts/{}/deployments", self.name(s)?);
-        self.api(Method::Post, &path, Some(body.to_string().into()), true).await.map(|_| ())
+        self.api.deploy(s, split).await
     }
 
     async fn submit(&mut self, bytes: &[u8]) -> Submit {
@@ -529,47 +598,7 @@ impl Exec for Live<'_> {
     }
 
     async fn bundle(&mut self, fold: &ReleaseFold) -> std::result::Result<Option<RawBundle>, String> {
-        let Ok(bucket) = self.env.bucket("RELEASES") else { return Ok(None) };
-        let listed = bucket.list().delimiter("/").execute().await.map_err(|e| e.to_string())?;
-        for prefix in listed.delimited_prefixes() {
-            let Some(rec) = bucket.get(format!("{prefix}release.json")).execute().await.map_err(|e| e.to_string())?
-            else {
-                continue;
-            };
-            let record = rec.body().ok_or("release.json has no body")?.bytes().await.map_err(|e| e.to_string())?;
-            let id: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&record).into();
-            if fold.uploads.contains_key(&id) {
-                continue;
-            }
-            let sig = bucket.get(format!("{prefix}release.sig")).execute().await.map_err(|e| e.to_string())?;
-            let sig = sig.ok_or_else(|| format!("{prefix}release.sig is missing"))?;
-            let sig = sig.body().ok_or("release.sig has no body")?.bytes().await.map_err(|e| e.to_string())?;
-            let sig = Signature(sig.try_into().map_err(|_| format!("{prefix}release.sig is not 64 bytes"))?);
-            let mut files = Vec::new();
-            let mut cursor = None;
-            loop {
-                let mut q = bucket.list().prefix(prefix.clone());
-                if let Some(c) = cursor.take() {
-                    q = q.cursor(c);
-                }
-                let page = q.execute().await.map_err(|e| e.to_string())?;
-                for o in page.objects() {
-                    let name = o.key()[prefix.len()..].to_string();
-                    if name == "release.json" || name == "release.sig" {
-                        continue;
-                    }
-                    let Some(obj) = bucket.get(o.key()).execute().await.map_err(|e| e.to_string())? else { continue };
-                    let bytes = obj.body().ok_or("an object with no body")?.bytes().await.map_err(|e| e.to_string())?;
-                    files.push((name, bytes));
-                }
-                if !page.truncated() {
-                    break;
-                }
-                cursor = page.cursor();
-            }
-            return Ok(Some(RawBundle { record, sig, files }));
-        }
-        Ok(None)
+        bundle(self.env, fold).await
     }
 
     async fn tagged(
@@ -577,50 +606,11 @@ impl Exec for Live<'_> {
         tag: &str,
         scripts: &[Script],
     ) -> std::result::Result<BTreeMap<Script, VersionId>, String> {
-        let mut out = BTreeMap::new();
-        for s in scripts {
-            let name = self.name(*s)?.to_string();
-            let v =
-                self.api(Method::Get, &format!("/workers/scripts/{name}/versions?per_page=10"), None, false).await?;
-            // The list, newest first, carries no annotations, so each of the ten newest versions is read until one
-            // carries the tag: a run uploads at most one version per script before the next reads it back.
-            for item in v["result"]["items"].as_array().into_iter().flatten() {
-                let Some(id) = item["id"].as_str() else { continue };
-                let one = self.api(Method::Get, &format!("/workers/scripts/{name}/versions/{id}"), None, false).await?;
-                if one["result"]["annotations"]["workers/tag"].as_str() == Some(tag) {
-                    out.insert(*s, id.parse().map_err(|_| format!("version id {id}"))?);
-                    break;
-                }
-            }
-        }
-        Ok(out)
+        self.api.tagged(tag, scripts).await
     }
 
     async fn upload(&mut self, s: Script, tag: &str, modules: &[(String, Vec<u8>)]) -> std::result::Result<(), String> {
-        let name = self.name(s)?.to_string();
-        let main = modules
-            .iter()
-            .map(|(n, _)| n.as_str())
-            .find(|n| *n == "index.js" || *n == "entry.js" || *n == "worker.js")
-            .ok_or("the script's modules have no index.js")?;
-        // The deployed version's bindings and runtime settings, read and sent: `keep_bindings` would take them from
-        // the newest upload, deployed or not, and an upload keeps no runtime setting at all (`ops::upload_metadata`).
-        let d = self.deployment(s).await?;
-        let live = ops::upload_source(&d.split).ok_or("a deployment with no versions")?;
-        let one = self.api(Method::Get, &format!("/workers/scripts/{name}/versions/{live}"), None, false).await?;
-        let meta = ops::upload_metadata(&one["result"], main, tag);
-        let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
-        form.append_with_str("metadata", &meta.to_string()).map_err(|e| format!("{e:?}"))?;
-        for (n, b) in modules {
-            let ct = if n.ends_with(".wasm") { "application/wasm" } else { "application/javascript+module" };
-            let opts = web_sys::BlobPropertyBag::new();
-            opts.set_type(ct);
-            let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(b.as_slice()));
-            let blob =
-                web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(|e| format!("{e:?}"))?;
-            form.append_with_blob_and_filename(n, &blob, n).map_err(|e| format!("{e:?}"))?;
-        }
-        self.api(Method::Post, &format!("/workers/scripts/{name}/versions"), Some(form.into()), false).await.map(|_| ())
+        self.api.upload(s, tag, modules).await
     }
 
     /// One host step of a `Rotate` (`decisions/DECISIONS.md`, "`rotate-probe`"). Every call is to the Cloudflare API or
@@ -639,7 +629,7 @@ impl Exec for Live<'_> {
         match (secret, step) {
             // The deploy token's own scope: the call `graft-ops` makes before every deploy.
             (SecretName::DeployToken, RotateStep::Probe) => {
-                let v = self.api_as(&new, Method::Get, "/workers/scripts", None, false).await?;
+                let v = self.api.call(&new, Method::Get, "/workers/scripts", None, false).await?;
                 let n = v["result"].as_array().map_or(0, Vec::len);
                 console_log!("graft-ops Rotate DeployToken slot {slot} probe: {n} scripts listed");
                 Ok(())
@@ -647,7 +637,7 @@ impl Exec for Live<'_> {
             // Workers R2 Storage Read, the read token's scope, on the first site's bucket.
             (SecretName::ReadToken, RotateStep::Probe) => {
                 let site = fold.genesis.as_ref().and_then(|g| g.sites.first()).ok_or("no site in the view")?;
-                let v = self.api_as(&new, Method::Get, &format!("/r2/buckets/{}", site.bucket), None, false).await?;
+                let v = self.api.call(&new, Method::Get, &format!("/r2/buckets/{}", site.bucket), None, false).await?;
                 let at = v["result"]["location"].as_str().ok_or("no bucket location in the answer")?;
                 console_log!("graft-ops Rotate ReadToken slot {slot} probe: {} location {at}", site.bucket);
                 Ok(())
@@ -717,6 +707,51 @@ impl Exec for Live<'_> {
     }
 }
 
+/// The first release in the `RELEASES` bucket that the group holds no `ReleaseUploaded` for: `release.json`, its
+/// signature, and every other file of its prefix. No `RELEASES` binding reads as an empty bucket.
+pub(crate) async fn bundle(env: &Env, fold: &ReleaseFold) -> std::result::Result<Option<RawBundle>, String> {
+    let Ok(bucket) = env.bucket("RELEASES") else { return Ok(None) };
+    let listed = bucket.list().delimiter("/").execute().await.map_err(|e| e.to_string())?;
+    for prefix in listed.delimited_prefixes() {
+        let Some(rec) = bucket.get(format!("{prefix}release.json")).execute().await.map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let record = rec.body().ok_or("release.json has no body")?.bytes().await.map_err(|e| e.to_string())?;
+        let id: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&record).into();
+        if fold.uploads.contains_key(&id) {
+            continue;
+        }
+        let sig = bucket.get(format!("{prefix}release.sig")).execute().await.map_err(|e| e.to_string())?;
+        let sig = sig.ok_or_else(|| format!("{prefix}release.sig is missing"))?;
+        let sig = sig.body().ok_or("release.sig has no body")?.bytes().await.map_err(|e| e.to_string())?;
+        let sig = Signature(sig.try_into().map_err(|_| format!("{prefix}release.sig is not 64 bytes"))?);
+        let mut files = Vec::new();
+        let mut cursor = None;
+        loop {
+            let mut q = bucket.list().prefix(prefix.clone());
+            if let Some(c) = cursor.take() {
+                q = q.cursor(c);
+            }
+            let page = q.execute().await.map_err(|e| e.to_string())?;
+            for o in page.objects() {
+                let name = o.key()[prefix.len()..].to_string();
+                if name == "release.json" || name == "release.sig" {
+                    continue;
+                }
+                let Some(obj) = bucket.get(o.key()).execute().await.map_err(|e| e.to_string())? else { continue };
+                let bytes = obj.body().ok_or("an object with no body")?.bytes().await.map_err(|e| e.to_string())?;
+                files.push((name, bytes));
+            }
+            if !page.truncated() {
+                break;
+            }
+            cursor = page.cursor();
+        }
+        return Ok(Some(RawBundle { record, sig, files }));
+    }
+    Ok(None)
+}
+
 /// The recovery window a lost or replaced site must stay under `UNDRAIN_BURN` for: `RECOVER_AFTER`, or on a
 /// test-faults build `OPS_RECOVER_MS`, for a hosted row whose lines do not measure its length (BF-50's recovery half,
 /// recorded as a deviation in `tests/m6/results/m6-wp1.md`).
@@ -730,7 +765,7 @@ fn recover_window(env: &Env) -> u64 {
 }
 
 /// The dwells: the design's, or a test install's `STEP_DWELL_MS` and `FIRST_DAY_MS`.
-fn dwell(env: &Env) -> Dwell {
+pub(crate) fn dwell(env: &Env) -> Dwell {
     let ms = |n: &str| env.var(n).ok().and_then(|v| v.to_string().parse().ok());
     let d = Dwell::default();
     // BF-46 on a test install: a `MintWrapKey` `Rotate`'s publish wait, read only by a test-faults build.
