@@ -1,0 +1,6 @@
+2026-11-24T06:03:14Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-24T06:03:40Z waiting 379 s for sweep runs started before the first pass (until 2026-11-24T06:10:00.000007+00:00)
+2026-11-24T06:09:53Z buckets: graft-m3f-site-a-packs, graft-m3f-site-b-packs, graft-m3f-site-c-packs
+2026-11-24T06:10:41Z 65630 purged: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-24T06:10:41Z 65630 second pass: a 0 -> 0, b 0 -> 0, c 0 -> 0
+2026-11-24T06:10:41Z {"dry": false, "purged": 1, "objects": 0, "refused": [], "second": 0}
