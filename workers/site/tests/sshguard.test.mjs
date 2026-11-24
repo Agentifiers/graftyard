@@ -2,7 +2,7 @@
 // `node --test 'workers/site/tests/*.test.mjs'`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { refuseSshOff } from "../sshguard.mjs";
+import { refuseForeignHostKey, refuseSshOff } from "../sshguard.mjs";
 
 const SITES = ["graft-m3f-site-a", "graft-m3f-site-b", "graft-m3f-site-c"];
 
@@ -49,4 +49,40 @@ test("--ssh and --ssh-off deploy without asking, and other installs' or non-Work
 
 test("an API failure refuses, since the guard cannot tell", async () => {
   await assert.rejects(refuseSshOff([], { siteScripts: SITES }, api({}, { fail: "zones" })), /cannot list Spectrum apps/);
+});
+
+// One account and one store, two installs: graft-m3f's sites bind SSH_HOST_KEY_A and _B, graft-m4a's bind neither, and
+// an unrelated script binds a same-named secret of another store.
+function store(bindings, { fail = null } = {}) {
+  return async (path) => {
+    if (fail && path.includes(fail)) throw new Error("403 Authentication error");
+    if (path.endsWith("/workers/scripts")) return { result: Object.keys(bindings).map((id) => ({ id })) };
+    const s = path.match(/workers\/scripts\/([^/]+)\/settings$/);
+    if (s) return { result: { bindings: bindings[s[1]] } };
+    throw new Error(`unexpected ${path}`);
+  };
+}
+const hk = (slot, store_id = "st1") => ({ type: "secrets_store_secret", name: `SSH_HOST_KEY_${slot}`, store_id, secret_name: `SSH_HOST_KEY_${slot}` });
+const ACCOUNT = {
+  "graft-m3f-site-a": [hk("A"), hk("B")], "graft-m3f-site-b": [hk("A"), hk("B")], "graft-m3f-site-c": [hk("A"), hk("B")],
+  "graft-m4a-site-a": [{ type: "plain_text", name: "SITE_ID" }],
+  "other-store-user": [hk("B", "st2")],
+};
+const M4A = ["graft-m4a-site-a", "graft-m4a-site-b", "graft-m4a-site-c"];
+
+test("a host-key write is refused when another install's scripts bind the secret", async () => {
+  await assert.rejects(refuseForeignHostKey(store(ACCOUNT), "acct", { store: "st1", secret: "SSH_HOST_KEY_B", siteScripts: M4A }),
+    /SSH_HOST_KEY_B is bound by another install's scripts \(graft-m3f-site-a, graft-m3f-site-b, graft-m3f-site-c\)/);
+});
+
+test("a host-key write goes ahead for the install that binds it, or when nothing binds it in this store", async () => {
+  await refuseForeignHostKey(store(ACCOUNT), "acct", { store: "st1", secret: "SSH_HOST_KEY_B", siteScripts: SITES });
+  // other-store-user binds SSH_HOST_KEY_B of st2, not st1's.
+  const { "graft-m3f-site-a": _a, "graft-m3f-site-b": _b, "graft-m3f-site-c": _c, ...rest } = ACCOUNT;
+  await refuseForeignHostKey(store(rest), "acct", { store: "st1", secret: "SSH_HOST_KEY_B", siteScripts: M4A });
+});
+
+test("a host-key write is refused when the bindings cannot be listed", async () => {
+  await assert.rejects(refuseForeignHostKey(store(ACCOUNT, { fail: "graft-m3f-site-b" }), "acct",
+    { store: "st1", secret: "SSH_HOST_KEY_A", siteScripts: SITES }), /cannot list which scripts bind SSH_HOST_KEY_A/);
 });
