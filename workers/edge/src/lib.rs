@@ -216,7 +216,7 @@ async fn gate_shared(c: &Ctx<'_>, req: &Request, guessed: &Repo) -> Result<bool>
             Err(_) => return Ok(true),
         },
     };
-    if gate::get(&(guessed.id, key)).is_some_and(|(at, _, foreign)| colo::servable(at, now(), foreign)) {
+    if gate::get(&(guessed.id, key)).is_some_and(|(at, _, foreign, _)| colo::servable(at, now(), foreign)) {
         return Ok(true);
     }
     let at = api::timed(c, "beside_match", colo::match_gate(&colo::gate_url(guessed.id, key, &guessed.record))).await;
@@ -419,7 +419,10 @@ async fn read_gate(
     let key = if c.colo_off { key.map(gate::off_key) } else { key };
     let Some(k) = key else {
         return Ok(match fresh_gate(c, repo, who, None).await {
-            Ok((d, _)) => Ok(d),
+            Ok((d, _, rows)) => {
+                c.push_rows.replace(rows.map(|r| (r, false)));
+                Ok(d)
+            }
             Err(GateFail::Read(e)) => Err(e),
             Err(GateFail::Edge(e)) => return Err(e),
         });
@@ -433,6 +436,9 @@ async fn read_gate(
         GateIo { c, repo, who, key: k, url, beside: std::cell::RefCell::new(beside), writable: Default::default() };
     // Boxed for the same reason: with `beside` the gate holds both its fresh read and the rows read beside the front.
     let g = Box::pin(colo::gate(&io, share)).await;
+    // The agent rows the decision's own fill read, from the fresh read or the isolate entry that holds them; `None`
+    // for a data-center copy or an older member, and `agents::push_context` then reads its own (`agent-rows-cache`).
+    c.push_rows.replace(g.rows.map(|r| (r, g.served != colo::Served::Read)));
     match g.served {
         colo::Served::Read => {}
         colo::Served::Isolate(age) => c.timing.put("gate_iso", age as f64),
@@ -481,14 +487,15 @@ struct GateIo<'a, 'c, 'b> {
 
 impl colo::GateFx for GateIo<'_, '_, '_> {
     type Err = GateFail;
+    type Rows = gate::Rows;
     fn now(&self) -> Timestamp {
         now()
     }
-    fn held(&self) -> Option<(Timestamp, graftyard_identity::Decision, bool)> {
+    fn held(&self) -> Option<colo::Held<gate::Rows>> {
         gate::get(&self.key)
     }
-    fn hold(&self, at: Timestamp, d: graftyard_identity::Decision, foreign: bool) {
-        gate::put(self.key, at, d, foreign);
+    fn hold(&self, at: Timestamp, d: graftyard_identity::Decision, foreign: bool, rows: Option<gate::Rows>) {
+        gate::put(self.key, at, d, foreign, rows);
     }
     async fn matched(&self) -> Option<Timestamp> {
         api::timed(self.c, "gate_match", colo::match_gate(&self.url)).await
@@ -497,7 +504,7 @@ impl colo::GateFx for GateIo<'_, '_, '_> {
         let url = self.url.clone();
         self.c.ctx.wait_until(colo::put_gate(url, at));
     }
-    async fn read(&self) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
+    async fn read(&self) -> std::result::Result<colo::Fill<gate::Rows>, GateFail> {
         fresh_gate(self.c, self.repo, self.who, Some(&self.writable)).await
     }
     fn writable(&self) -> bool {
@@ -571,27 +578,33 @@ fn reread_ahead(c: &Ctx<'_>, repo: &Repo, who: Option<&Principal>, k: gate::Key)
 }
 
 /// The gate's fresh read: the repository's access rows and the owner's `Authz` (from `rcache` for a read-class
-/// request), decided by `authorize_read`, and the time of the oldest fold read under the decision (`reopened`).
-/// `None` for a repository whose group is not created yet or was retired: hidden, and never cached.
+/// request), decided by `authorize_read`, the time of the oldest fold read under the decision (`reopened`), and a
+/// push's agent rows read with it. `None` for a repository whose group is not created yet or was retired: hidden,
+/// and never cached.
 async fn fresh_gate(
     c: &Ctx<'_>,
     repo: &Repo,
     who: Option<&Principal>,
     writable: Option<&std::cell::Cell<bool>>,
-) -> std::result::Result<(graftyard_identity::Decision, Option<Timestamp>), GateFail> {
-    // A push that reads the access rows reads its agent rows in the same read, which the push keeps
-    // (`Ctx::push_rows`); with the decision cached it reads no rows here, and `agents::push_context` reads its own.
+) -> std::result::Result<colo::Fill<gate::Rows>, GateFail> {
+    // A push that reads the access rows reads its agent rows in the same read. They ride with this decision into the
+    // gate's isolate entry (`agent-rows-cache`), so a push served from that entry reads no rows either; only a member
+    // that answered the access rows alone (an older release) leaves them `None`.
     let push = c.write.get() && c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT);
+    let agent_rows = std::cell::RefCell::new(None);
     let rows = async {
         if !push {
             return api::core_rows(c, repo, "access").await;
         }
         Ok(api::push_rows(c, repo).await?.map(|(core, agent)| {
-            c.push_rows.replace(Some((core.clone(), agent)));
+            if agent {
+                agent_rows.replace(Some(std::rc::Rc::new(core.clone())));
+            }
             core
         }))
     };
-    fresh_gate_on(c, repo, who, rows, writable).await
+    let (d, at) = fresh_gate_on(c, repo, who, rows, writable).await?;
+    Ok((d, at, agent_rows.into_inner()))
 }
 
 /// `fresh_gate` on the access rows `rows` answers: its own read, or the rows read beside the front (`beside`). With
@@ -702,9 +715,49 @@ mod gate {
     const ENTRIES_MAX: usize = 4_096;
 
     pub(crate) type Key = (RepoId, Option<[u8; 32]>);
+    /// A push gate's agent rows (`crate::api::push_rows`), shared by its entry and the requests it serves.
+    pub(crate) type Rows = std::rc::Rc<graftyard_fold::MemStore>;
+    /// The most agent-row bytes one isolate's entries hold, counted per entry [guess: a few hundred tasks a
+    /// repository, about 100 B a task row]. An entry past it keeps its decision without rows, and its pushes read
+    /// their own (`agent-rows-cache`).
+    pub(crate) const ROWS_BYTES_MAX: usize = 8 << 20;
+
+    struct Entry {
+        at: Timestamp,
+        d: Decision,
+        foreign: bool,
+        rows: Option<(Rows, usize)>,
+    }
 
     thread_local! {
-        static CACHE: RefCell<BTreeMap<Key, (Timestamp, Decision, bool)>> = const { RefCell::new(BTreeMap::new()) };
+        static CACHE: RefCell<BTreeMap<Key, Entry>> = const { RefCell::new(BTreeMap::new()) };
+        static ROWS_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A store's bytes as counted against ROWS_BYTES_MAX: its keys' and columns' value lengths.
+    pub(crate) fn rows_bytes_of(s: &graftyard_fold::MemStore) -> usize {
+        use graftyard_fold::Val;
+        let val = |v: &Val| match v {
+            Val::Null => 1,
+            Val::Int(_) => 8,
+            Val::Text(t) => t.len(),
+            Val::Blob(b) => b.len(),
+        };
+        s.0.iter()
+            .map(|(t, rows)| {
+                t.len()
+                    + rows
+                        .iter()
+                        .map(|(k, r)| k.iter().map(val).sum::<usize>() + r.cols.iter().map(val).sum::<usize>())
+                        .sum::<usize>()
+            })
+            .sum()
+    }
+
+    /// The agent-row bytes this isolate's entries hold now.
+    #[cfg(test)]
+    pub(crate) fn rows_bytes() -> usize {
+        ROWS_BYTES.with(|b| b.get())
     }
 
     fn stateless_key(claims: &InstallationClaims) -> [u8; 32] {
@@ -741,10 +794,11 @@ mod gate {
         (k.0, Some(hash.finalize().into()))
     }
 
-    /// The decision held for `k` at any age, the time of the oldest fold read it was made on, and whether it was
-    /// copied from the data center's entry; `colo::gate` decides whether it may serve (`colo::servable`).
-    pub(crate) fn get(k: &Key) -> Option<(Timestamp, Decision, bool)> {
-        CACHE.with(|c| c.borrow().get(k).copied())
+    /// The decision held for `k` at any age, the time of the oldest fold read it was made on, whether it was copied
+    /// from the data center's entry, and the agent rows its own fill read; `colo::gate` decides whether it may serve
+    /// (`colo::servable`), and the rows serve only with it.
+    pub(crate) fn get(k: &Key) -> Option<crate::colo::Held<Rows>> {
+        CACHE.with(|c| c.borrow().get(k).map(|e| (e.at, e.d, e.foreign, e.rows.as_ref().map(|(r, _)| r.clone()))))
     }
 
     /// The share-off arm's key on a test install (`x-graft-colo: off`): the same credential and repository under
@@ -757,14 +811,29 @@ mod gate {
         (k.0, Some(hash.finalize().into()))
     }
 
-    /// Holds `d` for `k`, stamped `at` (the oldest fold read under it); `foreign` when copied from the data center.
-    pub(crate) fn put(k: Key, at: Timestamp, d: Decision, foreign: bool) {
+    /// Holds `d` for `k`, stamped `at` (the oldest fold read under it), with the agent rows the same fill read;
+    /// `foreign` when copied from the data center. It replaces `k`'s entry whole, so no earlier fill's rows stay
+    /// beside it.
+    pub(crate) fn put(k: Key, at: Timestamp, d: Decision, foreign: bool, rows: Option<Rows>) {
         CACHE.with(|c| {
             let mut c = c.borrow_mut();
-            if c.len() >= ENTRIES_MAX {
-                c.clear();
-            }
-            c.insert(k, (at, d, foreign));
+            ROWS_BYTES.with(|b| {
+                if c.len() >= ENTRIES_MAX {
+                    c.clear();
+                    b.set(0);
+                }
+                if let Some((_, n)) = c.remove(&k).and_then(|e| e.rows) {
+                    b.set(b.get().saturating_sub(n));
+                }
+                let rows = rows.and_then(|r| {
+                    let n = rows_bytes_of(&r);
+                    (b.get() + n <= ROWS_BYTES_MAX).then(|| {
+                        b.set(b.get() + n);
+                        (r, n)
+                    })
+                });
+                c.insert(k, Entry { at, d, foreign, rows });
+            });
         });
     }
 }
@@ -946,6 +1015,56 @@ mod gate_tests {
 
     fn stateless(jti: u128) -> Principal {
         principal(Credential::Stateless(Box::new(claims(jti))))
+    }
+
+    fn rows(tag: &str) -> gate::Rows {
+        let mut s = graftyard_fold::MemStore::default();
+        let row =
+            graftyard_fold::Stored { written: Default::default(), cols: vec![graftyard_fold::Val::Text(tag.into())] };
+        graftyard_fold::Store::put(&mut s, "agent_task", vec![graftyard_fold::Val::Text("k".into())], row);
+        std::rc::Rc::new(s)
+    }
+
+    fn tag(r: &gate::Rows) -> String {
+        match &graftyard_fold::Store::get(&**r, "agent_task", &[graftyard_fold::Val::Text("k".into())]).unwrap().cols[0]
+        {
+            graftyard_fold::Val::Text(t) => t.to_string(),
+            _ => unreachable!(),
+        }
+    }
+
+    /// `agent-rows-cache`: an entry's rows are its own fill's. A put replaces the whole entry, so a decision put
+    /// without rows (a data-center copy) never keeps an earlier fill's rows beside it, and a new fill's rows replace
+    /// the old; the bytes counted fall back with each replacement; and past `ROWS_BYTES_MAX` an entry keeps its
+    /// decision with no rows, so its pushes read their own.
+    #[test]
+    fn a_gate_entry_holds_only_its_own_fills_rows_within_the_byte_cap() {
+        let k = (RepoId(DbId(901)), Some([1; 32]));
+        let base = gate::rows_bytes();
+        gate::put(k, Timestamp(1_000), graftyard_identity::Decision::Allow, false, Some(rows("fill-1")));
+        let one = gate::rows_bytes() - base;
+        assert!(one > 0);
+        let (at, d, foreign, got) = gate::get(&k).unwrap();
+        assert_eq!(
+            (at, d, foreign, tag(&got.unwrap())),
+            (Timestamp(1_000), graftyard_identity::Decision::Allow, false, "fill-1".into())
+        );
+        gate::put(k, Timestamp(2_000), graftyard_identity::Decision::Allow, true, None);
+        assert_eq!(gate::get(&k).unwrap().3, None, "a copy's decision carries no earlier fill's rows");
+        assert_eq!(gate::rows_bytes(), base, "the replaced rows' bytes are released");
+        gate::put(k, Timestamp(3_000), graftyard_identity::Decision::Hidden, false, Some(rows("fill-3")));
+        assert_eq!(tag(&gate::get(&k).unwrap().3.unwrap()), "fill-3");
+        assert_eq!(gate::rows_bytes() - base, one);
+        // A fill too large for what is left keeps its decision and no rows.
+        let mut big = graftyard_fold::MemStore::default();
+        let blob = vec![0u8; gate::ROWS_BYTES_MAX];
+        let row =
+            graftyard_fold::Stored { written: Default::default(), cols: vec![graftyard_fold::Val::Blob(blob.into())] };
+        graftyard_fold::Store::put(&mut big, "agent_task", Vec::new(), row);
+        let k2 = (RepoId(DbId(902)), Some([1; 32]));
+        gate::put(k2, Timestamp(4_000), graftyard_identity::Decision::Allow, false, Some(std::rc::Rc::new(big)));
+        assert_eq!(gate::get(&k2).map(|e| (e.1, e.3.is_none())), Some((graftyard_identity::Decision::Allow, true)));
+        assert_eq!(gate::rows_bytes() - base, one, "and counts nothing for it");
     }
 
     #[test]
@@ -2067,7 +2186,7 @@ struct Ctx<'a> {
     probe: std::cell::Cell<bool>,
     /// A push's repository rows from the read gate's one read: the access rows, and the agent rows when the member
     /// answered them too (`api::push_rows`), which `agents::push_context` reuses instead of reading them again.
-    push_rows: std::cell::RefCell<Option<(graftyard_fold::MemStore, bool)>>,
+    push_rows: std::cell::RefCell<Option<(gate::Rows, bool)>>,
     /// The install's `Authz` (`install_authz`), read once per request: a push starts it with its first reads, and
     /// `push_context` and `admission` both take it from here.
     install: std::cell::RefCell<Option<Option<graftyard_identity::AuthzFold>>>,
@@ -2299,7 +2418,7 @@ async fn receive_pack(
     let deletes_only = push.updates.iter().all(|u| u.new.is_none());
     // AM1: a push that may be an agent's asks the git cache for `validate`'s detail and carries what it gives
     // (`agents::agentish`). A default push asks for none, so its calls and bytes are unchanged.
-    let agent = api::timed(c, "context", agents::push_context(c, repo, &push)).await;
+    let mut agent = api::timed(c, "context", agents::push_context(c, repo, &push)).await;
     let detail = graftyard_git::agent::detail_lines(&push.updates, agent.is_some());
     // Only updates with a new tip get detail, so a push of deletes alone asks for none.
     let mut got: Vec<graftyard_git::agent::RefDetail> = Vec::new();
@@ -2400,7 +2519,8 @@ async fn receive_pack(
     if let Some(r) = drain(c, &mut tail, path).await? {
         return Ok(r);
     }
-    if let Some(a) = &agent {
+    if let Some(a) = agent.as_mut() {
+        agents::fresh_if_unlinked(c, repo, a, &push, &got, path).await;
         agents::fill_push(c, a, &mut push, &got, path);
     }
     let f = graftyard_raft::Command::format(&push);

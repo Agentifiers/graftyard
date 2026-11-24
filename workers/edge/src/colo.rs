@@ -53,13 +53,20 @@ pub(crate) enum Served {
     Colo(u64),
 }
 
-/// A gate's answer: the decision, where it came from, and whether a re-read ahead is due.
+/// A gate's answer: the decision, where it came from, whether a re-read ahead is due, and the rows the fill that made
+/// the decision read beside it (`GateFx::Rows`), never another fill's.
 #[derive(Debug, PartialEq)]
-pub(crate) struct Gated<E> {
+pub(crate) struct Gated<E, R> {
     pub(crate) decision: Result<Decision, E>,
     pub(crate) served: Served,
     pub(crate) ahead: bool,
+    pub(crate) rows: Option<R>,
 }
+
+/// An isolate entry: the decision's stamp, the decision, whether another isolate stamped it, and its fill's rows.
+pub(crate) type Held<R> = (Timestamp, Decision, bool, Option<R>);
+/// A fresh read's answer: the decision, its stamp (`None`: not to be cached), and the rows read with it.
+pub(crate) type Fill<R> = (Decision, Option<Timestamp>, Option<R>);
 
 /// What the gate does to the world: its clock, the isolate's entry, the data center's entry, and a fresh read, which
 /// answers the decision and the time of the oldest fold read under it (`None`: not to be cached, as for a repository
@@ -67,14 +74,18 @@ pub(crate) struct Gated<E> {
 #[allow(async_fn_in_trait)]
 pub(crate) trait GateFx {
     type Err;
+    /// What a fresh read read beside its decision: a push's agent rows (`agent-rows-cache`). They are held in the
+    /// decision's own entry and served only with it, so a cached push gate needs no read of its own, and rows never
+    /// outlive or come from another fill than the decision they ride with. A data-center copy carries none.
+    type Rows: Clone;
     fn now(&self) -> Timestamp;
-    /// The isolate's entry, at any age: the decision, its stamp, and whether another isolate stamped it.
-    fn held(&self) -> Option<(Timestamp, Decision, bool)>;
-    fn hold(&self, at: Timestamp, decision: Decision, foreign: bool);
+    /// The isolate's entry, at any age: the decision, its stamp, whether another isolate stamped it, and its rows.
+    fn held(&self) -> Option<Held<Self::Rows>>;
+    fn hold(&self, at: Timestamp, decision: Decision, foreign: bool, rows: Option<Self::Rows>);
     /// The data center's entry's stamp, if one answered within `COLO_MATCH_WITHIN`.
     async fn matched(&self) -> Option<Timestamp>;
     async fn share(&self, at: Timestamp);
-    async fn read(&self) -> Result<(Decision, Option<Timestamp>), Self::Err>;
+    async fn read(&self) -> Result<Fill<Self::Rows>, Self::Err>;
     /// Whether the last fresh read also found the caller may push to the repository (`Share::push`).
     fn writable(&self) -> bool;
     /// The decision on the access rows read beside the front on the guessed repository (`beside`), kept only when
@@ -85,10 +96,11 @@ pub(crate) trait GateFx {
 
 /// The gate's fresh decision: on the rows read beside the front when they allow, stamped no later than their read's
 /// start, since the front ran between that read and the gate; else a fresh read. A refusal on them, or a repository
-/// not created yet, is read again fresh, as a refusal on a cached fold is (`beside`).
-async fn fresh<F: GateFx>(fx: &F) -> Result<(Decision, Option<Timestamp>), F::Err> {
+/// not created yet, is read again fresh, as a refusal on a cached fold is (`beside`). Rows read beside the front are
+/// access rows only, so that decision carries no `Rows`.
+async fn fresh<F: GateFx>(fx: &F) -> Result<Fill<F::Rows>, F::Err> {
     match fx.beside().await {
-        Some((start, Ok((Decision::Allow, Some(at))))) => Ok((Decision::Allow, Some(at.min(start)))),
+        Some((start, Ok((Decision::Allow, Some(at))))) => Ok((Decision::Allow, Some(at.min(start)), None)),
         Some((_, Err(e))) => Err(e),
         _ => fx.read().await,
     }
@@ -119,12 +131,12 @@ pub(crate) const OFF: Share = Share { matches: false, puts: false, push: false }
 
 /// The read gate on the served path, sharing as `share` says; with `OFF` it keeps the isolate cache alone, as before
 /// `colo-gate`.
-pub(crate) async fn gate<F: GateFx>(fx: &F, share: Share) -> Gated<F::Err> {
+pub(crate) async fn gate<F: GateFx>(fx: &F, share: Share) -> Gated<F::Err, F::Rows> {
     let ahead_ok = share == READ;
     let now = fx.now();
     // A copy a POST took of the data center's entry never answers an advertisement, which decides on its own
     // isolate's reads.
-    if let Some((at, d, foreign)) = fx.held()
+    if let Some((at, d, foreign, rows)) = fx.held()
         && servable(at, now, foreign)
         && !(share.push && !share.matches && foreign)
     {
@@ -132,42 +144,43 @@ pub(crate) async fn gate<F: GateFx>(fx: &F, share: Share) -> Gated<F::Err> {
         if share.push && share.puts && d == Decision::Allow && !foreign {
             fx.share(at).await;
         }
-        return Gated { decision: Ok(d), served: Served::Isolate(now.0.saturating_sub(at.0)), ahead };
+        return Gated { decision: Ok(d), served: Served::Isolate(now.0.saturating_sub(at.0)), ahead, rows };
     }
     if share.matches
         && let Some(at) = fx.matched().await
     {
         let now = fx.now();
         if servable(at, now, true) {
-            // The copy keeps the entry's stamp, so the isolate never serves it longer than the data center would.
-            fx.hold(at, Decision::Allow, true);
+            // The copy keeps the entry's stamp, so the isolate never serves it longer than the data center would. It
+            // replaces the isolate's entry whole: the rows of the fill it replaces go with it.
+            fx.hold(at, Decision::Allow, true, None);
             let age = now.0.saturating_sub(at.0);
             let ahead = ahead_ok && age >= ms(COLO_AHEAD);
-            return Gated { decision: Ok(Decision::Allow), served: Served::Colo(age), ahead };
+            return Gated { decision: Ok(Decision::Allow), served: Served::Colo(age), ahead, rows: None };
         }
     }
-    let decision = match fresh(fx).await {
-        Ok((d, Some(at))) => {
+    let (decision, rows) = match fresh(fx).await {
+        Ok((d, Some(at), rows)) => {
             let keep = d != Decision::Allow || !share.push || fx.writable();
             if keep {
-                fx.hold(at, d, false);
+                fx.hold(at, d, false, rows.clone());
             }
             if share.puts && d == Decision::Allow && keep {
                 fx.share(at).await;
             }
-            Ok(d)
+            (Ok(d), rows)
         }
-        Ok((d, None)) => Ok(d),
-        Err(e) => Err(e),
+        Ok((d, None, rows)) => (Ok(d), rows),
+        Err(e) => (Err(e), None),
     };
-    Gated { decision, served: Served::Read, ahead: false }
+    Gated { decision, served: Served::Read, ahead: false, rows }
 }
 
 /// The re-read ahead, after a request's answer: a fresh read whose `Allow` replaces both entries with its own stamp;
 /// a refusal is held in the isolate and not put, so the data center's entry lapses on its own stamp.
 pub(crate) async fn reread<F: GateFx>(fx: &F) {
-    if let Ok((d, Some(at))) = fx.read().await {
-        fx.hold(at, d, false);
+    if let Ok((d, Some(at), rows)) = fx.read().await {
+        fx.hold(at, d, false, rows);
         if d == Decision::Allow {
             fx.share(at).await;
         }
@@ -374,7 +387,8 @@ mod tests {
 
     struct Isolate<'w> {
         w: &'w World,
-        held: RefCell<Option<(Timestamp, Decision, bool)>>,
+        /// The entry, with its fill's rows: here the start of the read that filled it.
+        held: RefCell<Option<Held<u64>>>,
         /// Rows read beside the front: their read's start, and whether they granted (`Err`: the read failed).
         beside: RefCell<Option<(u64, Result<bool, ()>)>>,
         reads: Cell<u32>,
@@ -382,14 +396,15 @@ mod tests {
 
     impl GateFx for Isolate<'_> {
         type Err = String;
+        type Rows = u64;
         fn now(&self) -> Timestamp {
             Timestamp(self.w.now.get())
         }
-        fn held(&self) -> Option<(Timestamp, Decision, bool)> {
+        fn held(&self) -> Option<Held<u64>> {
             *self.held.borrow()
         }
-        fn hold(&self, at: Timestamp, d: Decision, foreign: bool) {
-            *self.held.borrow_mut() = Some((at, d, foreign));
+        fn hold(&self, at: Timestamp, d: Decision, foreign: bool, rows: Option<u64>) {
+            *self.held.borrow_mut() = Some((at, d, foreign, rows));
         }
         async fn matched(&self) -> Option<Timestamp> {
             *self.w.colo.borrow()
@@ -397,13 +412,13 @@ mod tests {
         async fn share(&self, at: Timestamp) {
             *self.w.colo.borrow_mut() = Some(at);
         }
-        /// The fold read starts now, takes `read_ms`, and is stamped at its start.
-        async fn read(&self) -> Result<(Decision, Option<Timestamp>), String> {
+        /// The fold read starts now, takes `read_ms`, and is stamped at its start; its rows are named by that start.
+        async fn read(&self) -> Result<Fill<u64>, String> {
             self.reads.set(self.reads.get() + 1);
             let start = self.w.now.get();
             self.w.now.set(start + self.w.read_ms);
             let granted = self.w.revoked.get().is_none_or(|t| start < t);
-            Ok((if granted { Allow } else { Hidden }, Some(Timestamp(start))))
+            Ok((if granted { Allow } else { Hidden }, Some(Timestamp(start)), Some(start)))
         }
         /// Rows read beside the front from `beside`'s start, decided at the gate as a fresh read there would stamp
         /// it (now), or the error they answered.
@@ -429,6 +444,13 @@ mod tests {
 
     fn iso(w: &World) -> Isolate<'_> {
         Isolate { w, held: RefCell::new(None), beside: RefCell::new(None), reads: Cell::new(0) }
+    }
+
+    impl Isolate<'_> {
+        /// The entry without its rows.
+        fn entry(&self) -> Option<(Timestamp, Decision, bool)> {
+            self.held().map(|(at, d, f, _)| (at, d, f))
+        }
     }
 
     fn at(w: &World, t: u64) {
@@ -466,12 +488,12 @@ mod tests {
         let g = run(gate(&a, READ));
         assert_eq!((g.decision, g.served, g.ahead), (Ok(Allow), Served::Read, false));
         assert_eq!(*w.colo.borrow(), Some(Timestamp(1_000)), "stamped at the fold read's start, not at its put");
-        assert_eq!(a.held(), Some((Timestamp(1_000), Allow, false)));
+        assert_eq!(a.entry(), Some((Timestamp(1_000), Allow, false)));
         // Isolate b matches at 5,000 and copies the entry with its stamp.
         at(&w, 5_000);
         let g = run(gate(&b, READ));
         assert_eq!((g.decision, g.served, g.ahead), (Ok(Allow), Served::Colo(4_000), false));
-        assert_eq!(b.held(), Some((Timestamp(1_000), Allow, true)), "the copy keeps the entry's stamp");
+        assert_eq!(b.entry(), Some((Timestamp(1_000), Allow, true)), "the copy keeps the entry's stamp");
         // At 9,999 b serves its copy and a re-read ahead is due; at 10,000 the copy and the entry have both lapsed.
         at(&w, 9_999);
         let g = run(gate(&b, READ));
@@ -484,13 +506,13 @@ mod tests {
         at(&w, 15_000);
         run(reread(&a));
         assert_eq!(*w.colo.borrow(), Some(Timestamp(15_000)), "the re-read's Allow replaces the stamp");
-        assert_eq!(a.held(), Some((Timestamp(15_000), Allow, false)));
+        assert_eq!(a.entry(), Some((Timestamp(15_000), Allow, false)));
         // The grant is removed at 16,000; a re-read at 17,000 refuses, is held in the isolate, and is not put.
         w.revoked.set(Some(16_000));
         at(&w, 17_000);
         run(reread(&a));
         assert_eq!(*w.colo.borrow(), Some(Timestamp(15_000)), "a refused re-read never touches the entry");
-        assert_eq!(a.held(), Some((Timestamp(17_000), Hidden, false)));
+        assert_eq!(a.entry(), Some((Timestamp(17_000), Hidden, false)));
         // A fresh read that refuses is never put, and the share off never matches or puts.
         let w = world(100);
         w.revoked.set(Some(0));
@@ -537,7 +559,7 @@ mod tests {
         let g = run(gate(&a, READ));
         assert_eq!((g.decision, g.served), (Ok(Allow), Served::Read));
         assert_eq!(a.reads.get(), 0, "the rows read beside are the gate's read");
-        assert_eq!(a.held(), Some((Timestamp(1_000), Allow, false)), "stamped at the rows' read, not at the gate");
+        assert_eq!(a.entry(), Some((Timestamp(1_000), Allow, false)), "stamped at the rows' read, not at the gate");
         assert_eq!(*w.colo.borrow(), Some(Timestamp(1_000)));
         // The grant is removed at 1,500: the entry from the read at 1,000 lapses for every isolate by 10,000.
         w.revoked.set(Some(1_500));
@@ -638,7 +660,7 @@ mod tests {
         let g = run(gate(&post2, POST));
         assert_eq!((g.served, post2.reads.get()), (Served::Read, 1));
         assert_eq!(*w.colo.borrow(), Some(Timestamp(1_000)), "a POST never puts");
-        assert_eq!(post2.held(), Some((Timestamp(10_000), Allow, false)), "it holds its own read for its next POST");
+        assert_eq!(post2.entry(), Some((Timestamp(10_000), Allow, false)), "it holds its own read for its next POST");
         // An advertisement on that isolate serves the POST's read and puts its stamp, not now, for a POST elsewhere.
         at(&w, 11_000);
         assert_eq!((run(gate(&post2, ADVERT)).served, post2.reads.get()), (Served::Isolate(1_000), 1));
@@ -665,13 +687,63 @@ mod tests {
         let (adv, post) = (iso(&w), iso(&w));
         at(&w, 1_000);
         assert_eq!(run(gate(&adv, ADVERT)).decision, Ok(Allow));
-        assert_eq!((*w.colo.borrow(), adv.held()), (None, None), "a read-only Allow is never a push's entry");
+        assert_eq!((*w.colo.borrow(), adv.entry()), (None, None), "a read-only Allow is never a push's entry");
         at(&w, 2_000);
         assert_eq!((run(gate(&adv, ADVERT)).served, adv.reads.get()), (Served::Read, 2));
-        assert_eq!((run(gate(&post, POST)).served, post.reads.get(), post.held()), (Served::Read, 1, None));
+        assert_eq!((run(gate(&post, POST)).served, post.reads.get(), post.entry()), (Served::Read, 1, None));
         let fetch = iso(&w);
         run(gate(&fetch, READ));
-        assert!(w.colo.borrow().is_some() && fetch.held().is_some(), "a fetch's Allow is kept under its own key");
+        assert!(w.colo.borrow().is_some() && fetch.entry().is_some(), "a fetch's Allow is kept under its own key");
+    }
+
+    /// `agent-rows-cache`: a push gate's entry holds the rows its own fill read. A POST served from the entry gets
+    /// those rows with no read; past the decision's `READ_CACHE` both are read again together; a data-center copy
+    /// carries no rows and replaces an entry whole, so rows from an older fill never ride another decision; and a
+    /// fresh refusal holds that refusing fill's rows, not the last `Allow`'s.
+    #[test]
+    fn a_push_gate_serves_the_agent_rows_of_its_own_fill_and_no_other() {
+        let w = world(300);
+        let (adv, other) = (iso(&w), iso(&w));
+        // The advertisement reads at 1,000: decision and rows from that one read, and it puts the decision.
+        at(&w, 1_000);
+        let g = run(gate(&adv, ADVERT));
+        assert_eq!((g.decision, g.served, g.rows, adv.reads.get()), (Ok(Allow), Served::Read, Some(1_000), 1));
+        // Its POST on the same isolate is served from the entry with the same fill's rows, and reads nothing.
+        at(&w, 4_000);
+        let g = run(gate(&adv, POST));
+        assert_eq!((g.served, g.rows, adv.reads.get()), (Served::Isolate(3_000), Some(1_000), 1), "no second read");
+        // A POST on another isolate takes the data center's entry: a decision with no rows, so the push reads its own.
+        let g = run(gate(&other, POST));
+        assert_eq!((g.served, g.rows, other.reads.get()), (Served::Colo(3_000), None, 0));
+        // At READ_CACHE past the fill the entry still serves; one past it, decision and rows are read again together.
+        at(&w, 11_000);
+        assert_eq!(run(gate(&adv, POST)).rows, Some(1_000));
+        at(&w, 11_001);
+        let g = run(gate(&adv, POST));
+        assert_eq!(
+            (g.served, g.rows, adv.reads.get()),
+            (Served::Read, Some(11_001), 2),
+            "rows never outlive READ_CACHE"
+        );
+        // An isolate whose own entry, with an older fill's rows, has lapsed takes a newer data-center copy: the copy
+        // replaces the entry whole, so the older rows are gone and never serve beside the copy's decision.
+        let c = iso(&w);
+        c.hold(Timestamp(1), Allow, false, Some(1));
+        *w.colo.borrow_mut() = Some(Timestamp(19_500));
+        at(&w, 25_000);
+        let g = run(gate(&c, POST));
+        assert_eq!((g.served, g.rows), (Served::Colo(5_500), None), "a copy carries no rows");
+        assert_eq!(c.held(), Some((Timestamp(19_500), Allow, true, None)), "and the old fill's rows are gone");
+        // The grant is removed: the next fresh read refuses, and the entry holds that read's rows, not the Allow's.
+        let w = world(300);
+        let d = iso(&w);
+        at(&w, 1_000);
+        run(gate(&d, ADVERT));
+        w.revoked.set(Some(5_000));
+        at(&w, 12_000);
+        let g = run(gate(&d, POST));
+        assert_eq!((g.decision, g.rows), (Ok(Hidden), Some(12_000)));
+        assert_eq!(d.held(), Some((Timestamp(12_000), Hidden, false, Some(12_000))));
     }
 
     /// Every input of the key is in it: the credential, the repository, and the placement record, and the raw

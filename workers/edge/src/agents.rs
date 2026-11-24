@@ -461,7 +461,10 @@ pub(crate) fn linked(
 /// it reads (its `AgentPolicy` and tasks). `None` for a push `agentish` rules out, which reads nothing more.
 pub(crate) struct AgentPush {
     install: Option<AuthzFold>,
-    core: graftyard_fold::MemStore,
+    core: std::rc::Rc<graftyard_fold::MemStore>,
+    /// The rows came from the read gate's isolate entry, read up to `READ_CACHE` before this push
+    /// (`agent-rows-cache`), not by this request.
+    cached: bool,
 }
 
 pub(crate) async fn push_context(
@@ -476,16 +479,70 @@ pub(crate) async fn push_context(
     if !agentish(c, &push.actor, install.as_ref(), &push.updates) {
         return None;
     }
-    // The read gate's one read holds the agent rows unless the member answered access alone (an older release).
-    let held = c.push_rows.borrow().as_ref().filter(|(_, agent)| *agent).map(|(core, _)| core.clone());
-    let core = match held {
-        Some(core) => core,
-        None => match crate::api::core_rows(c, repo, "agent").await {
-            Ok(Ok(store)) => store,
-            _ => graftyard_fold::MemStore::default(),
-        },
+    // The read gate's decision carries the agent rows its own fill read, fresh or from its isolate entry
+    // (`agent-rows-cache`). Only a data-center copy, an entry past `gate::ROWS_BYTES_MAX`, or a member that answered
+    // the access rows alone leaves none, and the push reads them here (`ctx_read` in `server-timing`).
+    let held = c.push_rows.borrow().clone();
+    let (core, cached) = match held {
+        Some(held) => held,
+        None => (agent_rows(c, repo).await, false),
     };
-    Some(AgentPush { install, core })
+    Some(AgentPush { install, core, cached })
+}
+
+/// The push's own agent-rows read (`ctx_read` in `server-timing`), empty when it fails, as before.
+async fn agent_rows(c: &Ctx<'_>, repo: &crate::Repo) -> std::rc::Rc<graftyard_fold::MemStore> {
+    c.timing.put("ctx_read", 1.0);
+    std::rc::Rc::new(match crate::api::core_rows(c, repo, "agent").await {
+        Ok(Ok(store)) => store,
+        _ => graftyard_fold::MemStore::default(),
+    })
+}
+
+/// Whether rows the gate's entry held lack a task this push names: a `Graftyard-Session` trailer for a session the
+/// pusher's App could own that neither the rows nor the token's claim list, so `linked` would leave it `Claimed`. A
+/// task created after the entry's fill is the case (`agent-rows-cache`); another App's session never links, and rows
+/// read by this request are never read again.
+pub(crate) fn unlinked_by_cache(
+    a: &AgentPush,
+    push: &graftyard_git::repo::Push,
+    detail: &[graftyard_git::agent::RefDetail],
+    origin: &str,
+) -> bool {
+    let graftyard_identity::Actor::App { app, .. } = push.actor.actor else { return false };
+    if !a.cached {
+        return false;
+    }
+    let mut own = graftyard_git::task::app_sessions(&*a.core, app);
+    own.extend(graftyard_git::task::claim(&push.actor).cloned());
+    // Only a session this App could own: an External one of another App never links, whatever the rows say.
+    let mine = |id: &graftyard_identity::SessionId| match id {
+        graftyard_identity::SessionId::External { app: of, .. } => *of == app,
+        graftyard_identity::SessionId::Run(_) => true,
+    };
+    let v = graftyard_git::agent::validated_of(detail, &[]);
+    v.provenance.iter().flat_map(|p| p.sources.iter()).any(|s| match s {
+        graftyard_git::agent::Source::Claimed { key: graftyard_git::agent::TrailerKey::GraftyardSession, value } => {
+            graftyard_git::agent::session_from_url(value, origin, app).is_some_and(|id| mine(&id) && !own.contains(&id))
+        }
+        _ => false,
+    })
+}
+
+/// `unlinked_by_cache`'s re-read: the push reads its agent rows itself (`ctx_read` 1, `ctx_stale` 1).
+pub(crate) async fn fresh_if_unlinked(
+    c: &Ctx<'_>,
+    repo: &crate::Repo,
+    a: &mut AgentPush,
+    push: &graftyard_git::repo::Push,
+    detail: &[graftyard_git::agent::RefDetail],
+    path: &str,
+) {
+    if unlinked_by_cache(a, push, detail, &format!("https://{}/{path}", c.cfg.host)) {
+        c.timing.put("ctx_stale", 1.0);
+        a.core = agent_rows(c, repo).await;
+        a.cached = false;
+    }
 }
 
 /// Fills `push` with `validate`'s linked outputs (`linked`). `changed` and `protected` are kept only for an update by
@@ -511,7 +568,7 @@ fn fill(
     origin: &str,
     leases: bool,
 ) {
-    let v = linked(&push.actor, &a.core, detail, origin);
+    let v = linked(&push.actor, &*a.core, detail, origin);
     let install = a.install.as_ref().map(|f| f as &dyn AuthzRead);
     let agent =
         matches!(graftyard_git::agent::actor_kind(&push.actor, install), graftyard_git::agent::ActorKind::Agent(_));
@@ -556,7 +613,7 @@ pub(crate) async fn write_ref(
         changed: Vec::new(),
         leases: false,
     };
-    let agent = push_context(c, &rd.repo, &push).await;
+    let mut agent = push_context(c, &rd.repo, &push).await;
     let lines = graftyard_git::agent::detail_lines(&push.updates, true);
     let detail = match crate::validate(c, &rd.repo, &[], &[], &lines, false).await {
         Ok((_, d)) => d,
@@ -565,8 +622,10 @@ pub(crate) async fn write_ref(
     if !may_write(&u, force, &detail) {
         return Ok(Reply::error(422, "Update is not a fast forward", doc));
     }
-    if let Some(a) = &agent {
-        fill_push(c, a, &mut push, &detail, &format!("{}/{}", r.at.owner, r.at.name));
+    if let Some(a) = agent.as_mut() {
+        let path = format!("{}/{}", r.at.owner, r.at.name);
+        fresh_if_unlinked(c, &rd.repo, a, &push, &detail, &path).await;
+        fill_push(c, a, &mut push, &detail, &path);
     }
     let f = graftyard_raft::Command::format(&push);
     if !c.cfg.enabled.contains(&f) && f != graftyard_git::repo::REPO_FORMAT_V1 {
@@ -928,7 +987,7 @@ mod tests {
     /// for an agent's update and dropped for a user's push outside every agent prefix; `leases` follows 32.14.
     #[test]
     fn fill_links_the_claim_and_keeps_paths_only_for_agent_updates() {
-        let a = AgentPush { install: Some(install("refs/heads/claude/**")), core: Default::default() };
+        let a = AgentPush { install: Some(install("refs/heads/claude/**")), core: Default::default(), cached: false };
         let mut p = empty_push(app_token(Some("1114112.t1")), "refs/heads/claude/a");
         let d = [detail(
             "refs/heads/claude/a",
@@ -955,5 +1014,62 @@ mod tests {
         let d = [detail("refs/heads/main", "Signed-off-by: A <a@x>", &[".github/workflows/ci.yml"])];
         fill(&a, &mut human, &d, ORIGIN, true);
         assert!(human.changed.is_empty() && human.protected.is_empty());
+    }
+
+    /// A core store holding the App's task `t`, as the gate's agent rows hold it.
+    fn rows_with_task(t: &str) -> graftyard_fold::MemStore {
+        let mut s = graftyard_fold::MemStore::default();
+        let id = graftyard_identity::SessionId::parse(t, Some(APP)).unwrap();
+        let core = graftyard_git::task::TaskCore {
+            kind: graftyard_git::task::TaskKind::External,
+            state: graftyard_git::task::TaskApiState::InProgress,
+            prefix: None,
+            requester: None,
+            app: APP,
+            installation: InstallationId(DbId(7_190_001)),
+            created: Timestamp(1),
+            updated: Timestamp(1),
+        };
+        let row = graftyard_fold::Stored {
+            written: Default::default(),
+            cols: vec![graftyard_fold::Val::Blob(postcard::to_allocvec(&core).unwrap().into())],
+        };
+        graftyard_fold::Store::put(&mut s, "agent_task", graftyard_git::task::task_key(&id), row);
+        s
+    }
+
+    /// `agent-rows-cache`: rows the gate's entry held, from a fill before the push's task was created, would leave its
+    /// `Graftyard-Session` trailer `Claimed`; the push then reads its rows itself. Rows read by this request, rows that
+    /// list the task, a trailer naming another App's or a forged session, and a user's push are never read again.
+    #[test]
+    fn cached_rows_missing_the_pushs_own_task_are_read_again() {
+        let push = empty_push(app_token(None), "refs/heads/claude/a");
+        let d = [detail(
+            "refs/heads/claude/a",
+            &format!("Graftyard-Session: {ORIGIN}/_graftyard/sessions/1114112.t2"),
+            &["src/x.rs"],
+        )];
+        let with = |core, cached| AgentPush { install: Some(install("refs/heads/claude/**")), core, cached };
+        let empty = std::rc::Rc::new(graftyard_fold::MemStore::default());
+        assert!(unlinked_by_cache(&with(empty.clone(), true), &push, &d, ORIGIN), "a cached fill without the task");
+        assert!(!unlinked_by_cache(&with(empty.clone(), false), &push, &d, ORIGIN), "this request's own read");
+        let listed = std::rc::Rc::new(rows_with_task("1114112.t2"));
+        assert!(!unlinked_by_cache(&with(listed.clone(), true), &push, &d, ORIGIN), "the cached fill lists it");
+        let mut linked = empty_push(app_token(None), "refs/heads/claude/a");
+        fill(&with(listed, true), &mut linked, &d, ORIGIN, false);
+        assert!(linked.provenance[0].sources.iter().any(|s| matches!(s, Source::Session(_))), "and links it");
+        let other = [detail(
+            "refs/heads/claude/a",
+            &format!("Graftyard-Session: {ORIGIN}/_graftyard/sessions/9.t2"),
+            &["src/x.rs"],
+        )];
+        assert!(!unlinked_by_cache(&with(empty.clone(), true), &push, &other, ORIGIN), "another App's session");
+        let elsewhere =
+            [detail("refs/heads/claude/a", "Graftyard-Session: https://h/o/other/_graftyard/sessions/1114112.t2", &[])];
+        assert!(!unlinked_by_cache(&with(empty.clone(), true), &push, &elsewhere, ORIGIN), "another repository's URL");
+        let claimed = empty_push(app_token(Some("1114112.t2")), "refs/heads/claude/a");
+        assert!(!unlinked_by_cache(&with(empty.clone(), true), &claimed, &d, ORIGIN), "the token's own claim links it");
+        let human = empty_push(user_token(), "refs/heads/claude/a");
+        assert!(!unlinked_by_cache(&with(empty, true), &human, &d, ORIGIN), "a user's push links no session");
     }
 }
