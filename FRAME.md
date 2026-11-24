@@ -344,6 +344,17 @@ Under that direction the orchestrator settled two B0-33 lines that the three kep
 - **"Every refusal in the `ng` or 429 shape" reads Agent-class refusals,** and every Human or Bot 503 must carry `Retry-After`. Admission never refuses Human or Bot in the agent shape by design. A Human 503 is unavailability: a shed read or a shard that is still `warming`. erDA's 4,669 Agent-class 503s were member sheds of the write's row read. The orchestrator cleared edge refusal's design for code: a shed row read for an Agent-classed write answers the 429 shape, as the advert refusal already does on those routes, and a plain PAT or a Bot App is untouched. Its 215 upload-pack `warming` 503s carried no `Retry-After`, so they still fail the line until the edge adds one, after a GHES byte-diff check.
 - **What does not change.** The 3,912 ms Human line, the 110 agent line, the median of three runs, and every other line stand. The home git shard's catch-up lag, which made merges answer `warming` after `MERGE_WAIT` on all three runs and on B0-32's m3fk2B, stays open as a fix of its own.
 
+### Operator decision, 2026-11-24, BF-50's "every API token revoked" reads the install's own tokens
+
+> "Get it done. Always be asking how we can move the needle and don't wait for me to approve things unless it is a large cost"
+
+Under that direction the orchestrator settled how graft-m6a's BF-50 rows read "Lose site A with every API token revoked" (`build/BUILD-PLAN.md`, M6-WP1). The account token the harness runs on cannot be revoked and re-created from inside the account, which is why B0-19 was skipped ("Operator decision, 2026-10-29, B0-19 and pushes over the plan limit").
+
+- **Revoked:** every token the install holds. That is `graft-ops`' `DEPLOY_TOKEN`, minted and revoked before the loss so `graft-ops` holds a dead token through both rows, and no Worker on the install holds any other.
+- **The harness's own token** only reads logs, cost and script versions from the loss until the restore, and deploys nothing. Each row records every script's version list unchanged across that span (BM-6's "no script version is created").
+- **What the row then shows:** replacement and recovery need nothing from the Cloudflare API, because the executor key, the Workflows coordinator and the members do all of it. That is the claim the line exists for (`design/DESIGN.md`, "Downtime").
+- **What it does not show:** that the account's own control plane being unreachable changes nothing. That stays B0-19's question, and B0-19 stays skipped.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
