@@ -1,0 +1,1 @@
+["FIRST_DAY_MS=60000","GATE=pending","OPS_SCRIPTS={\"site/0\":\"graft-m4a-site-a\",\"site/1\":\"graft-m4a-site-b\",\"site/2\":\"graft-m4a-site-c\"}","OPS_STEP_MIN_ENTRIES=50","STEP_DWELL_MS=60000"]

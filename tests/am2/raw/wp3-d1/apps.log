@@ -1,0 +1,25 @@
+2026-11-24T03:30:06Z
+22a2d2a3
+  graft-m4a-MCP_APP_KEY_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4 (bfaa0c1573de4775b1b92a12fb89acb4); no copy kept
+  graft-m4a-MCP_CLIENT_SECRET_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4
+  graft-m4a-INSIGHTS_APP_KEY_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4 (bfaa0c1573de4775b1b92a12fb89acb4); no copy kept
+  graft-m4a-MCP_SEAL_KEY_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4
+wrote ~/.graft-m4a/apps/apps.json (public keys and the client secret's hash only)
+no operator route yet (R14): send the two ClaimSlug requests in ~/.graft-m4a/apps/apps-claims.request.json, then run `graftyard apps init --app-ids <graftyard-mcp id>,<graftyard-insights id> --out ~/.graft-m4a/apps`
+2026-11-24T03:30:59.639Z ClaimSlug (graftyard-mcp) on names:915: ok
+graftyard-mcp 3670016
+2026-11-24T03:31:01.579Z ClaimSlug (graftyard-insights) on names:619: ok
+graftyard-insights 3735552
+graftyard-mcp 3670016 graftyard-insights 3735552
+wrote 7 commands to ~/.graft-m4a/apps/apps-register.request.json: graftyard-mcp is App 3670016, graftyard-insights App 3735552
+2026-11-24T03:31:05.337Z PutApp (graftyard-mcp) on authz:1: ok
+2026-11-24T03:31:06.949Z RegisterApp (graftyard-mcp) on names:689: ok
+2026-11-24T03:31:09.044Z RegisterClient (graftyard-mcp) on names:371: ok
+2026-11-24T03:31:09.525Z PutAgentApp (graftyard-mcp) on authz:1: ok
+2026-11-24T03:31:09.988Z PutApp (graftyard-insights) on authz:1: ok
+2026-11-24T03:31:12.061Z RegisterApp (graftyard-insights) on names:347: ok
+2026-11-24T03:31:13.998Z RegisterClient (graftyard-insights) on names:545: ok
+{"app":3670016,"slug":"graftyard-mcp","callbacks":["https://mcp.m4a.graftyard.dev/callback"],"client_secrets":1}
+{"app":3735552,"slug":"graftyard-insights","callbacks":[],"client_secrets":0}
+Current Version ID: 044e4429-7bdf-4f52-ae51-ffbb0d237be1
+{"script":"graft-m4a-mcp","created_on":"2026-11-24T03:32:04.984192Z","versions":["044e4429 100"]}

@@ -1,0 +1,5 @@
+2026-11-24T04:14:26Z
+22a2d2a3
+{"count":303,"current":null,"site_release":{"0":"e23f69e9","1":"e23f69e9","2":"1a0f0e50"},"rolled":{"Edge":"e23f69e9","Front":"051f6f61","Mcp":"762a96d1","Ops":"e23f69e9","Site(SiteId(0))":"e23f69e9","Site(SiteId(1))":"e23f69e9","Site(SiteId(2))":"1a0f0e50","Workflows":"e23f69e9"}}
+release roll: intent 01M85W69KZB20JDABBE5PCH9D2 McpRoll { release: ReleaseId([5, 31, 111, 97, 1, 150, 121, 139, 131, 162, 35, 94, 122, 76, 28, 243, 119, 26, 211, 182, 207, 197, 17, 37, 127, 119, 191, 233, 186, 30, 203, 186]) }, 1 undo(s)
+{"answer":{"digest":"2470cf504d6ba883b5466727bf3612e06a76ae6a86174ff358c528553a5e1907","index":1034,"status":201},"intent":"01M85W69KZB20JDABBE5PCH9D2"}

@@ -1,0 +1,3 @@
+2026-11-24T03:34:55Z
+22a2d2a3
+{"client":"ts-v2","sdk":"@modelcontextprotocol/client 2.4.0","drop":false,"error":"SdkError: Version negotiation probe failed: fetch failed","mcpVersions":[],"consents":0,"tokenCalls":[],"codeRedemptions":0,"grantsListed":"unread: TypeError: fetch failed","refreshToken":false}

@@ -57,9 +57,14 @@ const out = { client: name, sdk: which === "v2" ? "@modelcontextprotocol/client 
 // answer is dropped under --drop-token.
 const tokenCalls = [];
 let dropped = false;
+// AM2-WP3: with REPORT=1, each request to graft-mcp asks graft-front for the version that answered, and the row lists
+// every version seen (`mcpVersions`), so a session through `mcp.<host>` shows whether it ran at the pin.
+const versions = new Set();
 const fetchFn = async (u, init) => {
   const url = String(u instanceof Request ? u.url : u);
+  if (process.env.REPORT && url.startsWith(MCP)) init = { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers ?? {})), "x-graftyard-report-version": "1" } };
   const r = await fetch(u, init);
+  if (process.env.REPORT && url.startsWith(MCP)) versions.add(r.headers.get("x-graftyard-mcp-version") ?? "none");
   if (url === `${MCP}/token`) {
     const grant = new URLSearchParams(String(init?.body ?? "")).get("grant_type");
     tokenCalls.push({ grant, status: r.status });
@@ -104,6 +109,8 @@ try {
   const { client, transport } = await connect();
   out.authMs = Date.now() - t0;
   out.protocol = which === "v2" ? client.getNegotiatedProtocolVersion?.() : transport.protocolVersion ?? "2025-11-25";
+  // LIST=1: tools/list once before the calls (AM2-WP3's session: initialize, tools/list, one tool call).
+  if (process.env.LIST) out.tools = (await client.listTools()).tools.length;
   let ok = 0;
   const lat = [], direct = [], errors = [];
   const p50 = (a) => a.sort((x, y) => x - y)[Math.floor(a.length / 2)];
@@ -125,6 +132,7 @@ try {
 } catch (e) {
   out.error = String(e).slice(0, 300);
 }
+if (process.env.REPORT) out.mcpVersions = [...versions];
 Object.assign(out, { consents, tokenCalls, codeRedemptions: tokenCalls.filter((c) => c.grant === "authorization_code").length,
   grantsListed: await settingsGrants().then((gs) => gs.filter((g) => g.client === cimd(name)).length, (e) => `unread: ${String(e).slice(0, 80)}`), tokenScope: tokens?.scope, refreshToken: !!tokens?.refresh_token });
 console.log(JSON.stringify(out));

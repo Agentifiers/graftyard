@@ -1,0 +1,10 @@
+2026-11-24T03:22:00Z
+22a2d2a3
+{"count":288,"current":null,"drained":[],"site_release":{"0":"e23f69e9","1":"e23f69e9","2":"1a0f0e50"},"rolled":{"Edge":"e23f69e9","Ops":"e23f69e9","Site(SiteId(0))":"e23f69e9","Site(SiteId(1))":"e23f69e9","Site(SiteId(2))":"1a0f0e50","Workflows":"e23f69e9"},"uploads":["00ed8e77","1a0f0e50","28af528e","308769e7","44c04e9b","44f1ddfe","5af23a25","5d0ba4e9","63644eb6","761a720d","a3a1f620","af45659e","bdf8547f","e23f69e9","e592682c"],"enabled":1}
+{"script":"graft-m4a-edge","created_on":"2026-11-24T01:46:35.065791Z","versions":["eef95142 100","f4e193b9 0"]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T03:09:41.301045Z","versions":["ac4cd9a5 100"]}
+{"script":"graft-m4a-site-a","created_on":"2026-11-24T01:14:40.337319Z","versions":["75bdd60d 100"]}
+{"script":"graft-m4a-site-b","created_on":"2026-11-24T01:23:41.292061Z","versions":["627ed36c 100"]}
+{"script":"graft-m4a-site-c","created_on":"2026-11-24T02:56:44.024513Z","versions":["54bbb423 100"]}
+{"ops_schedules":[]}
+edge FORMATS_ENABLED: 32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.16,32.19,20.3,32.22,32.23,18.12,32.24,18.13; EXPORT: 

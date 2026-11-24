@@ -1,0 +1,5 @@
+2026-11-24T04:19:29Z
+22a2d2a3
+[mcp-sdk] SEP-2352: stored OAuth credential has no 'issuer' stamp (pre-upgrade storage or provider not round-tripping the value). SEP-2352 isolation is inactive for this read; ensure your provider round-trips the issuer field.
+[mcp-sdk] SEP-2352: stored OAuth credential has no 'issuer' stamp (pre-upgrade storage or provider not round-tripping the value). SEP-2352 isolation is inactive for this read; ensure your provider round-trips the issuer field.
+{"client":"ts-v2","sdk":"@modelcontextprotocol/client 2.4.0","drop":false,"consentHeaders":{"csp":"frame-ancestors 'none'; default-src 'none'; style-src 'unsafe-inline'; form-action 'self'","xfo":"DENY"},"iss":"https://mcp.m4a.graftyard.dev","authMs":22086,"protocol":"2026-07-28","tools":8,"calls":1,"ok":1,"clientP50":2321,"directP50":2250,"overheadP50":71,"errors":[],"mcpVersions":["e7c66cdb-27b7-449b-a614-6885ba33569e"],"consents":1,"tokenCalls":[{"grant":"authorization_code","status":200}],"codeRedemptions":1,"grantsListed":3,"tokenScope":"write:read tools:context,repos,issues,pull_requests","refreshToken":true}
