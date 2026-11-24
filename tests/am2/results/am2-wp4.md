@@ -1,0 +1,67 @@
+# AM2-WP4: the AM2 gate (LM-2)
+
+LM-2 (`build/BUILD-PLAN.md`, AM2-WP4): the MCP row passes, a bad `graft-mcp` at 1% swaps back with the API blocked,
+and L0-15's `AgentGate` half holds. State on 2026-11-24, after the lead's rulings:
+
+| Part | State | Evidence |
+| --- | --- | --- |
+| MCP row (L0-08) | **met** | auth cells on m3fa2, the 30-call cell and tool-overhead p50 on m3fa3 (`am2-wp1.md`); sessions through `mcp.<host>` at N and under the pin on AM2-WP3 day d1 (`am2-wp3.md`) |
+| Swap-back, the undo | measured | AM2-WP3 day d1: the pre-signed `McpPointer` with the deploy token invalid, 119,218 of 119,218 answers from N while pinned |
+| Swap-back, the trigger | **open** | the lead ruled a forced `GATE=breach` does not stand in for `graft-ops` noticing the bad build; `decisions/OPEN-QUESTIONS.md` R47 |
+| L0-15's `AgentGate` half | **met** | the in-memory test below, and the hosted day l015 below |
+
+## L0-15's `AgentGate` half, in memory
+
+`crates/git/tests/agent_gates.rs`, `an_approval_through_graftyard_mcp_writes_no_agent_gate`: a writer approves an
+agent PR through the install's `Graftyard MCP` (an `AgentApp` of kind `Mcp`) on a scoped `ghu_` whose grant is
+`write_approve_merge`. 100 of 100 reviews are accepted and write no `AgentGate`, the merge is refused "0 of 2", and
+the same writer's own PAT and a second writer's approval then merge it. With the AgentApp-credential condition taken
+out of the review rule (`crates/git/src/issue_ops.rs`) the test fails at the gate count. The named-requester case is
+`crates/git/tests/task_gates.rs` (AM1-WP3).
+
+## Hosted, day l015 on graft-m3f (2026-11-24)
+
+The lead's go ($3 stop) after `am2-wp4` merged (main `e0b1be9e`). Driver `tests/am2/hosted/l015.mjs` from this
+branch; graft-mcp from `e0b1be9e` through `tests/am2/hosted/day.sh l015` (init, claims, register, deploy, smoke).
+Raw rows in `tests/am2/raw/l015-l015d.jsonl`. Start 05:39:40Z; **done line 06:13:07Z** (end sweep).
+
+**State before.** Start sweep: no shard running. No edge or site day: the edge was `81eb863f` at 100% with 20.4 and
+17.4 in its own `FORMATS_ENABLED`, sites a `9122106d`, b `884e864a`, c `56b7bf42` (2026-11-23 23:01Z, after
+AM2-WP1), every site, edge and ops schedule `[]`, no `graft-m3f-mcp`. RERETIRE OK (`tests/am2/raw/reretire-l015.log`).
+`m3org/am2-l015` = repo:65630 (201 in 35 s). Both apps slugs answered Taken (graftyard-mcp 327680, graftyard-insights
+4784128), as on m3fa4; the seven register commands ok; smoke: both metadata documents 200, the door 401 with
+`resource_metadata`, CIMD 200.
+
+**The run.** m3-ci flagged ThirdParty with `confine` `refs/heads/claude/**` (200), and two external tasks: requester
+m3-admin (7100003) and requester m3-member (7100002), each confirmed by account id in the task list. With no
+`extra_human_approvals`, each agent PR needs one approval from a human writer who is not its requester, so one counted
+approval would merge it. 20 PRs per case, each on its own `claude/` branch, pushed by m3-ci and opened in its task's
+session. graft-mcp's grant: `write:write_approve_merge tools:pull_requests`.
+
+| # | Case | Verdict | Evidence |
+| --- | --- | --- | --- |
+| 1 | An MCP client with `WriteApproveMerge` approves an agent PR (m3-member through `approve_pull_request` on m3-admin's task) | **pass, 20 of 20** | each review accepted (`APPROVED`); each `merge_pull_request` through graft-mcp `isError`, 403 "refused: graftyard/agent-gate is not satisfied for … 0 of 1 approvals from human writers"; each admin REST merge the same 403 |
+| 2 | A vendor's named requester approves its PR (m3-member's PAT on its own task's PR) | **pass, 20 of 20** | each review accepted; each admin REST merge 403 "0 of 1" |
+| 3 | Controls: an approval that counts merges | **pass, 2 of 2** | PR #1 (case 1) after m3-member's own PAT: merged 200; PR #2 (case 2) after m3-admin's PAT: merged 200 |
+| 4 | Teardown | **pass** | unflag 204; `graft-m3f-mcp`, `graft-m3f-mcp-aux` and the four `graft-m3f-` store secrets deleted (`day-l015-teardown.log`); net:65630's 3 shards torn down (200 each); repo:65630 retired (4 names, 4 were joined, all not joined, retired rows) and purged (0 objects, second pass 0; no key of 65630 in any of the three buckets); end sweep 06:13:07Z: no shard running; schedules `[]` |
+| 5 | Spend | **pass** | $0.17 on the graft-m3f prefix, 05:39:40Z to 06:13:10Z (`acctcost.py`), under the $3 stop |
+
+**L0-15's `AgentGate` half passes hosted, 42 of 42.** With the in-memory test, LM-2 now waits only on R47's trigger.
+
+**What the day found (harness and one product note).**
+- **The task create reply renders a named requester as `ghost`.** Both creates answered 201 with `requester.login`
+  `ghost`, and the unfiltered task list right after named m3-admin (7100003) for the first and `ghost` with id
+  7100002 for the second; a later list named m3-admin for both of the first runs' tasks. The stored requester was
+  right each time (the gate used it: "0 of 1"), so the login is a directory miss in the reply's rendering
+  (`crates/api/src/tasks.rs`, `simple_user` through `r.dir`), not a wrong requester [inference]. The list's
+  `requester=<login>` filter answered 503 twice. The driver now checks the requester by account id; runs l015 and
+  l015c stopped on this check before any PR (rows kept), and l015d is the run above.
+- `retirenets.mjs` under `timeout 400` was stopped during purge's wait for the 06:10Z sweep window, after the retire
+  had finished; `purge.py` alone then ran to its end. Purge logs went to `tests/am2/raw/` (`PURGE_LOG`,
+  `RETIRE_LOG`), not the tracked m2b logs.
+
+## The swap-back's trigger (R47)
+
+The lead approved the design on 2026-11-24 with three changes (flush homed by script name, the floor pooled as
+`gate-pool`, a missing version header counted apart and alarmed, not breached). Its code, plants plant121 to plant129,
+and the graft-m4a row follow on their own branch.

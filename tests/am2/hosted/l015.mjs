@@ -61,8 +61,13 @@ if (step === "run") {
   const tasks = {};
   for (const [c, who] of [["mcp", "m3-admin"], ["requester", "m3-member"]]) {
     const t = await api("POST", `${V1}/tasks`, inst, { kind: "external", session: `l015-${tag}-${c}`, summary: "am2 l015", requester: who });
-    row({ case: `task ${c}`, status: t.status, id: t.body?.id, requester: t.body?.requester?.login });
-    if (t.status !== 201 || t.body?.requester?.login !== who) throw new Error(`task ${c}: ${t.status} ${JSON.stringify(t.body).slice(0, 200)}`);
+    // The reply may render the requester's login as `ghost` (day l015: a directory miss), so the stored requester is
+    // checked by account id in the unfiltered list (the `requester=` filter answered 503 intermittently).
+    const want = c === "mcp" ? state.admin : state.member;
+    const l = await api("GET", `${V1}/tasks`, tokens.admin);
+    const mine = (Array.isArray(l.body) ? l.body : l.body?.tasks ?? []).find((x) => x.id === t.body?.id);
+    row({ case: `task ${c}`, status: t.status, id: t.body?.id, replyRequester: t.body?.requester?.login, requesterId: mine?.requester?.id, want });
+    if (t.status !== 201 || mine?.requester?.id !== want) throw new Error(`task ${c}: ${t.status} requester ${mine?.requester?.id} want ${want}`);
     tasks[c] = t.body.id;
   }
   const g = new Git(REPO).as(inst);
