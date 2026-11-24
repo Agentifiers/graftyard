@@ -424,3 +424,84 @@ Raw records in `raw/ck4/`:
 - `crons.txt`: the Workers Logs lines.
 - `gate.txt`: the scratch mirror. Its `judge(...)` lines are not verdicts.
 - `health.txt`: `site_health` each minute.
+
+## Rows A and B: the pooled 1% floor with slow-apply, and the drain during a site day (2026-11-24, main `dc880f1d`)
+
+Both rows ran on graft-m4a from merged main `dc880f1d`, which carries `gate-pool` (`f9e13961`), cleared by the lead: row A with a $5 stop and row B with a $6 stop. Both used `graft-m4a-ops`, built test-faults, with 1x load from the scratch Worker `graft-m4a-ck-edge` (two c-benches and one a/b bench, as in row 4). Token `graft-m4a-ops-deploy-7` (`625f764f…`) was minted at 05:54:43Z. Times are Cloudflare's; the orb's clock ran 25.7 s behind it, and `ck.log` stamps lines with the orb's. The raw records are in `raw/ckA/` and `raw/ckB/`.
+
+### Row A: R11 slow-apply on the pooled floor
+
+**Result: pass.** The lead accepted it. All three lines held: 1% committed `Starved` after its dwell with no page; 10% was judged from the 1% step's start and breached on the share rule once N+1's pooled count passed 1,000; and the `Rollback` ran to `IntentDone`. This closes R38's 1% case hosted. The done line was 06:20Z, and the row cost $3.61, against a $5 stop.
+
+**Setup.**
+- `graft-m4a-ops` was `62a8ed72`, deployed with `exec-ckA.json`: no `OPS_STEP_MIN_ENTRIES`, `STEP_DWELL_MS` 720000, `FIRST_DAY_MS` 60000, and a 1-minute cron.
+- The cron did not fire after the deploy. One remove and re-add fixed it, and the first run came at 06:00:07Z (R52).
+- `SiteDay{c, R11}` carried the pre-signed `Rollback{c, R10}`. N+1 was c `bf647730` (R11's version as the fold records it at entry 275; c also holds an unrecorded `62a04785` from an overlapping upload run). N was c `54bbb423` (R10, which the group's `site_release` for c names). Both are R9's code plus a marker.
+- The plant was `slow_ms` 600 on `bf647730` through the scratch Worker's `/fault`, set at 06:00:53.9Z, before the intent. Every c member running that version holds each inbound `/raft` 600 ms before it steps it.
+
+| Index | Group time | Entry |
+| --- | --- | --- |
+| 354 | 06:00:57Z | `Intent` |
+| 355, 356 | 06:01:14Z, 06:01:17Z | `SiteMode` Drain c, `IntentStep` 0 (1% deployed at 06:01:20Z) |
+| 357 | 06:14:12Z | `IntentStep` 1: 1% committed `Starved(499)`, no page; 10% deployed |
+| 358 | 06:18:15Z | `Rollback{c, R10}`, on the 10% breach |
+| 359 to 363 | 06:18:16Z to 06:18:26Z | return steps 0 and 1 (c to `54bbb423` at 100%), `SiteMode` Normal c, step 2, `IntentDone` |
+
+**`judge_site`'s verdicts** (`graft-ops`' own lines, `raw/ckA/verdicts.txt`). Counts are entries / answers / refused:
+
+| Step | N+1 | N | Over N's p99 (1,500 ms) / over 5 s | Verdict |
+| --- | --- | --- | --- | --- |
+| 1%, 12 min | 0 until 06:05Z, then 11 to 499 | up to 47,512 / 80,310 / 35 | 7,379 to 9,090 / 0 bp | `Starved` throughout; committed at `Starved(499)` after the dwell (`gate-pool`) |
+| 10%, from the 1% step's start | 618 (06:15:14Z), 737, 867 | up to 58,423 | 7,443 to 7,647 / 0 bp | `Starved` |
+| 10%, first read past 1,000 | **1,068 / 1,843 / 2** (06:18:14Z) | 61,821 / 104,941 / 37 | **7,696 / 0 bp** | **`Breach`: `GATE_APPLY_LAG: 7696 bp of N+1 entries over N's p99 1500 ms`** |
+
+- The 10% count went on from the 1% step's 499 rather than restarting at 0, which is `window_start` reading `Current::before`.
+- No read put an entry over 5 s, so the backstop never fired. The share rule did.
+
+### Row B: B0-07 hosted, a gray site during another site's day
+
+**Result: the drain half passed; the automatic undrain could not happen during the day, so c was undrained by hand on the lead's ruling.** After the hand undrain the day resumed and ran to `IntentDone`, with no breach. The done line was 07:27Z. The row cost $5.27, against a $6 stop; graft-m4a's UTC day stood at $16.85.
+
+**Setup.**
+- `graft-m4a-ops` was `9249fa8b`, the same `dc880f1d` build, deployed with `exec-ckB.json`: `OPS_STEP_MIN_ENTRIES` 50 (b's own gate is not under test), `STEP_DWELL_MS` 300000, `FIRST_DAY_MS` 60000, and a 1-minute cron. This time the cron fired without a re-add; the first run was at 06:25:08Z.
+- `SiteDay{b, R10}` carried `Rollback{b, R9}`. N+1 was b `847a6465` (R10, entry 274), and N was b `627ed36c` (R9).
+- At b's 10% step, while b was drained, a gray fault went on c at 06:32:29.6Z: rate 0.3, 3 s hangs (`hang_ms` 3000). It was lifted at 06:39:42.6Z.
+
+| Index | Group time | Entry |
+| --- | --- | --- |
+| 364 | 06:25:54Z | `Intent` |
+| 365, 366 | 06:26:14Z, 06:26:15Z | `SiteMode` Drain b, step 0 (1%) |
+| 367 | 06:32:11Z | step 1 (10% deployed at 06:32:13Z) |
+| 368 | 06:37:14.354Z | `SiteMode` Normal b, drain key: **b undrained under the 1% lead limit**, 284.8 s after the fault |
+| 369 | 06:37:16.339Z | `SiteMode` Drain c, drain key, 286.7 s after the fault, in the same run |
+| 370 | 07:06:20.238Z | `SiteMode` Normal c, **signed by hand** with the drain key (the lead's ruling) |
+| 371 | 07:07:11Z | step 2 (10% passed: N+1 6,702 / 11,797 / 20 against N 81,505, 58 bp over N's p99, 2 bp over 5 s; 50% deployed) |
+| 372 to 375 | 07:13:11Z to 07:13:18Z | step 3 (50%), `SiteRelease` b R10, step 4 (100%), step 5 (undrain, b already Normal) |
+| 376, 377 | 07:15:11Z, 07:15:13Z | step 6 (the first day passed: 11 bp over N's p99, 5 bp over 5 s), `IntentDone` |
+
+**What B0-07's line asked, and what was seen.**
+- **Two sites drained at once:** never. b's `Normal` and c's `Drain` committed in the same run, 2.0 s apart, in that order (`ops::auto_drain`).
+- **The day holds while c is drained:** each run from 06:37Z to 07:06Z answered `Wait`, "site 2 is drained; the site day waits".
+- **Leaders move off c** (`raw/ckB/leaders.txt`, every 10 s from site a's members, orb time):
+  - Before the fault, c led 145 to 150 of the 160 c-homed chains.
+  - Under the fault, before the drain, a took most of them: c led 14 to 32.
+  - After the drain, the 06:37:19.6Z poll (3 s after the drain) read 14 on c, 06:37:31.7Z read 2, and 06:37:43.7Z read 0. c then led none until the hand undrain. b led none either: it is lead-limited, and the one sampled chain in its 1% (`repo:7390455`) is c-homed.
+- **c's undrain after the lift: not reached, a deadlock (R53).** c was healthy: over 15 minutes, o0→c read 67 of 78,637 calls missed (0.09%). But calm needs both other voters to report at least `MIN_CALLS` (300) over `UNDRAIN_AFTER`, and o1→c read 71. `SiteHealth` counts member-to-member calls, so with c drained and b lead-limited by the running day, a led every chain and b's members only followed, sending c 15 to 45 calls per 5 minutes. The day's wait on another drained site has no bound, so neither could move.
+  - Restarting observer b's bench at 06:46Z did not help, because the bench's own counts do not feed `site_health`.
+  - The row was held at 07:03Z for the lead, at $4.23.
+  - Row 2's undrain worked only because no intent was current, so b led its own chains.
+- **The hand undrain:** the lead ruled (a). `SiteMode Normal c` was signed with graft-m4a's drain key, as at entry 135, and posted at 07:06:20Z (digest `17e9c253…`). Just before, the group held 370 entries, `SiteDay{b, R10}` was current at step 2, and c was the only drained site. The day resumed on its next run. After the undrain, c led 134 to 138 of the c-homed chains again.
+
+**Cleanup.**
+- Benches stopped at 07:14:40Z and the fault was off.
+- The ops cron was reset at 07:15:54Z and again at 07:18:28Z. It fired `Idle` runs until 07:19:07Z.
+- `graft-m4a-ops` was parked on `ac4cd9a5` by version id; the token was revoked and the scratch Worker deleted (the end state below).
+
+Raw records in `raw/ckA/` and `raw/ckB/`:
+- `ck.log`: the driver's milestones.
+- `answers.txt`: the posts.
+- `entries.txt` (row A): entries 353 to 363, decoded with their signers.
+- `verdicts.txt` and `crons.txt`: `graft-ops`' Workers Logs lines with the recomputed shares.
+- `gate.txt` and `gate-b.txt`: the scratch mirror. Their `judge(...)` lines are not verdicts.
+- `health.txt`: every voter's `site_health` each minute.
+- `leaders.txt` (row B): the leader site of the 160 c-homed chains every 10 s.

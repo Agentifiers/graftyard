@@ -1,0 +1,202 @@
+== 06:23:07 wall 3687 cpu 136 62a8ed72 ok
+   graft-ops Idle
+== 06:24:07 wall 3914 cpu 131 62a8ed72 ok
+   graft-ops Idle
+== 06:25:08 wall 4170 cpu 178 9249fa8b ok
+   graft-ops Idle
+== 06:26:07 wall 13187 cpu 202 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 2000, exceptions: 0, appends: 4193, acks: 4090, step_downs: 0, entries: 2544, lag: [0, 0, 0, 0, 0, 0, 0, 1, 19, 190, 42, 33, 61, 171, 104, 90, 11
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 2000, exceptions: 0, appends: 4343, acks: 4239, step_downs: 0, entries: 2643, lag: [0, 0, 0, 0, 0, 0, 0, 1, 27, 195, 43, 35, 62, 178, 109, 92, 12
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 2000, exceptions: 0, appends: 4379, acks: 4274, step_downs: 0, entries: 2681, lag: [0, 0, 0, 0, 0, 0, 0, 1, 27, 206, 46, 39, 62, 180, 110, 92, 12
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 0, exceptions: 0, appends: 0, acks: 0, step_downs: 0, entries: 0, lag: [] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 4492, acks: 4386, step_downs: 0, entries: 2805, lag: [0, 0, 0, 0, 0, 0, 0, 1, 29, 248, 53, 43, 70, 186, 111, 93, 12
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(847a6465-495a-41df-937a-344a4ca04b8e), 1), (VersionId(627ed36c-91c4-406a-ab3e-7744c464ee84), 99)])
+   graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:27:07 wall 3831 cpu 149 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 29, acks: 29, step_downs: 0, entries: 18, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 1, 3, 11] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 5139, acks: 5101, step_downs: 0, entries: 2979, lag: 
+   graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:28:07 wall 3804 cpu 133 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 65, acks: 65, step_downs: 0, entries: 37, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 1, 0, 1, 1, 4, 27] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 9471, acks: 9422, step_downs: 0, entries: 5371, lag: 
+   graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:29:07 wall 4750 cpu 132 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 153, acks: 153, step_downs: 0, entries: 88, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 2, 2, 4, 2, 8, 67] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 13866, acks: 13815, step_downs: 0, entries: 7803, l
+   graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:30:07 wall 3842 cpu 261 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 231, acks: 231, step_downs: 0, entries: 127, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 3, 3, 5, 3, 8, 102] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 18101, acks: 18048, step_downs: 0, entries: 10161
+   graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:31:08 wall 4080 cpu 157 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 318, acks: 318, step_downs: 0, entries: 174, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 1, 3, 3, 5, 6, 9, 143] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 22304, acks: 22220, step_downs: 0, entries: 12442
+   graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:32:07 wall 7145 cpu 181 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 401, acks: 401, step_downs: 0, entries: 218, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 1, 3, 4, 5, 8, 10, 182] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 26300, acks: 26191, step_downs: 0, entries: 1461
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 401, acks: 401, step_downs: 0, entries: 218, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 1, 3, 4, 5, 8, 10, 182] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 26377, acks: 26268, step_downs: 0, entries: 1466
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 401, acks: 401, step_downs: 0, entries: 218, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 1, 3, 4, 5, 8, 10, 182] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 26577, acks: 26468, step_downs: 0, entries: 1477
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(847a6465-495a-41df-937a-344a4ca04b8e), 10), (VersionId(627ed36c-91c4-406a-ab3e-7744c464ee84), 90)])
+   graft-ops Wait { until: Some(Timestamp(1795502233211)), why: "STEP_DWELL" }
+== 06:33:07 wall 6258 cpu 131 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 472, acks: 470, step_downs: 0, entries: 251, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 1, 4, 4, 6, 9, 11, 210, 0, 1] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 29374, acks: 29263, step_downs: 0, entries
+   graft-ops Wait { until: Some(Timestamp(1795502233211)), why: "STEP_DWELL" }
+== 06:34:08 wall 3873 cpu 156 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 718, acks: 713, step_downs: 0, entries: 380, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 6, 1, 3, 9, 8, 7, 14, 20, 294, 3, 10, 1] } N Side { apply_lag_p99_ms: 2000, exceptions: 0, appends: 31448, acks: 31310, step_downs: 0, en
+   graft-ops Wait { until: Some(Timestamp(1795502233211)), why: "STEP_DWELL" }
+== 06:35:07 wall 6706 cpu 195 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 1022, acks: 1013, step_downs: 0, entries: 555, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 11, 3, 4, 12, 12, 10, 19, 32, 419, 8, 15, 3, 1] } N Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 34596, acks: 34438, step_dow
+   graft-ops Wait { until: Some(Timestamp(1795502233211)), why: "STEP_DWELL" }
+== 06:36:07 wall 3759 cpu 174 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 1315, acks: 1302, step_downs: 0, entries: 720, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 13, 5, 5, 17, 14, 16, 25, 37, 550, 9, 18, 3, 1] } N Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 37275, acks: 37095, step_dow
+   graft-ops Wait { until: Some(Timestamp(1795502233211)), why: "STEP_DWELL" }
+== 06:37:07 wall 10336 cpu 182 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 1646, acks: 1633, step_downs: 0, entries: 889, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 14, 8, 7, 24, 16, 20, 27, 45, 683, 9, 21, 4, 2] } N Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 40427, acks: 40221, step_dow
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 11845, missed: 6 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1289
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 1647, acks: 1634, step_downs: 0, entries: 889, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 14, 8, 7, 24, 16, 20, 27, 45, 683, 9, 21, 4, 2] } N Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 40507, acks: 40301, step_dow
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 11932, missed: 6 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1299
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 1647, acks: 1634, step_downs: 0, entries: 889, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 14, 8, 7, 24, 16, 20, 27, 45, 683, 9, 21, 4, 2] } N Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 40533, acks: 40327, step_dow
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 12005, missed: 6 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1307
+   graft-ops Committed("SiteMode")
+   graft-ops Committed("SiteMode")
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:38:07 wall 7239 cpu 131 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 2056, acks: 2042, step_downs: 0, entries: 1129, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 12, 17, 14, 13, 34, 21, 28, 32, 55, 866, 9, 22, 4, 2] } N Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 45105, acks: 44889, step
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 15895, missed: 6 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1746
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:39:07 wall 5240 cpu 150 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 2635, acks: 2621, step_downs: 0, entries: 1465, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 24, 17, 19, 43, 27, 39, 55, 75, 1113, 9, 22, 4, 2] } N Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 50728, acks: 50512, ste
+   graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 20304, missed: 8 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 2235
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:40:08 wall 6700 cpu 137 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 3160, acks: 3146, step_downs: 0, entries: 1761, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 26, 23, 27, 48, 32, 47, 67, 93, 1344, 9, 22, 4, 2] } N Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 56195, acks: 55978, ste
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:41:08 wall 5992 cpu 237 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 3498, acks: 3484, step_downs: 0, entries: 1949, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 18, 30, 25, 31, 51, 34, 52, 74, 103, 1494, 9, 22, 4, 2] } N Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 59740, acks: 59523, st
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:42:07 wall 4340 cpu 226 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 3843, acks: 3828, step_downs: 0, entries: 2141, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 20, 35, 28, 34, 55, 39, 58, 78, 111, 1646, 9, 22, 4, 2] } N Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 63240, acks: 63023, st
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:43:08 wall 6326 cpu 221 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 4242, acks: 4226, step_downs: 0, entries: 2360, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 42, 31, 34, 59, 44, 63, 91, 118, 1819, 9, 22, 4, 2] } N Side { apply_lag_p99_ms: 2000, exceptions: 0, appends: 67013, acks: 66796, st
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:44:08 wall 3877 cpu 261 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 4568, acks: 4552, step_downs: 0, entries: 2539, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 43, 31, 36, 65, 45, 66, 98, 124, 1972, 9, 22, 4, 2] } N Side { apply_lag_p99_ms: 2000, exceptions: 0, appends: 70575, acks: 70358, st
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:45:08 wall 6620 cpu 186 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 3000, exceptions: 0, appends: 5012, acks: 4996, step_downs: 0, entries: 2788, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 49, 32, 43, 69, 50, 74, 109, 137, 2165, 9, 22, 4, 2] } N Side { apply_lag_p99_ms: 2000, exceptions: 0, appends: 74317, acks: 74100, s
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:46:07 wall 3127 cpu 126 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 2000, exceptions: 0, appends: 5379, acks: 5363, step_downs: 0, entries: 2988, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 24, 51, 34, 47, 71, 52, 82, 114, 144, 2330, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 77748, acks: 77531, 
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:49:07 wall 7008 cpu 134 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 2000, exceptions: 0, appends: 6734, acks: 6716, step_downs: 0, entries: 3764, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 28, 67, 46, 59, 96, 73, 101, 149, 182, 2924, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 91910, acks: 91691,
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:50:08 wall 4013 cpu 127 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 7271, acks: 7253, step_downs: 0, entries: 4086, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 78, 56, 68, 106, 77, 113, 166, 197, 3156, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 97208, acks: 96988
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:51:08 wall 8157 cpu 258 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 7900, acks: 7882, step_downs: 0, entries: 4451, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 31, 85, 73, 75, 123, 95, 121, 188, 208, 3413, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 104205, acks: 1039
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:52:07 wall 3685 cpu 161 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 8359, acks: 8341, step_downs: 0, entries: 4722, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 31, 89, 81, 78, 135, 106, 127, 201, 220, 3615, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 108823, acks: 108
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:53:08 wall 5095 cpu 129 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 8895, acks: 8876, step_downs: 0, entries: 5034, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 34, 100, 88, 87, 141, 116, 133, 216, 234, 3846, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 114027, acks: 11
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:54:08 wall 5111 cpu 239 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 9396, acks: 9377, step_downs: 0, entries: 5328, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 38, 107, 97, 91, 150, 129, 142, 236, 247, 4052, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 119389, acks: 11
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:55:08 wall 5315 cpu 146 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 9973, acks: 9954, step_downs: 0, entries: 5676, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 40, 118, 101, 97, 158, 139, 159, 257, 271, 4297, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 124964, acks: 1
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:56:08 wall 7502 cpu 151 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 10505, acks: 10486, step_downs: 0, entries: 5982, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 42, 124, 110, 104, 165, 144, 173, 269, 286, 4526, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 130595, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:57:07 wall 3097 cpu 129 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 10961, acks: 10942, step_downs: 0, entries: 6234, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 44, 130, 112, 108, 172, 147, 181, 276, 297, 4728, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 135746, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:58:07 wall 3038 cpu 142 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 11405, acks: 11386, step_downs: 0, entries: 6487, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 47, 138, 121, 113, 177, 152, 188, 283, 303, 4926, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 140701, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:59:08 wall 6506 cpu 234 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 11650, acks: 11631, step_downs: 0, entries: 6629, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 144, 124, 114, 180, 157, 191, 289, 307, 5036, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 143307, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:00:08 wall 8597 cpu 177 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 11650, acks: 11631, step_downs: 0, entries: 6629, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 144, 124, 114, 180, 157, 191, 289, 307, 5036, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 143307, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:01:07 wall 6906 cpu 136 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 11658, acks: 11639, step_downs: 0, entries: 6633, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 144, 124, 114, 180, 157, 191, 289, 307, 5040, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 143344, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:02:07 wall 4383 cpu 130 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 11658, acks: 11639, step_downs: 0, entries: 6633, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 144, 124, 114, 180, 157, 191, 289, 307, 5040, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 143344, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:03:08 wall 6957 cpu 123 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 11658, acks: 11639, step_downs: 0, entries: 6633, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 144, 124, 114, 180, 157, 191, 289, 307, 5040, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 143344, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:04:08 wall 8290 cpu 166 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 11658, acks: 11639, step_downs: 0, entries: 6633, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 144, 124, 114, 180, 157, 191, 289, 307, 5040, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 143344, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:05:08 wall 8755 cpu 146 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 11658, acks: 11639, step_downs: 0, entries: 6633, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 144, 124, 114, 180, 157, 191, 289, 307, 5040, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 143344, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:06:08 wall 8534 cpu 163 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 11666, acks: 11647, step_downs: 0, entries: 6637, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 144, 124, 114, 180, 157, 191, 289, 307, 5044, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 143367, acks
+   graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:07:07 wall 7375 cpu 162 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 11797, acks: 11777, step_downs: 0, entries: 6702, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 49, 144, 125, 114, 187, 160, 197, 293, 308, 5086, 11, 22, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 145031, acks
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 96, acks: 95, step_downs: 0, entries: 54, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 5, 3, 8, 4, 1, 31] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 148275, acks: 147945, step_downs: 0, entries: 83518, 
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 142, acks: 141, step_downs: 0, entries: 82, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 1, 6, 6, 9, 6, 1, 50] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 148522, acks: 148191, step_downs: 0, entries: 83660
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(847a6465-495a-41df-937a-344a4ca04b8e), 50), (VersionId(627ed36c-91c4-406a-ab3e-7744c464ee84), 50)])
+   graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:08:07 wall 3859 cpu 175 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 872, acks: 864, step_downs: 0, entries: 466, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 9, 24, 17, 27, 21, 36, 322, 1] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 4697, acks: 4670, step_downs: 0, entries:
+   graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:09:08 wall 3113 cpu 188 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 2351, acks: 2338, step_downs: 0, entries: 1273, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 6, 6, 25, 51, 37, 44, 52, 86, 961, 1] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 7530, acks: 7496, step_downs: 0, entr
+   graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:10:07 wall 6702 cpu 209 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 4253, acks: 4225, step_downs: 0, entries: 2311, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 13, 9, 51, 104, 62, 67, 77, 125, 1793, 1, 1] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 10094, acks: 10048, step_downs
+   graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:11:07 wall 4040 cpu 152 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 6169, acks: 6125, step_downs: 0, entries: 3348, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 18, 15, 63, 150, 82, 93, 109, 168, 2635, 3, 1] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 12419, acks: 12355, step_do
+   graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:12:07 wall 2413 cpu 280 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 8355, acks: 8306, step_downs: 0, entries: 4538, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 13, 22, 23, 83, 181, 106, 126, 153, 231, 3595, 4, 1] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 14552, acks: 14482, step_
+   graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:13:07 wall 12200 cpu 377 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 10614, acks: 10563, step_downs: 0, entries: 5797, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 32, 30, 100, 220, 135, 149, 201, 280, 4629, 4, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 16796, acks: 16723, st
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 446, acks: 445, step_downs: 0, entries: 253, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 8, 5, 8, 16, 12, 200] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 163824, acks: 163431, step_downs: 0, entries: 9
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 535, acks: 534, step_downs: 0, entries: 300, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 3, 9, 5, 9, 16, 15, 241] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 163881, acks: 163488, step_downs: 0, entries: 9
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 592, acks: 591, step_downs: 0, entries: 328, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 4, 9, 5, 9, 16, 15, 267] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 163974, acks: 163581, step_downs: 0, entries: 9
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 657, acks: 656, step_downs: 0, entries: 363, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 5, 10, 7, 9, 18, 17, 294] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 164057, acks: 163664, step_downs: 0, entries: 
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 770, acks: 769, step_downs: 0, entries: 427, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 1, 6, 13, 10, 10, 20, 19, 344] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 164133, acks: 163740, step_downs: 0, entries
+   graft-ops Committed("IntentStep")
+   graft-ops Deployed(Site(SiteId(1)), [(VersionId(847a6465-495a-41df-937a-344a4ca04b8e), 100)])
+   graft-ops Committed("SiteRelease")
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("IntentStep")
+   graft-ops Wait { until: Some(Timestamp(1795504458211)), why: "first day" }
+== 07:14:07 wall 3825 cpu 125 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 3018, acks: 3012, step_downs: 0, entries: 1658, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 8, 7, 22, 61, 41, 38, 73, 78, 1326, 1, 0, 0, 0, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 1803, acks: 1800, step_d
+   graft-ops Wait { until: Some(Timestamp(1795504458211)), why: "first day" }
+== 07:15:07 wall 6127 cpu 189 9249fa8b ok
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 6579, acks: 6570, step_downs: 0, entries: 3626, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 20, 18, 51, 122, 78, 72, 141, 182, 2931, 1, 1, 0, 0, 2] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 2620, acks: 2617, s
+   graft-ops gate site 1: N+1 Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 658, acks: 658, step_downs: 0, entries: 359, lag: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 5, 4, 8, 9, 8, 19, 301] } N Side { apply_lag_p99_ms: 1500, exceptions: 0, appends: 166069, acks: 165674, step_downs: 0, entries: 93
+   graft-ops Committed("IntentStep")
+   graft-ops Committed("IntentDone")
+   graft-ops Idle
+== 07:16:07 wall 3048 cpu 125 9249fa8b ok
+   graft-ops Idle
+== 07:17:08 wall 4877 cpu 124 9249fa8b ok
+   graft-ops Idle
+== 07:18:07 wall 4031 cpu 127 9249fa8b ok
+   graft-ops Idle
+== 07:19:07 wall 3800 cpu 221 9249fa8b ok
+   graft-ops Idle
+== 07:20:07 wall 5822 cpu 164 9249fa8b ok
+   graft-ops Idle
+== 07:21:07 wall 3490 cpu 233 9249fa8b ok
+   graft-ops Idle
+== 07:22:08 wall 5905 cpu 167 9249fa8b ok
+   graft-ops Idle
+== 07:23:08 wall 6287 cpu 153 9249fa8b ok
+   graft-ops Idle
