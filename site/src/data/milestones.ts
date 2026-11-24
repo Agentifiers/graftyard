@@ -87,7 +87,7 @@ export const milestones: Milestone[] = [
     after: 'Three rows, B0-32, B0-33 and B0-34, are met on the lead\'s rulings, which the operator accepted by closing AM1. Clauses that need Graftyard\'s own agents move to AM3, and fleets this size on one repository stay off until metadata child groups pass (M7-WP4).',
   },
   {
-    id: 'm4', code: 'M4', name: 'Webhooks, notifications, search, Actions and the web app', state: 'now', when: 'Every test row passes, still in build',
+    id: 'm4', code: 'M4', name: 'Webhooks, notifications, search, Actions and the web app', state: 'now', when: 'Every test row passes; held open for cache, artifacts and OIDC',
     lead: 'Everything that reads the committed log: webhooks, notifications and search, the Actions engine and its runners, and the web app.',
     groups: [
       { title: 'Passing on a hosted test install', items: [
@@ -103,11 +103,12 @@ export const milestones: Milestone[] = [
       ] },
       { title: 'Still in build', items: [
         'The launch service, so a step can call another action with <code>uses:</code>, and each job\'s own <code>GITHUB_TOKEN</code>. Both are built and ship with the next site day',
+        'What holds M4 open: <code>actions/cache</code>, <code>upload-artifact</code> and <code>download-artifact</code>, and OIDC tokens for cloud sign-in. Each gets its own test row, and the cache is being built now',
       ] },
     ],
   },
   {
-    id: 'm5', code: 'M5', name: 'Release control and site days', state: 'now', when: 'Gate: every clause passes',
+    id: 'm5', code: 'M5', name: 'Release control and site days', state: 'now', when: 'Closes when the last five key rotations pass',
     lead: 'How a new version reaches an install: releases the customer signs, applied one site a day with the site drained first, and a pre-signed way back for every step.',
     groups: [
       { title: 'Passed on hosted test installs', items: [
@@ -120,6 +121,9 @@ export const milestones: Milestone[] = [
         'Gate: a deliberately unreadable format sent to one site commits nothing, and its groups move to another site' + row('BM-5'),
         'Gate: with the vendor\'s token revoked mid-roll, the customer halts, removes the vendor key and aborts. Every site returns to the version it ran before, and a vendor-signed intent is refused' + row('BM-5'),
         'Gate: a bad <code>graft-ops</code> at 1% swaps back by its pre-signed pointer with the Cloudflare API blocked, after about 700 token mints, and returns to the last good version once unblocked' + row('BM-5'),
+      ] },
+      { title: 'Left before it closes', items: [
+        'Rotating the SSH host keys, the MCP and Insights App keys, the MCP client secret and the secrets wrap key under live traffic with no new script version. Each now reads its active key from the release log, and the hosted tests are next' + row('BF-46'),
       ] },
     ],
   },

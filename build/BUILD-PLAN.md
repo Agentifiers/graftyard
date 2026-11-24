@@ -1338,6 +1338,8 @@ It also carries BM-4's matrix run.
 | --- | --- |
 | BM-4 | An unmodified `actions/runner` runs a matrix, and a site is failed mid-run with no lost job state |
 
+**State (2026-11-24): M4 is held open by the operator.** Every acceptance row written in M4-WP1 to M4-WP6 is met hosted, BM-4 included. M4 closes once `actions-cache`, `actions-artifacts`, and `actions-oidc`, which M4-WP3's Build line lists and no code serves, each have a gate row in M4-WP3 that passes hosted (`FRAME.md`, "Operator decision, 2026-11-24, M5 closes after BF-46's new rows, and M4 holds for cache, artifacts, and OIDC"; `decisions/OPEN-QUESTIONS.md`, F116). `graftyard actions import` and a hosted read of `GITHUB_TOKEN` minting are known limits, not gate lines.
+
 ## Milestone 5: release control and site days
 
 Built (`design/DESIGN.md`, "Milestones 1 to 7"): the `Release` group with genesis against the trust anchor, `Keys` with the executor key, `ReleaseUploaded`, `IntentStep`, `IntentDone`, `SiteRelease`, `SiteMode`, pin-only `Pointers` set by undos, `graft-front`, `graft-ops` with the release bucket, `POST /api/graftyard/v1/release/entries`, `FrontRoll` and `OpsRoll`, `verify`-gated formats, gradual edge deploys, gated site days with pre-signed `Rollback`s, the Workflows script's day included, `SiteHealth` drain and undrain, `StaleMode`, the revocation and rotation runbooks, the change feed and export endpoints, and the vault with `graftyard vault upgrade`.
@@ -1474,6 +1476,8 @@ It also carries BM-5's vendor-token revocation mid-roll. Its in-memory half pass
 **Unreadable-format clause passes hosted (2026-11-24, graft-m4a, $0.46)** (`tests/m5/results/m5-wp6.md`, "BM-5's unreadable format, hosted"; code in "BM-5's unreadable format, code"; `decisions/DECISIONS.md`, "`release-seq`"). `graft-ops` uploaded N (seq 22) and N+1 (seq 23, built `test-format`) and ran site a's day to N+1. An edge with `FORCE_FORMAT=32.65520` and `FORCE_FORMAT_SITE=0` then pushed to three repos homed on a. Each forced push answered 503. Site a logged `NoLead` from site b's seq-22 refusal and handed off, and b led in term 3. The pushes after it committed through b. No member holds an entry in 0x20.0xfff0.
 
 **`graft-ops` swap-back clause passes hosted (2026-11-24, graft-m4a, $0.02); every BM-5 clause now passes** (`tests/m5/results/m5-wp6.md`, "BM-5's `graft-ops` swap-back, hosted"; `decisions/DECISIONS.md`, "`mint-ratio`"). `graft-ops` from main 6aa73504 rolled a `test-mint-fail` N+1 to 1%, and its deploy token was then made invalid. After about 700 mints through the edge, one edge isolate counted N+1's 503s past `MINT_ERROR_RATIO` and committed the pre-signed `OpsPointer` to N, with no deploy and no API call. Once unblocked, `graft-ops` returned to N at 100% and committed `IntentDone`.
+
+**State (2026-11-24): M5 closes when BF-46's hosted rows for the five rotations R45 added pass** (M5-WP6; `FRAME.md`, "Operator decision, 2026-11-24, M5 closes after BF-46's new rows, and M4 holds for cache, artifacts, and OIDC"). Every other M5 row, BM-5 included, is met. The lead closes M5 here once those rows pass. Known limits, not gate lines: `McpAppKey` and `InsightsAppKey` have no reader yet, so their rows read the probe and the switch; BF-47 ran on stand-ins (R10); BF-49's hosted revocation was pulled by `pull.py`, not the vault Worker; BM-5's revocation clause moved no pinned script.
 
 ## AM2: `graft-mcp` (after M5)
 

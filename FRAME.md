@@ -370,6 +370,13 @@ Under that direction the orchestrator settled how graft-m6a's BF-50 rows read "L
 - **AM2 is closed.** LM-2 is met, so AM2-WP4 is met (`build/BUILD-PLAN.md`, AM2-WP4, "State (2026-11-24)"): the MCP row (L0-08 on m3fa2 and m3fa3), the swap-back of a bad `graft-mcp` at 1% with the API blocked (R47 row r1 on graft-m4a), and L0-15's `AgentGate` half (42 of 42 on graft-m3f).
 - **What stays open, not as gate lines:** R47's 100% hold for `FrontRoll` and `McpRoll` is in code and is read hosted on the next `McpRoll` row on graft-m4a; R47's `OpsRoll` and `ControllerRoll` gates stay pending; A51 lands with AM3-WP1's controller (`decisions/OPEN-QUESTIONS.md`).
 
+### Operator decision, 2026-11-24, M5 closes after BF-46's new rows, and M4 holds for cache, artifacts, and OIDC
+
+> "Do your recommendation: close M5 after BF-46's rows pass, hold M4 for cache, artifacts and OIDC"
+
+- **M5 closes when BF-46's hosted rows for the five rotations R45 added pass** (`SshHostKeys`, `McpAppKey`, `McpClientSecret`, `InsightsAppKey`, `SecretsWrapKey`; `build/BUILD-PLAN.md`, M5-WP6). Every other M5 row is met. The lead closes M5 in BUILD-PLAN once those rows pass, with no further operator decision. Known limits, not gate lines: `McpAppKey` and `InsightsAppKey` have no reader yet, so their rows read the probe and the switch only; BF-47 ran with the runner account as the vault account and a minimal Worker as the Workflows script (R10); BF-49's hosted revocation was pulled by `pull.py`, not the vault Worker; BM-5's revocation clause moved no pinned script.
+- **M4 stays open until `actions-cache`, `actions-artifacts`, and `actions-oidc` each have a gate row in M4-WP3 and it passes hosted** (`decisions/OPEN-QUESTIONS.md`, F116). Every M4 row written today is met. `graftyard actions import` and a hosted read of `GITHUB_TOKEN` minting stay known limits, not gate lines.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
