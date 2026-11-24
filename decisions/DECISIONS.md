@@ -9939,8 +9939,10 @@ equal.
 **Status.** Asked for by the lead on 2026-11-24 as B0-33's lever 1, moved from edge refusal to LM-1. Built on branch
 `agent-rows-cache` from main `a07a518b`: `workers/edge/src/colo.rs` (`gate`, `GateFx::Rows`), `workers/edge/src/lib.rs`
 (`gate::put`/`get`, `fresh_gate`, `read_gate`, `ROWS_BYTES_MAX`) and `workers/edge/src/agents.rs` (`push_context`,
-`unlinked_by_cache`, `fresh_if_unlinked`). Edge only, so it ships on an edge day after the current B0-33 set, not
-during it. Not hosted. The validate path (F112's lever 2) is untouched.
+`unlinked_by_cache`, `fresh_if_unlinked`), and `crates/git` (`Push::agent_rules`, `agent::protected_now`) for the
+policy rule below. It ships after the current B0-33 set: a site day first, so every repository leader applies the
+policy rule, then the edge day that turns on the cached rows. An edge day before the site day would let a cached
+policy pass for up to `READ_CACHE`. Not hosted. The validate path (F112's lever 2) is untouched.
 
 **Decision.** A push gate's fresh read (`{"rows": {"access": true, "agent": true}}`) already reads the push's agent
 rows. The gate's isolate entry now holds them beside the decision, as one value put and replaced whole:
@@ -9972,10 +9974,21 @@ bound fulls the time before the send split front 0.5 s, gate 1.3 s, context 1.9 
   isolates.
 
 **What it changes.** The edge applies `AgentPolicy.extra_paths` (`validate`'s `protected`) and links sessions from the
-agent rows. `decide` re-reads tasks and leases and binds on them, but `protected` comes from the edge. So a `PUT
-.../agents/policy` that adds a protected path binds on agent pushes within `READ_CACHE` of its commit, not at once.
-That is the bound a revocation already has on the gate. Before this, a cached-gate push read the policy fresh on every
-push [inference: no test install sets `extra_paths` under load].
+agent rows, which may now be up to `READ_CACHE` old. So `decide` no longer trusts the edge's `protected` alone for the
+policy's own paths: `Push::agent_rules` matches each ref's `changed` paths against the `extra_paths` of its own fold,
+after the entry's earlier commands (`agent::protected_now`), and refuses a hit `Protected`, per ref as any protected
+hit. A `PUT .../agents/policy` that adds a protected path therefore binds on the next entry after it commits, however
+old the edge's rows were. A directory of a `truncated` list counts when a glob may match under it, as an Exclusive lease
+does. `PROTECTED_PATHS` never change, so the edge's `protected` still covers them. The lead ruled on 2026-11-24 that the
+policy must bind at once, since `extra_paths` is a security control and a revocation's `READ_CACHE` bound does not
+stretch to it.
+
+**What the policy rule beat.** A policy revision carried on `Push` (the policy row's commit index from the rows the edge
+used) and checked in `decide`, refusing a mismatch in the agent retry shape. It needs a new format (32.27), a
+`FormatsEnable`, the revision in the member's rows answer, and an old-format path. `Push` already carries `changed`,
+which is `protected`'s input before the policy is applied, so `decide` can apply the policy itself: no new format, no
+member change, and no extra retry after a policy change. The cost is one glob match per changed path per `extra_paths`
+glob in `decide` (at most `PATHS_MAX` paths), and nothing when the policy adds no paths.
 
 **Evidence.**
 - `colo::tests::a_push_gate_serves_the_agent_rows_of_its_own_fill_and_no_other`:
@@ -9997,6 +10010,13 @@ push [inference: no test install sets `extra_paths` under load].
   - cached rows trusted for a new task;
   - the token's claim not counted;
   - another App's session counted.
+- `agent_gates::a_policy_committed_after_the_edges_read_binds_the_next_push`: a push validated on a policy without
+  `extra_paths` is refused once a policy protecting its path commits, in an earlier entry or earlier in the same
+  entry; so is a `truncated` directory a new glob may reach under; a path no glob names and a directory list no glob
+  reaches pass.
+- `tests/m0carried/plant151.py`: 6 of 6 mutants caught. They are main's rule (the edge's `protected` alone), the policy
+  read before the entry's earlier commands, only the first glob, only the first path, a directory matched as a file,
+  and every path matched by overlap.
 - `tests/edgeboot/run.sh` with and without `PRODUCT=1`.
 
 **Flip.** Back it out on the next B0-33 row after its edge day if either holds:
@@ -10004,6 +10024,4 @@ push [inference: no test install sets `extra_paths` under load].
 - cached-gate pushes' `context` time does not drop: `context` p50 on `gate_iso` pushes without `ctx_read` stays above
   200 ms, or `ctx_read` is on more than 25% of `gate_iso` pushes.
 
-Also back it out if a push is seen to pass a protected path that a `PUT .../agents/policy` committed more than
-`READ_CACHE` before it. That breaks the bound this entry states. Leases and a `Session` link stay `decide`'s: it checks
-them on its own read.
+Leases, a `Session` link and the policy's `extra_paths` stay `decide`'s: it checks them on its own read.

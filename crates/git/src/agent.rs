@@ -222,6 +222,18 @@ pub fn changed_of(refname: &RefName, paths: &[&str]) -> ChangedPaths {
     ChangedPaths { refname: refname.clone(), paths: dirs.into_iter().map(Into::into).collect(), truncated: true }
 }
 
+/// `decide`'s own protected-path check (`agent-rows-cache`): the first of a ref's `changed` paths that the fold's
+/// current `extra` paths protect, so a policy that committed after the edge's `validate` read binds the next entry.
+/// The edge's `protected` already covers `PROTECTED_PATHS`, which never change. A directory of a list cut past
+/// PATHS_MAX (`truncated`, written `dir/`) cannot name its files, so it counts when any `extra` glob overlaps it, as
+/// an Exclusive lease does.
+pub fn protected_now(c: &ChangedPaths, extra: &[Box<str>]) -> Option<Box<str>> {
+    let hit = |g: &str, p: &str| {
+        if p.ends_with('/') { graftyard_identity::glob::glob_overlap(g, p) } else { glob_match(g, p) }
+    };
+    extra.iter().find_map(|g| c.paths.iter().find(|p| hit(g, p))).cloned()
+}
+
 /// The changed paths that match `PROTECTED_PATHS` or the policy's `extra_paths`, sorted; `None` when none does.
 pub fn protected_of(refname: &RefName, paths: &[&str], extra: &[Box<str>]) -> Option<ProtectedHits> {
     let mut hits: Vec<&str> = paths

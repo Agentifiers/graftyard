@@ -312,6 +312,56 @@ fn b0_36_agents_are_refused_and_others_are_not() {
     eprintln!("B0-36 Graftyard-run App: {run_counts:?}; draft-only refused a ready PR");
 }
 
+/// `agent-rows-cache`: the edge's `protected` may come from an `AgentPolicy` read before the latest one committed.
+/// A push validated against rev k (no `extra_paths`) is refused when rev k+1 protecting its path committed first, in
+/// an earlier entry or earlier in the same entry; a truncated directory a new glob reaches under is refused; a path the
+/// new policy does not name, and a push before the policy, still pass.
+#[test]
+fn a_policy_committed_after_the_edges_read_binds_the_next_push() {
+    let mut w = World::new();
+    w.flag(claude_row());
+    let set = |paths: &[&str]| {
+        let policy = AgentPolicy { extra_paths: paths.iter().map(|p| (*p).into()).collect(), ..AgentPolicy::default() };
+        let mut c =
+            IssueCall::new(IssueOp::SetAgentPolicy(policy), user(OWNER), RequestId(Ulid(0)), serde_json::Value::Null);
+        c.agent = true;
+        RepoCmd::Issue(Box::new(c))
+    };
+    let at = |r: &str, n: u32, paths: &[&str]| {
+        RepoCmd::Push(push(app(CLAUDE), vec![up(&format!("refs/heads/claude/{r}"), None, Some(oid(n)))], paths))
+    };
+    // Rev k: nothing extra, so `Makefile` passes.
+    assert_eq!(refs(&w.commit(at("k", 1, &["Makefile"]))), [RefOutcome::Ok]);
+    // Rev k+1 in its own entry; the push's `protected` was computed on rev k.
+    w.commit(set(&["Makefile", "gen/*.rs"])).expect("the admin sets the policy");
+    let o = w.commit(at("k1", 2, &["LICENSE", "Makefile"]));
+    assert_eq!(agent_rule(&o), Some(AgentRule::Protected), "{o:?}");
+    assert!(format!("{o:?}").contains("Makefile is a protected path"), "{o:?}");
+    // The policy and the push in one entry, the policy first: decide sees the earlier command. The first command
+    // admitted decides alone, so a filler goes first.
+    let filler = RepoCmd::Push(push(user(OWNER), vec![up("refs/heads/filler", None, Some(oid(90)))], &[]));
+    let all = w.commit_all_acked(vec![
+        filler,
+        set(&["Makefile", "gen/*.rs", "tools/gen.sh"]),
+        at("same", 3, &["tools/gen.sh"]),
+    ]);
+    let index = |i: usize| all[i].as_ref().map(|a| a.index).ok();
+    assert!(index(1).is_some() && index(1) == index(2), "{:?} {:?}", index(1), index(2));
+    let pushed = all[2].clone().map(|a| a.out);
+    assert_eq!(agent_rule(&pushed), Some(AgentRule::Protected), "{pushed:?}");
+    // Past PATHS_MAX the edge sends directories; `gen/` may hold paths `gen/*.rs` protects.
+    let many: Vec<String> = (0..1_200).map(|i| format!("{}/f{i}.rs", ["src", "gen", "lib"][i % 3])).collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    let o = w.commit(at("dirs", 4, &many));
+    assert_eq!(agent_rule(&o), Some(AgentRule::Protected), "{o:?}");
+    // Controls: paths no glob names (`gen/*.rs` reaches neither a file one directory deeper nor one named `gen`),
+    // and a directory list no glob reaches under.
+    assert_eq!(refs(&w.commit(at("ok", 5, &["src/a.rs", "Makefile.am", "gen/sub/x.rs", "gen"]))), [RefOutcome::Ok]);
+    let few: Vec<String> = (0..1_200).map(|i| format!("{}/f{i}.rs", ["src", "lib"][i % 2])).collect();
+    let few: Vec<&str> = few.iter().map(String::as_str).collect();
+    assert_eq!(refs(&w.commit(at("okdirs", 6, &few))), [RefOutcome::Ok]);
+}
+
 // ---- AgentGate ----
 
 fn gate_rule(o: &RepoOutcome) -> Option<String> {

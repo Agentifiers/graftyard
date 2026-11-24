@@ -1092,6 +1092,7 @@ impl Push {
             app: Some(a.app),
             session: a.task.clone(),
         });
+        let extra = crate::tiers::agent_policy(s.core()).extra_paths;
         for (u, r) in self.updates.iter().zip(refs.iter_mut()) {
             if *r != RefOutcome::Ok || Some(&u.name) == session_ref {
                 continue;
@@ -1101,6 +1102,16 @@ impl Push {
             let changed = self.changed.iter().find(|c| c.refname == u.name);
             if why.is_none() && u.new.is_some() && changed.is_none() {
                 why = Some(AgentRefusal::of(AgentRule::Reclass));
+            }
+            // The edge's `protected` used the policy it read, which may predate this entry (`agent-rows-cache`):
+            // the fold's own `extra_paths` binds here, so a policy that committed before this entry refuses at once.
+            if why.is_none()
+                && u.new.is_some()
+                && let Some(c) = changed
+                && let Some(p) = crate::agent::protected_now(c, &extra)
+            {
+                let text = format!("refused: {p} is a protected path; agents may not change it");
+                why = Some(AgentRefusal::new(AgentRule::Protected, text));
             }
             if why.is_none()
                 && let (Some(v), Some(c), Some(h)) = (lease, changed, holder.as_ref())
