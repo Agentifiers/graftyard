@@ -436,8 +436,9 @@ MUTANTS = [
      ['cargo', 'test', 'graftyard-git', '--test', 'catchup', 'large_promoted']),
 ]
 
+# A target dir of its own, so a mutant's build never touches the workspace's; under the git-ignored target/.
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
-           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', '/home/user/workspace/repo/.worktrees/target-rows'))
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')))
 
 
 def run(t):

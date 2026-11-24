@@ -25,16 +25,17 @@ MARKS = ['-p', 'graftyard-git', '--test', 'agent_gates']
 
 # (name, file, old, new, test args)
 MUTANTS = [
+    # `cut` takes the first lanes from `first_lanes` and counts bytes as (soft, all) with `add` since soft-grow.
     ('agent lane starves humans: Agent cut before Human and MergeQueue', L,
-     '        for class in [AdmitClass::Human, AdmitClass::MergeQueue] {\n            while fits(ad.lanes[class.lane()].front(), &batch, bytes) {',
-     '        while ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {\n            let q = ad.take(AdmitClass::Agent).expect("front");\n            (bytes, ad.tokens) = (bytes + q.bytes, ad.tokens - 1.0);\n            batch.push(q);\n        }\n        for class in [AdmitClass::Human, AdmitClass::MergeQueue] {\n            while fits(ad.lanes[class.lane()].front(), &batch, bytes) {',
+     '        for class in first_lanes {\n            while fits(ad.lanes[class.lane()].front(), &batch, bytes) {',
+     '        while ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {\n            let q = ad.take(AdmitClass::Agent).expect("front");\n            (bytes, ad.tokens) = (add(bytes, &q), ad.tokens - 1.0);\n            taken[AdmitClass::Agent.lane()] += 1;\n            batch.push(q);\n        }\n        for class in first_lanes {\n            while fits(ad.lanes[class.lane()].front(), &batch, bytes) {',
      RAFT),
     ('AGENT_FLOOR not honored: no floor before Bot', L,
      '        let floor = (AGENT_FLOOR * cap * since / 1000.0).floor() as usize;',
      '        let floor = 0 * (AGENT_FLOOR * cap * since / 1000.0).floor() as usize;', RAFT),
     ('AGENT_SHARE not enforced: the bucket never empties', L,
-     '            (bytes, ad.tokens) = (bytes + q.bytes, ad.tokens - 1.0);',
-     '            (bytes, ad.tokens) = (bytes + q.bytes, ad.tokens);', RAFT),
+     '            (bytes, ad.tokens) = (add(bytes, &q), ad.tokens - 1.0);',
+     '            (bytes, ad.tokens) = (add(bytes, &q), ad.tokens);', RAFT),
     ('DEMOTE_PER_MIN in leader memory only: the fold count ignored', L,
      '        let committed = self.fold.actor_writes(actor, from, Timestamp(self.now.0 + 1));',
      '        let committed = 0 * self.fold.actor_writes(actor, from, Timestamp(self.now.0 + 1));', RAFT),
@@ -50,9 +51,10 @@ MUTANTS = [
     ('AGENT_QUEUE_MAX not enforced', L,
      '        if agent && (ad.agent().len() >= AGENT_QUEUE_MAX.0 as usize ||',
      '        if agent && (ad.agent().len() >= usize::MAX ||', RAFT),
+    # Each queued agent command carries its own `until` now (AGENT_WAIT, or sooner by its `Admit::budget`).
     ('AGENT_WAIT never expires agents', L,
-     '        let old = ad.lanes[AdmitClass::Agent.lane()].take_old(|q| q.at < cut);',
-     '        let old = ad.lanes[AdmitClass::Agent.lane()].take_old(|q| q.at < cut && false);', RAFT),
+     '        let old = ad.lanes[AdmitClass::Agent.lane()].take_old(|q| q.until < now);',
+     '        let old = ad.lanes[AdmitClass::Agent.lane()].take_old(|q| q.until < now && false);', RAFT),
     ('hot from leader memory: a pushes window that is never filled', A,
      '        if m.push {\n            self.pushes.push_back(at);\n        }', '', RAFT),
     ('AGENT_INLINE_ENTRY not applied: only pressure stages agent packs', L,
@@ -65,12 +67,13 @@ MUTANTS = [
     ('ng without the retry hint', S,
      'reason: format!("agent admission full, retry after {retry_after_s}s"),',
      'reason: "agent admission full".into(),', ['-p', 'graftyard-git', '--lib']),
+    # The budget's rule moved to `would` (ask, then decide): pushes from a positive balance.
     ('mergeable computed past the budget: pushes always admitted', P,
-     '            MergeCause::HeadPush | MergeCause::Dispatch => self.ms > -est_ms,',
+     '            MergeCause::HeadPush | MergeCause::Dispatch => self.ms > 0.0,',
      '            MergeCause::HeadPush | MergeCause::Dispatch => true,', GIT),
     ('GETs ignore the budget', P,
-     '                fresh && self.ms - est_ms >= GET_RESERVE * Self::rate(self.k)',
-     '                fresh', GIT),
+     '            MergeCause::Get => self.ms - est_ms >= GET_RESERVE * self.rate,',
+     '            MergeCause::Get => true,', GIT),
     ('list fields compute', P,
      '            MergeCause::List => false,', '            MergeCause::List => self.ms >= est_ms,', GIT),
     ('GETs not coalesced per PR', P,
@@ -86,9 +89,10 @@ MUTANTS = [
     ('another owner can reduce a held network', H,
      '    let mut out: Vec<u8> = asks.iter().map(|a| a.2.min(a.3)).collect();',
      '    let mut out: Vec<u8> = asks.iter().map(|_| 0).collect();', GIT),
+    # archive_due_walk takes the log's total bytes from the host (`SUM(length(row))`).
     ('LOG_MAX_BYTES ignored: only the 30-day rule archives', FS,
-     '    let mut over = log.iter().map(|e| e.2).sum::<u64>().saturating_sub(max_bytes);',
-     '    let mut over = 0 * log.iter().map(|e| e.2).sum::<u64>().saturating_sub(max_bytes);', FOLD),
+     '    let mut over = total_bytes.saturating_sub(max_bytes);',
+     '    let mut over = 0 * total_bytes.saturating_sub(max_bytes);', FOLD),
     ('RepoFold marks no writes: hot and DEMOTE_PER_MIN never fire on a repository', R,
      '        actor.map(|a| WriteMark { actor: Some(a), push: false })\n    }',
      '        let _ = actor;\n        None\n    }', MARKS),
@@ -98,10 +102,13 @@ MUTANTS = [
     ('RepoFold marks every write a push', R,
      '        actor.map(|a| WriteMark { actor: Some(a), push: false })',
      '        actor.map(|a| WriteMark { actor: Some(a), push: true })', MARKS),
+    ('list fields compute: the ask admits them', P,
+     '                self.stats.list_asked += 1;\n                false',
+     '                self.stats.list_asked += 1;\n                true', GIT),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
-           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '..', 'target-par')),
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
            CARGO_INCREMENTAL='0')
 only = sys.argv[1:] and set(int(x) for x in sys.argv[1:])
 for n, (name, path, old, new, args) in enumerate(MUTANTS):

@@ -15,6 +15,10 @@ where its anchors are (`anchors` below); an unknown shape fails, so a new plant 
 `scripts/plants-baseline.txt` lists the mutants that had drifted when this check went in, one `file: name` per line,
 to be fixed on later branches. It only shrinks. The check fails on a drifted mutant it does not list, on a listed one
 whose anchors all match again, and on a line the merge base's copy did not have. Exit code 1 lists each failure.
+
+An anchor that matches once is necessary, not sufficient: the mutant may no longer compile (lm1mem #28, after `grant`
+took a floor) or may match code the plant no longer means (lm1mem #95 matched a cat-file parser, not upload-pack's
+stop), so only a plant run proves its mutants.
 """
 
 import ast
