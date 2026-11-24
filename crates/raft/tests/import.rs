@@ -38,10 +38,8 @@ impl Copy {
     /// has no peer but the importer.
     fn feed(&mut self, now: Timestamp, rows: &[Vec<u8>]) -> Option<Halt> {
         let fed = self.imp.feed(&mut self.m, now, rows);
-        if let Some(r) = fed.ready {
-            let (_, out) = r.persist(&mut self.disk);
-            assert!(out.messages.iter().chain(&out.early).all(|e| e.to == IMPORTER), "{:?}", out.messages);
-        }
+        let (_, out) = fed.ready.persist(&mut self.disk);
+        assert!(out.messages.iter().chain(&out.early).all(|e| e.to == IMPORTER), "{:?}", out.messages);
         fed.halt
     }
 }

@@ -40,10 +40,10 @@ pub enum Halt {
     Refused(Refusal),
 }
 
-/// What one `feed` did: the member's `Ready`, which the host persists before anything else, and why the copy stopped,
-/// if it did.
+/// What one `feed` did: the member's `Ready`, which the host persists before anything else (an idle one when no row
+/// was new), and why the copy stopped, if it did.
 pub struct Fed<C: Command> {
-    pub ready: Option<Ready<C, ()>>,
+    pub ready: Ready<C, ()>,
     pub halt: Option<Halt>,
 }
 
@@ -110,7 +110,7 @@ impl Importer {
             (at, prev) = (e.index, d);
             entries.push(e);
         }
-        let Some(top) = entries.last().map(|e| e.index) else { return Fed { ready: None, halt } };
+        let Some(top) = entries.last().map(|e| e.index) else { return Fed { ready: m.idle(now), halt } };
         let term = entries.iter().map(|e| e.term).max().unwrap_or(Term(0)).max(m.term());
         self.round += 1;
         let req = AppendReq {
@@ -138,7 +138,7 @@ impl Importer {
         }
         self.held = held;
         self.digest = m.digest_of(held).unwrap_or(self.digest);
-        Fed { ready: Some(ready), halt }
+        Fed { ready, halt }
     }
 
     /// The `InstallSnapshot` for an archived range: the host copied the objects `source` names. The member asks for

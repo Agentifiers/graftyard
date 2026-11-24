@@ -1836,6 +1836,11 @@ impl Family for Tokens {
         if let Some(h) = hex_of("code") {
             out.insert("code".into(), json!(f.more.codes.get(&h.0)));
         }
+        // The lifeboat front's only credential read (`decisions/DECISIONS.md`, "`lifeboat-bundle`"): a `LifeboatRead`
+        // row's account, never a `Stored` row's.
+        if let Some(h) = hex_of("lifeboat") {
+            out.insert("lifeboat".into(), json!(f.lifeboat(&h.0).map(|a| a.0.0)));
+        }
         Value::Object(out)
     }
     fn fold_bytes(f: &id::TokensFold) -> Vec<u8> {

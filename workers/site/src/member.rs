@@ -538,6 +538,9 @@ impl DurableObject for Member {
             return Response::error("site down", 503);
         }
         let url = req.url()?;
+        if let (Method::Post, "/import") = (req.method(), url.path()) {
+            return self.import(req).await;
+        }
         if let (Method::Post, "/join") = (req.method(), url.path()) {
             let join: Join = req.json().await?;
             if let Some(why) = crate::retire::refusal(crate::retire::at(&self.state.storage().sql())) {
@@ -594,6 +597,52 @@ impl DurableObject for Member {
             });
         }
         Response::empty()
+    }
+}
+
+impl Member {
+    /// `POST /import` (`crate::lifeboat`): a lifeboat learner's rows. The first call joins it from entry 1.
+    async fn import(&self, mut req: Request) -> Result<Response> {
+        if !crate::lifeboat::mode(&self.env) {
+            return Response::error("not a lifeboat", 404);
+        }
+        let body: crate::lifeboat::ImportReq = req.json().await?;
+        let rows = crate::lifeboat::rows_of(&body)?;
+        if self.hosts.borrow().is_none() {
+            let Some(row1) = rows.first() else { return Response::error("an unjoined copy starts at entry 1", 409) };
+            // The family from the chain alone, as `Kind::of` picks it; the record from entry 1 under that family.
+            let probe = Join {
+                chain: body.chain,
+                me: MemberRef::new(body.chain, SiteId(0), graftyard_types::MemberKind::Learner, 0, 1),
+                record: PlacementRecord {
+                    name: graftyard_types::PlacementName::Solo,
+                    sites: Default::default(),
+                    home: SiteId(0),
+                    generation: 1,
+                    moving_from: None,
+                    at: Timestamp(0),
+                },
+                peers: Vec::new(),
+                owner: body.owner,
+                genesis: None,
+                #[cfg(feature = "test-faults")]
+                no_claim: false,
+            };
+            let Some(h) = Hosted::build(self.state.clone(), self.env.clone(), &probe) else {
+                return Response::error(format!("no member family hosts {}", body.chain), 400);
+            };
+            let joined = each!(&h, x => match crate::lifeboat::join_of_host(x, &body, row1) {
+                Some(j) => Routes { host: x.clone() }.store_join(&j).map(|_| true),
+                None => Ok(false),
+            })?;
+            if !joined {
+                return Response::error("entry 1 rebuilds no placement record", 422);
+            }
+            *self.hosts.borrow_mut() = Some(h);
+        }
+        let h = self.hosts.borrow().clone().expect("built above");
+        let v = each!(&h, x => crate::lifeboat::import(x, rows).await)?;
+        Response::from_json(&v)
     }
 }
 
@@ -1158,9 +1207,6 @@ fn stale_until<F: Family>(h: &Host<F>) -> Option<graftyard_types::Timestamp> {
 /// importer (`graftyard_raft::import`), which no placement names, so a read-index read there would wait out
 /// CAMPAIGN_DEADLINE for an answer that never comes: every read is the member's own fold (`stale()`), and every write
 /// or leadership route answers 503, as GitHub answers a write it cannot take.
-fn lifeboat_mode(env: &Env) -> bool {
-    env.var("GRAFTYARD_LIFEBOAT").is_ok_and(|v| v.to_string() == "1")
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Lifeboat {
@@ -1176,7 +1222,7 @@ fn lifeboat_route(path: &str) -> Lifeboat {
     match path {
         "/read" => Lifeboat::Stale,
         "/raft" | "/status" | "/stats" | "/ping" | "/rtt" | "/log" | "/audit" | "/trace" | "/faults" | "/isolate"
-        | "/deps_log" | "/elections" | "/arrivals" | "/retire" | "/purge_retire" | "/reset" | "/abort" => {
+        | "/deps_log" | "/elections" | "/arrivals" | "/retire" | "/purge_retire" | "/reset" | "/abort" | "/view" => {
             Lifeboat::Pass
         }
         _ => Lifeboat::Refuse,
@@ -1259,7 +1305,7 @@ impl<F: Family> Routes<F> {
                 return Response::error("member class failing (injected site fault)", 503);
             }
         }
-        if lifeboat_mode(&self.host.env) {
+        if crate::lifeboat::mode(&self.host.env) {
             match lifeboat_route(url.path()) {
                 Lifeboat::Pass => {}
                 Lifeboat::Stale => {
@@ -3680,6 +3726,32 @@ async fn repo_owner_row(env: &Env, repo: graftyard_types::RepoId) -> std::result
 
 #[cfg(test)]
 mod tests {
+    /// The lifeboat front's credential read (`{"lifeboat": hash}`) names an account only for a `LifeboatRead` row: a
+    /// main-host token's `Stored` row, which the lifeboat holds with every other token row's metadata, is no lifeboat
+    /// credential, and the same read of it answers null (D1, `decisions/DECISIONS.md`, "`lifeboat-bundle`").
+    #[test]
+    fn a_stored_tokens_hash_is_no_lifeboat_credential() {
+        use graftyard_identity::{ScopeSet, TokenKind, TokensEvent, TokensFold};
+        use graftyard_raft::Fold as _;
+        use graftyard_types::{AccountId, DbId, TokenShard};
+
+        use crate::family::{Family, Tokens};
+        let (stored, boat) = ([7u8; 32], [9u8; 32]);
+        let mut f = TokensFold::new(TokenShard(5));
+        f.apply(&TokensEvent::Stored {
+            hash: stored,
+            kind: TokenKind::Pat,
+            account: AccountId(DbId(41)),
+            scopes: ScopeSet(1),
+            expires: None,
+        });
+        f.apply(&TokensEvent::LifeboatRead { hash: boat, account: AccountId(DbId(42)) });
+        let read = |h: [u8; 32]| Tokens::read_json(&f, &json!({ "lifeboat": graftyard_types::Digest(h).hex() }));
+        assert_eq!(read(boat)["lifeboat"], json!(42));
+        assert_eq!(read(stored)["lifeboat"], json!(null), "a Stored row's hash is refused by the lifeboat front");
+        assert_eq!(read([1; 32])["lifeboat"], json!(null));
+    }
+
     /// A lifeboat member never asks for a read index and takes no write: `/read` is the stale path, every write and
     /// leadership route is refused, and only the importer's `/raft` and the observation routes pass.
     #[test]
@@ -3708,7 +3780,8 @@ mod tests {
         ] {
             assert_eq!(lifeboat_route(p), Lifeboat::Refuse, "{p}");
         }
-        for p in ["/raft", "/status", "/stats", "/ping", "/trace"] {
+        // `/view`: the `Release` learner's signed entries, which the lifeboat edge's view reads.
+        for p in ["/raft", "/status", "/stats", "/ping", "/trace", "/view"] {
             assert_eq!(lifeboat_route(p), Lifeboat::Pass, "{p}");
         }
     }
