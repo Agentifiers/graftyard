@@ -452,8 +452,7 @@ pub struct CodeMode { pub spec: &'static OpenApi /* ghes-3.22 */ }
 // Release control. `Pointers` gains `mcp` and `controller`, set only by the pre-signed undos `McpPointer { pin }` and
 // `ControllerPointer { pin }`, and `Intent` gains `McpRoll { release }` and `ControllerRoll { release }`
 // (`design/DESIGN.md`, Shape, Release group). The install's `Rotate` covers the `Graftyard MCP` App key and client
-// secret and the `graftyard-insights` App key, which `graftyard apps init` stored in the install's Secrets Store, and
-// `graft-mcp` and the site scripts read each one's active slot from their `Release` view.
+// secret and the `graftyard-insights` App key; each holder reads the active slot from its `Release` view.
 // `graft-front` reads `Pointers.mcp` with `Pointers.edge` and sets both overrides in one header, which `graft-mcp`
 // forwards on its edge calls. A `None` pointer sets no override, so the deployment's percentage split applies.
 
