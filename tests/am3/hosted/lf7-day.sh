@@ -27,7 +27,8 @@
 #   infra            bucket graft-agents-m4a-releases, token graft-agents-m4a-deploy into the store
 #   controller       graft-agents-m4a-controller c0 (the script `graft-ops` uploads beside) and its STATUS_TOKEN
 #   front            graft-agents-m4a-front and its FRONT_TOKEN
-#   ops              graft-agents-m4a-ops (`deploy.mjs --agents`), GATE unset, 1-minute cron (set twice, R52)
+#   ops              graft-agents-m4a-ops (`deploy.mjs --agents`), GATE unset, 1-minute cron, then cron-fired.py waits
+#                    up to 15 minutes for its first scheduled run, resetting once only if none comes (R52)
 #   bundles          c1 (this checkout's controller, marked) and c2 (`test-bad`), signed, under the bucket
 #   roll <R>         `release roll R` (a ControllerRoll), its pre-signed undos
 #   abort <R>        the step-0 check, then the customer's Abort to R
@@ -201,7 +202,10 @@ ops)
       runner node workers/ops/deploy.mjs $AOPS $RSTORE $P-AGENTS_WEBHOOK_SECRET_A --agents "$K/agents-ops.json" 2>&1 |
         grep -E "Current Version|rror" | tail -3)
     deployment $AOPS "$RB" rapi
-    cron $AOPS "* * * * *"
+    t=$(date +%s%3N); cron $AOPS "* * * * *"
+    # R52: a new trigger's first run comes 4.5 to 10 minutes later, reset or not; wait for it (up to 15 minutes, then one
+    # reset and 15 more) before any step that needs the executor.
+    runner python3 tests/am3/hosted/cron-fired.py $AOPS "* * * * *" --since "$t" || { echo "STOP: the agents graft-ops cron never fired"; exit 3; }
   } 2>&1 | log ;;
 bundles)
   { put() { runner npx --prefix tests/m0 wrangler r2 object put "$BUCKET/$1" --file "$2" --remote 2>&1 | tail -1; }
