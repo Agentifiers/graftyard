@@ -1,0 +1,28 @@
+2026-11-24T00:59:51Z
+stand-ins: the vault account is the runner account (not isolated from graft-runners); graft-m4a-workflows is a minimal Worker, not Workflows
+builds of 05aace32
+row 47a spend: $0.0
+{"script":"graft-m4a-ops","created_on":"2026-11-24T00:53:14.473779Z","versions":["5f29ee48 100"]}
+{"mint":"graft-m4a-bf47-deploy","ok":true,"id":"9cd28a1c","errors":[]}
+{"patch":"graft-m4a-ops-deploy-token","ok":true,"errors":[]}
+{"scripts":{"site/0":"graft-m4a-site-a","site/1":"graft-m4a-site-b","site/2":"graft-m4a-site-c","workflows":"graft-m4a-workflows","edge":"graft-m4a-edge","ops":"graft-m4a-ops"},"gate":"pass","cron":"* * * * *","step_dwell_ms":60000,"first_day_ms":60000,"test_faults":true,"slots":null}
+Current Version ID: 53485950-08fb-4e7e-9000-4ad2b1dc37ed
+{"script":"graft-m4a-ops","created_on":"2026-11-24T01:00:30.702738Z","versions":["53485950 100"]}
+{"ops_schedules":["* * * * *"]}
+put r9/edge/index.js
+put r9/edge/index_bg.wasm
+put r9/edge/marker.js
+put r9/formats.txt
+put r9/ops/index.js
+put r9/ops/index_bg.wasm
+put r9/ops/marker.js
+put r9/release.json
+put r9/release.sig
+put r9/site/index.js
+put r9/site/index_bg.wasm
+put r9/site/marker.js
+put r9/vault/945600e6a880e47a82d09a0306e5ed012f692fda-index_bg.wasm
+put r9/vault/entry.js
+put r9/vault/marker.js
+put r9/workflows/entry.js
+R9 e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e

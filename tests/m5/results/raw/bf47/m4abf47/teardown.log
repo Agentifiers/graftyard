@@ -1,0 +1,16 @@
+2026-11-24T01:59:20Z
+stand-ins: the vault account is the runner account (not isolated from graft-runners); graft-m4a-workflows is a minimal Worker, not Workflows
+{"ops_schedules":[]}
+Current Version ID: 8734edc8-c764-4841-b9be-8c3092f4eeb5
+{"ops_schedules":[]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T01:59:57.491805Z","versions":["8734edc8 100"]}
+{"revoke":"graft-m4a-bf47-deploy","ok":true,"errors":[]}
+{"lock_clear": 200, "errors": []}
+{"lock": 200, "errors": [], "rules": []}
+{"emptied": 0, "refused": [], "left": 0}
+{"bucket_delete": 200, "errors": []}
+{"vault_secret_delete":true,"errors":[]}
+{"vault_script_delete":true,"errors":[]}
+{"revoke":"graft-m4a-bf47-vault","ok":true,"errors":[]}
+{"workflows_standin_delete":true,"errors":[]}
+token files shredded

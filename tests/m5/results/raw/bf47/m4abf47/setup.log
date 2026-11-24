@@ -1,0 +1,20 @@
+2026-11-24T00:58:26Z
+stand-ins: the vault account is the runner account (not isolated from graft-runners); graft-m4a-workflows is a minimal Worker, not Workflows
+9a458f87
+builds of 05aace32
+graft-m4a's day to now: $0.12
+{"runner_scripts_before":["graft-runners"]}
+{"runner_buckets_before":[]}
+{"mint":"graft-m4a-bf47-vault","ok":true,"id":"52570767","errors":[]}
+{"vault_token_id":"525707677f350d3b6ef5fcfa9ca586d9"}
+Uploaded graft-m4a-workflows (1.51 sec)
+Deployed graft-m4a-workflows triggers (0.42 sec)
+Current Version ID: ebb2f6e4-6339-4153-89ed-e3f8ebd0b613
+{"script":"graft-m4a-workflows","created_on":"2026-11-24T00:58:55.780961Z","versions":["ebb2f6e4 100"]}
+{"workflows_schedules":[]}
+  graft-m4a-vault-standin: created in ENAM
+  graft-m4a-vault-standin: lock rules 4 (35 days on feed/, entries/, snapshot/, pack/)
+  graft-m4a-vault-standin: release 47a4ac5cf9b351a662ba361ff2995713400f5a1f90467ed8eda9c046057cb00e deployed, pull cron * * * * *, export token jti 01M85GZHA29Q7Z3RSPAVV8ZN8A scope install holder "vault" exp 1795568312 (1 days)
+vault init exit 0
+{"script":"graft-m4a-vault-standin","version":"bac66742","percentage":100,"tag":null,"message":null}
+{"lock": 200, "errors": [], "rules": [{"id": "vault-entries-35d", "enabled": true, "prefix": "entries/", "condition": {"type": "Age", "maxAgeSeconds": 3024000}}, {"id": "vault-feed-35d", "enabled": true, "prefix": "feed/", "condition": {"type": "Age", "maxAgeSeconds": 3024000}}, {"id": "vault-pack-35d", "enabled": true, "prefix": "pack/", "condition": {"type": "Age", "maxAgeSeconds": 3024000}}, {"id": "vault-snapshot-35d", "enabled": true, "prefix": "snapshot/", "condition": {"type": "Age", "maxAgeSeconds": 3024000}}]}

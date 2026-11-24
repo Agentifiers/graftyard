@@ -1,0 +1,8 @@
+2026-11-24T00:28:52Z
+stand-ins: the vault account is the runner account (not isolated from graft-runners); graft-m4a-workflows is a minimal Worker, not Workflows
+builds of 05aace32
+r8 47a4ac5cf9b351a662ba361ff2995713400f5a1f90467ed8eda9c046057cb00e signed and verified: ["edge/index.js","edge/index_bg.wasm","formats.txt","ops/index.js","ops/index_bg.wasm","site/index.js","site/index_bg.wasm","vault/945600e6a880e47a82d09a0306e5ed012f692fda-index_bg.wasm","vault/entry.js","workflows/entry.js"]
+r9 e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e signed and verified: ["edge/index.js","edge/index_bg.wasm","edge/marker.js","formats.txt","ops/index.js","ops/index_bg.wasm","ops/marker.js","site/index.js","site/index_bg.wasm","site/marker.js","vault/945600e6a880e47a82d09a0306e5ed012f692fda-index_bg.wasm","vault/entry.js","vault/marker.js","workflows/entry.js"]
+site wasm sha256 f73a6abce9d6003e
+edge wasm sha256 5ea3261bb39e1e30
+ops wasm sha256 3a95b90764d51544

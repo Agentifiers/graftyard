@@ -94,7 +94,7 @@ tag_of() {
   local d; d=$($1 "/workers/scripts/$2/deployments" | jq -c '.result.deployments[0].versions')
   for v in $(echo "$d" | jq -r '.[] | "\(.version_id)/\(.percentage)"'); do
     $1 "/workers/scripts/$2/versions/${v%/*}" | jq -c --arg s "$2" --arg p "${v#*/}" \
-      '{script: $s, version: .result.id[0:8], percentage: ($p|tonumber), tag: (.result.metadata.annotations["workers/tag"] // null), message: (.result.metadata.annotations["workers/message"] // null)}'
+      '(.result.annotations // .result.metadata.annotations // {}) as $a | {script: $s, version: .result.id[0:8], percentage: ($p|tonumber), tag: ($a["workers/tag"] // null), message: ($a["workers/message"] // null)}'
   done
 }
 # spend <from file>: graft-m4a's spend since the time in that file (setup.iso for 47a, ops.iso for 47b).
