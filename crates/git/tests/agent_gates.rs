@@ -384,6 +384,45 @@ fn agent_gate_counts_human_writers_on_the_current_head() {
     assert!(matches!(w.commit(m), Ok(RepoOut::Merge(_))));
 }
 
+/// L0-15's `AgentGate` half for `Graftyard MCP` (LM-2): a writer's approval through the install's `Graftyard MCP` App
+/// (an `AgentApp` of kind `Mcp`), on a scoped `ghu_` whose grant allows approve and merge, writes no `AgentGate`, so the
+/// agent's PR stays refused; the same writer's own PAT then counts.
+#[test]
+fn an_approval_through_graftyard_mcp_writes_no_agent_gate() {
+    let mut w = World::new();
+    w.flag(claude_row());
+    register_own(&mut w, PLAIN, "graftyard-mcp");
+    w.flag(AgentApp { app: PLAIN, kind: AgentKind::Mcp, confine: None });
+    let hash = [0xA7; 32];
+    let fields = Box::new(TokenFields {
+        app: Some(PLAIN),
+        grant: Some(graftyard_identity::GrantId(DbId(1))),
+        write: Some(graftyard_identity::WriteScope::WriteApproveMerge),
+        ..TokenFields::default()
+    });
+    let (account, kind) = (AccountId(DbId(WRITER)), TokenKind::UserToServer);
+    w.ident.tokens.apply(&TokensEvent::StoredWith { hash, kind, account, scopes: ScopeSet(1), expires: None, fields });
+    let via_mcp = Principal { credential: Credential::Stored(hash), ..user(WRITER) };
+    w.set("refs/heads/claude/m", oid(70));
+    let n = number(&open_pr(&mut w, app(CLAUDE), "refs/heads/claude/m", false));
+    let gates = |w: &mut World| {
+        let f = w.fold();
+        let head = tiers::pull_head(&*f.core, IssueNumber(n)).unwrap().head_sha;
+        tiers::agent_gates(&*f.core, IssueNumber(n), &head).len()
+    };
+    for _ in 0..100 {
+        assert!(approve(&mut w, via_mcp.clone(), n).is_ok(), "the review itself is accepted");
+    }
+    assert_eq!(gates(&mut w), 0, "Graftyard MCP's approvals never write AgentGate");
+    let m = merge(&mut w, via_mcp.clone(), n);
+    assert!(gate_rule(&w.commit(m)).expect("refused by the gate").contains("0 of 2"));
+    approve(&mut w, user(WRITER), n).unwrap();
+    approve(&mut w, user(WRITER2), n).unwrap();
+    assert_eq!(gates(&mut w), 2, "the same writer's own PAT counts");
+    let m = merge(&mut w, user(WRITER), n);
+    assert!(matches!(w.commit(m), Ok(RepoOut::Merge(_))));
+}
+
 /// A user's PR, opened and reviewed in the default formats and in 32.8, carries no `AgentMeta`, writes no
 /// `AgentGate`, and merges with no approval as before.
 #[test]
