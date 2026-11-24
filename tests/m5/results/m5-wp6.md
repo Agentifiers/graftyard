@@ -297,7 +297,58 @@ read N's `verify` refusals as same-release and never handed off, and no site bui
 
 **Plants** (`tests/m0carried/plant210.py`): 6 of 6 caught. They cover seq taken from upload time, seq 0 accepted, a malformed tag that panics, seq derived from the release id (so sites differ), same-release refusers handing off (`<=`), and `FORCE_FORMAT_SITE` ignored.
 
-**Hosted row, still to run on graft-m4a ($6 stop).** Today's m4a versions carry bare-id tags, so every member runs as
-`RELEASE`. The row needs N and N+1 uploaded by this `graft-ops` with seq tags: N for every site, then N+1 for site a
-built with `test-format`, rolled by a site day, and an edge with `FORCE_FORMAT=32.65520` and `FORCE_FORMAT_SITE=0`.
-Pass: no entry in 0x20.0xfff0 committed on any member, and A's groups lead elsewhere.
+The hosted row is below, in "BM-5's unreadable format, hosted".
+
+## BM-5's unreadable format, hosted (2026-11-24, graft-m4a, row m4af1, $0.46)
+
+**Verdict: passes.** On all three repos the push in 0x20.0xfff0 committed on no member, and every group then led on
+site b. Driver: `tests/m5/bm5/format.sh`; raw logs in `tests/m5/results/raw/bm5/m4af1/`.
+
+**Setup** (12:16:32Z to 13:04:26Z, all from main 801d63ad).
+- `graft-ops` 07131128 (test-faults, `GATE=pass`, 60 s dwells) uploaded N = 4c6729de with seq 22 and N+1 = 2f379da8
+  with seq 23. N+1's site build has `test-format`. Every site script then held versions tagged `22-4c6729de…` and
+  `23-2f379da8…`.
+- `release roll n` ran the three site days (12:27:46Z to 12:54:42Z). `release roll n1 0` ran site a's day, done at
+  13:04:21Z. `site_release` ended a = 2f379da8, b and c = 4c6729de, with no intent current and nothing drained.
+- The edge was redeployed as 3443bb26 with every binding kept plus `FORCE_FORMAT=32.65520` and `FORCE_FORMAT_SITE=0`.
+- Three fresh repos homed on site a: bm5f-m4af1-1, -3 and -4 (repo:65589, 65591, 65592). A fourth, -2, got a 422
+  during b's drain and has no config; it is excluded.
+
+**Pushes** (`push.log`). For each repo: one clone through the edge (its leader a, term 2), then six plain PAT pushes
+3 s apart, each to its own ref `bm5f/m4af1/<repo>/<i>`.
+
+| Repo | Push 1 (forced, leader a) | NoLead alarm on a | New leader | Pushes 2–6 |
+|---|---|---|---|---|
+| 65589 | 13:04:49Z, HTTP 503 | 13:05:13Z, refusal at index 32 by site 1 at seq 22 | b, term 3 | HTTP 200, indexes 35–47 |
+| 65591 | 13:05:46Z, HTTP 503 | 13:06:11Z, index 30 | b, term 3 | HTTP 200, indexes 33–45 |
+| 65592 | 13:06:42Z, HTTP 503 | 13:07:07Z, index 24 | b, term 3 | HTTP 200, indexes 27–39 |
+
+- **Nothing in 0x20.0xfff0 committed.** On every member of every repo, the index the alarm names (32, 30, 24) holds a
+  term-3 entry, appended by b after a truncated its own. No member's `/log` holds a `/1` ref from the forced push.
+- **The refusal reads as older.** Site a's alarm is `NoLead { site: SiteId(1), refusal: Refusal { release: ReleaseTag
+  { id: 4c6729de…, seq: 22 }, … reason: "format Format { family: 32, version: 65520 } is not read…" } }`, then
+  `TransferStarted { to: SiteId(1), why: NoLead }`. Site b logged no NoLead.
+- **The forced format reached only a's leaders.** `recv:32.65520` rose to 3–4 per group with push 1 and never rose
+  after it. Pushes 2–6 went to b in the normal format.
+- **Ending state, 13:12Z.** All 9 members agree on commit (56, 47, 41), and each push's entry has the same index and
+  term on all three.
+
+**Caveats.**
+- The supervised push service restarted once after DONE and pushed repo 65589's `/1` again at 13:07:39Z, through
+  leader b in the normal format (HTTP 200). It committed at index 54, term 3. It is not the forced push.
+- **Driver fault, fixed.** `formats.txt` must be sorted, and the first N+1 had 32.65520 appended at the end, so
+  `graft-ops` refused it. N+1 was re-signed sorted; the refused id db46d152 never reached the group.
+
+**Seq-less versions on graft-m4a.** Every version before this row has a bare-id tag or none: sites b2bb49ec,
+5f9e7a9f and 74869876, and every R9, R10 and R12 upload. Builds before 72fbc0a4 have no seq code and run the constant
+`RELEASE` (seq 1). New code reading a seq-less tag also runs `RELEASE`, and logs it once per isolate
+(`a_member_s_release_is_its_version_tag_s_and_any_other_tag_is_the_oldest`). A rollback to any of them therefore
+ranks as oldest. This row did not roll back to one: no site ran a seq-less version during it, and the Workers Logs
+query for "names no release seq" found 0 lines on sites a and b.
+
+**Left as found and as changed.**
+- The edge is back on eef95142 at 100% and f4e193b9 at 0%. `graft-ops` is parked on ac4cd9a5 with the cron off,
+  and the row's deploy token is revoked.
+- Site a still runs N+1 (2f379da8, built with `test-format`); b and c run N. A product build never reads 0x20.0xfff0.
+- New prefixes `bm5f-n/` and `bm5f-n1/` are in `graft-m4a-releases`.
+- Spend $0.46 on the graft-m4a prefix (`tests/fanout/acctcost.py`, 12:16:32Z to 13:14:48Z).

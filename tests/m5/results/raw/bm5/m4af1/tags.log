@@ -1,0 +1,8 @@
+2026-11-24T13:02:57Z
+{"script":"graft-m4a-site-a","version":"169cd766","percentage":100,"tag":"23-2f379da83"}
+{"script":"graft-m4a-site-b","version":"89586bfb","percentage":100,"tag":"22-4c6729de8"}
+{"script":"graft-m4a-site-c","version":"969d360b","percentage":100,"tag":"22-4c6729de8"}
+{"script":"graft-m4a-edge","version":"3443bb26","percentage":100,"tag":"bm5f-edg"}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T12:20:12.324735Z","versions":["07131128 100"]}
+{"count":440,"current":{"intent":"SiteDay { target: Site(SiteId(0)), release: ReleaseId([47, 55, 157, 168, 50, 48, 110, 183, 94, 45, 102, 125, 88, 115, 162, 218, 23, 236, 68, 43, 109, 198, 19, 205, 79, 158, 159, 248, 94, 183, 164, 219]) }","next":6,"since":1795525346611,"state":"Running { step: 6 }"},"drained":[],"site_release":{"0":"2f379da8","1":"4c6729de","2":"4c6729de"}}
+spend since setup: $0.35

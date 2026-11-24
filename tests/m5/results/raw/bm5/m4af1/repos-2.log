@@ -1,0 +1,18 @@
+2026-11-24T12:40:21Z
+file://<checkout>/tests/am1/runs/mkrepos.mjs:18
+  if (r.status !== 201) throw new Error(`${name}: ${r.status} ${JSON.stringify(r.body?.message)}`);
+                              ^
+
+Error: bm5f-m4af1-1: 422 "Repository creation failed."
+    at file://<checkout>/tests/am1/runs/mkrepos.mjs:18:31
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+Node.js v26.12.0
+awk: fatal: cannot open file `~/.graft-m4a/m3/am1-runs-repos.txt' for reading: No such file or directory
+{"chain":"repo:","members":[[0,null,null,null],[1,null,null,null],[2,null,null,null]]}
+awk: fatal: cannot open file `~/.graft-m4a/m3/am1-runs-repos.txt' for reading: No such file or directory
+{"chain":"repo:","members":[[0,null,null,null],[1,null,null,null],[2,null,null,null]]}
+awk: fatal: cannot open file `~/.graft-m4a/m3/am1-runs-repos.txt' for reading: No such file or directory
+{"chain":"repo:","members":[[0,null,null,null],[1,null,null,null],[2,null,null,null]]}
+awk: fatal: cannot open file `~/.graft-m4a/m3/am1-runs-repos.txt' for reading: No such file or directory
+{"chain":"repo:","members":[[0,null,null,null],[1,null,null,null],[2,null,null,null]]}
