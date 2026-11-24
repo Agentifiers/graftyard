@@ -3488,6 +3488,40 @@ Evidence:
 
 **Flip.** A planted ack fault that the bound misses at 10% with 1,000 or more N+1 answers: then lower the margin or the z, or judge over the whole step's dwell.
 
+#### `gate-errors`: an edge, front, or MCP roll is judged on `graft-front`'s count of answers by version (2026-11-24)
+
+**Status.** Code-only, not deployed: `graft-front`'s counts, the site's `errors` route, and `graft-ops`'s gate each ship on their script's next deploy, the site's on a site day. Answers R47's trigger in code (`decisions/OPEN-QUESTIONS.md`), from AM2's design with the lead's three changes (2026-11-24). R47 stays open until a hosted row breaches on it.
+
+**Decision.**
+- **The counter.** `graft-front` already reads, from every answer, the version that ran it. Each isolate counts answers and 5xx by that version, under the script that answered and under its own version, so a `FrontRoll` is judged on the answers each front served (`gate::count`). A call whose binding threw counts as `threw`, and an answer with no version as `unversioned`.
+- **Where it goes.** Every `FLUSH_MS` (30 s, as the members' gate counters), beside a request, the isolate sends each script's counts to that script's home site: a SHA-256 of the script's key over the voter sites by id, as `fingerprint_shard` homes a key (`gate::errors_sites`). The next site in that order takes them only when the home does not answer. `graft-ops` sums every voter site's `errors` object, so a failover moves nothing.
+- **The judgment.** For a running `EdgeRoll`, `FrontRoll`, or `McpRoll`, `graft-ops` reads the sum from the step's window start (`gate::window_start`) and from the intent's start. It judges N+1's version against N's in the window, or against N's from the intent's start when the window holds under `STEP_MIN_ANSWERS` of N's (a pinned script's N serves 0% at 100%) (`gate::judge_roll`).
+- **Breach.** N+1's 5xx rate is over N's plus 0.1 points (`GATE_ERRORS_BP`), past chance: answers times the binary KL divergence at least ln 10,000 (`GATE_ERRORS_NATS`) [guess]. A breach at any count submits the undo, so 2 of 2 answers at 1% swap back. A thrown binding call is one of N+1's 5xx.
+- **The floor is relative.** Under `STEP_MIN_ANSWERS` (1,000 [guess]) with no breach, the gate is `Starved`, and `ops::next` treats it as `gate-pool` treats a site day: the 1% step commits after its dwell, the 10% step counts from the 1% step's start, and later steps dwell up to twice their dwell, then page. An `McpRoll` or `FrontRoll` goes from 1% straight to 100%, which has no dwell, so a quiet `graft-mcp` is judged only at 1%.
+- **A missing version header** is a front or script bug, not a bad build. It is counted apart, alarmed by `graft-front` per answer and by `graft-ops` per read, and never judged as N+1's.
+- `OpsRoll` and `ControllerRoll` stay `Pending`: no front sees their answers. They still pass only on a test install's `GATE`.
+- No request path calls the Cloudflare API. The counts travel over the `REGISTRY_<n>` bindings `graft-front` already reads its view through, in `wait_until`.
+
+**Why.**
+- `graft-front` is the one place every edge and `graft-mcp` answer passes, and it already knows the version that ran.
+- Homing the key spreads the scripts' writes over the sites. The design's lowest-answering site would put every isolate's writes on site a, as the lead noted.
+- A fixed 1,000-answer floor at 1% is R38 again: at 1%, `graft-mcp` may never reach it in a dwell. And a breach judged only at the floor would let a bad build serve 1% for the whole dwell.
+
+**Beat.**
+- The lowest site that answers (AM2's first design).
+- Analytics Engine through the API from `graft-ops`'s cron: that is an API read the swap-back would wait on during a control-plane outage.
+- Counting in the edge and `graft-mcp`: a script that throws or never starts cannot count itself.
+- `GATE=breach`, which the lead ruled does not stand in for the trigger.
+
+**Evidence.**
+- `crates/release/src/tests/group/errors.rs`, 5 tests. Each answer counts by the version that ran it. Each script's counts home on one site whatever the site table's order (edge and mcp on a, front on c). The breach and floor cases. A missing version header never breaches, and a thrown call does. End to end: release 2's `McpRoll` at 1%, with 5 of 6 N+1 answers 500, breaches before its dwell, and the run submits the pre-signed `McpPointer` to release 1. A quiet healthy 1% step commits after its dwell, and an `OpsRoll` stays unjudged.
+- `tests/m0carried/plant121.py` to `plant124.py`: 13 mutants, all caught. They cover counts by the wrong version, the floor dropped, N's rate ignored, and a breach under the floor not undoing.
+
+**Flip.**
+- A hosted step that breaches with a healthy N+1. Then raise `GATE_ERRORS_NATS`, or judge only at the floor.
+- A hosted bad `graft-mcp` at 1% that the gate never reads. Then check the flush (`errorsPending` on `/_front/status`) and each site's `errors` object.
+- An install whose fronts' writes overload one site's `errors` object. Then key the home by script and version.
+
 #### `gate-pool`: a site day's 1% and 10% steps share one `STEP_MIN_ENTRIES` floor (2026-11-24)
 
 **Status.** Code-only, not deployed; `ops::next` and `Exec::gate` run in `graft-ops`, so it ships on an ops deploy. Answers R38's 1% case in code (`decisions/OPEN-QUESTIONS.md`), as the lead chose.

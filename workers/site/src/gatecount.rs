@@ -5,6 +5,9 @@
 //! - **Gate counters.** Per script version (the `VERSION` version metadata binding), the members' applied entries
 //!   with their apply lag, verify refusals and fold storage losses (apply and verify exceptions), AppendEntries
 //!   answered and acked, and `STEP_DOWN` trips (`graftyard_release::gate::Counters`). Object `gate`, one per site.
+//! - **`GATE_ERRORS`'s input.** Per script key (`edge`, `mcp`, `front`), `graft-front`'s answers and 5xx by the
+//!   version that answered, thrown calls, and answers with no version (`graftyard_release::gate::ScriptErrors`).
+//!   Object `errors`, on each key's home site (`gate::errors_sites`), or the next one while the home does not answer.
 //! - **`SiteHealth`.** Per target site, this site's member-to-member calls and those that missed `CALL_DEADLINE` or
 //!   failed (`HealthLog`). Object `site_health`, one per site, so the sick site never judges itself.
 //!
@@ -15,7 +18,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use graftyard_release::gate::Counters;
+use graftyard_release::gate::{Counters, ScriptErrors};
 use serde_json::json;
 use worker::{Env, WorkerVersionMetadata};
 
@@ -95,7 +98,7 @@ pub const HEALTH_BUCKET_MS: u64 = 10_000;
 const GATE_KEEP_MS: u64 = 6 * graftyard_release::ops::STEP_DWELL + graftyard_release::ops::FIRST_DAY;
 
 /// The `Registry` object's routes: PUT adds one isolate's counts to the current bucket; GET sums buckets from
-/// `since` (epoch ms), the gate's for `version`.
+/// `since` (epoch ms), the gate's for `version`, the errors' for `key`.
 pub fn route(
     sql: &worker::SqlStorage,
     object: &str,
@@ -137,6 +140,34 @@ pub fn route(
             sum.add(&serde_json::from_str(crate::host::text(&r[0])?)?);
         }
         return Ok(serde_json::to_value(sum)?);
+    }
+    if object == "errors" {
+        sql.exec("CREATE TABLE IF NOT EXISTS errors (minute INTEGER NOT NULL, key TEXT NOT NULL, c TEXT NOT NULL, PRIMARY KEY (minute, key)) WITHOUT ROWID", None)?;
+        let sum = |key: String, from: i64| -> worker::Result<ScriptErrors> {
+            let mut sum = ScriptErrors::default();
+            for r in crate::host::rows(
+                sql,
+                "SELECT c FROM errors WHERE key = ? AND minute >= ?",
+                vec![key.into(), (from / 60_000 * 60_000).into()],
+            )? {
+                sum.add(&serde_json::from_str(crate::host::text(&r[0])?)?);
+            }
+            Ok(sum)
+        };
+        if let Some(b) = put {
+            let key = b["key"].as_str().ok_or_else(|| worker::Error::RustError("key".into()))?.to_owned();
+            let add: ScriptErrors = serde_json::from_value(b["counts"].clone())?;
+            let minute = (now / 60_000 * 60_000) as i64;
+            let mut c = sum(key.clone(), minute)?;
+            c.add(&add);
+            sql.exec(
+                "INSERT OR REPLACE INTO errors (minute, key, c) VALUES (?, ?, ?)",
+                vec![minute.into(), key.into(), serde_json::to_string(&c)?.into()],
+            )?;
+            sql.exec("DELETE FROM errors WHERE minute < ?", vec![(now.saturating_sub(GATE_KEEP_MS) as i64).into()])?;
+            return Ok(json!({}));
+        }
+        return Ok(serde_json::to_value(sum(q("key").unwrap_or_default(), since)?)?);
     }
     sql.exec("CREATE TABLE IF NOT EXISTS site_health (bucket INTEGER NOT NULL, target INTEGER NOT NULL, calls INTEGER NOT NULL, missed INTEGER NOT NULL, PRIMARY KEY (bucket, target)) WITHOUT ROWID", None)?;
     if let Some(b) = put {

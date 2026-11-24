@@ -74,8 +74,6 @@ fn a_step_gate_breaches_on_each_input_at_its_bound_and_starves_under_step_min_en
     assert_eq!(gate::judge_site(&lag_side(20, 1, 10_000), &n), Gate::Starved(20));
     assert_eq!(gate::judge_site(&lag_side(1_000, 500, 300), &lag_side(999, 0, 200)), Gate::Pass);
     assert!(breach(lag_side(1_000, 500, 300)), "the same N+1 against N's 5,000 entries");
-    assert_eq!(gate::judge_errors(20, 10), Gate::Pass);
-    assert!(matches!(gate::judge_errors(21, 10), Gate::Breach(_)));
 }
 
 /// The host's counters: summed across isolates, read back as the p99 bucket's upper bound and the ack rate; with no N

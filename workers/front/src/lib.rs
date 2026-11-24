@@ -18,12 +18,20 @@
 //!   current deployment. Each mismatch is logged as an alarm (`console_error`) and counted. The header is taken off
 //!   the client's response unless the client asked for it with `x-graftyard-report-version`, so no client response
 //!   changes.
+//! - **`GATE_ERRORS`'s input.** Each answer is counted by the version it reported, under the script that answered and
+//!   under this front's own version (`graftyard_release::gate::count`): answers and 5xx, calls whose binding threw,
+//!   and answers with no version, which alarm. At most every `FLUSH_MS`, beside a request, the isolate sends what it
+//!   counted to the `errors` object of each script's home site (`gate::errors_sites`), over the `REGISTRY_<n>` bindings
+//!   it reads the view with, and to the next site only when the home does not answer. `graft-ops` sums every site's
+//!   object to judge an edge, front, or MCP roll (OPEN-QUESTIONS R47).
 //! - **Status.** `GET /_front/status` with the `FRONT_TOKEN` secret as `x-front-token` answers the view and the
 //!   counters. Without the secret the route does not exist.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use graftyard_lookup::{Bindings, view};
+use graftyard_release::gate::{self, ScriptErrors};
 use graftyard_release::view::{forward, mismatch};
 use graftyard_release::{Anchor, Script};
 use graftyard_types::SiteTable;
@@ -50,8 +58,72 @@ struct Counts {
     last_mismatch: Option<serde_json::Value>,
 }
 
+/// How often an isolate sends its `GATE_ERRORS` counts [guess], as the site members send their gate counters
+/// (`workers/site/src/gatecount.rs`, `FLUSH_MS`).
+const FLUSH_MS: u64 = 30_000;
+/// How long one flush to one site waits before it tries the next.
+const FLUSH_CALL: std::time::Duration = std::time::Duration::from_millis(2_000);
+
+/// What this isolate counted for `GATE_ERRORS` since its last flush, by `gate::errors_key`.
+#[derive(Default)]
+struct Pending {
+    errors: BTreeMap<String, ScriptErrors>,
+    flushed: u64,
+    version: Option<Option<String>>,
+}
+
 thread_local! {
     static COUNTS: RefCell<Counts> = RefCell::new(Counts::default());
+    static PENDING: RefCell<Pending> = RefCell::new(Pending::default());
+}
+
+/// This front's own version (the `VERSION` binding), read once.
+fn own_version(env: &Env) -> Option<String> {
+    PENDING.with(|p| {
+        p.borrow_mut()
+            .version
+            .get_or_insert_with(|| env.get_binding::<WorkerVersionMetadata>("VERSION").ok().map(|v| v.id()))
+            .clone()
+    })
+}
+
+/// Counts one forwarded request, and once `FLUSH_MS` has passed since the last flush, sends what was counted beside
+/// the request.
+fn count(env: &Env, ctx: &Context, sites: &SiteTable, to: Script, ran: Option<&str>, status: Option<u16>) {
+    let front = own_version(env);
+    let now = graftyard_lookup::now_ms();
+    let taken = PENDING.with(|p| {
+        let mut p = p.borrow_mut();
+        gate::count(&mut p.errors, to, ran, front.as_deref(), status);
+        if now < p.flushed + FLUSH_MS {
+            return None;
+        }
+        p.flushed = now;
+        Some(std::mem::take(&mut p.errors))
+    });
+    let Some(errors) = taken else { return };
+    let (env, sites) = (env.clone(), sites.clone());
+    ctx.wait_until(async move {
+        let voters: Vec<_> = sites.0.iter().filter(|s| !s.spare).map(|s| s.id).collect();
+        let b = Bindings { env: &env, sites: &sites };
+        for (key, counts) in errors.into_iter().filter(|(_, c)| !c.is_empty()) {
+            let body = json!({ "key": key, "counts": counts }).to_string();
+            for site in gate::errors_sites(&key, &voters) {
+                if put_errors(&b, site, &body).await {
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// One flush to one site's `errors` object: whether it answered 200 within `FLUSH_CALL`.
+async fn put_errors(b: &Bindings<'_>, site: graftyard_types::SiteId, body: &str) -> bool {
+    let Ok(stub) = b.registry(site, "errors") else { return false };
+    let mut init = RequestInit::new();
+    init.with_method(Method::Put).with_body(Some(body.into()));
+    let Ok(req) = Request::new_with_init("https://registry/errors", &init) else { return false };
+    matches!(graftyard_lookup::within(FLUSH_CALL, stub.fetch_with_request(req)).await, Some(Ok(r)) if r.status_code() == 200)
 }
 
 #[event(fetch)]
@@ -88,9 +160,23 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if let Some(o) = &plan.overrides {
         fwd.headers().set(OVERRIDE_HEADER, o)?;
     }
-    let res = env.service(binding)?.fetch_request(fwd).await?;
+    let res = match env.service(binding)?.fetch_request(fwd).await {
+        Ok(r) => r,
+        Err(e) => {
+            count(&env, &ctx, &sites, to, None, None);
+            return Err(e);
+        }
+    };
     let ran = res.headers().get(version_header)?;
+    count(&env, &ctx, &sites, to, ran.as_deref(), Some(res.status_code()));
     let bad = mismatch(pin, ran.as_deref());
+    if ran.is_none() && !bad {
+        console_error!(
+            "ALARM graft-front: {} answered {} with no version",
+            if to == Script::Mcp { "graft-mcp" } else { "edge" },
+            res.status_code()
+        );
+    }
     COUNTS.with(|c| {
         let mut c = c.borrow_mut();
         c.requests += 1;
@@ -139,6 +225,7 @@ fn status(env: &Env, req: &Request) -> Result<Response> {
         json!({ "requests": c.requests, "pinned": c.pinned, "mcp": c.mcp, "mismatches": c.mismatches,
                 "firstMismatch": c.first_mismatch, "lastMismatch": c.last_mismatch })
     });
+    let pending = PENDING.with(|p| serde_json::to_value(&p.borrow().errors).unwrap_or_default());
     Response::from_json(&json!({
         "front": version,
         "now": graftyard_lookup::now_ms(),
@@ -146,5 +233,6 @@ fn status(env: &Env, req: &Request) -> Result<Response> {
         "mcpPin": view::pin(Script::Mcp).map(|v| v.to_string()),
         "view": view::status(),
         "counts": counts,
+        "errorsPending": pending,
     }))
 }

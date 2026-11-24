@@ -9,7 +9,8 @@
 //!   `CALL_DEADLINE` after their leader on a quiet chain (R29's commit round), are judged against followers
 //!   (`decisions/DECISIONS.md`, "`gate-relative`"); fewer than `STEP_MIN_ENTRIES`
 //!   applied by N+1 is `Starved`, which `next` dwells on up to twice `STEP_DWELL` and then pages. `judge_errors` is
-//!   `GATE_ERRORS` for the edge, front, ops, MCP, and controller rolls.
+//!   `GATE_ERRORS` for the edge, front, and MCP rolls, on `graft-front`'s count of answers by version (`count`,
+//!   `errors_sites`, `judge_roll`; DECISIONS "`gate-errors`").
 //! - **Burn.** A target site's burn, from one observer, is its missed share of calls over the allowed share
 //!   (`ALLOWED_MISS`). `verdict` calls a site `burning` when both other voter sites' `DRAIN_WINDOW` reports are at
 //!   `DRAIN_BURN` or more, and `calm` when both `UNDRAIN_AFTER` reports are under `UNDRAIN_BURN`. A report with fewer
@@ -286,10 +287,165 @@ pub fn n_from_start(n_step: &Counters) -> bool {
     n_step.entries < STEP_MIN_ENTRIES
 }
 
-/// A pinned or front script's step gate: N+1's 5xx rate against N's, in basis points.
-pub fn judge_errors(n1_bp: u32, n_bp: u32) -> Gate {
-    if n1_bp > n_bp + GATE_ERRORS_BP {
-        return Gate::Breach(format!("GATE_ERRORS: N+1 {n1_bp} bp of 5xx, N {n_bp} bp").into());
+/// Answers N+1 must give in a step before its `GATE_ERRORS` is passed (`STEP_MIN_ANSWERS`) [guess]: the 1% step
+/// commits under it after its dwell, the 10% step counts from the 1% step's start, and any later step dwells up to
+/// twice its dwell and pages, as `STEP_MIN_ENTRIES` does for a site day (OPEN-QUESTIONS R47, `gate-pool`).
+pub const STEP_MIN_ANSWERS: u64 = 1_000;
+/// `GATE_ERRORS` breaches only when N+1's excess over N's rate plus `GATE_ERRORS_BP` is past chance at 1 in 10,000
+/// per read: the Chernoff bound `answers x KL(N+1's rate, N's rate + 0.1 points)` at least ln 10,000, stricter than
+/// `GATE_ACK_RATE`'s 1 in 1,000 because `graft-ops` reads the gate every run over overlapping windows [guess]. So a few
+/// 5xx of a few answers breach under `STEP_MIN_ANSWERS` (2 of 2, 10 of 1,000 against a clean N), and one 5xx of one
+/// answer does not (R43, R47) [inference].
+pub const GATE_ERRORS_NATS: f64 = 9.210_340_371_976_184;
+
+/// One script version's answers through `graft-front` over a window, and how many were 5xx.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Answers {
+    pub answers: u64,
+    pub fivexx: u64,
+}
+
+impl Answers {
+    fn add(&mut self, o: &Answers) {
+        self.answers += o.answers;
+        self.fivexx += o.fivexx;
+    }
+}
+
+/// One script's `GATE_ERRORS` input over a window, as each `graft-front` isolate counts it and the `errors` registry
+/// object sums it (`count`): answers and 5xx by the version the answer reported, calls whose binding threw (no answer,
+/// so no version), and answers that reported no version, with their 5xx.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScriptErrors {
+    pub versions: BTreeMap<String, Answers>,
+    pub threw: u64,
+    pub unversioned: Answers,
+}
+
+impl ScriptErrors {
+    pub fn add(&mut self, o: &ScriptErrors) {
+        for (v, a) in &o.versions {
+            self.versions.entry(v.clone()).or_default().add(a);
+        }
+        self.threw += o.threw;
+        self.unversioned.add(&o.unversioned);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == ScriptErrors::default()
+    }
+
+    /// The answers that reported version `v`.
+    pub fn of(&self, v: VersionId) -> Answers {
+        self.versions.get(&v.to_string()).copied().unwrap_or_default()
+    }
+}
+
+/// The key a script's `GATE_ERRORS` counts go under: its bundle folder's name (`edge`, `mcp`, `front`).
+pub fn errors_key(s: Script) -> &'static str {
+    crate::ops::folder(s).trim_end_matches('/')
+}
+
+/// One request `graft-front` forwarded to `to`: the version the answer reported (`ran`), the front's own version, and
+/// the answer's status, `None` when the binding threw. Counts under `to` by `ran`, and under the front by its own
+/// version, so a `FrontRoll` is judged on the answers each front version served. A thrown call is a 5xx the client
+/// saw from this front; for `to` it has no version and counts as `threw`. An answer with no version is `unversioned`:
+/// a front or script bug, alarmed but never judged as N+1's (R47).
+pub fn count(
+    pending: &mut BTreeMap<String, ScriptErrors>,
+    to: Script,
+    ran: Option<&str>,
+    front: Option<&str>,
+    status: Option<u16>,
+) {
+    let fivexx = u64::from(status.is_none_or(|s| s >= 500));
+    let mut one = |key: &str, version: Option<&str>| {
+        let e = pending.entry(key.to_string()).or_default();
+        let a = match version {
+            Some(v) => e.versions.entry(v.to_string()).or_default(),
+            None => &mut e.unversioned,
+        };
+        a.answers += 1;
+        a.fivexx += fivexx;
+    };
+    one(errors_key(Script::Front), front);
+    match status {
+        Some(_) => one(errors_key(to), ran),
+        None => pending.entry(errors_key(to).to_string()).or_default().threw += 1,
+    }
+}
+
+/// The sites a front sends the counts under `key` (`errors_key`) to, in order: the home, picked by a hash of the key
+/// over the voter sites by id (as `fingerprint_shard` picks a shard), then each next site, which takes them only when
+/// the ones before did not answer. Every isolate's counts of one script land on one site, and `graft-ops` sums every
+/// site.
+pub fn errors_sites(key: &str, voters: &[SiteId]) -> Vec<SiteId> {
+    use sha2::{Digest as _, Sha256};
+    let mut v = voters.to_vec();
+    v.sort_unstable();
+    v.dedup();
+    if v.is_empty() {
+        return v;
+    }
+    let h = Sha256::new().chain_update(b"graftyard/errors/").chain_update(key).finalize();
+    let home = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as usize % v.len();
+    v.rotate_left(home);
+    v
+}
+
+/// The current roll's script judged on `GATE_ERRORS`, with its N+1 and N versions, while it runs forward: an
+/// `EdgeRoll`, `FrontRoll`, or `McpRoll`, the scripts `graft-front` sees answer. N is the release the roll keeps beside
+/// R, as `ops::steps` deploys it. `None` for every other intent: an `OpsRoll` or `ControllerRoll` gate stays pending,
+/// because no front sees their answers (R47).
+pub fn roll_versions(fold: &ReleaseFold) -> Option<(Script, VersionId, Option<VersionId>)> {
+    let c = fold.current.as_deref()?;
+    let (IntentState::Running { .. } | IntentState::Halted { .. }) = c.state else { return None };
+    let i = &c.intent.intent;
+    let (Intent::EdgeRoll { release } | Intent::FrontRoll { release } | Intent::McpRoll { release }) = i else {
+        return None;
+    };
+    let s = i.script()?;
+    let n1 = crate::ops::version(fold, release, s)?;
+    let n = match i.pinned() {
+        Some(_) => fold.deployed.get(&s).and_then(|(kept, _)| *kept),
+        None => crate::ops::running(fold, s),
+    }
+    .filter(|n| n != release)
+    .and_then(|n| crate::ops::version(fold, &n, s));
+    Some((s, n1, n))
+}
+
+/// An edge, front, or MCP roll's step gate from the summed counts: N+1's version over the step's window (`window`,
+/// from `window_start`), against N's over the same window, or N's from the intent's start (`whole`) when the window
+/// holds under `STEP_MIN_ANSWERS` of N's: at 100% a pinned script's N serves 0%.
+pub fn judge_roll(window: &ScriptErrors, whole: &ScriptErrors, n1: VersionId, n: Option<VersionId>) -> Gate {
+    let n_side = match n {
+        Some(n) if window.of(n).answers < STEP_MIN_ANSWERS => whole.of(n),
+        Some(n) => window.of(n),
+        None => Answers::default(),
+    };
+    judge_errors(window.of(n1), window.threw, n_side)
+}
+
+/// An edge, front, or MCP roll's step gate (`GATE_ERRORS`): N+1's answers with every thrown call counted as one of
+/// its 5xx, against N's. It breaches when N+1's 5xx rate is over N's plus `GATE_ERRORS_BP` by more than chance
+/// (`GATE_ERRORS_NATS`), at any count; otherwise under `STEP_MIN_ANSWERS` it is `Starved`.
+pub fn judge_errors(n1: Answers, threw: u64, n: Answers) -> Gate {
+    let (a, e) = (n1.answers + threw, n1.fivexx + threw);
+    let base = (n.fivexx as f64 / n.answers.max(1) as f64 + f64::from(GATE_ERRORS_BP) / 10_000.0).min(1.0);
+    if a > 0 && (e as f64 / a as f64) > base {
+        let p = e as f64 / a as f64;
+        let term = |x: f64, y: f64| if x > 0.0 { x * (x / y).ln() } else { 0.0 };
+        let nats = a as f64 * (term(p, base) + term(1.0 - p, 1.0 - base));
+        if nats >= GATE_ERRORS_NATS {
+            return Gate::Breach(
+                format!("GATE_ERRORS: N+1 {e} 5xx of {a} answers ({threw} thrown), N {} of {}", n.fivexx, n.answers)
+                    .into(),
+            );
+        }
+    }
+    if a < STEP_MIN_ANSWERS {
+        return Gate::Starved(a);
     }
     Gate::Pass
 }
