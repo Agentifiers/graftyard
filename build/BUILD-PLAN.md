@@ -1550,6 +1550,13 @@ pre-signed `McpPointer` committed, through two Workers Custom Domains under `gra
 session through `mcp.<host>` at N and one while the pin holds. LM-2's MCP row counts L0-08's hosted passes (m3fa2
 and m3fa3).
 
+**Passed hosted, day d1 (2026-11-24, graft-m4a, 11 of 11; `tests/am2/results/am2-wp3.md`, "Hosted, day d1").**
+`graft-ops` ran `FrontRoll` and `McpRoll` for three releases with the undo counts `next_roll` predicts (w1 0 and 0,
+w2's `McpRoll` 1). With w2's `graft-mcp` at 1% and the deploy token invalid, `GATE=breach` committed the pre-signed
+`McpPointer` without a deployment read, and while the pin held 119,218 of 119,218 sampled answers through
+`mcp.m4a.graftyard.dev` came from N, including while the split still sent 1% to N+1. One MCP session answered at N
+and one under the pin. The zone's lists before and after the day are identical. Cost $0.05.
+
 ### AM2-WP4. AM2 gate
 
 **Build.** Nothing new.
