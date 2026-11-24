@@ -29,25 +29,29 @@ MUTANTS = [
     ('a revoked jti is kept', RC,
      'fn not_revoked(revoked: &bool) -> bool {\n    !*revoked', 'fn not_revoked(revoked: &bool) -> bool {\n    let _ = revoked;\n    true', EDGE),
     ('through: a write-class request takes the cached entry', RC,
-     '    if let Some(v) = get(cache, &k, at, read_class) {', '    if let Some(v) = get(cache, &k, at, true) {', EDGE),
+     '    if read_class {\n        if let Some(v) = get(cache, &k, at, true) {',
+     '    if let Some(v) = get(cache, &k, at, true) {\n        return Ok(Some(v));\n    }\n    if read_class {\n        if let Some(v) = get(cache, &k, at, true) {', EDGE),
     ('through: a write\'s fresh answer does not refresh the entry', RC,
-     '    if let Some(v) = &v {\n        put(cache, k, at, v.clone());\n    }', '    if let Some(v) = v.as_ref().filter(|_| read_class) {\n        put(cache, k, at, v.clone());\n    }', EDGE),
+     '    running.end(shared);\n    if let Ok(Some(v)) = &answer {\n        put(cache, k, at, v.clone());\n    }',
+     '    running.end(shared);\n    let _ = &at;', EDGE),
     ('an entry is stamped when its answer arrives, not when its read started', RC,
-     '    let v = read.await?;\n    if let Some(v) = &v {\n        put(cache, k, at, v.clone());',
-     '    let v = read.await?;\n    if let Some(v) = &v {\n        put(cache, k, Timestamp(at.0 + 4_000), v.clone());', EDGE),
+     '    running.end(shared);\n    if let Ok(Some(v)) = &answer {\n        put(cache, k, at, v.clone());',
+     '    running.end(shared);\n    if let Ok(Some(v)) = &answer {\n        put(cache, k, Timestamp(at.0 + 4_000), v.clone());', EDGE),
     ('past the cap, the map keeps growing', RC,
      '        if self.entries.len() >= self.cap && !self.entries.contains_key(&k) {', '        if false {', EDGE),
     ('past the cap, an update of a held key clears the map', RC,
      '        if self.entries.len() >= self.cap && !self.entries.contains_key(&k) {', '        if self.entries.len() >= self.cap {', EDGE),
 ]
 
-ENV = dict(os.environ, CARGO_INCREMENTAL='0')
+ENV = dict(os.environ, CARGO_INCREMENTAL='0',
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')))
 
 
 def run(t):
     pkg, kind, name = t
     args = ['cargo', 'test', '-q', '-p', pkg, kind, name] if kind == '--test' else ['cargo', 'test', '-q', '-p', pkg, '--lib', name]
-    r = subprocess.run(args, cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=1800)
+    # A hang counts as caught (README, "Planted bugs").
+    r = subprocess.run(['timeout', '-k', '10', '600', *args], cwd=ROOT, env=ENV, capture_output=True, text=True)
     out = r.stdout + r.stderr
     return r.returncode, out, 'error[E' in out or 'could not compile' in out
 
@@ -73,6 +77,8 @@ def main():
         elif code != 0:
             caught += 1
             fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ')]
+            if code == 124:
+                fails = ['(timed out)', *fails]
             print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]', flush=True)
         else:
             print(f'{i:2} MISSED  {name}', flush=True)

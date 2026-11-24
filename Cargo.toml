@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/actions", "crates/git", "crates/identity", "crates/raft", "crates/types", "workers/site", "tests/m1/wp4", "tests/m1/wp5", "crates/release", "cli", "workers/edge", "workers/ops", "tests/m1/wp6/bed", "crates/lookup", "crates/fold", "crates/api", "crates/wire", "workers/front", "workers/runners", "workers/mcp", "workers/vault", "lifeboat", "workers/lifeboat"]
+members = ["crates/actions", "crates/git", "crates/identity", "crates/raft", "crates/types", "workers/site", "tests/m1/wp4", "tests/m1/wp5", "crates/release", "cli", "workers/edge", "workers/ops", "tests/m1/wp6/bed", "crates/lookup", "crates/fold", "crates/api", "crates/wire", "workers/front", "workers/runners", "workers/mcp", "workers/vault", "lifeboat", "workers/lifeboat", "workers/controller", "workers/agents-front"]
 
 [workspace.package]
 edition = "2024"

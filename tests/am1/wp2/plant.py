@@ -60,20 +60,22 @@ MUTANTS = [
      '                (!allowed.iter().any(|a| **a == *name)).then(|| {',
      '                (allowed.is_empty() && false).then(|| {', GIT),
     ('32.8 chosen for every push (default bytes change)', R,
-     '        if self.validated() {\n            REPO_FORMAT_AGENT', '        if true {\n            REPO_FORMAT_AGENT', GIT),
+     '        } else if self.validated() {\n            REPO_FORMAT_AGENT', '        } else if true {\n            REPO_FORMAT_AGENT', GIT),
+    # The permission gate between them grew (a fine-grained token's own scope): the mutant moves the agent check past
+    # the whole gate, as it was on main.
     ('the agent check after the permission checks: an App without the permission gets a bare 403', I,
-     "        let install = crate::repo::install_authz(deps);\n        if let crate::agent::ActorKind::Agent(_) = crate::agent::actor_kind(&self.actor, install) {\n            agent_refusal(&self.op, v).map_or(Ok(()), |r| Err(IssueErr::Agent(r)))?;\n        }\n        let owner = v.owner();\n        let folds = crate::repo::authz_folds(deps);\n        let authz = folds.iter().copied().find(|a| a.owner() == Some(owner));\n        // An installation token is authorized once, by the GitHub App permission the command needs, intersected with\n        // the installation's current row; past that gate it may do what a role check below would ask of a user.\n        let perm = match app {\n            Some(c) => {\n                let access = Access { repo: v.tiers.repo, owner, core: v.core() };\n                match graftyard_identity::authorize_app(c, &self.app_needs(v), &folds, &access) {\n                    Decision::Allow => Some(RepoPermission::Admin),\n                    Decision::Forbidden => return Err(IssueErr::Forbidden),\n                    Decision::Hidden => return Err(IssueErr::NotFound),\n                }\n            }\n            None => permission(&self.actor, v, &folds),\n        };\n",
-     "        let owner = v.owner();\n        let folds = crate::repo::authz_folds(deps);\n        let authz = folds.iter().copied().find(|a| a.owner() == Some(owner));\n        // An installation token is authorized once, by the GitHub App permission the command needs, intersected with\n        // the installation's current row; past that gate it may do what a role check below would ask of a user.\n        let perm = match app {\n            Some(c) => {\n                let access = Access { repo: v.tiers.repo, owner, core: v.core() };\n                match graftyard_identity::authorize_app(c, &self.app_needs(v), &folds, &access) {\n                    Decision::Allow => Some(RepoPermission::Admin),\n                    Decision::Forbidden => return Err(IssueErr::Forbidden),\n                    Decision::Hidden => return Err(IssueErr::NotFound),\n                }\n            }\n            None => permission(&self.actor, v, &folds),\n        };\n        let install = crate::repo::install_authz(deps);\n        if let crate::agent::ActorKind::Agent(_) = crate::agent::actor_kind(&self.actor, install) {\n            agent_refusal(&self.op, v).map_or(Ok(()), |r| Err(IssueErr::Agent(r)))?;\n        }\n", GIT),
+     "        let install = crate::repo::install_authz(deps);\n        if let crate::agent::ActorKind::Agent(_) = crate::agent::actor_kind(&self.actor, install) {\n            agent_refusal(&self.op, v).map_or(Ok(()), |r| Err(IssueErr::Agent(r)))?;\n        }\n        let owner = v.owner();\n        let folds = crate::repo::authz_folds(deps);\n        let authz = folds.iter().copied().find(|a| a.owner() == Some(owner));\n        // An installation token is authorized once, by the GitHub App permission the command needs, intersected with\n        // the installation's current row; past that gate it may do what a role check below would ask of a user.\n        let perm = match app {\n            Some(c) => {\n                let access = Access { repo: v.tiers.repo, owner, core: v.core() };\n                match graftyard_identity::authorize_app(c, &self.app_needs(v), &folds, &access) {\n                    Decision::Allow => Some(RepoPermission::Admin),\n                    Decision::Forbidden => return Err(IssueErr::Forbidden),\n                    Decision::Hidden => return Err(IssueErr::NotFound),\n                }\n            }\n            None => {\n                // A `github_pat_` or `ghu_` acts only within its own scope and permissions, by the same per-resource\n                // names an App's command needs.\n                let access = Access { repo: v.tiers.repo, owner, core: v.core() };\n                let fields = crate::repo::stored_fields(&self.actor, deps);\n                match graftyard_identity::token_allows(fields, &self.app_needs(v), &access) {\n                    Decision::Allow => permission(&self.actor, v, &folds),\n                    Decision::Forbidden => return Err(IssueErr::Forbidden),\n                    Decision::Hidden => return Err(IssueErr::NotFound),\n                }\n            }\n        };\n",
+     "        let owner = v.owner();\n        let folds = crate::repo::authz_folds(deps);\n        let authz = folds.iter().copied().find(|a| a.owner() == Some(owner));\n        // An installation token is authorized once, by the GitHub App permission the command needs, intersected with\n        // the installation's current row; past that gate it may do what a role check below would ask of a user.\n        let perm = match app {\n            Some(c) => {\n                let access = Access { repo: v.tiers.repo, owner, core: v.core() };\n                match graftyard_identity::authorize_app(c, &self.app_needs(v), &folds, &access) {\n                    Decision::Allow => Some(RepoPermission::Admin),\n                    Decision::Forbidden => return Err(IssueErr::Forbidden),\n                    Decision::Hidden => return Err(IssueErr::NotFound),\n                }\n            }\n            None => {\n                // A `github_pat_` or `ghu_` acts only within its own scope and permissions, by the same per-resource\n                // names an App's command needs.\n                let access = Access { repo: v.tiers.repo, owner, core: v.core() };\n                let fields = crate::repo::stored_fields(&self.actor, deps);\n                match graftyard_identity::token_allows(fields, &self.app_needs(v), &access) {\n                    Decision::Allow => permission(&self.actor, v, &folds),\n                    Decision::Forbidden => return Err(IssueErr::Forbidden),\n                    Decision::Hidden => return Err(IssueErr::NotFound),\n                }\n            }\n        };\n        let install = crate::repo::install_authz(deps);\n        if let crate::agent::ActorKind::Agent(_) = crate::agent::actor_kind(&self.actor, install) {\n            agent_refusal(&self.op, v).map_or(Ok(()), |r| Err(IssueErr::Agent(r)))?;\n        }\n", GIT),
     ('Push::tiers Core only with provenance (followers refuse the entry)', R,
-     '        if self.provenance.is_empty() { TierSet::CORE } else { TierSet::CORE.union(TierSet::METADATA) }',
-     '        TierSet::CORE', GIT),
+     '        if self.provenance.is_empty() && !path_set { TierSet::CORE } else { TierSet::CORE.union(TierSet::METADATA) }',
+     '        let _ = path_set;\n        TierSet::CORE', GIT),
     ('session_from_url splits a forged value inside a character', AG,
      '    let (head, rest) = value.split_at_checked(origin.len())?;',
      '    let (head, rest) = value.split_at(origin.len());', GIT),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
-           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, '..', 'target-am1')),
+           CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
            CARGO_INCREMENTAL='0')
 only = sys.argv[1:] and set(int(x) for x in sys.argv[1:])
 for n, (name, path, old, new, args) in enumerate(MUTANTS):
@@ -85,7 +87,8 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
     assert src.count(old) == 1, (name, 'anchor not unique', src.count(old))
     open(f, 'w').write(src.replace(old, new, 1))
     try:
-        r = subprocess.run(['cargo', 'test', '-j', '3', *args, '--no-fail-fast'], cwd=ROOT, env=env,
+        # A hang counts as caught (README, "Planted bugs").
+        r = subprocess.run(['timeout', '-k', '10', '600', 'cargo', 'test', '-j', '3', *args, '--no-fail-fast'], cwd=ROOT, env=env,
                            capture_output=True, text=True)
         out = r.stdout + r.stderr
         failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')})
@@ -93,6 +96,8 @@ for n, (name, path, old, new, args) in enumerate(MUTANTS):
             verdict = 'DID NOT COMPILE'
         else:
             verdict = 'CAUGHT' if r.returncode != 0 else 'MISSED'
+        if r.returncode == 124:
+            failed = ['(timed out)', *failed]
         print(f'{n:2} {verdict:8} {name}: {", ".join(failed)}', flush=True)
     finally:
         open(f, 'wb').write(orig)

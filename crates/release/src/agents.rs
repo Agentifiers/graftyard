@@ -116,6 +116,25 @@ pub fn feed(after: u64, entries: &[(Vec<u8>, Timestamp)], per_page: usize) -> Ve
         .collect()
 }
 
+/// The edge's answer to `GET release/entries` (`workers/edge/src/release.rs`, `read`): a JSON array of `{"index",
+/// "entry", "at"}`, `entry` the stored bytes in standard base64, as `extend` takes them. Anything else is an error,
+/// which a reader treats as a failed refresh.
+pub fn parse_page(body: &[u8]) -> Result<Vec<(Index, Vec<u8>, Timestamp)>, String> {
+    use base64::Engine as _;
+    let v: serde_json::Value = serde_json::from_slice(body).map_err(|e| format!("not JSON: {e}"))?;
+    let rows = v.as_array().ok_or("not an array of entries")?;
+    rows.iter()
+        .map(|r| {
+            let index = r["index"].as_u64().ok_or("an entry with no index")?;
+            let at = r["at"].as_u64().ok_or("an entry with no at")?;
+            let b = r["entry"].as_str().ok_or("an entry with no bytes")?;
+            let bytes =
+                base64::engine::general_purpose::STANDARD.decode(b).map_err(|e| format!("entry {index}: {e}"))?;
+            Ok((Index(index), bytes, Timestamp(at)))
+        })
+        .collect()
+}
+
 /// The `Cloudflare-Workers-Version-Overrides` value `graft-agents-front` sets on its call to `graft-controller`:
 /// `Some` only while the view's `Pointers.controller` is `Some`, so `None` follows the deployment split.
 pub fn controller_override(view: &AgentsReleaseView, controller_script: &str) -> Option<String> {

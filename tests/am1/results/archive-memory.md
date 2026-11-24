@@ -260,6 +260,10 @@ Edge refusal's closing B0-33 run clA (graft-m2b, main `daa4dcc2` with open-bytes
 `mwuiu47v`, load 10:06:13Z for 300 s; raws `raw/memguard-clA.jsonl.xz` and `raw/a1-cl/`, branch `b033-closing`
 `f1d19e10`). Memguard's 2 s samples carry `memSplit.open`.
 
+**Census note (2026-11-24).** clA ran `arrival=mem`, so the leader's wasm memory here includes BF-14's arrival ring, up
+to 19.4 MiB at 40,000 rows. clA's leader took 42,695 `/commit`s from a1's reset (a1's end `inbound`), so its ring was
+full by the end of load ("The census of the leader's uncounted heap"). The followers hold none of it.
+
 **open.high does not explain the leader's climb.**
 - Leader site 0 peaked at 89.1 MiB against memguard's 120, with no reset on any member. `open.high` peaked at
   4.20 MiB and `requestsHigh` at 498. memSplit's counted in-flight parts peaked at 2.7 MiB; `logPageHigh` 4.18 MB.
@@ -315,6 +319,10 @@ The lead's 15-minute row (`tests/am1/results/b033-ln.md`): lnA on graft-m2b, mai
 site day, repo 131418, a1 `mwuqsbkc`, load 900 s from 13:46:21Z, leader site 0 throughout, 0 leader changes, harness
 outage 1 s (0.1%), run $6.24. Raws `raw/memguard-lnA.jsonl.xz`, `raw/leaderlogs-lnA.json.xz`, `raw/a1-ln/`. Every line
 below is recorded, not gated.
+
+**Census note (2026-11-24).** ln ran `arrival=mem`, so every leader heapLive, heapPeak and wasm figure below includes
+BF-14's arrival ring, up to 19.4 MiB, full from about 13:51Z; the followers hold none of it ("The census of the leader's
+uncounted heap"). Builds since `lm1-arrival-bytes` report it as memSplit `arrivals`.
 
 **Caveat on rate.** ln's leader ran 73,369 commands at 81.5 a second and 185 inbound requests a second, against clA's 117
 and 274 over its 300 s; commit p50 and p99 626 and 2,416 ms against 797 and 2,670. The plateau below is at ln's rate.

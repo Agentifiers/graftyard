@@ -258,7 +258,14 @@ async fn mint(mut req: Request, env: &Env, ctx: &Context) -> Result<Response> {
 
 #[event(scheduled)]
 async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
-    if env.var("OPS_SCRIPTS").is_ok() {
+    // The agents account's `graft-ops` reads the install over HTTPS (`GRAFTYARD_HOST`); the install's has no such
+    // variable and reads its own members.
+    if env.var("OPS_SCRIPTS").is_err() {
+        return;
+    }
+    if env.var("GRAFTYARD_HOST").is_ok() {
+        crate::agents::run(&env).await;
+    } else {
         crate::exec::run(&env).await;
     }
 }

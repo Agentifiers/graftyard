@@ -178,3 +178,21 @@ fn the_agents_view_never_moves_to_a_lower_index_and_keeps_its_last_view_when_a_r
     assert_eq!(v.extend(&a, &get(&g2, n, 100)).unwrap(), 1);
     assert_eq!(v.fold(), &g2.f);
 }
+
+/// What a reader parses from the edge's page is what `feed` served: the same indexes, bytes, and times, so the view
+/// replays it to the group's fold; a page with a bad entry is refused whole.
+#[test]
+fn the_edges_page_parses_back_to_the_feed() {
+    use base64::Engine as _;
+    let g = controller_pinned();
+    let page = get(&g, 2, 5);
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let rows: Vec<serde_json::Value> =
+        page.iter().map(|(i, e, at)| serde_json::json!({ "index": i.0, "entry": b64.encode(e), "at": at.0 })).collect();
+    let body = serde_json::to_vec(&rows).unwrap();
+    assert_eq!(crate::agents::parse_page(&body).unwrap(), page);
+    assert_eq!(crate::agents::parse_page(b"[]").unwrap(), vec![]);
+    for bad in [&b"{}"[..], b"[{\"index\":3,\"at\":1}]", b"[{\"index\":3,\"entry\":\"!!\",\"at\":1}]", b"nope"] {
+        assert!(crate::agents::parse_page(bad).is_err(), "{}", String::from_utf8_lossy(bad));
+    }
+}

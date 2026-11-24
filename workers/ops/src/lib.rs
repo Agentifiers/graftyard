@@ -355,6 +355,8 @@ pub fn ssh_slot_ready(sites: &[(u8, Vec<SshHostPublic>)]) -> Result<Vec<String>,
 }
 
 #[cfg(target_arch = "wasm32")]
+mod agents;
+#[cfg(target_arch = "wasm32")]
 mod exec;
 #[cfg(target_arch = "wasm32")]
 mod worker_main;

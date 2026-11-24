@@ -288,7 +288,8 @@ impl Puller {
             let lag = LifeboatStatus::at(ReleaseId(rel_or_zero(&self.env)), st.current_at, now());
             let line =
                 json!({ "lifeboat_pass": r, "lag_s": lag.header(), "decoder": decoder, "halted": st.puller.halted });
-            if !st.puller.halted.is_empty() || lag.alarms() {
+            // A halted chain, the lag alarm, or a pack unserved on a live chain past `UNSERVED_ALARM_MS`.
+            if !st.puller.halted.is_empty() || lag.alarms() || r.unserved_alarm > 0 {
                 console_error!("{line}");
             } else {
                 console_log!("{line}");
@@ -324,6 +325,9 @@ impl DurableObject for Puller {
                     "halted": st.puller.halted,
                     "held": st.puller.held,
                     "owed": st.owed.len(),
+                    "unserved": st.unserved.len(),
+                    "unserved_alarm": pass::unserved_alarm(&st, now()),
+                    "gone": st.puller.gone,
                     "packs": st.packs,
                     "pages": st.pages,
                     "objects": st.objects,

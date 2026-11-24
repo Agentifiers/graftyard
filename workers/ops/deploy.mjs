@@ -24,6 +24,12 @@
 // fourth and fifth arguments (`_A` is slot 0, `_B` slot 1); once a `Rotate` switches it, the view's slot, not the
 // sixth argument, names the slot new values wrap under. BF-46-style `"ssh_announce_ms": n` (test-faults) lowers an
 // `SshHostKeys` `Rotate`'s announce wait (`OPS_SSH_ANNOUNCE_MS`).
+// AM3-WP1's agents account (`src/agents.rs`): `--agents <agents.json>` binds the agents `graft-ops` instead, with no
+// minting route in use. The file holds `{"anchor": <install.toml path>, "host": "<install host>", "app_id": <graftyard-
+// agent App id>, "app_key": <secret name>, "executor_key": <secret name>, "deploy_token": <secret name>, "scripts":
+// {"agents-front": "<name>", "controller": "<name>"}, "releases": <agents release bucket>, "gate": ..., "step_dwell_ms":
+// n, "first_day_ms": n, "cron": ...}`; the last four are optional and for test installs. `GRAFTYARD_HOST` is what makes
+// a run the agents one. Its MINT_WRAP_KEY argument may name any secret of the store: nothing mints there.
 // Needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID. The secret itself is written by `wrangler secrets-store secret
 // create` with its value on stdin, never here.
 
@@ -36,6 +42,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 const ex = args.indexOf("--executor");
 const executor = ex >= 0 ? JSON.parse(readFileSync(args.splice(ex, 2)[1], "utf8")) : null;
+const ag = args.indexOf("--agents");
+const agents = ag >= 0 ? JSON.parse(readFileSync(args.splice(ag, 2)[1], "utf8")) : null;
+if (executor && agents) throw new Error("--executor and --agents are two different graft-ops");
 const [name, storeId, secretName, wrapA, wrapB, current] = args;
 if (!name || !storeId || !secretName) throw new Error("usage: deploy.mjs <name> <secrets store id> <secret name>");
 const out = join(here, "build");
@@ -104,6 +113,30 @@ if (executor) {
   };
   // `"cron": "* * * * *"` for BF-39's kills on a test install; the design's cadence otherwise.
   cfg.triggers = { crons: [faults && executor.cron ? executor.cron : "*/5 * * * *"] };
+}
+if (agents) {
+  const anchor = Object.fromEntries(readFileSync(agents.anchor, "utf8").split("\n")
+    .map((l) => l.match(/^(install|customer_key)\s*=\s*"([^"]*)"/)).filter(Boolean).map((m) => [m[1], m[2]]));
+  if (!/^\d+$/.test(String(agents.app_id))) throw new Error("agents.app_id is the App's numeric id");
+  cfg.secrets_store_secrets.push(
+    { binding: "DEPLOY_TOKEN", store_id: storeId, secret_name: agents.deploy_token },
+    { binding: "AGENTS_EXECUTOR_KEY", store_id: storeId, secret_name: agents.executor_key },
+    { binding: "AGENT_APP_KEY", store_id: storeId, secret_name: agents.app_key },
+  );
+  if (agents.releases) cfg.r2_buckets = [{ binding: "RELEASES", bucket_name: agents.releases }];
+  cfg.vars = {
+    ...(cfg.vars ?? {}),
+    GRAFTYARD_INSTALL: anchor.install,
+    GRAFTYARD_CUSTOMER_KEY: anchor.customer_key,
+    GRAFTYARD_HOST: agents.host,
+    AGENT_APP_ID: String(agents.app_id),
+    CF_ACCOUNT: process.env.CLOUDFLARE_ACCOUNT_ID,
+    OPS_SCRIPTS: JSON.stringify(agents.scripts),
+    ...(agents.gate ? { GATE: agents.gate } : {}),
+    ...(agents.step_dwell_ms != null ? { STEP_DWELL_MS: String(agents.step_dwell_ms) } : {}),
+    ...(agents.first_day_ms != null ? { FIRST_DAY_MS: String(agents.first_day_ms) } : {}),
+  };
+  cfg.triggers = { crons: [agents.cron ?? "*/5 * * * *"] };
 }
 writeFileSync(join(gen, `${name}.jsonc`), JSON.stringify(cfg, null, 2));
 execFileSync("npx", ["--prefix", resolve(here, "../../tests/m0"), "wrangler", "deploy", "-c", `${name}.jsonc`], { cwd: gen, stdio: "inherit" });

@@ -2,7 +2,7 @@
 //! repository rows and kept only when they hash to the entry's checksum, and a halted chain moved by nothing again.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use graftyard_git::export::{self, ChangeBatch, ExportObject};
 use graftyard_git::pack::{PackId, PackRef};
@@ -63,6 +63,9 @@ struct Fake {
     served: RefCell<BTreeMap<PackId, Vec<u8>>>,
     kept: RefCell<BTreeMap<PackId, Vec<u8>>>,
     edge_calls: RefCell<Vec<(ChainId, u64)>>,
+    /// Chains the edge answers 404 (no group: retired or purged), and ones it answers 503.
+    gone: RefCell<BTreeSet<ChainId>>,
+    down: RefCell<BTreeSet<ChainId>>,
     feed_down: RefCell<bool>,
     /// The next import takes at most this many rows and halts on none.
     short: RefCell<Option<usize>>,
@@ -110,6 +113,12 @@ impl Host for Fake {
     }
     async fn entries(&self, chain: ChainId, from: Index, limit: u64) -> Result<Page, String> {
         self.edge_calls.borrow_mut().push((chain, from.0));
+        if self.gone.borrow().contains(&chain) {
+            return Ok(Page::Status(404));
+        }
+        if self.down.borrow().contains(&chain) {
+            return Ok(Page::Status(503));
+        }
         let log = self.log.borrow();
         let l = log.get(&chain).cloned().unwrap_or_default();
         let rows: Vec<Vec<u8>> = l.into_iter().skip(from.0 as usize - 1).take(limit as usize).collect();
@@ -236,5 +245,135 @@ fn the_feed_then_the_edge_with_packs_checked_and_a_halt_held() {
     assert_eq!(st2.current_at, 50);
 
     // The state round-trips.
+    assert_eq!(State::decode(&st.encode()).unwrap(), st);
+}
+
+/// A chain the edge answers 404 has no group (retired or purged): it is asked once and never again, and it does not
+/// hold the copy back from current. A chain the edge answers 503 is asked again on the next pass. Before, a retired chain
+/// answered 503 "retry", and a stale feed asked for it on every pass for good (graft-m3f `repo:65577`, R59's read).
+#[test]
+fn a_chain_the_edge_answers_404_is_asked_no_more() {
+    let h = Fake::default();
+    let mut st = State::default();
+    *h.now.borrow_mut() = 1_000;
+    let other = ChainId::Names(graftyard_types::NameShard(3));
+    h.round(0, &[(IDS, 1, 2), (other, 1, 1)]);
+    run(&h, &mut st);
+
+    // The feed stops. `IDS` was retired at the install; `other` is down for now.
+    h.gone.borrow_mut().insert(IDS);
+    h.down.borrow_mut().insert(other);
+    *h.now.borrow_mut() = 1_000 + FEED_STALE_MS;
+    let r = run(&h, &mut st);
+    assert_eq!(r.gone, [IDS]);
+    assert_eq!(h.copy.borrow()[&IDS].len(), 2, "the copy keeps what it holds");
+
+    h.edge_calls.borrow_mut().clear();
+    *h.now.borrow_mut() += 1;
+    let r = run(&h, &mut st);
+    assert!(r.gone.is_empty());
+    assert_eq!(h.edge_calls.borrow().as_slice(), [(other, 2)], "the gone chain is asked no more; the down one is");
+
+    // The gone chain holds nothing back: the copy is current though the gone chain's copy is short of the log, as of
+    // the start of the cycle in which every chain answered (the pass before, whose cycle the down chain spoiled).
+    h.down.borrow_mut().clear();
+    h.commit(IDS, 4);
+    *h.now.borrow_mut() += 1;
+    run(&h, &mut st);
+    assert_eq!(st.current_at, *h.now.borrow() - 1);
+    assert_eq!(h.copy.borrow()[&IDS].len(), 2);
+    assert_eq!(State::decode(&st.encode()).unwrap(), st);
+}
+
+/// `lifeboat-turns`: with the feed stale, the edge pulls go round every chain on a turn, so 900 chains all catch up
+/// although one pass takes 400 empty answers at most, and the copy is current only once a whole cycle answered, as of
+/// that cycle's start. Before, every pass began at the first chain in key order and took 40 pages, so the rest of a
+/// large install never moved and the copy was never current.
+#[test]
+fn a_stale_round_reaches_every_chain_and_is_current_once_a_cycle_ends() {
+    let h = Fake::default();
+    let mut st = State::default();
+    *h.now.borrow_mut() = 1_000;
+    let chains: Vec<ChainId> = (0..900u16).map(|i| ChainId::Names(graftyard_types::NameShard(i))).collect();
+    let all: Vec<(ChainId, u64, u64)> = chains.iter().map(|c| (*c, 1, 1)).collect();
+    h.round(0, &all);
+    run(&h, &mut st);
+    assert_eq!(st.current_at, 1_000);
+
+    // The feed stops. One chain at the end of the key order moves: a pass that always started at the first key would
+    // never reach it.
+    let tail = *chains.last().unwrap();
+    h.commit(tail, 3);
+    let start = 1_000 + FEED_STALE_MS;
+    let mut passes = 0;
+    while st.puller.held.get(tail) < Index(3) {
+        passes += 1;
+        assert!(passes <= 3, "the turn reached the last chain within ceil(900 / PROBES_PER_PASS) passes");
+        *h.now.borrow_mut() = start + passes;
+        let r = run(&h, &mut st);
+        assert!(r.probes <= pass::PROBES_PER_PASS + pass::AT_ONCE, "{} probes", r.probes);
+    }
+    assert_eq!(passes, 3);
+    assert_eq!(st.current_at, start + 1, "current as of the cycle that started at the first stale pass");
+    // Each chain is asked once a cycle, never twice in a row before the others.
+    let asked: Vec<ChainId> = h.edge_calls.borrow().iter().map(|(c, _)| *c).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    assert!(asked.iter().take(900).all(|c| seen.insert(*c)), "one cycle asks each chain once");
+
+    // A chain the edge cannot serve (503) spoils its cycle: the copy is not current as of that cycle's start, and is
+    // again once a later cycle answers whole.
+    let mid = chains[450];
+    h.down.borrow_mut().insert(mid);
+    let held_at = st.current_at;
+    let cycle_start = st.puller.cycle.unwrap();
+    for k in 1..=3 {
+        *h.now.borrow_mut() = start + 3 + k;
+        run(&h, &mut st);
+    }
+    assert_eq!(st.current_at, held_at, "the cycle {cycle_start} had a chain that did not answer");
+    h.down.borrow_mut().clear();
+    for k in 4..=9 {
+        *h.now.borrow_mut() = start + 3 + k;
+        run(&h, &mut st);
+    }
+    assert!(st.current_at > held_at, "a whole cycle answered once the chain was back");
+    assert!(st.current_at < *h.now.borrow(), "as of a cycle's start, not the pass that ended it");
+}
+
+/// `lifeboat-turns`: owed packs go round by network. A network whose packs the install no longer serves and whose
+/// chain the edge answers 404 is dropped after one probe; a pack unserved on a live chain stays owed and counts toward
+/// the alarm; and neither holds back another network's pack. Before, 41 dead packs ahead of a live one in key order
+/// took every pass's 40 copies for good.
+#[test]
+fn owed_packs_go_round_by_network_and_a_gone_networks_are_dropped() {
+    let h = Fake::default();
+    let mut st = State::default();
+    *h.now.borrow_mut() = 1_000;
+    let net = |n: i64| graftyard_types::NetworkId(DbId(n));
+    let owed = |n: i64, i: u128, b: &[u8]| Owed {
+        network: net(n),
+        id: PackId(Ulid(i)),
+        checksum: Digest(Sha256::digest(b).into()),
+        bytes: b.len() as u64,
+    };
+    // Network 1: 45 packs of a purged repository; network 2: one pack unserved on a live chain; network 3: one live.
+    for i in 1..=45 {
+        st.owed.insert(owed(1, i, b"gone"));
+    }
+    h.gone.borrow_mut().insert(ChainId::Repo(RepoId(DbId(1))));
+    st.owed.insert(owed(2, 200, b"missing"));
+    st.owed.insert(owed(3, 300, b"live"));
+    h.served.borrow_mut().insert(PackId(Ulid(300)), b"live".to_vec());
+    let r = run(&h, &mut st);
+    assert!(h.kept.borrow().contains_key(&PackId(Ulid(300))), "the live pack is copied on the first pass");
+    assert!(st.owed.iter().all(|o| o.network != net(1)), "a gone network's packs are dropped");
+    let probes = h.edge_calls.borrow().iter().filter(|(c, _)| *c == ChainId::Repo(RepoId(DbId(1)))).count();
+    assert_eq!(probes, 1, "one probe of the gone chain, not one per pack");
+    assert_eq!(r.gone, [ChainId::Repo(RepoId(DbId(1)))]);
+    assert_eq!(st.owed.len(), 1, "the pack unserved on a live chain stays owed");
+    assert_eq!((r.unserved, r.unserved_alarm), (1, 0));
+    *h.now.borrow_mut() = 1_000 + pass::UNSERVED_ALARM_MS;
+    let r = run(&h, &mut st);
+    assert_eq!((r.unserved, r.unserved_alarm), (1, 1), "unserved for an hour on a live chain alarms");
     assert_eq!(State::decode(&st.encode()).unwrap(), st);
 }

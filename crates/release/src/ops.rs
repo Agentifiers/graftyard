@@ -110,9 +110,30 @@ pub enum Gate {
     Breach(Box<str>),
 }
 
+/// The account a `graft-ops` runs in. The install's runs every intent but the agents account's, and drains, replaces,
+/// and pages for lifeboats. The agents account's (`design/AGENT-LAYER.md`, Shape, \"Controller\") reads the install's
+/// view over HTTPS, runs only `ControllerRoll` (`group::agents_intent`), deploys only `graft-agents-front` and
+/// `graft-controller`, and signs with `Keys.agents_executor`; it holds no drain key and reads no site health.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Account {
+    #[default]
+    Install,
+    Agents,
+}
+
+/// Whether `account`'s `graft-ops` runs `i`. Every other intent it leaves to the other account and sits idle, because
+/// the group holds one intent in flight.
+pub fn runs(account: Account, i: &Intent) -> bool {
+    match account {
+        Account::Install => !matches!(i, Intent::ControllerRoll { .. }),
+        Account::Agents => crate::group::agents_intent(i),
+    }
+}
+
 /// What `graft-ops` read this run.
 #[derive(Clone, Debug)]
 pub struct World {
+    pub account: Account,
     pub now: Timestamp,
     /// Each script's deployment, from the deployments API. A script missing here is one the API did not answer for.
     pub deployments: BTreeMap<Script, Deployment>,
@@ -457,15 +478,25 @@ fn same(have: &Split, want: &Split) -> bool {
 
 /// The one thing `graft-ops` does now for the current intent.
 pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
-    if let Some(a) = auto_drain(fold, w) {
-        return a;
-    }
-    if let Some(a) = auto_replace(fold, w) {
-        return a;
+    if w.account == Account::Install {
+        if let Some(a) = auto_drain(fold, w) {
+            return a;
+        }
+        if let Some(a) = auto_replace(fold, w) {
+            return a;
+        }
     }
     let Some(c) = fold.current.as_deref() else { return Action::Idle };
+    if !runs(w.account, &c.intent.intent) {
+        return Action::Idle;
+    }
     if let IntentState::Halted { .. } = c.state {
         return Action::Idle;
+    }
+    if let (Account::Agents, Intent::Rotate { secret, .. }) = (w.account, &c.intent.intent) {
+        return Action::Page(
+            format!("intent {}: the agents graft-ops does not rotate {secret:?} yet", c.intent.id.0).into(),
+        );
     }
     if let Intent::Rotate { secret, slot } = c.intent.intent {
         return rotate_next(fold, c, secret, slot, w, &dwell);
@@ -783,14 +814,17 @@ fn bad(why: impl Into<String>) -> Refusal {
 }
 
 /// Takes a release's files from the release bucket only when `release.json` verifies under `Keys.release`, lists
-/// `formats.txt` and every other file with its SHA-256, and every file it lists is there. Returns the scripts each
-/// genesis site and this account's scripts upload (`scripts` names the non-site scripts this `graft-ops` deploys).
+/// `formats.txt` and every other file with its SHA-256, and every file it lists is there. Returns the scripts this
+/// account uploads: each genesis site's and `scripts` for the install, `scripts` alone for the agents account, whose
+/// `ReleaseUploaded` names `AgentsFront` and `Controller` only (`scripts` names the non-site scripts this `graft-ops`
+/// deploys).
 pub fn check_bundle(
     fold: &ReleaseFold,
     record: &[u8],
     sig: Signature,
     files: &[(String, Vec<u8>)],
     scripts: &[Script],
+    account: Account,
 ) -> Result<Checked, Refusal> {
     let keys = fold.keys.as_ref().ok_or(Refusal::BadState("no Release view yet"))?;
     verify_raw(&keys.release, record, &sig).map_err(|_| bad("release.json does not verify under Keys.release"))?;
@@ -813,7 +847,10 @@ pub fn check_bundle(
     let formats = files.iter().find(|(n, _)| n == "formats.txt").ok_or_else(|| bad("the bundle has no formats.txt"))?;
     let reads = parse_formats(&formats.1).ok_or_else(|| bad("formats.txt is not one family.version per line"))?;
     let genesis = fold.genesis.as_ref().expect("installed");
-    let mut want: Vec<Script> = genesis.sites.iter().map(|s| Script::Site(s.id)).collect();
+    let mut want: Vec<Script> = match account {
+        Account::Install => genesis.sites.iter().map(|s| Script::Site(s.id)).collect(),
+        Account::Agents => Vec::new(),
+    };
     want.extend(scripts.iter().copied().filter(|s| !matches!(s, Script::Site(_))));
     let mut out = BTreeMap::new();
     for s in want {
@@ -998,7 +1035,7 @@ pub fn vault_due(fold: &ReleaseFold, r: ReleaseId) -> bool {
 }
 
 /// The first code intent of the roll order that R has not finished, with its undos: each member site's `SiteDay`,
-/// each spare's, `SiteDay { Workflows }`, then `EdgeRoll`, `OpsRoll`, `FrontRoll`, and `McpRoll`.
+/// each spare's, `SiteDay { Workflows }`, then `EdgeRoll`, `OpsRoll`, `FrontRoll`, `McpRoll`, and `ControllerRoll`.
 fn next_code(fold: &ReleaseFold, up: &Upload, r: ReleaseId) -> Option<(Intent, Vec<ReleaseEntry>)> {
     let g = fold.genesis.as_ref().expect("installed");
     let sites = g.sites.iter().filter(|s| !s.spare).chain(g.sites.iter().filter(|s| s.spare));
@@ -1009,6 +1046,9 @@ fn next_code(fold: &ReleaseFold, up: &Upload, r: ReleaseId) -> Option<(Intent, V
         Intent::OpsRoll { release: r },
         Intent::FrontRoll { release: r },
         Intent::McpRoll { release: r },
+        // The agents account's release: its own `ReleaseUploaded` names only `AgentsFront` and `Controller`, so every
+        // intent above skips it (`design/AGENT-LAYER.md`, Shape, "Controller").
+        Intent::ControllerRoll { release: r },
     ]);
     for i in order {
         let s = i.script().expect("a code intent names its script");
@@ -1096,6 +1136,10 @@ pub struct RawBundle {
 /// real group.
 #[allow(async_fn_in_trait)]
 pub trait Exec {
+    /// The account this `graft-ops` runs in: the install's unless the host says otherwise.
+    fn account(&self) -> Account {
+        Account::Install
+    }
     fn now(&self) -> Timestamp;
     /// The non-site scripts this `graft-ops` deploys (`check_bundle`'s `scripts`).
     fn scripts(&self) -> Vec<Script>;
@@ -1172,8 +1216,9 @@ pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
                 break;
             }
         };
-        // Once a run, beside whatever else it does: a silent lifeboat moves nothing, so it only pages.
-        if pass == 0 {
+        // Once a run, beside whatever else it does: a silent lifeboat moves nothing, so it only pages. The install's
+        // `graft-ops` alone pages for it.
+        if pass == 0 && e.account() == Account::Install {
             for h in silent_lifeboats(&fold, e.now(), dwell.lifeboat_silent) {
                 let why = format!("lifeboat {h} has sent no LifeboatDecoder for {} ms", dwell.lifeboat_silent);
                 e.page(&why);
@@ -1211,6 +1256,7 @@ pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
                 }
             }
         }
+        let account = e.account();
         let gate = if fold.current.is_some() { e.gate(&fold).await } else { Gate::Pending };
         let health = e.health(&fold).await;
         let moves = match fold.current.as_deref() {
@@ -1219,7 +1265,7 @@ pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
             }
             _ => MoveRun::Absent,
         };
-        let w = World { now: e.now(), deployments, gate, health, moves };
+        let w = World { account, now: e.now(), deployments, gate, health, moves };
         let (bytes, kind) = match next(&fold, &w, dwell) {
             Action::Idle => {
                 log.push(Ran::Idle);
@@ -1337,7 +1383,7 @@ async fn upload_step<E: Exec>(e: &mut E, fold: &ReleaseFold) -> Result<Option<Ra
         Ok(None) => return Ok(None),
         Err(x) => return Err(Ran::Error(format!("release bucket: {x}").into())),
     };
-    let c = check_bundle(fold, &b.record, b.sig, &b.files, &e.scripts())
+    let c = check_bundle(fold, &b.record, b.sig, &b.files, &e.scripts(), e.account())
         .map_err(|r| Ran::Error(format!("release bundle refused: {r}").into()))?;
     let scripts: Vec<Script> = c.scripts.keys().copied().collect();
     // Every script's version carries the same tag: a version uploaded under an earlier seq (another release's upload

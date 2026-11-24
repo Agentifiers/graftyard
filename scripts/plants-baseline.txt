@@ -3,12 +3,6 @@
 # scripts/check_plants.py fails on a line added here, on new drift, and on a listed mutant that matches again.
 # Order: the invariant and admission plants first (lm1mem, am1/wp1, am1/hotshards, composed), then fanout and m4/wp4.
 tests/am1/hosted/plant.py: commits reachable from existing refs reported as new
-tests/am1/rest/plant.py: archive: no slack, so the log is cut to exactly the cap
-tests/am1/rest/plant.py: archive: a promotion takes an entry over PROMOTE_MAX
-tests/am1/rest/plant.py: archive: recorded while held in one bucket
-tests/am1/wp2/plant.py: 32.8 chosen for every push (default bytes change)
-tests/am1/wp2/plant.py: the agent check after the permission checks: an App without the permission gets a bare 403
-tests/am1/wp2/plant.py: Push::tiers Core only with provenance (followers refuse the entry)
 tests/am1/wp3/plant.py: a derived final state is not recorded by the next command
 tests/am1/wp4/plant.py: glob overlap ignores a trailing ** after a literal
 tests/am1/wp4/plant.py: a release reports Expired, not Released
@@ -24,10 +18,4 @@ tests/m3/wp3/plant.sh: live-before-move
 tests/m3/wp4/plant.sh: key-cache-never-lapses
 tests/m3/wp4/plant.sh: claims-not-intersected
 tests/m4/wp1/plant.py: a rebuilt store starts past the committed read (replay_from ignored)
-tests/m4/wp2/plant.py: the actor is notified of its own comment
-tests/m4/wp2/plant.py: an ignored repository still notifies
-tests/m4/wp2/plant.py: watchers are not notified
-tests/nr2/plant.py: through: a write-class request takes the cached entry
-tests/nr2/plant.py: through: a write's fresh answer does not refresh the entry
-tests/nr2/plant.py: an entry is stamped when its answer arrives, not when its read started
 tests/nr3/plant.py: cache: the answer is stamped with the floor, not the index it was built at

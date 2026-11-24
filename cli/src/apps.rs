@@ -134,16 +134,16 @@ pub enum Planned {
 }
 
 impl Planned {
-    fn names(op: NamesOp) -> Planned {
+    pub(crate) fn names(op: NamesOp) -> Planned {
         let cmd = NamesCmd { cred: CredentialShard::NONE, op };
         Planned::Names(ChainId::Names(cmd.shard().expect("an App op names its shard")), cmd)
     }
 
-    fn authz(op: AuthzOp) -> Planned {
+    pub(crate) fn authz(op: AuthzOp) -> Planned {
         Planned::Authz(ChainId::Authz(install_account()), AuthzCmd { cred: CredentialShard::NONE, op })
     }
 
-    fn request(&self, op: &str, note: &str) -> Value {
+    pub(crate) fn request(&self, op: &str, note: &str) -> Value {
         match self {
             Planned::Authz(chain, cmd) => {
                 json!({ "kind": "graftyard.authz.command", "chain": chain, "op": op, "cmd": cmd, "note": note })
@@ -155,12 +155,12 @@ impl Planned {
     }
 }
 
-fn check_host(host: &str) -> Res<()> {
+pub(crate) fn check_host(host: &str) -> Res<()> {
     let ok = !host.is_empty() && host.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'.');
     if ok { Ok(()) } else { Err(format!("--host {host:?}: a bare hostname such as git.example.com")) }
 }
 
-fn check_prefix(p: &str) -> Res<()> {
+pub(crate) fn check_prefix(p: &str) -> Res<()> {
     let ok = p.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_');
     if ok { Ok(()) } else { Err(format!("--secret-prefix {p:?}: letters, digits, '-' and '_' only")) }
 }
@@ -179,7 +179,7 @@ fn callback(saved: &Saved) -> String {
     }
 }
 
-fn slug(s: &str) -> Slug {
+pub(crate) fn slug(s: &str) -> Slug {
     Slug::parse(s).expect("the table's slugs parse")
 }
 
@@ -247,7 +247,7 @@ pub fn register_commands(saved: &Saved, ids: [AppId; 2]) -> Res<Vec<(String, Pla
     Ok(out)
 }
 
-fn write_new(path: &Path, text: &str, mode: u32) -> Res<()> {
+pub(crate) fn write_new(path: &Path, text: &str, mode: u32) -> Res<()> {
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -257,7 +257,7 @@ fn write_new(path: &Path, text: &str, mode: u32) -> Res<()> {
     f.write_all(text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn write_requests(path: &Path, v: &[Value]) -> Res<()> {
+pub(crate) fn write_requests(path: &Path, v: &[Value]) -> Res<()> {
     std::fs::write(path, serde_json::to_string_pretty(v).expect("json") + "\n")
         .map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -365,7 +365,7 @@ pub fn register(out: &Path, ids: &[i64]) -> Res<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
@@ -379,7 +379,7 @@ mod tests {
     use crate::config::mint_install;
     use crate::genesis::tests::serve;
 
-    fn install() -> InstallToml {
+    pub(crate) fn install() -> InstallToml {
         InstallToml {
             install: mint_install().to_string(),
             account: "be2a".into(),
@@ -426,7 +426,7 @@ mod tests {
         (out, posted)
     }
 
-    fn files(dir: &Path) -> Vec<(std::path::PathBuf, String)> {
+    pub(crate) fn files(dir: &Path) -> Vec<(std::path::PathBuf, String)> {
         std::fs::read_dir(dir)
             .unwrap()
             .map(|e| {
@@ -499,9 +499,9 @@ mod tests {
 
     /// The install account's `Authz` leader and every `Names` shard leader, each given exactly the folds its
     /// command's `deps` name, as a leader reads them through `fresh`.
-    struct Leaders {
-        names: BTreeMap<NameShard, NamesFold>,
-        authz: AuthzFold,
+    pub(crate) struct Leaders {
+        pub(crate) names: BTreeMap<NameShard, NamesFold>,
+        pub(crate) authz: AuthzFold,
     }
 
     impl Leaders {
@@ -523,14 +523,14 @@ mod tests {
             deps.collect()
         }
 
-        fn names(&mut self, cmd: &NamesCmd) -> NamesOut {
+        pub(crate) fn names(&mut self, cmd: &NamesCmd) -> NamesOut {
             let s = cmd.shard().expect("a keyed op");
             let chains = cmd.deps(self.shard(s));
             let d = self.deps(&chains);
             decide(self.shard(s), cmd, &d)
         }
 
-        fn authz(&mut self, cmd: &AuthzCmd) {
+        pub(crate) fn authz(&mut self, cmd: &AuthzCmd) {
             let chains = cmd.deps(&self.authz);
             let d = self.deps(&chains);
             decide(&mut self.authz, cmd, &d);

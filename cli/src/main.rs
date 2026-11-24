@@ -1,9 +1,10 @@
 //! `graftyard`, the operator CLI (`design/DESIGN.md`, "Usage (caller's view)", the operator block; "Install
 //! operations"). Milestone 1 builds `init`, `sites add`, `sites add-spare`, `placement set`, `genesis`, `sign`, and
-//! `install --genesis`; Milestone 3 `admin bootstrap` and `mint-key rotate | step`; AM2 `apps init`. The deploy token
-//! comes from `CLOUDFLARE_API_TOKEN`.
+//! `install --genesis`; Milestone 3 `admin bootstrap` and `mint-key rotate | step`; AM2 `apps init`; AM3 `agents init`.
+//! The deploy token comes from `CLOUDFLARE_API_TOKEN`.
 
 mod admin;
+mod agents;
 mod apps;
 mod cf;
 mod config;
@@ -94,6 +95,11 @@ enum Cmd {
     Apps {
         #[command(subcommand)]
         cmd: AppsCmd,
+    },
+    /// The agents account's first-party Apps, `graftyard-agent` and `graftyard-workspace` (`cli/src/agents.rs`).
+    Agents {
+        #[command(subcommand)]
+        cmd: AgentsCmd,
     },
     /// The installation-token signing key in `MintWrapKey`.
     MintKey {
@@ -468,6 +474,36 @@ enum AppsCmd {
 }
 
 #[derive(Subcommand)]
+enum AgentsCmd {
+    /// Without --app-ids: draws the Apps' keys, graftyard-agent's webhook secret, and the agents executor key into the
+    /// agents account's Secrets Store, writes agents.json and the slug claims, and prints the executor public key for
+    /// `Keys.agents_executor`. With --app-ids: writes the registration requests.
+    Init {
+        /// The install's host.
+        #[arg(long, required_unless_present = "app_ids", conflicts_with = "app_ids")]
+        host: Option<String>,
+        /// The slug claims' answers: graftyard-agent's App id, then graftyard-workspace's.
+        #[arg(long, value_delimiter = ',')]
+        app_ids: Option<Vec<i64>>,
+        /// The agents account, whose token CLOUDFLARE_API_TOKEN must be (default: install.toml's account).
+        #[arg(long, conflicts_with = "app_ids")]
+        account: Option<String>,
+        /// The Secrets Store id to write to, instead of finding or creating graft-agents-<install>.
+        #[arg(long, conflicts_with = "app_ids")]
+        store: Option<String>,
+        /// Put this before each secret's name, so installs sharing a store do not collide.
+        #[arg(long, default_value = "", conflicts_with = "app_ids")]
+        secret_prefix: String,
+        /// graftyard-agent's webhook URL, the controller's hostname; without it the App has no webhook.
+        #[arg(long, conflicts_with = "app_ids")]
+        webhook_url: Option<String>,
+        /// The folder for agents.json and the request files.
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum MintKeyCmd {
     /// Draws the next signing key: writes its `MintWrapKey` text and its `PutVerifyingKey` request.
     Rotate {
@@ -724,6 +760,16 @@ fn run(cli: Cli) -> Res<()> {
                     apps::init(config, &host, &apps::InitOpts { store, secret_prefix, mcp_origin }, &out)
                 }
                 (None, None) => Err("apps init takes --host or --app-ids".into()),
+            }
+        }
+        Cmd::Agents { cmd: AgentsCmd::Init { host, app_ids, account, store, secret_prefix, webhook_url, out } } => {
+            match (host, app_ids) {
+                (_, Some(ids)) => agents::register(&out, &ids),
+                (Some(host), None) => {
+                    let opts = agents::InitOpts { store, secret_prefix, webhook_url };
+                    agents::init(config, account.as_deref(), &host, &opts, &out)
+                }
+                (None, None) => Err("agents init takes --host or --app-ids".into()),
             }
         }
         Cmd::MintKey { cmd: MintKeyCmd::Rotate { kid, secret_out, out } } => admin::rotate(kid, &secret_out, &out),

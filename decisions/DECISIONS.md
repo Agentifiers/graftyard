@@ -10210,6 +10210,13 @@ allocator keeps (fragmentation). The live heap does.
   allocator, not an owner.
 - **Remove it** if a hosted row shows member CPU per request more than 1% above the same shape's row without it.
 
+**Addendum, 2026-11-24 (`lm1-arrival-bytes`, the lead's ruling).** On `arrival=mem` rows `heapLive` includes BF-14's
+in-memory arrival ring. That is 19.4 MiB on a B0-33 leader at its 40,000-row cap, and none on a follower
+(`tests/am1/results/archive-memory.md`, "The census of the leader's uncounted heap"). Test-faults builds report it as
+memSplit `arrivals` `{rows, bytes}`, priced at 509 B a row, the wasm32 count [inference: rows times the measured
+mean], so a reading can subtract it. Rows keep `arrival=mem`: `arrival=sql` would bring back write-cuts' bare `exec` per
+`/commit`. Test `host::tests::the_arrival_bytes_follow_the_ring`; `tests/m0carried/plant153.py`, 7 of 7.
+
 ### `archive-scan`: the archive alarm keeps its `SUM(length(row))` scan, with no running sum, 2026-11-24
 
 **Status.** Priced at $0 by LM-1 on 2026-11-24 from raws already kept; nothing built.
@@ -10401,6 +10408,61 @@ snapshot rebuild of the shard, which a rule kept outside the log would not.
 
 **Flip.** A developer enrolled on two lifeboats at once needs both tokens live. That needs a per-host revocation, which
 is a new Tokens format.
+
+### `export-retired`: the export entries read answers a retired group 404, and the lifeboat asks a 404 chain no more, 2026-11-24
+
+**Status.** Built at $0 on branch `export-retired` from main `798d8d0f`, at the lead's request after R59's read. Not hosted: it ships on the next edge day, and the puller with the lifeboat bundle.
+
+**Finding.** The lifeboat's puller did ask for a retired chain. `Puller::pulls` takes every chain it holds a cursor for while the feed is stale, and a chain's cursor exists once the feed carried it. A repository retired or purged after that never leaves `held`, and `pass` skipped any status that was not a page, so the chain was asked again on every pass. The edge answered it 503 "no learner or follower of repo:N answered; retry" (graft-m3f `repo:65577`, retired 2026-11-17, read twice on 2026-11-24, `decisions/OPEN-QUESTIONS.md`, R59), so the loop never ended: up to `PAGES_PER_PASS` of each pass's edge pages went to chains that will never answer [inference from the code; not run hosted].
+
+**Decision.**
+- **The edge.** When no learner or follower of the chain answers `/log_rows`, the entries read asks `graftyard_lookup::retired_group`: each site's registry row and the record's bootstrap names, then every one's `/status`. Only when every member answered not joined with its `retired` row (`retire-sticks`) is the chain answered 404, as `design/DESIGN.md` answers a chain with no group. A registry or status read that failed, a member never joined, or one still joined keeps the 503. A repository with no `RepoOwner` row is 404 as before, but a `Names` read that failed is now a 503, not a 404 that would stop a lifeboat for good.
+- **The puller.** An edge 404 marks the chain gone (`Puller::gone`): the copy keeps what it holds, no source moves it again, and the pass names it in `Report::gone`. A gone chain holds no pass back from current. Any other status is asked again next pass, as before.
+
+**Why.** A retired group refuses every `/join`, so it never answers again, and the lead's ruling was to stop on it. The proof reads members, not the lookup's "no group": every voter writes its own site's registry row before it stores anything, so a live group, replaced or moved, leaves a joined member among those named (`repo-gone`).
+
+**What it beat.**
+- **A halt.** A halt alarms and holds the copy from current for good; a retired chain is the install's own decision, not a fault on the host.
+- **Backing off a 503.** A chain that is only down then waits too, and a retired one is still asked for good.
+- **404 on the lookup's "no group" alone.** That answer is relative to the record the lookup used, and a replaced bootstrap member answers it for a live group (`repo-gone`, the cross-placement window).
+
+**Evidence.**
+- `lifeboat/tests/pass.rs`, `a_chain_the_edge_answers_404_is_asked_no_more`: the gone chain is asked once, never again, and the copy is current while that chain's copy is short of the install's log; a chain the edge answers 503 is asked again. Without the puller's change the test fails (`r.gone` empty).
+- `crates/lookup`, `only_every_member_retired_is_a_retired_group`: three retired answers are proof, and a missing answer, a member never joined, or a joined one is not.
+- edgeboot on both builds.
+
+**Flip.** A retired group that comes back: if a retire ever stops sticking (`retire-sticks` reversed), a 404 would stop a lifeboat on a chain that answers again. Then the puller asks a gone chain again daily.
+
+### `lifeboat-turns`: a stale lifeboat goes round every chain on a turn, with its own probe budget, and owed packs go round by network, 2026-11-24
+
+**Status.** Built at $0 on branch `bf53-prep` from main `1c1ac169`, ruled by the lead on 2026-11-24 (ruling A, and the pack 404 rule) after BF-53's plan found both starvations. Not hosted: BF-53 on graft-m3f runs it.
+
+**Finding.** Two starvations in the puller, each shown by a scratch test on main [measured, native]:
+- **Stale pulls.** `Puller::pulls` listed the held chains from the first in key order on every pass, and a pass stopped at `PAGES_PER_PASS` (40) answers. With 60 chains and the feed stale, 40 reached the install's commit after 5 passes and 20 never did. graft-m3f's export-state names 3,234 chains, so a stopped feed would have moved the same 40 for good and the copy would never be current.
+- **Owed packs.** Packs were tried in `(network, id)` order, 40 a pass, and a 404 stayed owed. With 41 packs the install no longer serves ahead of a live one, the live pack was never copied in 5 passes. graft-m3f's feed still carries stored packs of repositories purged since 2026-11-22.
+
+**Decision.**
+- **Turns.** The edge pulls go round the known chains from the one after `Puller::turn`, `AT_ONCE` (16 [guess]) first pages at once, each chain pulled to its end before the turn passes it. So every chain is asked once a cycle, whatever the budgets.
+- **Two budgets.** Pages that carry rows count against `PAGES_PER_PASS` (40); answers with none, a caught-up chain or any status, against `PROBES_PER_PASS` (400 [guess]). At the bundle's 10 s alarm a round of graft-m3f's 3,234 chains takes about 9 passes, about 80 s.
+- **Current while stale.** Only a cycle in which every chain answered caught up (or gone), with none behind or halted, is current, and as of the cycle's start. A pass alone never is while chains remain to ask. With the feed fresh, current is as before.
+- **Packs.** One network at a time round the turns (`in_turns`, as the vault's). A pack the install answers 404 sends one probe of its repository chain a pass: a 404 there (`export-retired`) marks the chain gone and drops that network's owed packs. On a live chain the pack stays owed, is tried again in turn, and is counted in `State::unserved`; one unserved for `UNSERVED_ALARM_MS` (1 h [guess]) alarms in the pass line (`Report::unserved_alarm`, logged as an error), so a real missing pack is never dropped in silence.
+- **The feed hold** (test-faults). `/_bed/feed?hold=1|0` on the edge sets a row in the feed site's registry object `export`, and a held feed claims no round. BF-53 holds it while a repository archives, so the lifeboat's first copy of that chain reads the archive from index 1 (`decisions/OPEN-QUESTIONS.md`, R59).
+
+**Cost.** Only while the feed is stale: about 40 signed edge requests a second at 400 probes a 10 s pass, and a follower Durable Object wake for each, against graft-m3f's 3,234 chains [inference from the budgets; not measured].
+
+**What it beat.**
+- **Rotation alone, one budget of 40.** A round of 3,234 chains then takes about 81 passes, about 13.5 minutes, past the 5-minute lag alarm, so a stale copy would alarm in every stale window even with nothing to copy.
+- **A chain list from the install.** No endpoint lists chains, and a new one would be a second source the feed already is.
+- **Dropping a pack on its first 404.** A live chain's pack the install lost would vanish from the copy with no alarm.
+
+**Evidence.** `lifeboat/tests/pass.rs`:
+- `a_stale_round_reaches_every_chain_and_is_current_once_a_cycle_ends`: 900 chains, the last in key order moved, caught up in 3 passes with at most `PROBES_PER_PASS + AT_ONCE` answers each; current as of the cycle's start; a 503 inside a cycle holds it back and a later whole cycle moves it.
+- `owed_packs_go_round_by_network_and_a_gone_networks_are_dropped`: 45 dead packs of a purged network dropped after one probe, a live network's pack copied on the first pass, and an unserved pack on a live chain kept and alarming after an hour.
+- `tests/m0carried/plant200.py`: 8 of 8 native mutants caught; the feed hold's mutant by `tests/exportbed/run.sh`.
+
+**Flip.**
+- A hosted stale window in which the copy does not reach current within one alarm period (5 minutes): raise the budgets or the concurrency, or list the chains that moved.
+- A measured probe cost over $1 an hour: probe only chains whose commit moved, from a cheaper source than one read per chain.
 
 ### `user-demote`: the edge sends every authenticated user write with its actor, and the leader counts demotions, 2026-11-24
 
@@ -10815,13 +10877,14 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
   - Any live state to `Cancelled` on the cancel delivery.
   - A non-writer's title or body edit pauses a `Queued` or `Running` task, as the host's pause does. Only a writer's reassignment queues it again, and moves `snapshot` to that entry's index.
   - `Draft`, `Done`, `Failed`, and `Cancelled` are final and take no event. A refused step changes nothing.
+- An org whose login is over 32 characters, so that `<org>-agents` would pass GHES's 39-character limit, has no fork workspace (`NoWorkspaceOrg`) and runs `InRepo` only (the lead's ruling on OPEN-QUESTIONS A51, 2026-11-24).
 - `TaskState::api` is the `PATCH` state each sends, by the table in "Tasks and the activity feed": `Paused` is `waiting_for_user`, `Draft` and `Done` are `completed`, and `Cancelled` sends none, because only the cancel endpoint sets it and `PATCH` refuses it (`TaskErr::HostState`). A controller state is final exactly when the base state it sends is.
 
 **Why.**
 - The base already holds the task's durable record; the controller's state only decides its next call, so a pure step with no format keeps it testable and adds no failure domain.
 - `Draft { pr }` is final because the table maps it to `completed`, a final base state. Review and merge then go through the PR, not the task.
 
-**Beat.** Storing the controller's `Task` as fields on `AgentTask`, which would put Sandbox ids and budgets on the base's group for a component the base does not run.
+**Beat.** Storing the controller's `Task` as fields on `AgentTask`, which would put Sandbox ids and budgets on the base's group for a component the base does not run. For long org logins, a hash-suffixed workspace org name, a second naming rule every lookup of the agents org computes and no user can predict.
 
 **Evidence.**
 - `crates/git/tests/controller.rs`, 5 tests: the prefix and both workspaces, and the 32 and 33 character org logins on either side of the 39-character limit (OPEN-QUESTIONS A51); each budget limit at and past it; every forward step and every refused one; each final state refusing every event; the pause and its resume, with the snapshot moved; and the `api` map with no `cancelled` or `timed_out`.
@@ -10829,4 +10892,27 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **Flip.**
 - The controller needs a step this model refuses, such as resuming a failed task. Then add the event here first, with its base `PATCH`.
-- A design choice for long org logins (A51). Then `workspace` follows it.
+- A customer whose org login is over 32 characters needs fork mode. Then a naming rule for its workspace org goes in the design first, and `workspace` follows it.
+
+#### `agents-ops`: the agents account's `graft-ops` is the install's executor under `Account::Agents` (2026-11-24)
+
+**Status.** Code-only (AM3-WP1); not deployed. LF-7 is its hosted row, on the runner account standing in as the agents account (`FRAME.md`, "Operator decision, 2026-11-24, AM1 closed and the runner account stands in as the agents account").
+
+**Decision.**
+- One executor, `graftyard_release::ops::run`, with an `Account` the host names. `Account::Agents` runs only the intents `group::agents_intent` names (`ControllerRoll`; a `Rotate` of an agents secret pages until it is built), uploads only `AgentsFront` and `Controller` from a bundle, drains and replaces no site, and pages for no lifeboat. `Account::Install` sits idle while a `ControllerRoll` is current. Since the group holds one intent in flight, each account's `graft-ops` waits out the other's.
+- The agents host (`workers/ops/src/agents.rs`) is the `graft-ops` script with `GRAFTYARD_HOST` set. It reads an `AgentsReleaseView` of `GET release/entries` under a `graftyard-agent` App JWT, kept by the isolate across runs, submits through `POST release/entries`, and signs with `AGENTS_EXECUTOR_KEY`. Its versions and deployments calls are the install's own (`exec::Api`) under the agents account's deploy token.
+- `release roll` signs `ControllerRoll` last, after `McpRoll`, for a release that uploaded a `Controller` version, with a `ControllerPointer` to N as its undo, as for every pinned script.
+
+**Why.**
+- The roll, its undo, and its `Abort` are the same steps for every pinned script, and the group already checks the agents key's entries, so a second executor would repeat `steps` and `next` for one script.
+- Reading over HTTPS and committing through the edge keeps the agents account off the install's Durable Object bindings, which another account cannot bind.
+
+**Beat.** A separate crate for the agents executor, which would copy `ops::next`'s pinned-roll rules and drift from them.
+
+**Evidence.**
+- `crates/release/src/tests/group/run.rs`: `the_agents_graft_ops_runs_controller_rolls_alone_under_the_agents_key` (uploads only the two agents scripts of a bundle that also holds site and edge files, every entry under `Keys.agents_executor`, 1% then 100% with N at 0%, no drain with a burning site, the install idle on a `ControllerRoll` and the agents one idle on an `EdgeRoll`) and `lf7_a_controller_breach_with_the_api_down_commits_the_pointer_and_deploys_later` (LF-7's in-memory half: the pin lands with the API down, an `AgentsReleaseView` of the feed carries it, the return to N waits for the API).
+- `tests/m0carried/plant226.py`: 5 mutants, all caught.
+
+**Flip.**
+- An agents release that must ship in the same bundle as an install release, so one `ReleaseUploaded` names both accounts' scripts. Then the group's upload rule changes first.
+- OPEN-QUESTIONS A52's `graft-agents-front` roll: it joins this executor's `ControllerRoll` steps.

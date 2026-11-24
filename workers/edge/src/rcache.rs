@@ -382,18 +382,16 @@ mod tests {
     }
 
     /// One `through` call on `T` that must finish at once, and whether it read. A write-class call goes through its
-    /// batch with nothing else in flight, so it starts its own read at once.
+    /// batch with nothing else in flight, so it starts its own read at once; `alone` keeps it off the batch's clock,
+    /// which the test cannot drive.
     fn call(at: u64, read_class: bool, answer: Option<bool>) -> (Option<bool>, bool) {
         let mut read = false;
         let r = async {
             read = true;
             Ok::<_, String>(answer)
         };
-        let out = if read_class {
-            through(&T, 1, Timestamp(at), true, false, &crate::api::Timing::default(), r).now_or_never()
-        } else {
-            batched(&T, 1, Timestamp(at), false, r, || at, |_| std::future::ready(())).now_or_never().map(|b| b.answer)
-        };
+        let out =
+            through(&T, 1, Timestamp(at), read_class, !read_class, &crate::api::Timing::default(), r).now_or_never();
         (out.expect("ready").expect("ok"), read)
     }
 
@@ -674,5 +672,9 @@ mod tests {
         run(&[at(5, 100)], None);
         assert_eq!(get(&B, &1, Timestamp(5), true), Some(1));
         assert_eq!(get(&B, &1, Timestamp(5), false), None);
+        // Stamped when the read started (5 ms), not when it answered (105 ms): it ages out READ_CACHE after its start.
+        let ttl = READ_CACHE.as_millis() as u64;
+        assert_eq!(get(&B, &1, Timestamp(5 + ttl), true), Some(1));
+        assert_eq!(get(&B, &1, Timestamp(6 + ttl), true), None);
     }
 }
