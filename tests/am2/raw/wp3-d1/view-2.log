@@ -1,0 +1,23 @@
+2026-11-24T04:20:20Z
+22a2d2a3
+{"script":"graft-m4a-front","created_on":"2026-11-24T04:13:09.680642Z","versions":["5ee2eb15 100"]}
+{"script":"graft-m4a-mcp","created_on":"2026-11-24T04:15:06.328081Z","versions":["c70db1f4 1","e7c66cdb 99"]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T04:17:12.5828Z","versions":["5421ad57 100"]}
+{"count":305,"current":{"intent":"McpRoll { release: ReleaseId([5, 31, 111, 97, 1, 150, 121, 139, 131, 162, 35, 94, 122, 76, 28, 243, 119, 26, 211, 182, 207, 197, 17, 37, 127, 119, 191, 233, 186, 30, 203, 186]) }","next":0,"since":1795493888144,"state":"Undoing"},"drained":[],"slots":{"DeployToken":{"slot":0,"switched":1795480526860},"MintWrapKey":{"slot":0,"switched":1795481368373},"ReadToken":{"slot":0,"switched":1795480590257}}}
+{"at":1795492177896,"entry":"ReleaseUploaded","index":288,"kind":"ReleaseUploaded","sigs":["d38725"]}
+{"at":1795492210016,"entry":"ReleaseUploaded","index":289,"kind":"ReleaseUploaded","sigs":["d38725"]}
+{"at":1795492251911,"entry":"ReleaseUploaded","index":290,"kind":"ReleaseUploaded","sigs":["d38725"]}
+{"at":1795492675339,"entry":"FrontRoll { release: ReleaseId([118, 42, 150, 209, 197, 73, 41, 212, 249, 139, 230, 73, 75, 111, 69, 99, 58, 199, 209, 168, 54, 134, 188, 147, 95, 183, 139, 19, 83, 217, 101, 90]) } id 01M85V7QD96RHA7XFRNCQBN23Q","index":291,"kind":"Intent","sigs":["031923"]}
+{"at":1795492748920,"entry":"step 0","index":292,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795492753310,"entry":"step 1","index":293,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795492755180,"entry":"IntentDone","index":294,"kind":"IntentDone","sigs":["d38725"]}
+{"at":1795492921660,"entry":"McpRoll { release: ReleaseId([118, 42, 150, 209, 197, 73, 41, 212, 249, 139, 230, 73, 75, 111, 69, 99, 58, 199, 209, 168, 54, 134, 188, 147, 95, 183, 139, 19, 83, 217, 101, 90]) } id 01M85VF7X1Q5PYMSR13V3PMV5X","index":295,"kind":"Intent","sigs":["031923"]}
+{"at":1795493107659,"entry":"step 0","index":296,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795493112476,"entry":"step 1","index":297,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795493114281,"entry":"IntentDone","index":298,"kind":"IntentDone","sigs":["d38725"]}
+{"at":1795493439677,"entry":"FrontRoll { release: ReleaseId([5, 31, 111, 97, 1, 150, 121, 139, 131, 162, 35, 94, 122, 76, 28, 243, 119, 26, 211, 182, 207, 197, 17, 37, 127, 119, 191, 233, 186, 30, 203, 186]) } id 01M85VZ2485QK0EYMX4X9JHCX4","index":299,"kind":"Intent","sigs":["031923"]}
+{"at":1795493587136,"entry":"step 0","index":300,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795493591425,"entry":"step 1","index":301,"kind":"IntentStep","sigs":["d38725"]}
+{"at":1795493593165,"entry":"IntentDone","index":302,"kind":"IntentDone","sigs":["d38725"]}
+{"at":1795493676937,"entry":"McpRoll { release: ReleaseId([5, 31, 111, 97, 1, 150, 121, 139, 131, 162, 35, 94, 122, 76, 28, 243, 119, 26, 211, 182, 207, 197, 17, 37, 127, 119, 191, 233, 186, 30, 203, 186]) } id 01M85W69KZB20JDABBE5PCH9D2","index":303,"kind":"Intent","sigs":["031923"]}
+{"at":1795493888144,"entry":"McpPointer","index":304,"kind":"McpPointer","sigs":["031923"]}

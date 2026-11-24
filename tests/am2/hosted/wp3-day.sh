@@ -64,7 +64,7 @@ edge_day() {
   local x; x=$(live_export)
   node tests/m1/integ/deploy-edge.mjs "$W/sites.json" $EDGE_NAME --test-faults --anchor "$W/install.toml" --ops $OPS \
     --web /tmp/wp3web --var "FORMATS_ENABLED=$1" ${x:+--export-bucket $x} \
-    --var RUN_SERVICE_PUBLIC=35f3192f9087eceb3316c4abecb151fd3f324daceb83565a4a5d93c0d5a06f38 2>&1 |
+    --var RUN_SERVICE_PUBLIC=35f3192f9087eceb3316c4abecb151fd3f324daceb83565a4a5d93c0d5a06f38 ${2:+--var HOST=$2} 2>&1 |
     grep -E "Uploaded|Deployed|Current Version|rror" | tail -4
 }
 
@@ -91,11 +91,16 @@ token)
 edge)
   { deployment $EDGE_NAME
     echo "live FORMATS_ENABLED: $(live_formats); EXPORT: $(live_export)"
-    if [ "${3:-on}" = off ]; then
+    if [ "${3:-on}" = restore ]; then
+      # The lead's ruling: the handoff's split back by version id (`<id>@<pct>` ...), with those versions' own vars.
+      npx --prefix tests/m0 wrangler versions deploy "${@:4}" --name $EDGE_NAME -y 2>&1 | grep -E "Deployed|rror" | tail -2
+    elif [ "${3:-on}" = off ]; then
       edge_day "$(cat "$K/formats-before")"
     else
       [ -s "$K/formats-before" ] || live_formats >"$K/formats-before"
-      edge_day "$(cat "$K/formats-before"),20.4,17.4"
+      # HOST: the front's hostname, which every request through graft-front carries; the edge's workers.dev name
+      # (deploy-edge.mjs's default) misses `Host::endpoint` and answers 404 (day d1's first session N0).
+      edge_day "$(cat "$K/formats-before"),20.4,17.4" "$HOSTN"
     fi
     deployment $EDGE_NAME
     echo "now FORMATS_ENABLED: $(live_formats); EXPORT: $(live_export)"
@@ -109,7 +114,10 @@ apps)
     mcp=$(echo "$ids" | awk '$1 == "graftyard-mcp" {print $2}'); ins=$(echo "$ids" | awk '$1 == "graftyard-insights" {print $2}')
     echo "graftyard-mcp $mcp graftyard-insights $ins" | tee "$K/app-ids"
     cargo run -q -p graftyard -- apps init --app-ids "$mcp,$ins" --out "$A" && node tests/am2/hosted/apps.mjs register "$A"
-    npx --prefix tests/m0 wrangler deploy -c <(sed "s/graft-m3f-mcp-aux/$AUX_NAME/" tests/am2/hosted/aux.jsonc) 2>&1 | grep -E "Current Version|rror"
+    # Beside aux.jsonc, so its relative `main` resolves (a `<(...)` config does not).
+    sed "s/graft-m3f-mcp-aux/$AUX_NAME/" tests/am2/hosted/aux.jsonc >tests/am2/hosted/.aux-m4a.jsonc
+    npx --prefix tests/m0 wrangler deploy -c tests/am2/hosted/.aux-m4a.jsonc 2>&1 | grep -E "Current Version|rror"
+    rm -f tests/am2/hosted/.aux-m4a.jsonc
     node workers/mcp/deploy.mjs $MCP_NAME "$A/apps.json" --edge $EDGE_NAME --store $STORE --app-id "$mcp" \
       --host-origin "https://$HOSTN" 2>&1 | grep -E "Current Version|rror"
     deployment $MCP_NAME
@@ -179,7 +187,7 @@ unblock)
       --data-binary @"$K/deploy.value" | jq -c '{unblock: .success, modified: .result.modified}'
   } 2>&1 | log ;;
 session)
-  { GRAFT_MCP=https://$MCPH GRAFT_AUX=https://$AUX_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev REPORT=1 LIST=1 \
+  { GRAFT_EDGE=https://$HOSTN GRAFT_MCP=https://$MCPH GRAFT_AUX=https://$AUX_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev REPORT=1 LIST=1 \
       node tests/am2/hosted/ts-client.mjs v2 1
   } 2>&1 | log ;;
 sampler)
@@ -191,12 +199,9 @@ sampler)
 teardown)
   { touch "$O/stop"; amp orb service stop wp3-sampler >/dev/null 2>&1
     cronoff
-    echo "graft-ops parked from ${OPS_REF:?OPS_REF} with ${OPS_PARKED:?OPS_PARKED}"
-    (cd /tmp && rm -rf wp3-ops && git -C "$OLDPWD" worktree add -f --detach /tmp/wp3-ops "$OPS_REF" >/dev/null 2>&1)
-    (cd /tmp/wp3-ops && unset CARGO_TARGET_DIR && export PATH=$HOME/.cargo/bin:$PATH \
-      && ln -sfn "$HOME/workspace/repo/tests/m0/node_modules" tests/m0/node_modules \
-      && node workers/ops/deploy.mjs $OPS $STORE graft-m4a-mint-wrap-key - graft-m4a-secrets-wrap-key-b 1 \
-           --executor "$OPS_PARKED" 2>&1 | grep -E "Current Version|rror" | tail -3)
+    # The lead's ruling: graft-ops parks as the version the handoff named (OPS_PARKED, a version id), not a rebuild.
+    echo "graft-ops parked as ${OPS_PARKED:?OPS_PARKED version id}"
+    npx --prefix tests/m0 wrangler versions deploy "$OPS_PARKED@100" --name $OPS -y 2>&1 | grep -E "Deployed|rror" | tail -2
     cronoff
     deployment $OPS
     for n in $FRONT_NAME $MCP_NAME $AUX_NAME; do npx --prefix tests/m0 wrangler delete --name $n --force 2>&1 | tail -1; done

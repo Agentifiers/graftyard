@@ -1,0 +1,1716 @@
+{
+    "wallTime": 6663,
+    "cpuTime": 102,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492259711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492267020
+        }
+    ],
+    "eventTimestamp": 1795492260330,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492259711
+    }
+}
+{
+    "wallTime": 5753,
+    "cpuTime": 117,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492319711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492326049
+        }
+    ],
+    "eventTimestamp": 1795492320261,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492319711
+    }
+}
+{
+    "wallTime": 3939,
+    "cpuTime": 133,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492379711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492384007
+        }
+    ],
+    "eventTimestamp": 1795492380037,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492379711
+    }
+}
+{
+    "wallTime": 4094,
+    "cpuTime": 113,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492439711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492444304
+        }
+    ],
+    "eventTimestamp": 1795492440180,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492439711
+    }
+}
+{
+    "wallTime": 4311,
+    "cpuTime": 147,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492499711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492504777
+        }
+    ],
+    "eventTimestamp": 1795492500433,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492499711
+    }
+}
+{
+    "wallTime": 5718,
+    "cpuTime": 102,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492559711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492566321
+        }
+    ],
+    "eventTimestamp": 1795492560575,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492559711
+    }
+}
+{
+    "wallTime": 4874,
+    "cpuTime": 137,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492619711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492625034
+        }
+    ],
+    "eventTimestamp": 1795492620130,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492619711
+    }
+}
+{
+    "wallTime": 4415,
+    "cpuTime": 136,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492679711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Deployed(Front, [(VersionId(2d211afd-ca9c-4291-9343-7c84e2683233), 1), (VersionId(ff300f13-c24e-4acb-8865-d7fd96faf927), 99)])"
+            ],
+            "level": "log",
+            "timestamp": 1795492684872
+        },
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795492743848)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795492684872
+        }
+    ],
+    "eventTimestamp": 1795492680424,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492679711
+    }
+}
+{
+    "wallTime": 15571,
+    "cpuTime": 134,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492739711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795492756367
+        },
+        {
+            "message": [
+                "graft-ops Deployed(Front, [(VersionId(2d211afd-ca9c-4291-9343-7c84e2683233), 100)])"
+            ],
+            "level": "log",
+            "timestamp": 1795492756367
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795492756367
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentDone\")"
+            ],
+            "level": "log",
+            "timestamp": 1795492756367
+        },
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492756367
+        }
+    ],
+    "eventTimestamp": 1795492740769,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492739711
+    }
+}
+{
+    "wallTime": 6993,
+    "cpuTime": 133,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492799711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492808108
+        }
+    ],
+    "eventTimestamp": 1795492801082,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492799711
+    }
+}
+{
+    "wallTime": 3179,
+    "cpuTime": 137,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492859711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492863255
+        }
+    ],
+    "eventTimestamp": 1795492860057,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492859711
+    }
+}
+{
+    "wallTime": 2957,
+    "cpuTime": 125,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492919711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795492923406
+        }
+    ],
+    "eventTimestamp": 1795492920418,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492919711
+    }
+}
+{
+    "wallTime": 8366,
+    "cpuTime": 118,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492979711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Deployed(Mcp, [(VersionId(e7c66cdb-27b7-449b-a614-6885ba33569e), 1), (VersionId(044e4429-7bdf-4f52-ae51-ffbb0d237be1), 99)])"
+            ],
+            "level": "log",
+            "timestamp": 1795492988925
+        },
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795493047228)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795492988925
+        }
+    ],
+    "eventTimestamp": 1795492980532,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795492979711
+    }
+}
+{
+    "wallTime": 4303,
+    "cpuTime": 151,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493039711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795493047228)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795493044586
+        }
+    ],
+    "eventTimestamp": 1795493040239,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493039711
+    }
+}
+{
+    "wallTime": 14770,
+    "cpuTime": 363,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493099711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795493115247
+        },
+        {
+            "message": [
+                "graft-ops Deployed(Mcp, [(VersionId(e7c66cdb-27b7-449b-a614-6885ba33569e), 100)])"
+            ],
+            "level": "log",
+            "timestamp": 1795493115247
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795493115247
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentDone\")"
+            ],
+            "level": "log",
+            "timestamp": 1795493115247
+        },
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795493115247
+        }
+    ],
+    "eventTimestamp": 1795493100428,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493099711
+    }
+}
+{
+    "wallTime": 4833,
+    "cpuTime": 201,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493159711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795493165535
+        }
+    ],
+    "eventTimestamp": 1795493160667,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493159711
+    }
+}
+{
+    "wallTime": 2465,
+    "cpuTime": 246,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493219711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795493222961
+        }
+    ],
+    "eventTimestamp": 1795493220481,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493219711
+    }
+}
+{
+    "wallTime": 6382,
+    "cpuTime": 148,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493279711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795493286547
+        }
+    ],
+    "eventTimestamp": 1795493280129,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493279711
+    }
+}
+{
+    "wallTime": 6141,
+    "cpuTime": 154,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493339711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795493346406
+        }
+    ],
+    "eventTimestamp": 1795493340223,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493339711
+    }
+}
+{
+    "wallTime": 5508,
+    "cpuTime": 133,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493399711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795493406130
+        }
+    ],
+    "eventTimestamp": 1795493400588,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493399711
+    }
+}
+{
+    "wallTime": 7986,
+    "cpuTime": 275,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493459711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Deployed(Front, [(VersionId(5ee2eb15-046f-40e3-9e88-cc86ab6230ad), 1), (VersionId(2d211afd-ca9c-4291-9343-7c84e2683233), 99)])"
+            ],
+            "level": "log",
+            "timestamp": 1795493468540
+        },
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795493526778)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795493468540
+        }
+    ],
+    "eventTimestamp": 1795493460504,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493459711
+    }
+}
+{
+    "wallTime": 4410,
+    "cpuTime": 131,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493519711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795493526778)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795493524592
+        }
+    ],
+    "eventTimestamp": 1795493520150,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493519711
+    }
+}
+{
+    "wallTime": 13917,
+    "cpuTime": 200,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493579711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795493594164
+        },
+        {
+            "message": [
+                "graft-ops Deployed(Front, [(VersionId(5ee2eb15-046f-40e3-9e88-cc86ab6230ad), 100)])"
+            ],
+            "level": "log",
+            "timestamp": 1795493594164
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795493594164
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentDone\")"
+            ],
+            "level": "log",
+            "timestamp": 1795493594164
+        },
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795493594164
+        }
+    ],
+    "eventTimestamp": 1795493580205,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493579711
+    }
+}
+{
+    "wallTime": 4655,
+    "cpuTime": 102,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493639711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795493645135
+        }
+    ],
+    "eventTimestamp": 1795493640454,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493639711
+    }
+}
+{
+    "wallTime": 8667,
+    "cpuTime": 118,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493699711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Deployed(Mcp, [(VersionId(c70db1f4-ba11-41ab-8e5f-ea0123624b3c), 1), (VersionId(e7c66cdb-27b7-449b-a614-6885ba33569e), 99)])"
+            ],
+            "level": "log",
+            "timestamp": 1795493709311
+        },
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795493766328)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795493709311
+        }
+    ],
+    "eventTimestamp": 1795493700610,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493699711
+    }
+}
+{
+    "wallTime": 3696,
+    "cpuTime": 144,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493759711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795493766328)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795493764022
+        }
+    ],
+    "eventTimestamp": 1795493760302,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493759711
+    }
+}
+{
+    "wallTime": 5505,
+    "cpuTime": 105,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493819711
+    },
+    "scriptVersion": {
+        "id": "46fa07cd-dbfe-44e6-a454-d9df6631f277"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Wait { until: None, why: \"no deployment of Mcp read\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795493826098
+        }
+    ],
+    "eventTimestamp": 1795493820571,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493819711
+    }
+}
+{
+    "wallTime": 8964,
+    "cpuTime": 195,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493879711
+    },
+    "scriptVersion": {
+        "id": "5421ad57-e87c-4899-bf6e-b6b2e137332c"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Committed(\"McpPointer\")"
+            ],
+            "level": "log",
+            "timestamp": 1795493889764
+        },
+        {
+            "message": [
+                "graft-ops Wait { until: None, why: \"no deployment of Mcp read\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795493889764
+        }
+    ],
+    "eventTimestamp": 1795493880751,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493879711
+    }
+}
+{
+    "wallTime": 4188,
+    "cpuTime": 232,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493939711
+    },
+    "scriptVersion": {
+        "id": "5421ad57-e87c-4899-bf6e-b6b2e137332c"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Wait { until: None, why: \"no deployment of Mcp read\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795493944249
+        }
+    ],
+    "eventTimestamp": 1795493940005,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493939711
+    }
+}
+{
+    "wallTime": 4351,
+    "cpuTime": 221,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493999711
+    },
+    "scriptVersion": {
+        "id": "5421ad57-e87c-4899-bf6e-b6b2e137332c"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Wait { until: None, why: \"no deployment of Mcp read\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795494004536
+        }
+    ],
+    "eventTimestamp": 1795494000129,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795493999711
+    }
+}
+{
+    "wallTime": 7242,
+    "cpuTime": 150,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494059711
+    },
+    "scriptVersion": {
+        "id": "5421ad57-e87c-4899-bf6e-b6b2e137332c"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Deployed(Mcp, [(VersionId(e7c66cdb-27b7-449b-a614-6885ba33569e), 100), (VersionId(c70db1f4-ba11-41ab-8e5f-ea0123624b3c), 0)])"
+            ],
+            "level": "log",
+            "timestamp": 1795494067436
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795494067436
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentDone\")"
+            ],
+            "level": "log",
+            "timestamp": 1795494067436
+        },
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494067436
+        }
+    ],
+    "eventTimestamp": 1795494060167,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494059711
+    }
+}
+{
+    "wallTime": 4651,
+    "cpuTime": 109,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494119711
+    },
+    "scriptVersion": {
+        "id": "5421ad57-e87c-4899-bf6e-b6b2e137332c"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494124704
+        }
+    ],
+    "eventTimestamp": 1795494120027,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494119711
+    }
+}
+{
+    "wallTime": 3556,
+    "cpuTime": 151,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494179711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494183727
+        }
+    ],
+    "eventTimestamp": 1795494180139,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494179711
+    }
+}
+{
+    "wallTime": 2478,
+    "cpuTime": 128,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494239711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494243059
+        }
+    ],
+    "eventTimestamp": 1795494240573,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494239711
+    }
+}
+{
+    "wallTime": 10526,
+    "cpuTime": 111,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494299711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Deployed(Front, [(VersionId(57581ba4-fa3d-40e7-bff9-50a23e65e9db), 1), (VersionId(5ee2eb15-046f-40e3-9e88-cc86ab6230ad), 99)])"
+            ],
+            "level": "log",
+            "timestamp": 1795494311086
+        },
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795494368345)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795494311086
+        }
+    ],
+    "eventTimestamp": 1795494300531,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494299711
+    }
+}
+{
+    "wallTime": 4334,
+    "cpuTime": 129,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494359711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795494368345)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795494364562
+        }
+    ],
+    "eventTimestamp": 1795494360190,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494359711
+    }
+}
+{
+    "wallTime": 8734,
+    "cpuTime": 208,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494419711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795494429110
+        },
+        {
+            "message": [
+                "graft-ops Deployed(Front, [(VersionId(57581ba4-fa3d-40e7-bff9-50a23e65e9db), 100)])"
+            ],
+            "level": "log",
+            "timestamp": 1795494429110
+        },
+        {
+            "message": [
+                "graft-ops Deployed(Front, [(VersionId(57581ba4-fa3d-40e7-bff9-50a23e65e9db), 100)])"
+            ],
+            "level": "log",
+            "timestamp": 1795494429110
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795494429110
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentDone\")"
+            ],
+            "level": "log",
+            "timestamp": 1795494429110
+        },
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494429110
+        }
+    ],
+    "eventTimestamp": 1795494420337,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494419711
+    }
+}
+{
+    "wallTime": 5160,
+    "cpuTime": 165,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494479711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494485635
+        }
+    ],
+    "eventTimestamp": 1795494480430,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494479711
+    }
+}
+{
+    "wallTime": 10344,
+    "cpuTime": 146,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494539711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Deployed(Mcp, [(VersionId(016538f0-d29e-475b-b1c9-ff7010795ec1), 1), (VersionId(e7c66cdb-27b7-449b-a614-6885ba33569e), 99)])"
+            ],
+            "level": "log",
+            "timestamp": 1795494551167
+        },
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795494608784)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795494551167
+        }
+    ],
+    "eventTimestamp": 1795494540790,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494539711
+    }
+}
+{
+    "wallTime": 6521,
+    "cpuTime": 110,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494599711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Wait { until: Some(Timestamp(1795494608784)), why: \"STEP_DWELL\" }"
+            ],
+            "level": "log",
+            "timestamp": 1795494607046
+        }
+    ],
+    "eventTimestamp": 1795494600497,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494599711
+    }
+}
+{
+    "wallTime": 7227,
+    "cpuTime": 244,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494659711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795494667421
+        },
+        {
+            "message": [
+                "graft-ops Deployed(Mcp, [(VersionId(016538f0-d29e-475b-b1c9-ff7010795ec1), 100), (VersionId(e7c66cdb-27b7-449b-a614-6885ba33569e), 0)])"
+            ],
+            "level": "log",
+            "timestamp": 1795494667421
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentStep\")"
+            ],
+            "level": "log",
+            "timestamp": 1795494667421
+        },
+        {
+            "message": [
+                "graft-ops Committed(\"IntentDone\")"
+            ],
+            "level": "log",
+            "timestamp": 1795494667421
+        },
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494667421
+        }
+    ],
+    "eventTimestamp": 1795494660145,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494659711
+    }
+}
+{
+    "wallTime": 4719,
+    "cpuTime": 146,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494719711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494724950
+        }
+    ],
+    "eventTimestamp": 1795494720189,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494719711
+    }
+}
+{
+    "wallTime": 2641,
+    "cpuTime": 177,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494779711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494782883
+        }
+    ],
+    "eventTimestamp": 1795494780214,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494779711
+    }
+}
+{
+    "wallTime": 4265,
+    "cpuTime": 187,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494839711
+    },
+    "scriptVersion": {
+        "id": "940bafa4-9383-42cd-95bc-1dc8c45affbb"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494844359
+        }
+    ],
+    "eventTimestamp": 1795494840060,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494839711
+    }
+}
+{
+    "wallTime": 3894,
+    "cpuTime": 113,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494899711
+    },
+    "scriptVersion": {
+        "id": "ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494904122
+        }
+    ],
+    "eventTimestamp": 1795494900200,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494899711
+    }
+}
+{
+    "wallTime": 577,
+    "cpuTime": 131,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "scriptVersion": {
+        "id": "ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef"
+    },
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [],
+    "eventTimestamp": 1795494943836,
+    "event": {
+        "request": {
+            "url": "https://graft-ops/mint",
+            "method": "POST",
+            "headers": {
+                "content-type": "text/plain;charset=UTF-8"
+            }
+        },
+        "response": {
+            "status": 200
+        }
+    }
+}
+{
+    "wallTime": 4970,
+    "cpuTime": 112,
+    "truncated": false,
+    "executionModel": "stateless",
+    "outcome": "ok",
+    "tailAttributes": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494959711
+    },
+    "scriptVersion": {
+        "id": "ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef"
+    },
+    "entrypoint": "default",
+    "scriptName": "graft-m4a-ops",
+    "diagnosticsChannelEvents": [],
+    "exceptions": [],
+    "logs": [
+        {
+            "message": [
+                "graft-ops Idle"
+            ],
+            "level": "log",
+            "timestamp": 1795494965415
+        }
+    ],
+    "eventTimestamp": 1795494960414,
+    "event": {
+        "cron": "* * * * *",
+        "scheduledTime": 1795494959711
+    }
+}

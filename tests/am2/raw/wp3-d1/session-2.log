@@ -1,0 +1,4 @@
+2026-11-24T03:40:09Z
+22a2d2a3
+[mcp-sdk] SEP-2352: stored OAuth credential has no 'issuer' stamp (pre-upgrade storage or provider not round-tripping the value). SEP-2352 isolation is inactive for this read; ensure your provider round-trips the issuer field.
+{"client":"ts-v2","sdk":"@modelcontextprotocol/client 2.4.0","drop":false,"error":"Error: consent: 302 https://m4a.graftyard.dev/login/oauth/authorize?client_id=Iv1.0000000000380000&redirect_uri=https%3A%2F%2Fmcp.m4a.grafty ","mcpVersions":["044e4429-7bdf-4f52-ae51-ffbb0d237be1"],"consents":1,"tokenCalls":[],"codeRedemptions":0,"grantsListed":"unread: Error: host authorize: 404 Repository not found.\n","refreshToken":false}

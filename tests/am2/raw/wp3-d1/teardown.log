@@ -1,0 +1,16 @@
+2026-11-24T04:34:21Z
+22a2d2a3
+{"schedules":[]}
+graft-ops parked as ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef
+╰  SUCCESS  Deployed graft-m4a-ops version ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef at 100% (0.34 sec)
+{"schedules":[]}
+{"script":"graft-m4a-ops","created_on":"2026-11-24T04:34:33.089999Z","versions":["ac4cd9a5 100"]}
+Successfully deleted graft-m4a-front
+Successfully deleted graft-m4a-mcp
+Successfully deleted graft-m4a-mcp-aux
+{"delete":"graft-m4a-MCP_APP_KEY_A","ok":true}
+{"delete":"graft-m4a-INSIGHTS_APP_KEY_A","ok":true}
+{"delete":"graft-m4a-MCP_CLIENT_SECRET_A","ok":true}
+{"delete":"graft-m4a-MCP_SEAL_KEY_A","ok":true}
+{"revoke":"graft-m4a-wp3-deploy","ok":true}
+row token files shredded
