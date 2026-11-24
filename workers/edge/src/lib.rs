@@ -2288,8 +2288,8 @@ impl Ctx<'_> {
 
     /// A call to `graft-ops` over the `OPS` `fetch()` binding, with a version override while the cached view's
     /// `OpsPointer` pins it (`design/DESIGN.md`, Shape, `Pointers`; journey 7). `OPS_SCRIPT` names the script the
-    /// override header keys on. The edge reads the view only here and in the release endpoint, so only those requests
-    /// refresh it (`graftyard_lookup::view::ensure`).
+    /// override header keys on. The edge reads the view only here, in the release endpoint, and in `ssh::meta`, so only
+    /// those requests refresh it (`graftyard_lookup::view::ensure`).
     ///
     /// Each `/mint` answer counts in this isolate's `MintWatch` by the version that answered (`OPS_VERSION_HEADER`):
     /// once a running `OpsRoll`'s N+1 fails past `MINT_ERROR_RATIO`, the isolate submits the roll's pre-signed
@@ -4548,7 +4548,7 @@ async fn serve(
         return ssh::key(&c, &req).await;
     }
     if path == ssh::META_PATH && req.method() == Method::Get {
-        return ssh::meta(&c);
+        return ssh::meta(&c).await;
     }
     if path == release::ENTRIES_PATH {
         return release::entries(&c, &mut req).await;

@@ -28,8 +28,10 @@
 // `sshfront` container from `--ssh-image` (or, without it, an image built from containers/ssh); the Secrets Store
 // secrets `SSH_HOST_KEY_A` and `SSH_HOST_KEY_B` of that store are bound by the same names, which
 // deploy/ssh-front/hostkeys.mjs writes; and `--edge <script>` binds the edge as `EDGE` with props `{"ssh": true}`, the
-// only way a front's request reaches the edge as one. `--var SSH_HOST_KEY_ACTIVE=B` makes slot B the one key exchange
-// serves (a rotation).
+// only way a front's request reaches the edge as one. The slot key exchange serves is the `Release` view's
+// (`Rotate { SshHostKeys, slot }`), which `SshOutbound` reads through the script's own `SITE` binding, so a rotation
+// is no site day: write the idle slot with hostkeys.mjs, then the customer's `Rotate`, whose graft-ops probes every
+// site's `/ssh_slots`, waits `SSH_ANNOUNCE_FOR` (30 days) while every graft-sshd announces both slots, then switches.
 // A run without `--ssh` lists the account's Spectrum apps first and refuses while one has this install as its Worker
 // origin, since the new versions would turn SSH off on that hostname; `--ssh-off` turns it off on purpose
 // (`sshguard.mjs`).

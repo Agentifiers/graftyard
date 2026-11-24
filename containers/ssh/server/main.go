@@ -1,7 +1,7 @@
 // graft-sshd, the SSH front's server (design/DESIGN.md, Shape, "SSH front"; build/BUILD-PLAN.md, M6-WP2). It runs in the
 // `sshfront` container behind each site's `SshFront` Durable Object, which pipes it the sockets the edge's `connect()`
 // handler receives from the install's Spectrum app on port 22. It holds no repository, no git binary, and no secret
-// at rest: the host keys come from `keys.graft` at start, a client key is checked by asking the edge, and every git
+// at rest: the host keys come from `keys.graft` at start and every `refreshEvery` after, a client key is checked by asking the edge, and every git
 // request is the smart-HTTP request an HTTPS client makes, sent to the edge through `git.graft` with the verified key's
 // fingerprint, so a push over SSH takes the HTTPS write path (staging, validate, place, commit, report-status).
 // `keys.graft` and `git.graft` are outbound intercepts the object registers; they reach `SshOutbound` in the site
@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -43,17 +44,27 @@ const (
 	lookupBudget = 20 * time.Second
 	lookupTry    = 5 * time.Second
 	userAgent    = "git/graft-sshd"
+	// How often `keys.graft` is read again, so a slot written to Secrets Store is announced, and a `Rotate` switch
+	// committed on the `Release` group is served, within a minute with no restart [guess].
+	refreshEvery = 60 * time.Second
 	zeroID       = "0000000000000000000000000000000000000000"
 )
 
 type server struct {
 	keysURL, gitURL string
 	http            *http.Client
-	config          *ssh.ServerConfig
-	// Every host key of both slots, announced with `hostkeys-00@openssh.com` and proved on request.
-	announced []ssh.Signer
+	// The host keys a new connection gets; a refresh swaps the whole set, and a connection keeps the one it began with.
+	keys atomic.Pointer[hostSet]
 	// How long a key lookup is retried; a test shortens it.
 	lookupBudget time.Duration
+}
+
+// hostSet is one reading of `keys.graft`: the config whose host keys (the active slot's) serve key exchange, and
+// every host key of both slots, announced with `hostkeys-00@openssh.com` and proved on request.
+type hostSet struct {
+	active    string
+	config    *ssh.ServerConfig
+	announced []ssh.Signer
 }
 
 // hostKeys is `keys.graft`'s answer: each slot is the PEM text of its OpenSSH private keys (one Ed25519, one ECDSA
@@ -80,17 +91,27 @@ func parseSlot(text string) ([]ssh.Signer, error) {
 	}
 }
 
-// newServer builds the server from `keys.graft`'s answer: the active slot's keys serve key exchange, one per
-// algorithm, and both slots' keys are announced, so every replica serves the same fingerprints.
+// newServer builds the server from `keys.graft`'s answer (`hostSet`).
 func newServer(keysURL, gitURL string, keys hostKeys) (*server, error) {
 	s := &server{keysURL: keysURL, gitURL: strings.TrimSuffix(gitURL, "/"), http: &http.Client{}, lookupBudget: lookupBudget}
+	set, err := s.hostSet(keys)
+	if err != nil {
+		return nil, err
+	}
+	s.keys.Store(set)
+	return s, nil
+}
+
+// hostSet reads one answer: the active slot's keys serve key exchange, one per algorithm, and both slots' keys are
+// announced, so every replica serves the same fingerprints.
+func (s *server) hostSet(keys hostKeys) (*hostSet, error) {
 	active, err := parseSlot(keys.Slots[keys.Active])
 	if err != nil || len(active) == 0 {
 		return nil, fmt.Errorf("active host-key slot %q: %v (%d keys)", keys.Active, err, len(active))
 	}
-	s.config = &ssh.ServerConfig{ServerVersion: serverVersion, PublicKeyCallback: s.authenticate}
+	set := &hostSet{active: keys.Active, config: &ssh.ServerConfig{ServerVersion: serverVersion, PublicKeyCallback: s.authenticate}}
 	for _, k := range active {
-		s.config.AddHostKey(k)
+		set.config.AddHostKey(k)
 	}
 	seen := map[string]bool{}
 	for _, slot := range []string{"A", "B"} {
@@ -101,11 +122,11 @@ func newServer(keysURL, gitURL string, keys hostKeys) (*server, error) {
 		for _, k := range ks {
 			if b := string(k.PublicKey().Marshal()); !seen[b] {
 				seen[b] = true
-				s.announced = append(s.announced, k)
+				set.announced = append(set.announced, k)
 			}
 		}
 	}
-	return s, nil
+	return set, nil
 }
 
 // fetchKeys reads `keys.graft` until it answers: the object registers the intercept before it starts the container,
@@ -113,21 +134,56 @@ func newServer(keysURL, gitURL string, keys hostKeys) (*server, error) {
 func fetchKeys(keysURL string) (hostKeys, error) {
 	var last error
 	for end := time.Now().Add(60 * time.Second); time.Now().Before(end); time.Sleep(time.Second) {
-		c := &http.Client{Timeout: 5 * time.Second}
-		r, err := c.Get(keysURL + "/slots")
-		if err != nil {
-			last = err
-			continue
-		}
-		var k hostKeys
-		err = json.NewDecoder(r.Body).Decode(&k)
-		r.Body.Close()
-		if r.StatusCode == 200 && err == nil {
+		k, err := fetchKeysOnce(keysURL)
+		if err == nil {
 			return k, nil
 		}
-		last = fmt.Errorf("HTTP %d %v", r.StatusCode, err)
+		last = err
 	}
 	return hostKeys{}, fmt.Errorf("keys.graft did not answer in 60 s: %v", last)
+}
+
+// fetchKeysOnce makes one read of `keys.graft`; anything but a 200 with the answer is an error (a 503 while the site
+// has no `Release` view yet).
+func fetchKeysOnce(keysURL string) (hostKeys, error) {
+	c := &http.Client{Timeout: 5 * time.Second}
+	r, err := c.Get(keysURL + "/slots")
+	if err != nil {
+		return hostKeys{}, err
+	}
+	var k hostKeys
+	err = json.NewDecoder(r.Body).Decode(&k)
+	r.Body.Close()
+	if r.StatusCode != 200 || err != nil {
+		return hostKeys{}, fmt.Errorf("HTTP %d %v", r.StatusCode, err)
+	}
+	return k, nil
+}
+
+// refresh reads `keys.graft` once and swaps in its host keys for new connections; on any failure the current set
+// stays. A change of the active slot is logged.
+func (s *server) refresh() error {
+	k, err := fetchKeysOnce(s.keysURL)
+	if err != nil {
+		return err
+	}
+	set, err := s.hostSet(k)
+	if err != nil {
+		return err
+	}
+	if old := s.keys.Swap(set); old.active != set.active {
+		log.Printf("host-key slot %s active (was %s), %d host keys announced", set.active, old.active, len(set.announced))
+	}
+	return nil
+}
+
+// watch refreshes the host keys every `every`, one try per tick.
+func (s *server) watch(every time.Duration) {
+	for range time.Tick(every) {
+		if err := s.refresh(); err != nil {
+			log.Printf("host keys not refreshed, keeping the current set: %v", err)
+		}
+	}
 }
 
 var errRefused = errors.New("graft-sshd: key refused")
@@ -178,16 +234,17 @@ func (s *server) lookup(fp string) (int, error) {
 func (s *server) serve(nc net.Conn) {
 	start := time.Now()
 	nc.SetDeadline(start.Add(loginGrace))
-	conn, chans, reqs, err := ssh.NewServerConn(nc, s.config)
+	keys := s.keys.Load()
+	conn, chans, reqs, err := ssh.NewServerConn(nc, keys.config)
 	if err != nil {
 		nc.Close()
 		return
 	}
 	nc.SetDeadline(time.Time{})
 	defer conn.Close()
-	go s.globals(conn, reqs)
+	go s.globals(conn, keys, reqs)
 	go s.keepalive(conn)
-	s.announce(conn)
+	s.announce(conn, keys)
 	for nch := range chans {
 		if nch.ChannelType() != "session" {
 			nch.Reject(ssh.UnknownChannelType, "graft-sshd serves git sessions only")
@@ -210,9 +267,9 @@ func sshString(b []byte) []byte {
 
 // announce sends both slots' public keys (OpenSSH's PROTOCOL, "hostkeys-00@openssh.com"), so a client with
 // `UpdateHostKeys` learns the next slot before the rotation makes it active (BF-51).
-func (s *server) announce(conn *ssh.ServerConn) {
+func (s *server) announce(conn *ssh.ServerConn, keys *hostSet) {
 	var p []byte
-	for _, k := range s.announced {
+	for _, k := range keys.announced {
 		p = append(p, sshString(k.PublicKey().Marshal())...)
 	}
 	conn.SendRequest("hostkeys-00@openssh.com", false, p)
@@ -221,7 +278,7 @@ func (s *server) announce(conn *ssh.ServerConn) {
 // prove answers "hostkeys-prove-00@openssh.com": one signature per requested key over the request name, the session
 // identifier, and the key, by that key. An RSA key signs with the RSA algorithm key exchange negotiated, else
 // rsa-sha2-512, as OpenSSH's server does. A key the server did not announce refuses the request.
-func (s *server) prove(conn *ssh.ServerConn, payload []byte) ([]byte, bool) {
+func (s *server) prove(conn *ssh.ServerConn, keys *hostSet, payload []byte) ([]byte, bool) {
 	alg := ""
 	if a, ok := ssh.ConnMetadata(conn).(ssh.AlgorithmsConnMetadata); ok {
 		alg = a.Algorithms().HostKey
@@ -238,7 +295,7 @@ func (s *server) prove(conn *ssh.ServerConn, payload []byte) ([]byte, bool) {
 		blob := payload[4 : 4+n]
 		payload = payload[4+n:]
 		var key ssh.Signer
-		for _, k := range s.announced {
+		for _, k := range keys.announced {
 			if bytes.Equal(k.PublicKey().Marshal(), blob) {
 				key = k
 			}
@@ -267,10 +324,10 @@ func (s *server) prove(conn *ssh.ServerConn, payload []byte) ([]byte, bool) {
 	return out, true
 }
 
-func (s *server) globals(conn *ssh.ServerConn, reqs <-chan *ssh.Request) {
+func (s *server) globals(conn *ssh.ServerConn, keys *hostSet, reqs <-chan *ssh.Request) {
 	for r := range reqs {
 		if r.Type == "hostkeys-prove-00@openssh.com" {
-			p, ok := s.prove(conn, r.Payload)
+			p, ok := s.prove(conn, keys, r.Payload)
 			r.Reply(ok, p)
 		} else if r.WantReply {
 			r.Reply(false, nil)
@@ -696,7 +753,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("graft-sshd on %s: slot %s active, %d host keys announced", listen, keys.Active, len(s.announced))
+	log.Printf("graft-sshd on %s: slot %s active, %d host keys announced", listen, keys.Active, len(s.keys.Load().announced))
+	go s.watch(refreshEvery)
 	for {
 		c, err := l.Accept()
 		if err != nil {

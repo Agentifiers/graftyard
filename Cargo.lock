@@ -905,7 +905,9 @@ dependencies = [
  "futures-util",
  "graftyard-api",
  "graftyard-identity",
+ "graftyard-lookup",
  "graftyard-raft",
+ "graftyard-release",
  "graftyard-types",
  "graftyard-wire",
  "js-sys",
@@ -923,12 +925,16 @@ name = "graftyard-ops"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "base64",
  "crypto_box",
  "graftyard-identity",
  "graftyard-lookup",
+ "graftyard-raft",
  "graftyard-release",
  "graftyard-types",
  "js-sys",
+ "rand",
+ "rsa",
  "serde",
  "serde_json",
  "sha2",
@@ -986,6 +992,7 @@ name = "graftyard-site"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "base64",
  "futures-channel",
  "futures-util",
  "graftyard-actions",

@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -413,15 +414,123 @@ func TestHostKeysAnnounceAndProve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range again.announced {
-		if !bytes.Equal(again.announced[i].PublicKey().Marshal(), b.srv.announced[i].PublicKey().Marshal()) {
+	for i, k := range again.keys.Load().announced {
+		if !bytes.Equal(k.PublicKey().Marshal(), b.srv.keys.Load().announced[i].PublicKey().Marshal()) {
 			t.Fatal("two replicas from the same secrets announce different keys")
 		}
 	}
 	// After a rotation (slot B active), the keys a client learned from the announcement serve key exchange.
 	rotated, err := newServer("", "", hostKeys{Active: "B", Slots: b.slots.Slots})
-	if err != nil || len(rotated.announced) != 6 {
+	if err != nil || len(rotated.keys.Load().announced) != 6 {
 		t.Fatalf("rotated server: %v", err)
+	}
+}
+
+// hostKeyOf dials the server as a new connection, offering only `algo`, and answers the host key key exchange served
+// and the keys the server announced.
+func hostKeyOf(t *testing.T, b *bed, algo string) (ssh.PublicKey, [][]byte) {
+	t.Helper()
+	signer, _ := ssh.ParsePrivateKey(must(os.ReadFile(filepath.Join(b.dir, "id"))))
+	var got ssh.PublicKey
+	cfg := &ssh.ClientConfig{
+		User:              "git",
+		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyAlgorithms: []string{algo},
+		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			got = key
+			return nil
+		},
+	}
+	nc, err := net.Dial("tcp", b.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, _, reqs, err := ssh.NewClientConn(nc, b.addr, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var announced [][]byte
+	select {
+	case r := <-reqs:
+		for p := r.Payload; len(p) > 0; {
+			n := binary.BigEndian.Uint32(p)
+			announced = append(announced, p[4:4+n])
+			p = p[4+n:]
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no hostkeys-00 announcement")
+	}
+	go ssh.DiscardRequests(reqs)
+	return got, announced
+}
+
+// A `Rotate { SshHostKeys }` switch with no restart: once `keys.graft` names slot B and a refresh reads it, a new
+// connection's key exchange serves slot B's keys, and both slots stay announced. A failed read keeps the set in use,
+// and a slot written to Secrets Store later is announced after the next refresh.
+func TestRefreshServesTheSwitchedSlot(t *testing.T) {
+	b := newBed(t)
+	var mu sync.Mutex
+	answer, status := hostKeys{Active: "A", Slots: map[string]string{"A": b.slots.Slots["A"], "B": ""}}, 200
+	keys := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path != "/slots" || status != 200 {
+			http.Error(w, "no Release view yet", status)
+			return
+		}
+		json.NewEncoder(w).Encode(answer)
+	}))
+	t.Cleanup(keys.Close)
+	b.srv.keysURL = keys.URL
+	set := func(a hostKeys, code int) {
+		mu.Lock()
+		answer, status = a, code
+		mu.Unlock()
+	}
+	slotA, _ := parseSlot(b.slots.Slots["A"])
+	slotB, _ := parseSlot(b.slots.Slots["B"])
+
+	// Slot B not yet written: only A's 3 keys are announced after a refresh.
+	if err := b.srv.refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ann := hostKeyOf(t, b, ssh.KeyAlgoED25519); len(ann) != 3 {
+		t.Fatalf("announced %d keys with slot B empty, want 3", len(ann))
+	}
+	// Slot B written: announced within a refresh, still served from A.
+	set(hostKeys{Active: "A", Slots: b.slots.Slots}, 200)
+	if err := b.srv.refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if got, ann := hostKeyOf(t, b, ssh.KeyAlgoED25519); !bytes.Equal(got.Marshal(), slotA[0].PublicKey().Marshal()) || len(ann) != 6 {
+		t.Fatalf("before the switch: served %s, announced %d", ssh.FingerprintSHA256(got), len(ann))
+	}
+	// The switch: slot B serves key exchange for each algorithm, and both slots are still announced.
+	set(hostKeys{Active: "B", Slots: b.slots.Slots}, 200)
+	if err := b.srv.refresh(); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range slotB {
+		got, ann := hostKeyOf(t, b, hostAlgo(k.PublicKey()))
+		if !bytes.Equal(got.Marshal(), k.PublicKey().Marshal()) {
+			t.Fatalf("after the switch key exchange served %s, not slot B's %s", ssh.FingerprintSHA256(got), k.PublicKey().Type())
+		}
+		if len(ann) != 6 {
+			t.Fatalf("after the switch announced %d keys, want 6", len(ann))
+		}
+	}
+	// keys.graft fails (503) or names a slot with no keys: the refresh errs and slot B keeps serving.
+	set(hostKeys{}, 503)
+	if err := b.srv.refresh(); err == nil {
+		t.Fatal("a 503 refreshed")
+	}
+	set(hostKeys{Active: "A", Slots: map[string]string{"B": b.slots.Slots["B"]}}, 200)
+	if err := b.srv.refresh(); err == nil {
+		t.Fatal("an empty active slot refreshed")
+	}
+	if got, _ := hostKeyOf(t, b, ssh.KeyAlgoED25519); !bytes.Equal(got.Marshal(), slotB[0].PublicKey().Marshal()) {
+		t.Fatal("a failed refresh changed the served keys")
 	}
 }
 

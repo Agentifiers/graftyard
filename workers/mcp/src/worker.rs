@@ -5,9 +5,20 @@
 //!   it, so an undo that pins the edge pins `graft-mcp`'s calls too.
 //! - `VERSION`, the version metadata binding: a request from `graft-front` (`x-graftyard-front`) gets the version that
 //!   ran as `x-graftyard-mcp-version`, which `graft-front` checks against `Pointers.mcp`.
-//! - `MCP_CLIENT_SECRET` and `MCP_SEAL_KEY`, Secrets Store bindings of the secrets `graftyard apps init` stored in the
-//!   install's store (`MCP_CLIENT_SECRET_A` and `MCP_SEAL_KEY_A`, `cli/src/apps.rs`), and `MCP_SEAL_KEY_OLD`,
-//!   optional, bound to the slot a rotation retired, which still opens what it sealed.
+//! - `MCP_CLIENT_SECRET_0` and `MCP_CLIENT_SECRET_1`, Secrets Store bindings of the client secret's two slots
+//!   (`MCP_CLIENT_SECRET_A`, which `graftyard apps init` stored in the install's store, `cli/src/apps.rs`, and
+//!   `MCP_CLIENT_SECRET_B`, bound once a rotation has stored it). Each request reads the slot of
+//!   `SecretName::McpClientSecret` that its cached `Release` view holds (`crate::client_secret_bindings`), so a
+//!   `Rotate { McpClientSecret, slot }` switch committed on the `Release` group changes the secret with no new script
+//!   version (OPEN-QUESTIONS R45). Slot 0 falls back to `MCP_CLIENT_SECRET`, the one binding of a version deployed
+//!   before the slots.
+//! - `MCP_SEAL_KEY`, the Secrets Store binding of `MCP_SEAL_KEY_A`, and `MCP_SEAL_KEY_OLD`, optional, bound to the slot
+//!   a seal-key rotation retired, which still opens what it sealed.
+//! - The view: `MEMBER_<n>` and `REGISTRY_<n>` per site and the variables `GRAFTYARD_SITES`, `GRAFTYARD_INSTALL`, and
+//!   `GRAFTYARD_CUSTOMER_KEY`, as `graft-front` binds them. One `graftyard_lookup::view` replica per isolate, read from
+//!   any `Release` member and checked against the trust anchor; no request path calls the Cloudflare API. While those
+//!   variables are set and the view holds no entries yet, the script answers 503, since a guessed slot could pick a
+//!   secret the App no longer lists. Without them the client secret is slot 0.
 //! - Variables `MCP_CLIENT_ID` (`Graftyard MCP`'s client id), `MCP_ORIGIN` (`https://mcp.<host>`), `HOST_ORIGIN`
 //!   (`https://<host>`), and `DENY_ZONES` (comma-separated: the install's own zones, which a CIMD URL may not name).
 //!
@@ -18,6 +29,9 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use futures_util::StreamExt as _;
+use graftyard_lookup::{Bindings, view};
+use graftyard_release::{Anchor, SecretName};
+use graftyard_types::SiteTable;
 use worker::*;
 
 use crate::flow::{self, Req, Resp};
@@ -160,12 +174,34 @@ impl flow::Env for Live {
     }
 }
 
-async fn live(env: Env, req: &Request) -> Result<Live> {
+/// The client secret in the slot this isolate's `Release` view names (`crate::client_secret_bindings`).
+async fn client_secret(env: &Env, ctx: &Context) -> Result<String> {
+    let vars = (env.var("GRAFTYARD_SITES"), env.var("GRAFTYARD_INSTALL"), env.var("GRAFTYARD_CUSTOMER_KEY"));
+    let (members, slot) = match vars {
+        (Ok(sites), Ok(install), Ok(customer)) => {
+            let sites: SiteTable = serde_json::from_str(&sites.to_string())?;
+            let anchor = Anchor::from_vars(&install.to_string(), &customer.to_string())
+                .map_err(|e| Error::RustError(e.to_string()))?;
+            view::ensure(&Bindings { env, sites: &sites }, &anchor, Some(ctx)).await;
+            (true, view::with(|r| (r.count() > 0).then(|| r.fold.slot(SecretName::McpClientSecret))))
+        }
+        _ => (false, None),
+    };
+    let names = crate::client_secret_bindings(members, slot).map_err(|e| Error::RustError(e.into()))?;
+    for name in names {
+        if let Some(s) = secret(env, name).await? {
+            return Ok(s);
+        }
+    }
+    Err(Error::RustError(format!("no client secret in {}", names.join(" or "))))
+}
+
+async fn live(env: Env, req: &Request, ctx: &Context) -> Result<Live> {
     let key = |s: Option<String>| s.as_deref().and_then(Sealer::key_from_hex);
     let mut keys: Vec<[u8; 32]> = key(secret(&env, "MCP_SEAL_KEY").await?).into_iter().collect();
     keys.extend(key(secret(&env, "MCP_SEAL_KEY_OLD").await?));
     let sealer = Sealer::new(keys).ok_or_else(|| Error::RustError("MCP_SEAL_KEY is not 64 hex characters".into()))?;
-    let secret = secret(&env, "MCP_CLIENT_SECRET").await?.ok_or_else(|| Error::RustError("no client secret".into()))?;
+    let secret = client_secret(&env, ctx).await?;
     Ok(Live {
         origin: var(&env, "MCP_ORIGIN")?,
         host: var(&env, "HOST_ORIGIN")?,
@@ -179,10 +215,11 @@ async fn live(env: Env, req: &Request) -> Result<Live> {
 }
 
 #[event(fetch)]
-async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    let host = match live(env, &req).await {
+async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
+    let host = match live(env, &req, &ctx).await {
         Ok(h) => h,
         // A missing or bad secret stops new sessions; nothing else is served without it (Failure modes, bad-config).
+        // So does a bound `Release` view with no entries yet.
         Err(e) => return Response::error(format!("graft-mcp is not configured: {e}"), 503),
     };
     let url = req.url()?;

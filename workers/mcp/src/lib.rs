@@ -370,6 +370,21 @@ pub fn redirect_hosts(doc: &CimdDoc) -> (Vec<String>, bool) {
     (hosts, local)
 }
 
+/// The Secrets Store bindings that hold `Graftyard MCP`'s client secret, in the order to read them, for whether the
+/// `Release` members are bound (`GRAFTYARD_SITES`, `GRAFTYARD_INSTALL`, `GRAFTYARD_CUSTOMER_KEY`) and the active slot of
+/// `SecretName::McpClientSecret` the view holds (`None` while the view has no entries). Without the members the slot
+/// is 0. Slot 0 falls back to the unslotted `MCP_CLIENT_SECRET`, the binding of a version deployed before the slots
+/// (as `graft-ops`' `slot_value` does). A bound view with no entries is an error, not slot 0: a guessed slot could pick
+/// a secret the App no longer lists (OPEN-QUESTIONS R45).
+pub fn client_secret_bindings(members: bool, slot: Option<u8>) -> Result<&'static [&'static str], &'static str> {
+    match (members, slot) {
+        (false, _) | (true, Some(0)) => Ok(&["MCP_CLIENT_SECRET_0", "MCP_CLIENT_SECRET"]),
+        (true, Some(1)) => Ok(&["MCP_CLIENT_SECRET_1"]),
+        (true, Some(_)) => Err("McpClientSecret: the Release view names a slot other than 0 or 1"),
+        (true, None) => Err("McpClientSecret: no Release view yet"),
+    }
+}
+
 /// The repositories a consent names: 1 to `REPOS_MAX` `owner/name`s, all of one owner.
 pub fn parse_repos(s: &str) -> Option<Vec<String>> {
     let ok = |p: &str| {
@@ -380,4 +395,26 @@ pub fn parse_repos(s: &str) -> Option<Vec<String>> {
     let fine = repos.len() <= REPOS_MAX
         && repos.iter().all(|r| r.split_once('/').is_some_and(|(o, n)| o == owner && ok(o) && ok(n)));
     fine.then_some(repos)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::client_secret_bindings;
+
+    #[test]
+    fn r45_the_client_secret_follows_the_view_s_slot() {
+        assert_eq!(client_secret_bindings(true, Some(1)), Ok(&["MCP_CLIENT_SECRET_1"][..]));
+        assert_eq!(client_secret_bindings(true, Some(0)), Ok(&["MCP_CLIENT_SECRET_0", "MCP_CLIENT_SECRET"][..]));
+        assert!(client_secret_bindings(true, Some(2)).is_err());
+    }
+
+    #[test]
+    fn r45_without_members_the_client_secret_is_slot_0_with_the_unslotted_fallback() {
+        assert_eq!(client_secret_bindings(false, None), Ok(&["MCP_CLIENT_SECRET_0", "MCP_CLIENT_SECRET"][..]));
+    }
+
+    #[test]
+    fn r45_members_bound_with_no_view_yet_is_an_error() {
+        assert!(client_secret_bindings(true, None).is_err());
+    }
 }

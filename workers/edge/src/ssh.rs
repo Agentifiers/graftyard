@@ -10,7 +10,8 @@
 //!   `GET /_graftyard/ssh/key` and git's smart-HTTP routes. A public request has no props, so the header means nothing
 //!   on it. A push then takes the HTTPS path whole, with `Credential::Ssh` (format 32.26), and its leader re-reads the
 //!   key's `Tokens` row once per entry, so a removed key refuses every command decided after the removal (BF-52).
-//! - `GET /api/graftyard/v1/meta/ssh` lists both host-key slots from `SSH_HOST_KEYS`, which the deploy writes (BF-51).
+//! - `GET /api/graftyard/v1/meta/ssh` lists both host-key slots as the sites' registries read them from Secrets Store,
+//!   and the active one from the `Release` view, so a rotation needs no new edge version (BF-46, BF-51).
 //! - `DELETE /user/keys/{id}` (GHES's "Delete a public SSH key") removes the key's `Tokens` row, then its listing.
 
 use graftyard_identity::{Actor, Credential, Fingerprint, Principal, ScopeSet, UserId, fingerprint_shard};
@@ -87,14 +88,72 @@ pub async fn key(c: &Ctx<'_>, req: &Request) -> Result<Response> {
     }
 }
 
+/// How long an isolate keeps the host-key slots a site's registry answered [guess]: a slot written to Secrets Store is
+/// listed within a minute, as `graft-sshd` announces it.
+const SLOTS_FOR_MS: u64 = 60_000;
+
+thread_local! {
+    /// This isolate's host-key slots from a site's registry, and when they were read (`site_slots`).
+    static SLOTS: std::cell::RefCell<Option<(u64, Value)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Both slots' public keys, `{"A": [...], "B": [...]}`, from the `ssh` registry object of the first active site that
+/// answers with any key (`/ssh_slots`, which reads that site's Secrets Store bindings), kept `SLOTS_FOR_MS`.
+async fn site_slots(c: &Ctx<'_>) -> Option<Value> {
+    let now = graftyard_lookup::now_ms();
+    let kept = SLOTS.with(|s| s.borrow().as_ref().filter(|(at, _)| now < at + SLOTS_FOR_MS).map(|(_, v)| v.clone()));
+    if kept.is_some() {
+        return kept;
+    }
+    let b = c.bindings();
+    for site in c.sites.0.iter().filter(|s| !s.spare) {
+        let Ok(stub) = b.registry(site.id, "ssh") else { continue };
+        let call = async {
+            let mut r = stub.fetch_with_str("https://registry/ssh_slots").await.ok()?;
+            if r.status_code() != 200 {
+                return None;
+            }
+            r.json::<Value>().await.ok()
+        };
+        let Some(Some(v)) = graftyard_lookup::within(graftyard_lookup::CALL, call).await else { continue };
+        let listed = |slot: &str| v[slot].as_array().map(Vec::len);
+        // A site whose bindings hold no key (an unbound store) is passed over.
+        if let (Some(a), Some(b)) = (listed("A"), listed("B"))
+            && a + b > 0
+        {
+            SLOTS.with(|s| *s.borrow_mut() = Some((now, v.clone())));
+            return Some(v);
+        }
+    }
+    None
+}
+
 /// `GET /api/graftyard/v1/meta/ssh`: both host-key slots, `{"active", "slots": {"A": [...], "B": [...]}}`, each key's
-/// type, public key, and SHA-256 fingerprint, as the deploy wrote them; 404 where the install has SSH off.
-pub fn meta(c: &Ctx<'_>) -> Result<Response> {
-    let keys = c.env.var("SSH_HOST_KEYS").ok().map(|v| v.to_string()).filter(|_| c.cfg.ssh_option);
-    let Some(keys) = keys else { return crate::text(c.rid, 404, "SSH is off on this install\n") };
+/// type, public key, and SHA-256 fingerprint. The slots are a site's (`site_slots`), or `SSH_HOST_KEYS`, which the
+/// deploy writes, when no site answers; `active` is the `Release` view's `SshHostKeys` slot, or `SSH_HOST_KEYS`' own
+/// while the view holds no entry. 404 where the install has SSH off.
+pub async fn meta(c: &Ctx<'_>) -> Result<Response> {
+    if !c.cfg.ssh_option {
+        return crate::text(c.rid, 404, "SSH is off on this install\n");
+    }
+    let var: Option<Value> = c.env.var("SSH_HOST_KEYS").ok().and_then(|v| serde_json::from_str(&v.to_string()).ok());
+    let Some(slots) = site_slots(c).await.or_else(|| var.as_ref().map(|v| v["slots"].clone())) else {
+        return crate::text(c.rid, 503, "no site listed the SSH host keys; retry\n");
+    };
+    if let Some(a) = &c.anchor {
+        graftyard_lookup::view::ensure(&c.bindings(), a, Some(c.ctx)).await;
+    }
+    let viewed = graftyard_lookup::view::with(|r| {
+        (r.count() > 0).then(|| r.fold.slot(graftyard_release::SecretName::SshHostKeys))
+    });
+    let active = match viewed {
+        Some(0) => json!("A"),
+        Some(_) => json!("B"),
+        None => var.as_ref().and_then(|v| v.get("active").cloned()).unwrap_or(json!("A")),
+    };
     let h = crate::headers(c.rid)?;
     h.set("content-type", "application/json; charset=utf-8")?;
-    Ok(Response::ok(keys)?.with_headers(h))
+    Ok(Response::ok(json!({ "active": active, "slots": slots }).to_string())?.with_headers(h))
 }
 
 /// `DELETE /user/keys/{id}`: the caller's key with that id (`keys::key_id`) is removed on its `fingerprint_shard`, the

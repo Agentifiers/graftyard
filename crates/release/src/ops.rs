@@ -54,6 +54,9 @@ pub struct Dwell {
     /// A `MintWrapKey` `Rotate`'s wait between publish and switch: `ROTATE_PUBLISHED_FOR`, lowered only by a
     /// test-faults `graft-ops` (`OPS_ROTATE_PUBLISHED_MS`).
     pub rotate_published: u64,
+    /// An `SshHostKeys` `Rotate`'s wait between its probe and switch: `SSH_ANNOUNCE_FOR`, lowered only by a test-faults
+    /// `graft-ops` (`OPS_SSH_ANNOUNCE_MS`).
+    pub ssh_announce: u64,
     /// How long a registered lifeboat may send no `LifeboatDecoder` before `graft-ops` pages: `LIFEBOAT_SILENT`,
     /// lowered only by a test-faults `graft-ops` (`OPS_LIFEBOAT_SILENT_MS`), so BF-53 reads the alarm in hours.
     pub lifeboat_silent: u64,
@@ -65,6 +68,7 @@ impl Default for Dwell {
             step: STEP_DWELL,
             first_day: FIRST_DAY,
             rotate_published: ROTATE_PUBLISHED_FOR,
+            ssh_announce: SSH_ANNOUNCE_FOR,
             lifeboat_silent: LIFEBOAT_SILENT,
         }
     }
@@ -181,10 +185,13 @@ pub enum Action {
 /// one installation-token lifetime, `graftyard_identity::stateless::INSTALLATION_TOKEN_TTL`, so every edge has read
 /// the row (`rotation_step`). `workers/ops`'s tests hold the two equal.
 pub const ROTATE_PUBLISHED_FOR: u64 = 3_600_000;
+/// How long every `graft-sshd` announces a new `SshHostKeys` slot before it serves key exchange, so `UpdateHostKeys`
+/// clients have learned it (\"Install operations\", Rotation runbook) [guess].
+pub const SSH_ANNOUNCE_FOR: u64 = 30 * 24 * 3_600_000;
 
 /// A `Rotate`'s next action (`group::rotate_steps`). An `Abort` of one moves nothing, so it ends at once and leaves the
 /// slot the last switch chose.
-fn rotate_next(fold: &ReleaseFold, c: &Current, secret: SecretName, slot: u8, w: &World, published: u64) -> Action {
+fn rotate_next(fold: &ReleaseFold, c: &Current, secret: SecretName, slot: u8, w: &World, dwell: &Dwell) -> Action {
     let id = c.intent.id;
     let done = Action::Commit { body: ReleaseEntry::IntentDone { intent: id }, signer: Signer::Executor };
     if !matches!(c.state, IntentState::Running { .. }) {
@@ -205,9 +212,10 @@ fn rotate_next(fold: &ReleaseFold, c: &Current, secret: SecretName, slot: u8, w:
         None => done,
         Some(RotateStep::Switch) => Action::Commit { body: step, signer: Signer::Executor },
         Some(RotateStep::Wait) => {
-            let until = Timestamp(c.since.0.saturating_add(published));
+            let wait = if secret == SecretName::SshHostKeys { dwell.ssh_announce } else { dwell.rotate_published };
+            let until = Timestamp(c.since.0.saturating_add(wait));
             if w.now < until {
-                Action::Wait { until: Some(until), why: format!("{secret:?}'s new key is published").into() }
+                Action::Wait { until: Some(until), why: format!("{secret:?}'s new slot is announced").into() }
             } else {
                 Action::Commit { body: step, signer: Signer::Executor }
             }
@@ -460,7 +468,7 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
         return Action::Idle;
     }
     if let Intent::Rotate { secret, slot } = c.intent.intent {
-        return rotate_next(fold, c, secret, slot, w, dwell.rotate_published);
+        return rotate_next(fold, c, secret, slot, w, &dwell);
     }
     let id = c.intent.id;
     let steps = match steps(fold, c, dwell) {

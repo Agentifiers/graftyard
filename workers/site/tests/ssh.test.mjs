@@ -94,20 +94,49 @@ test("a version with no ssh image refuses to start and says why", async () => {
   await assert.rejects(ssh.open(f.o, 0), /no image "ssh"/);
 });
 
+// The script's own `SITE` binding, whose `/_graftyard/ssh/active` answers `status` with the `Release` view's slot.
+function site(active, status = 200) {
+  const calls = [];
+  return {
+    calls,
+    async fetch(url) {
+      calls.push(String(url));
+      return status === 200 ? Response.json({ active }) : new Response("no Release view yet", { status });
+    },
+  };
+}
+
 test("SshOutbound serves the host-key slots on keys.graft and forwards git.graft to EDGE only", async () => {
   const env = {
     SSH_HOST_KEY_A: { get: async () => "A-PEM" },
     SSH_HOST_KEY_B: { get: async () => "B-PEM" },
-    SSH_HOST_KEY_ACTIVE: "B",
+    SITE: site("A"),
     EDGE: { fetch: async (r) => new Response(`edge saw ${new URL(r.url).pathname}${new URL(r.url).search} ${r.headers.get("x-graftyard-ssh-key")}`) },
   };
   const keys = await ssh.outbound({ host: "keys" }, env, new Request("http://keys.graft/slots"));
-  assert.deepEqual(await keys.json(), { active: "B", slots: { A: "A-PEM", B: "B-PEM" } });
+  assert.deepEqual(await keys.json(), { active: "A", slots: { A: "A-PEM", B: "B-PEM" } });
+  assert.deepEqual(env.SITE.calls, ["https://site/_graftyard/ssh/active"]);
   assert.equal((await ssh.outbound({ host: "keys" }, env, new Request("http://keys.graft/other"))).status, 404);
   const req = new Request("http://git.graft/o/r.git/info/refs?service=git-upload-pack", { headers: { "x-graftyard-ssh-key": "ab" } });
   assert.equal(await (await ssh.outbound({ host: "git" }, env, req)).text(), "edge saw /o/r.git/info/refs?service=git-upload-pack ab");
   assert.equal((await ssh.outbound({}, env, new Request("http://elsewhere/"))).status, 403);
   assert.equal((await ssh.outbound({ host: "git" }, { ...env, EDGE: undefined }, req)).status, 503);
+});
+
+test("keys.graft's active slot is the Release view's: slot B after a Rotate switch, with no variable", async () => {
+  const env = { SSH_HOST_KEY_A: { get: async () => "A-PEM" }, SSH_HOST_KEY_B: { get: async () => "B-PEM" }, SITE: site("B") };
+  const keys = await ssh.outbound({ host: "keys" }, env, new Request("http://keys.graft/slots"));
+  assert.equal(keys.status, 200);
+  assert.deepEqual(await keys.json(), { active: "B", slots: { A: "A-PEM", B: "B-PEM" } });
+});
+
+test("keys.graft answers 503 while the active slot is unknown, so graft-sshd retries rather than guess", async () => {
+  const keysEnv = { SSH_HOST_KEY_A: { get: async () => "A-PEM" }, SSH_HOST_KEY_B: { get: async () => "B-PEM" } };
+  const req = () => new Request("http://keys.graft/slots");
+  // The view has no entries yet.
+  assert.equal((await ssh.outbound({ host: "keys" }, { ...keysEnv, SITE: site(null, 503) }, req())).status, 503);
+  // No `SITE` binding.
+  assert.equal((await ssh.outbound({ host: "keys" }, keysEnv, req())).status, 503);
 });
 
 // When the platform stops the container after its last session, from the session's end: the object goes inactive

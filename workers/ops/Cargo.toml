@@ -24,6 +24,10 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 # with each owner's X25519 `SealKey`. No default features, so it builds for wasm32; the Worker supplies randomness.
 crypto_box = { version = "0.9", default-features = false, features = ["alloc", "rand_core", "salsa20", "seal"] }
 graftyard-identity = { path = "../../crates/identity" }
+# The `McpAppKey` and `InsightsAppKey` `Rotate` probes (`app_lists`): the PEM private key's public half as DER SPKI.
+# No default features, so it builds for wasm32; PEM is stripped with `base64`, not rsa's `pem` feature.
+rsa = { version = "0.9", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 # `RotateStep` for `rotate_command`, native and wasm32 (M5-WP6).
 graftyard-release = { path = "../../crates/release" }
 graftyard-types.workspace = true
@@ -37,4 +41,10 @@ web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Crypto", "F
 # lookup. Only the Worker build runs it.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 graftyard-lookup = { path = "../../crates/lookup" }
+# Decodes the install account's `Authz` fold for the App-key `Rotate` probes.
+graftyard-raft = { path = "../../crates/raft" }
 sha2.workspace = true
+
+[dev-dependencies]
+# Test RSA keys for `app_lists`, from a seeded generator.
+rand = "0.8"

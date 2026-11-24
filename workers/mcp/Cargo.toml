@@ -23,6 +23,9 @@ url = "2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-util = { version = "0.3", default-features = false }
+graftyard-lookup = { path = "../../crates/lookup" }
+graftyard-release = { path = "../../crates/release" }
+graftyard-types.workspace = true
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["AbortSignal", "Crypto"] }
 worker.workspace = true

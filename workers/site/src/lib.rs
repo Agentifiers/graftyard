@@ -138,8 +138,8 @@ impl SiteEnv {
 }
 
 /// No public route: `workers_dev` and preview URLs are off, so only this script's own `SITE` binding reaches the handler,
-/// with a `PrSync` first attempt (`prsync::in_band`) or an archive promotion (`archive::in_band`). Anything else is
-/// refused.
+/// with a `PrSync` first attempt (`prsync::in_band`), an archive promotion (`archive::in_band`), or the SSH front's
+/// host-key slot (`SSH_ACTIVE_PATH`). Anything else is refused.
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if site_down(&env) {
@@ -151,7 +151,35 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if req.method() == Method::Post && req.path() == archive::PROMOTE_PATH {
         return archive::promote_handled(req, env, &ctx).await;
     }
+    if req.method() == Method::Get && req.path() == SSH_ACTIVE_PATH {
+        return ssh_active(&env, &ctx).await;
+    }
     Response::error("not found", 404)
+}
+
+/// The SSH front's host-key slot that key exchange serves, which `SshOutbound` (`ssh.mjs`) reads for `keys.graft`.
+const SSH_ACTIVE_PATH: &str = "/_graftyard/ssh/active";
+
+/// `GET /_graftyard/ssh/active`: `{"active": "A" | "B"}`, the `Release` view's slot of `SshHostKeys` (0 is A, 1 is
+/// B), so a committed `Rotate { SshHostKeys, slot }` switch is served with no new script version. A view with no
+/// entries yet answers 503, since a guessed slot would serve the wrong keys; a script with no anchor runs no `Release`
+/// group and answers slot 0, the fold's default.
+async fn ssh_active(env: &Env, ctx: &Context) -> Result<Response> {
+    let slot = match release::anchor(env) {
+        None => Some(0),
+        Some(anchor) => {
+            let site = SiteEnv::read(env)?;
+            graftyard_lookup::view::ensure(&graftyard_lookup::Bindings { env, sites: &site.sites }, &anchor, Some(ctx))
+                .await;
+            graftyard_lookup::view::with(|r| {
+                (r.count() > 0).then(|| r.fold.slot(graftyard_release::SecretName::SshHostKeys))
+            })
+        }
+    };
+    match slot {
+        Some(s) => Response::from_json(&serde_json::json!({ "active": if s == 0 { "A" } else { "B" } })),
+        None => Response::error("SshHostKeys: no Release view yet", 503),
+    }
 }
 
 /// The site's Cron Trigger: the pack sweeper (`crate::sweep`), then the fold audit (`crate::fold_audit`). Reports go to the
