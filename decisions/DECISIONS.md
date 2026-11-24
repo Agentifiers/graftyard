@@ -9972,6 +9972,16 @@ with over 300 ms of bound at their first send, against 29 that committed [infere
 - **Revisit the hedge** if the home's one-try validates over 1.5 s stay above 5% with pool 429s near zero. That means
   the slow tail is git work after all.
 
+**Settle reading (B0-33 clA, 2026-11-24, `graft-m2b`, main `daa4dcc2`; `tests/am1/results/b033-closing.md`).**
+- **Moved validates that ended ok: 337 of 1,919 (18%),** against h1A's 29 of 1,010 (3%) on main `dc880f1d` without
+  it. h2A read 7 of 28 and h3A 362 of 839 on the same build as h1A. A validate is moved when `validate_tries` is 2 or
+  more.
+- Agent ok pushes were 8,741 against h1A's 9,295, with 1,919 validates moved against 1,010, so the first flip is not
+  met on this reading. 2,045 of clA's 4,774 `full`s were still `bound_at_send` against h1A's 3,225 of 4,211.
+- Git cache busy (a validate 429 seen by a1) was 284 against h1A's 0. Validates by site: 86.2%, 13.0% and 0.9%.
+- A moved validate's own time fell to p50 1,194 ms (p90 3,927), against h1A's p50 4,917 ms (p90 6,606), consistent with
+  the gate refusing a queue that will not drain instead of holding it 2 s [inference].
+
 ### `readindex-batch`: the read-index confirm is already batched; ack riding (B) and region asks (F) priced, not built, pushed grants (P) rejected, 2026-11-23
 
 **Status.** Ruled by the lead on 2026-11-23 from `tests/am1/results/readindex-batch.md`. Not built. Figures for m3fg3
