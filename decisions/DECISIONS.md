@@ -3488,6 +3488,31 @@ Evidence:
 
 **Flip.** A planted ack fault that the bound misses at 10% with 1,000 or more N+1 answers: then lower the margin or the z, or judge over the whole step's dwell.
 
+#### `gate-pool`: a site day's 1% and 10% steps share one `STEP_MIN_ENTRIES` floor (2026-11-24)
+
+**Status.** Code-only, not deployed; `ops::next` and `Exec::gate` run in `graft-ops`, so it ships on an ops deploy. Answers R38's 1% case in code (`decisions/OPEN-QUESTIONS.md`), as the lead chose.
+
+**Decision.**
+- A site day's 1% step that is `Starved` after its dwell commits its `IntentStep` without a page. Every other gated step with a dwell still dwells up to twice `STEP_DWELL` and then pages.
+- The 10% step that follows it counts N+1 and N from the 1% step's start (`gate::window_start`, from `Current::before`, the previous step's start), so the 10% gate judges both steps' entries against one floor.
+- Only the floor is pooled. `judge_site` still runs at 1%, and a breach there (exceptions, `STEP_DOWN`, or a share rule once N+1 has the floor) runs the pre-signed `Rollback` as at any step.
+- An undo, `Resume` or `Abort` sets `before` to its own time with `since`, so no window reaches back past it.
+
+**Why.** At 1% the N+1 members are about 1% of a site's member objects, because a gradual deployment assigns versions per Durable Object, and most of those carry almost no traffic. Check rows 2 and 4 saw 0 N+1 entries for the first 5 minutes at 1% at any load, and row 4's 12-minute 1% reached 589 entries at 1x to 2x and passed only on `OPS_STEP_MIN_ENTRIES`. Without the override, every quiet install's site day pages at 1% with nothing wrong.
+
+**Beat.**
+- Skipping or merging the 1% step below a traffic floor. It takes away the 1% step's protection from the low-traffic installs that need it most.
+- A lower floor at 1% scaled by the site's entry rate. One slow entry in a few dozen reads over 2%, so the share rules would breach on chance, which `gate-relative`'s floor exists to stop.
+- Version-keyed probes on a canary group. That would be invented traffic, and it needs a new path on every member.
+
+**Evidence.**
+- `sitedays.rs`, `a_starved_1pct_step_pools_its_floor_into_10pct_which_dwells_twice_its_dwell_then_pages`: a 1% step `Starved` at 10 entries waits its dwell and then commits; the 10% step's window starts at the 1% step's start, and the 50% step's at its own; a `Starved` 10% waits to twice its dwell and pages; a breach at 1% under the floor returns the `Rollback`. On main the 1% step waits and pages instead.
+- `tests/m0carried/plant114.py`: 5 of 5 caught. plant82's mutant 24 and plant98 are still caught.
+
+**Flip.**
+- A hosted 10% step on the real floor that is still `Starved` at twice its dwell on an install whose 1% and 10% together carry 1,000 entries: the window does not reach back, so check `before`.
+- A regression that shows only in the 1% step's members and passes because 10%'s entries dilute it: then judge 1% on its own once it has the floor, and pool only when it does not.
+
 #### `drain-budget`: a missed call deadline is budgeted at 1 in 100, drained at 5 x over 5 minutes, and calm under 2 x over 15 minutes (2026-11-23)
 
 **Status.** Code-only, not deployed; the thresholds live in `graft-ops`, so they ship on an ops deploy. R41 stays open: the values come from one install.

@@ -438,9 +438,12 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
                 if w.now < until {
                     return Action::Wait { until: Some(until), why: "STEP_DWELL".into() };
                 }
-                // Too few entries: dwell on, up to twice the step's dwell, then page.
+                // Too few entries: dwell on, up to twice the step's dwell, then page. The 1% step's floor is pooled
+                // with the 10% step's instead (R38): it commits after its dwell, and 10% counts from its start
+                // (`gate::window_start`). A breach at 1% still runs the undo above.
                 if let Gate::Starved(n) = w.gate
                     && *dwell > 0
+                    && *pct != 1
                 {
                     let cap = Timestamp(start.0.saturating_add(2 * *dwell));
                     if w.now < cap {

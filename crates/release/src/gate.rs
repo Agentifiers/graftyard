@@ -17,10 +17,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use graftyard_types::SiteId;
+use graftyard_types::{SiteId, Timestamp};
 
 use crate::ReleaseFold;
-use crate::ops::Gate;
+use crate::group::Current;
+use crate::ops::{Gate, Step};
 use crate::types::{DayTarget, Intent, IntentState, ReleaseEntry, Script, VersionId};
 
 /// Entries the N+1 members must apply in a step before its gate is judged (`STEP_MIN_ENTRIES`) [guess].
@@ -262,6 +263,20 @@ pub fn day_versions(fold: &ReleaseFold) -> Option<(SiteId, VersionId, Option<Ver
         .or(undo)
         .and_then(|n| crate::ops::version(fold, &n, script));
     Some((*s, n1, n))
+}
+
+/// Where the current step's gate starts counting: the step's start, or at a 10% step that follows a 1% step, the 1%
+/// step's start. So the 10% gate judges both steps' entries and its `STEP_MIN_ENTRIES` floor pools them, while the 1%
+/// step, whose N+1 members carry almost no traffic, commits `Starved` after its dwell (`ops::next`, OPEN-QUESTIONS
+/// R38). Only the floor moves: a breach at 1% still runs the undo.
+pub fn window_start(fold: &ReleaseFold, c: &Current) -> Timestamp {
+    let steps = crate::ops::steps(fold, c, crate::ops::Dwell::default()).unwrap_or_default();
+    let pct = |k: usize| match steps.get(k) {
+        Some(Step::Deploy { pct, .. }) => Some(*pct),
+        _ => None,
+    };
+    let k = usize::from(c.next);
+    if k > 0 && pct(k) == Some(10) && pct(k - 1) == Some(1) { c.before } else { c.since }
 }
 
 /// Whether N's counters over the step's window are too few to judge against, so the host reads N's from the
