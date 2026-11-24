@@ -1,0 +1,12 @@
+2026-11-24T19:10:54Z
+65c10004
+  graft-agents-m4a-AGENTS_APP_KEY_A: written to Secrets Store store <runner-store> (<runner-store>); no copy kept
+  graft-agents-m4a-WORKSPACE_APP_KEY_A: written to Secrets Store store <runner-store> (<runner-store>); no copy kept
+  graft-agents-m4a-AGENTS_WEBHOOK_SECRET_A: written to Secrets Store store <runner-store>
+  graft-agents-m4a-AGENTS_EXECUTOR_KEY: written to Secrets Store store <runner-store>; no copy kept
+wrote ~/.graft-m4a/lf7/agents/agents.json (public keys only)
+agents executor public key: 35df51473624b41c9b33851fbd401e782af2bafd026bef056772a2e56b2845c0
+the customer adds it as Keys.agents_executor with a signed Keys entry: `graftyard release entry` with {"Keys": {"agents_executor": "35df51473624b41c9b33851fbd401e782af2bafd026bef056772a2e56b2845c0"}} and --keys <latest genesis or Keys entry>, then `graftyard sign` with the customer key and `graftyard release post`
+no operator route yet (R14): send the two ClaimSlug requests in ~/.graft-m4a/lf7/agents/agents-claims.request.json, then run `graftyard agents init --app-ids <graftyard-agent id>,<graftyard-workspace id> --out ~/.graft-m4a/lf7/agents`
+{"replace":"AGENTS_WEBHOOK_SECRET_A","ok":true}
+{"host":"graft-m4a-edge.<sub>.workers.dev","secret_prefix":"graft-agents-m4a-","apps":["graftyard-agent","graftyard-workspace"],"agents_executor":"35df51473624b41c9b33851fbd401e782af2bafd026bef056772a2e56b2845c0"}

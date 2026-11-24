@@ -1,0 +1,14 @@
+2026-11-24T19:06:15Z
+65c10004
+deployed eef95142-d0a1-441a-9e8f-695d412ec51a, newest upload 06329970-0d82-48e7-8952-51c8b3724482
+R57: newest vs deployed: {}
+start 2026-11-24T19:06:17Z
+Uploaded graft-m4a-edge (5.15 sec)
+Deployed graft-m4a-edge triggers (0.47 sec)
+Current Version ID: e9197bf3-9dc1-4093-9df6-0d9dea213ab4
+exit at 2026-11-24T19:09:44Z
+{"script":"graft-m4a-edge","created_on":"2026-11-24T19:09:50.778953Z","versions":["e9197bf3 100"]}
+R57: after vs before: {}
+GET release/entries, no JWT: 405
+fault hook, clear: {"now":1795547399629,"plan":{"from":0,"site":null,"until":0},"sites":[{"site":0,"ok":true},{"site":1,"ok":true},{"site":2,"ok":true}]}
+GET release/entries after propagation: 401 (3 of 3, 19:11Z)

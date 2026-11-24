@@ -71,7 +71,10 @@ fn main() {
             "release": k.release.hex(),
             "drain": k.drain.hex(),
             "executor": k.executor.hex(),
+            "agents_executor": k.agents_executor.map(|x| x.hex()),
         })),
+        // LF-7: the controller's pin, the version `graft-agents-front` sends every request to while it is set.
+        "controller_pin": f.pointers.get(graftyard_release::Script::Controller).map(|v| v.to_string()),
         "keys_entry": entries.iter().rev().map(|(b, _)| b).find(|b| {
             matches!(SignedEntry::decode(b).map(|e| e.body), Ok(ReleaseEntry::Genesis(_) | ReleaseEntry::Keys(_)))
         }).map(|b| b.iter().map(|x| format!("{x:02x}")).collect::<String>()),

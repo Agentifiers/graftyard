@@ -1,0 +1,9 @@
+2026-11-24T19:38:31Z
+probe: one version upload of graft-agents-m4a-controller (its deployed bindings, incl. the Secrets Store WEBHOOK_SECRET) per token scope
+Workers Scripts Write + Workers Containers Write: 10021 Secrets store binding authorization failed
++ Secrets Store Read: 10021
++ Secrets Store Write: ok (version a3c120e0, tag lf7-probe, not deployed)
+the runner account's own token: ok (version 763aa80c, tag lf7-probe, not deployed)
+{"revoke":"graft-agents-m4a-probe-sc","ok":true}
+{"revoke":"graft-agents-m4a-probe-ss","ok":true}
+{"revoke":"graft-agents-m4a-probe-sw","ok":true}

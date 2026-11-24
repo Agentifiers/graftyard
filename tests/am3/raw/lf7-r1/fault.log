@@ -1,0 +1,3 @@
+2026-11-24T19:50:58Z
+65c10004
+{"now":1795549867092,"plan":{"chains":["release"],"from":1795549867092,"group_only":false,"hang_ms":10000,"rate":null,"site":255,"until":1795550467092},"sites":[{"site":0,"ok":true},{"site":1,"ok":true},{"site":2,"ok":true}]}

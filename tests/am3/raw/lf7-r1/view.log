@@ -1,0 +1,6 @@
+2026-11-24T19:45:07Z
+65c10004
+{"script":"graft-agents-m4a-controller","created_on":"2026-11-24T19:44:12.925947Z","versions":["298b89f0 100"]}
+{"script":"graft-agents-m4a-front","created_on":"2026-11-24T19:13:43.73676Z","versions":["91b302e7 100"]}
+{"script":"graft-agents-m4a-ops","created_on":"2026-11-24T19:32:16.125055Z","versions":["39a03439 100"]}
+{"count":474,"current":null,"rolled":{"Controller":"3452f14a","Edge":"e23f69e9","Front":"b48fa157","Mcp":"4d6e33f1","Ops":"7def7980","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"},"entries":[{"at":1795549403141,"entry":"ControllerRoll { release: ReleaseId([52, 82, 241, 74, 6, 145, 138, 29, 110, 194, 101, 39, 238, 193, 123, 35, 221, 142, 125, 52, 205, 44, 178, 8, 107, 139, 21, 124, 33, 86, 192, 26]) } id 01M87HAWSY0TD7CWZPHSE0EB8Q","index":470,"kind":"Intent","sigs":["031923"]},{"at":1795549429861,"entry":"Abort","index":471,"kind":"Abort","sigs":["031923"]},{"at":1795549454036,"entry":"step 0","index":472,"kind":"IntentStep","sigs":["35df51"]},{"at":1795549455187,"entry":"IntentDone","index":473,"kind":"IntentDone","sigs":["35df51"]}]}

@@ -1,0 +1,6 @@
+2026-11-24T19:40:19Z
+65c10004
+{"at": 1795549091742, "msg": "graft-agents-ops Idle"}
+{"at": 1795549091742, "msg": "graft-agents-ops Error(\"upload Controller: Post /workers/scripts/graft-agents-m4a-controller/versions: HTTP 400: [{\\\"code\\\":10021,\\\"documentation_url\\\":\\\"https://developers.cloudflare.com/workers/observability/errors/#validation-errors-10021\\\",\\\"message\\\":\\\"Secrets store binding authorization failed. Check your permissions and secret scopes.\\\"}]\")"}
+{"at": 1795549152495, "msg": "graft-agents-ops Idle"}
+{"at": 1795549152495, "msg": "graft-agents-ops Error(\"upload Controller: Post /workers/scripts/graft-agents-m4a-controller/versions: HTTP 400: [{\\\"code\\\":10021,\\\"documentation_url\\\":\\\"https://developers.cloudflare.com/workers/observability/errors/#validation-errors-10021\\\",\\\"message\\\":\\\"Secrets store binding authorization failed. Check your permissions and secret scopes.\\\"}]\")"}

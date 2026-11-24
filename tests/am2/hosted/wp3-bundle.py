@@ -7,6 +7,10 @@ every enabled format (65000.1 included) and no `UnreadableFormat` refuses it.
 
     python3 tests/am2/hosted/wp3-bundle.py <out dir> <label> --formats <formats.txt>
         [--front <workers/front/build>] [--mcp <workers/mcp/build>] [--marker]
+        [--agents-front <workers/agents-front/build>] [--controller <workers/controller/build>]
+
+AM3-WP1's LF-7 takes `--controller` alone: the agents account's bundle, which `graft-ops` under `Account::Agents`
+uploads and rolls as a `ControllerRoll`.
 
 `--marker` adds `<script>/marker.js` (an unused module naming the label) to each script, so the upload is a new
 version of the same build. Prints `{"release": <sha256 of release.json>, "files": n}`.
@@ -30,7 +34,7 @@ def put(name, data):
     files.append({'name': name, 'sha256': hashlib.sha256(data).hexdigest()})
 
 
-for script in ('front', 'mcp'):
+for script in ('front', 'mcp', 'agents-front', 'controller'):
     build = flag(f'--{script}')
     if not build:
         continue

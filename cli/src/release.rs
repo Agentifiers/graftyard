@@ -229,6 +229,7 @@ fn body(v: &Value, t: &InstallToml, keys: &Value) -> Res<ReleaseEntry> {
         "EdgePointer" => ReleaseEntry::EdgePointer { pin: release_id(b, "pin")? },
         "OpsPointer" => ReleaseEntry::OpsPointer { pin: release_id(b, "pin")? },
         "McpPointer" => ReleaseEntry::McpPointer { pin: release_id(b, "pin")? },
+        "ControllerPointer" => ReleaseEntry::ControllerPointer { pin: release_id(b, "pin")? },
         "SiteLost" => ReleaseEntry::SiteLost { site: site(b, "site")? },
         // `{"StaleMode": {"scope": "Install" | {"Owner": id} | {"Repo": id}, "until_s": seconds from now}}`, or an
         // absolute `"until"` in epoch ms.
