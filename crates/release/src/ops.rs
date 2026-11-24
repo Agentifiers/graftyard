@@ -406,6 +406,18 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
     // Another site drained (an automatic drain, or a human's) stops a site day's drain and forward deploys: the group
     // refuses a second drain-key drain, and the day's N+1 members stay under the 1% lead limit until it ends.
     let other_drained = |s: SiteId| fold.drained.keys().find(|d| **d != s.0).copied();
+    // The wait on another drained site is bounded like the day's own (`STUCK_DAY`): past it, from the later of that
+    // drain and the day's last entry, the day pages instead of waiting in silence (OPEN-QUESTIONS R53).
+    let waits = |d: u8, why: String| {
+        let from = fold.drained.get(&d).map_or(c.since, |x| Timestamp(x.since.0.max(c.since.0)));
+        let until = Timestamp(from.0.saturating_add(STUCK_DAY));
+        if w.now >= until {
+            return Action::Page(
+                format!("intent {}: {why} for STUCK_DAY; it needs site {d}'s Normal or an Abort", id.0).into(),
+            );
+        }
+        Action::Wait { until: None, why: why.into() }
+    };
     let undrain = |s: SiteId| Action::Commit {
         body: ReleaseEntry::SiteMode(crate::types::SiteMode { site: s, mode: crate::types::Mode::Normal }),
         signer: Signer::Drain,
@@ -424,7 +436,7 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
     match step {
         Step::Drain(s) if fold.drained.contains_key(&s.0) => done,
         Step::Drain(s) if let Some(d) = other_drained(*s) => {
-            Action::Wait { until: None, why: format!("site {d} is drained; site {} waits to drain", s.0).into() }
+            waits(d, format!("site {d} is drained; site {} waits to drain", s.0))
         }
         Step::Drain(s) => Action::Commit {
             body: ReleaseEntry::SiteMode(crate::types::SiteMode { site: *s, mode: crate::types::Mode::Drain }),
@@ -478,7 +490,7 @@ pub fn next(fold: &ReleaseFold, w: &World, dwell: Dwell) -> Action {
                 && let Script::Site(s) = script
                 && let Some(d) = other_drained(*s)
             {
-                return Action::Wait { until: None, why: format!("site {d} is drained; the site day waits").into() };
+                return waits(d, format!("site {d} is drained; the site day waits"));
             }
             let Some(dep) = w.deployments.get(script) else {
                 if let Some(a) = stuck(script, c.since) {

@@ -243,23 +243,50 @@ fn a_site_burns_only_when_both_other_sites_report_it_and_each_report_counts_once
         |o: u8, t: u8, calls: u64, missed: u64| SiteHealth { observer: SiteId(o), target: SiteId(t), calls, missed };
     // 5 x the allowed 1 in 100 is 100 missed in 2,000.
     let both = [h(0, 2, 2_000, 100), h(1, 2, 2_000, 100)];
-    assert!(gate::verdict(&voters, &both, &[])[&2].burning);
+    assert!(gate::verdict(&voters, &both, &[], None)[&2].burning);
     let under = [h(0, 2, 2_000, 100), h(1, 2, 2_000, 99)];
-    assert!(!gate::verdict(&voters, &under, &[])[&2].burning, "one observer under DRAIN_BURN");
+    assert!(!gate::verdict(&voters, &under, &[], None)[&2].burning, "one observer under DRAIN_BURN");
     let one = [h(0, 2, 2_000, 2_000)];
-    assert!(!gate::verdict(&voters, &one, &[])[&2].burning, "one observer alone");
+    assert!(!gate::verdict(&voters, &one, &[], None)[&2].burning, "one observer alone");
     // The sick site's own report about itself or the others decides nothing.
     let own = [h(2, 2, 2_000, 0), h(0, 2, 2_000, 100), h(1, 2, 2_000, 100), h(2, 0, 2_000, 2_000)];
-    let v = gate::verdict(&voters, &own, &[]);
+    let v = gate::verdict(&voters, &own, &[], None);
     assert!(v[&2].burning && !v[&0].burning);
     let few = [h(0, 2, 299, 299), h(1, 2, 299, 299)];
-    assert!(!gate::verdict(&voters, &few, &[])[&2].burning, "under MIN_CALLS is no evidence");
+    assert!(!gate::verdict(&voters, &few, &[], None)[&2].burning, "under MIN_CALLS is no evidence");
     // Calm needs both under 2 x over the slow window: 40 missed in 2,000 is 2 x, not under it.
     let calm = [h(0, 2, 2_000, 0), h(1, 2, 2_000, 39)];
-    assert!(gate::verdict(&voters, &[], &calm)[&2].calm);
+    assert!(gate::verdict(&voters, &[], &calm, None)[&2].calm);
     let at = [h(0, 2, 2_000, 0), h(1, 2, 2_000, 40)];
-    assert!(!gate::verdict(&voters, &[], &at)[&2].calm);
-    assert!(!gate::verdict(&voters, &[], &few)[&2].calm, "no evidence is not calm");
+    assert!(!gate::verdict(&voters, &[], &at, None)[&2].calm);
+    assert!(!gate::verdict(&voters, &[], &few, None)[&2].calm, "no evidence is not calm");
+}
+
+/// R53: while a running site day holds one voter to the 1% lead limit, that voter's members lead almost nothing and
+/// barely call a drained site, so its thin report is no evidence either way: the drained site's calm is judged by the
+/// other voter alone, which still needs `MIN_CALLS`. Burning still needs both. Row B's numbers: a's 78,637 calls to c
+/// at 67 missed, b's 71 at 0.
+#[test]
+fn a_lead_limited_voters_thin_report_leaves_calm_to_the_other_voter_with_min_calls() {
+    let voters = [SiteId(0), SiteId(1), SiteId(2)];
+    let h =
+        |o: u8, t: u8, calls: u64, missed: u64| SiteHealth { observer: SiteId(o), target: SiteId(t), calls, missed };
+    let row_b = [h(0, 2, 78_637, 67), h(1, 2, 71, 0)];
+    assert!(!gate::verdict(&voters, &[], &row_b, None)[&2].calm, "both voters' evidence, as before R53");
+    assert!(gate::verdict(&voters, &[], &row_b, Some(SiteId(1)))[&2].calm, "b is lead-limited: a alone judges");
+    assert!(!gate::verdict(&voters, &[], &row_b, Some(SiteId(0)))[&2].calm, "the limited voter is a, so b must judge");
+    let thin = [h(0, 2, gate::MIN_CALLS - 1, 0), h(1, 2, 71, 0)];
+    assert!(!gate::verdict(&voters, &[], &thin, Some(SiteId(1)))[&2].calm, "the remaining voter needs MIN_CALLS");
+    let a_only = [h(0, 2, gate::MIN_CALLS, 5)];
+    assert!(gate::verdict(&voters, &[], &a_only, Some(SiteId(1)))[&2].calm, "no report from the limited voter");
+    let a_hot = [h(0, 2, 2_000, 40), h(1, 2, 71, 0)];
+    assert!(!gate::verdict(&voters, &[], &a_hot, Some(SiteId(1)))[&2].calm, "the remaining voter at 2 x is not calm");
+    // The limited voter's report still counts against calm once it is evidence: 300 calls at 2 x.
+    let b_hot = [h(0, 2, 78_637, 67), h(1, 2, gate::MIN_CALLS, 6)];
+    assert!(!gate::verdict(&voters, &[], &b_hot, Some(SiteId(1)))[&2].calm, "a limited voter's evidence of burn");
+    // Burning never drops a voter: a alone at 10 x does not drain c.
+    let one = [h(0, 2, 2_000, 200), h(1, 2, 71, 71)];
+    assert!(!gate::verdict(&voters, &one, &[], Some(SiteId(1)))[&2].burning);
 }
 
 #[test]
@@ -349,6 +376,67 @@ fn an_automatic_drain_preempts_a_site_day_under_the_lead_limit() {
     assert_eq!(o.deps[&s0].split, vec![(version_of(2, s0), 100)]);
     assert_eq!(o.g.f.site_release.get(&0), Some(&rel(2).0));
     assert_eq!(gate::lead_limited(&o.g.f), None, "the limit ends with the day");
+}
+
+/// R53 through `next` and `graft-ops`' verdict: a site drained during another site's day undrains on the other
+/// voter's calm while the rolling site is lead-limited, and the day finishes. A day that waits `STUCK_DAY` on another
+/// drained site pages instead of waiting in silence.
+#[test]
+fn a_site_drained_during_a_day_undrains_on_the_other_voters_calm_and_a_long_wait_pages() {
+    let mut o = Ops::new(G::new());
+    upload_all(&mut o.g, 1);
+    o.roll_all(1);
+    upload_all(&mut o.g, 2);
+    assert!(matches!(o.roll(2), ops::Roll::Next { .. }));
+    while o.g.f.current.as_deref().unwrap().next < 2 {
+        o.act();
+    }
+    o.act(); // site 0 at 10%
+    o.health = health(&[(0, CALM), (2, BURNING)]);
+    o.act();
+    o.act();
+    assert_eq!(gate::lead_limited(&o.g.f), Some(SiteId(0)));
+    assert!(o.g.f.drained.contains_key(&2));
+    // Row B: site 1 called site 2 often and cleanly, site 0 (lead-limited) barely at all.
+    let voters = [SiteId(0), SiteId(1), SiteId(2)];
+    let h =
+        |o: u8, t: u8, calls: u64, missed: u64| SiteHealth { observer: SiteId(o), target: SiteId(t), calls, missed };
+    let slow = [h(1, 2, 78_637, 67), h(0, 2, 71, 0), h(1, 0, 78_000, 10), h(2, 0, 80, 0), h(0, 1, 5_000, 1)];
+    o.health = gate::verdict(&voters, &[], &slow, gate::lead_limited(&o.g.f));
+    assert_eq!(mode(&next(&o)), Some((2, Mode::Normal)), "site 2 undrains on site 1's calm alone");
+    o.health = gate::verdict(&voters, &[], &slow, None);
+    assert!(matches!(next(&o), Action::Wait { until: None, why } if why.contains("site 2 is drained")), "before R53");
+    // Nobody undrains site 2: after STUCK_DAY from the later of its drain and the day's last entry, the day pages.
+    let since = o.g.f.drained[&2].since.0.max(o.g.f.current.as_deref().unwrap().since.0);
+    o.g.at = Timestamp(since + gate::STUCK_DAY - 1);
+    assert!(matches!(next(&o), Action::Wait { until: None, .. }));
+    o.g.at = Timestamp(since + gate::STUCK_DAY);
+    assert!(matches!(next(&o), Action::Page(why) if why.contains("site 2 is drained") && why.contains("STUCK_DAY")));
+    // Site 2's calm arrives: it undrains, and the day runs to its end.
+    o.health = gate::verdict(&voters, &[], &slow, gate::lead_limited(&o.g.f));
+    o.act();
+    o.health = BTreeMap::new();
+    o.finish();
+    assert!(o.g.f.drained.is_empty());
+    assert_eq!(o.g.f.site_release.get(&0), Some(&rel(2).0));
+}
+
+/// A day that starts while another site is drained, and waits `STUCK_DAY` at its own drain step, pages too.
+#[test]
+fn a_day_waiting_stuck_day_to_drain_its_site_pages() {
+    let mut o = Ops::new(G::new());
+    upload_all(&mut o.g, 1);
+    o.roll_all(1);
+    upload_all(&mut o.g, 2);
+    o.health = health(&[(1, BURNING)]);
+    o.act();
+    o.health = BTreeMap::new();
+    assert!(matches!(o.roll(2), ops::Roll::Next { .. }));
+    let since = o.g.f.drained[&1].since.0.max(o.g.f.current.as_deref().unwrap().since.0);
+    o.g.at = Timestamp(since + gate::STUCK_DAY - 1);
+    assert!(matches!(next(&o), Action::Wait { until: None, why } if why.contains("waits to drain")));
+    o.g.at = Timestamp(since + gate::STUCK_DAY);
+    assert!(matches!(next(&o), Action::Page(why) if why.contains("waits to drain") && why.contains("STUCK_DAY")));
 }
 
 /// `STUCK_DAY`: a site day that cannot advance for an hour, on an unreadable deployment or a gate that stays pending,

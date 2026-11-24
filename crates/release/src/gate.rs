@@ -511,15 +511,35 @@ pub fn loss(v: &mut BTreeMap<u8, Verdict>, voters: &[SiteId], zero: &[SiteHealth
 
 /// Each voter site's verdict from the reports of the others. `fast` holds the `DRAIN_WINDOW` reports and `slow` the
 /// `UNDRAIN_AFTER` ones; a site judges no site, itself included, alone, so the sick site never decides for itself.
-pub fn verdict(voters: &[SiteId], fast: &[SiteHealth], slow: &[SiteHealth]) -> BTreeMap<u8, Verdict> {
+/// `limited` is the site a running site day holds to the 1% lead limit (`lead_limited`): its members lead almost
+/// nothing, so they barely call a drained site, and a report from it under `MIN_CALLS` is absence of evidence, not
+/// evidence against calm. Calm is then judged by the other observers, each with `MIN_CALLS`; the limited site's report
+/// still blocks it when it has `MIN_CALLS` and is not under `UNDRAIN_BURN`. Burning still needs every other site
+/// (OPEN-QUESTIONS R53, `decisions/DECISIONS.md`, "`calm-one`").
+pub fn verdict(
+    voters: &[SiteId],
+    fast: &[SiteHealth],
+    slow: &[SiteHealth],
+    limited: Option<SiteId>,
+) -> BTreeMap<u8, Verdict> {
     let all = |t: SiteId, reports: &[SiteHealth], ok: &dyn Fn(&SiteHealth) -> bool| {
         voters.iter().filter(|o| **o != t).all(|o| reports.iter().any(|h| h.observer == *o && h.target == t && ok(h)))
+    };
+    let calm = |t: SiteId| {
+        let report = |o: SiteId| slow.iter().find(|h| h.observer == o && h.target == t);
+        let others: Vec<SiteId> = voters.iter().copied().filter(|o| *o != t).collect();
+        let judged: Vec<SiteId> = others.iter().copied().filter(|o| Some(*o) != limited).collect();
+        let quiet = |o: SiteId| report(o).is_none_or(|h| !h.evidence() || h.under(UNDRAIN_BURN));
+        if judged.len() == others.len() || judged.is_empty() {
+            return all(t, slow, &|h| h.under(UNDRAIN_BURN));
+        }
+        judged.iter().all(|o| report(*o).is_some_and(|h| h.under(UNDRAIN_BURN))) && others.iter().all(|o| quiet(*o))
     };
     voters
         .iter()
         .map(|t| {
             let burning = all(*t, fast, &|h| h.at_least(DRAIN_BURN));
-            let calm = all(*t, slow, &|h| h.under(UNDRAIN_BURN));
+            let calm = calm(*t);
             (t.0, Verdict { burning, calm, ..Verdict::default() })
         })
         .collect()
