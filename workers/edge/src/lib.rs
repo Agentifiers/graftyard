@@ -2759,11 +2759,14 @@ pub(crate) async fn validate(
     let sites = shard_order(repo, pinned);
     let n = sites.len();
     let (head, url) = (&head, &url);
+    // An agent's: each try's slot wait from what is left of its bound when the try starts (`slot-bound`).
+    let slot_ms = || if agent { agent_slot_ms(budget_left(c)) } else { None };
     let start = |i: usize| {
         let site = sites[i];
+        let url = with_slot(shard_url(url, i, n, moved_to(repo, site)), slot_ms());
         async move {
             let body = || Some(js_sys::Uint8Array::from(&head[..]).into());
-            let r = validate_on(c, repo, site, &shard_url(url, i, n, moved_to(repo, site)), &body, detail).await;
+            let r = validate_on(c, repo, site, &url, &body, detail).await;
             let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
             mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
             r
@@ -2791,10 +2794,34 @@ pub(crate) async fn validate(
 /// being torn down (`decisions/DECISIONS.md`, "`validate-hedge`").
 const VALIDATE_HEDGE: std::time::Duration = std::time::Duration::from_millis(1_000);
 
-/// The hedge a validate gets: none for an agent's, which the container already bounds with its 2 s admission wait and
-/// whose p50 is 1.5 s, so a hedge would double most of them.
+/// The hedge a validate gets: none for an agent's, which the container already bounds with its admission wait
+/// (`agent_slot_ms`) and whose p50 is 1.5 s, so a hedge would double most of them. On B0-33 h1A an agent's slow tail
+/// was that wait on a full pool shard, so a hedge would start more tries into the same full gates (`slot-bound`).
 fn validate_hedge(agent: bool) -> Option<std::time::Duration> {
     (!agent).then_some(VALIDATE_HEDGE)
+}
+
+/// What an agent validate's try must leave of the push's AGENT_PUSH_BOUND once its container slot is granted: the
+/// validate's own work and the commit after it. On B0-33 h1A the home's quick validates spent p90 about 230 ms in
+/// `v_walk` and `v_index`, the commit took p50 271 ms, and ok pushes had p5 809 ms of the bound left at their first
+/// send [measured, `tests/am1/results/g40-slot.md`]; 1 s [guess] covers the three.
+const AGENT_SLOT_RESERVE: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// The longest an agent validate's try may wait for a container slot (`slot_ms`, which the shard passes to its
+/// container and keeps in a forward to a pool shard): what is left of the push's bound now less
+/// `AGENT_SLOT_RESERVE`, never above the container's own 2 s, and none for a push with no bound. On h1A 1,010 agent
+/// validates waited a pool shard's whole 2 s for its 429 and reached the next site with too little bound left: 29 of
+/// them committed (`slot-bound`).
+fn agent_slot_ms(left: Option<std::time::Duration>) -> Option<u64> {
+    left.map(|l| l.saturating_sub(AGENT_SLOT_RESERVE).as_millis().min(2_000) as u64)
+}
+
+/// `url` with an agent try's slot wait (`agent_slot_ms`).
+fn with_slot(url: String, slot_ms: Option<u64>) -> String {
+    match slot_ms {
+        Some(ms) => format!("{url}&slot_ms={ms}"),
+        None => url,
+    }
 }
 
 /// One try's answer: the shard's value, or `(status, body)` with status 0 for a failed call.
@@ -2934,7 +2961,9 @@ async fn validate_streamed(
         }
     };
     let (site, mut tries) = streamed_site(&sites, probe).await;
-    let r = validate_on(c, repo, site, &shard_url(&url, 1, 2, moved_to(repo, site)), &body, detail).await;
+    let slot = if agent { agent_slot_ms(budget_left(c)) } else { None };
+    let r =
+        validate_on(c, repo, site, &with_slot(shard_url(&url, 1, 2, moved_to(repo, site)), slot), &body, detail).await;
     let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
     mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
     match r {
@@ -5152,6 +5181,29 @@ mod tests {
         // A human's 429 (none is sent today: a human waits for a slot) would move on the same way, hedge or not.
         let human = [Some((100, 429)), Some((300, 200)), Some((50, 200))];
         assert_eq!(run(&human, h), (Some((1, Ok(()))), vec![(0, 429)], 2, vec![], 400));
+    }
+
+    /// `slot-bound`, B0-33 h1A: an agent validate's slot wait is what is left of its push's bound less what the
+    /// validate and its commit need after the slot, at most the container's 2 s. On main every agent try waited 2 s,
+    /// so a push that moved with 2.4 s left (h1A's p50 at the first send) spent all of it on the next pool's 429.
+    #[test]
+    fn an_agent_try_waits_for_a_slot_only_what_its_bound_leaves() {
+        use std::time::Duration;
+
+        use super::{agent_slot_ms, with_slot};
+        let ms = |m: u64| Some(Duration::from_millis(m));
+        // A fresh push: the container's own 2 s cap.
+        assert_eq!(agent_slot_ms(ms(4_500)), Some(2_000));
+        assert_eq!(agent_slot_ms(ms(3_000)), Some(2_000));
+        // 2,433 ms left (h1A's ok pushes' p50 at their first send) leaves 1,433 ms to wait, not 2,000.
+        assert_eq!(agent_slot_ms(ms(2_433)), Some(1_433));
+        // A try with less than the reserve left waits for no slot: a free one or a 429 at once.
+        assert_eq!(agent_slot_ms(ms(800)), Some(0));
+        assert_eq!(agent_slot_ms(ms(0)), Some(0));
+        // A push with no bound (a human's) sends none, and the container keeps its default.
+        assert_eq!(agent_slot_ms(None), None);
+        assert_eq!(with_slot("u?a=1".into(), Some(1_433)), "u?a=1&slot_ms=1433");
+        assert_eq!(with_slot("u?a=1".into(), None), "u?a=1");
     }
 
     /// A streamed pack can be sent once, so it fails over before its first byte: it goes to the first site whose

@@ -1052,7 +1052,8 @@ impl ShardHost<'_> {
     /// counts as derived work, outside `NetworkLoad`. An error carries the container's status when it answered
     /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`, and a
     /// 409 `missingBase` on `OnDisk::AsItStands` is `MissingBase`. `sums` are the edge's `headsum` and `packsum`,
-    /// passed on so the container answers a body changed on the way 502, not the pack's 4xx (G35).
+    /// passed on so the container answers a body changed on the way 502, not the pack's 4xx (G35), and an agent's
+    /// `slot_ms`, the slot wait its push's bound leaves (`slot-bound`).
     #[allow(clippy::too_many_arguments)]
     pub async fn validate(
         &self,

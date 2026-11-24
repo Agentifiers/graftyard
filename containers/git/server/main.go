@@ -26,7 +26,8 @@
 //	                                 "detail", read from the repository's own objects (a REST ref write).
 //	                                 At most min(16, max(4, 2*NumCPU)) validates run at once; humans (the default) wait without
 //	                                 a deadline and queued humans go before agents (FIFO within each lane). Agents wait
-//	                                 up to 2s, with at most 8*slots queued, or get 429 and Retry-After whole seconds.
+//	                                 up to 2s (slot_ms=M: M ms, at most 2s), with at most 8*slots queued and no more
+//	                                 queued than drain within that wait, or get 429 and Retry-After whole seconds.
 //	                                 derived=1 is the shard's own archive-promotion validate: its CPU is derived
 //	                                 and it does not count in the queue depth. Both 200 answers carry
 //	                                 "lock_wait_ms", the wait for the network's lock shared (not the admission wait),
@@ -825,7 +826,11 @@ func newValidateGate(slots int) *validateGate {
 }
 
 // acquire returns a release function for a granted slot. Agents use wait as their deadline; humans have no deadline.
-// A refusal includes a positive Retry-After value. Context cancellation is not a queue-full refusal.
+// An agent that would queue is refused at once when the queue is past agentQueuePerSlot a slot, or when the agents
+// already queued would take longer than wait to drain at the gate's measured run time (`slot-bound`): on B0-33 h1A a
+// full pool shard held 1,306 agent validates its whole 2 s and then refused them, and the pushes reached the next site
+// with too little of their bound left to commit. A refusal includes a positive Retry-After value. Context
+// cancellation is not a queue-full refusal.
 func (g *validateGate) acquire(ctx context.Context, agent bool, wait time.Duration) (func(), int, error) {
 	g.mu.Lock()
 	if g.running < g.slots {
@@ -834,7 +839,7 @@ func (g *validateGate) acquire(ctx context.Context, agent bool, wait time.Durati
 		g.mu.Unlock()
 		return func() { g.release(started) }, 0, nil
 	}
-	if agent && len(g.agents) >= agentQueuePerSlot*g.slots {
+	if agent && (len(g.agents) >= agentQueuePerSlot*g.slots || g.drainLocked(len(g.agents)) > wait) {
 		retry := g.retryAfterLocked()
 		g.mu.Unlock()
 		return nil, retry, errValidateQueueFull
@@ -920,6 +925,23 @@ func (g *validateGate) release(started time.Time) {
 	close(w.ready)
 }
 
+// drainLocked estimates how long the gate takes to grant the agents already queued, ahead of one more: each slot
+// frees once per average run, so ahead/slots runs. It counts no human and no running validate's time left, so it is
+// low when humans queue too, which only ever admits an agent the deadline then refuses.
+func (g *validateGate) drainLocked(ahead int) time.Duration {
+	return time.Duration(float64(ahead) / float64(g.slots) * g.average * float64(time.Second))
+}
+
+// agentWait is an agent validate's slot wait: the edge's slot_ms (what is left of the push's bound less what the
+// validate and its commit need after the slot), never above agentValidateWait; agentValidateWait without one.
+func agentWait(slotMs string) time.Duration {
+	ms, err := strconv.Atoi(slotMs)
+	if err != nil || ms < 0 {
+		return agentValidateWait
+	}
+	return min(agentValidateWait, time.Duration(ms)*time.Millisecond)
+}
+
 // retryAfterLocked estimates the wait for one more agent, including the queued agents already ahead of it.
 func (g *validateGate) retryAfterLocked() int {
 	n := int(math.Ceil(float64(len(g.agents)+1) / float64(g.slots) * g.average))
@@ -952,7 +974,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "bad held")
 		return
 	}
-	release, retryAfter, err := validateAdmission.acquire(r.Context(), agent, agentValidateWait)
+	release, retryAfter, err := validateAdmission.acquire(r.Context(), agent, agentWait(query.Get("slot_ms")))
 	if err != nil {
 		if err == errValidateQueueFull {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
