@@ -206,9 +206,13 @@ async fn record(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<PlacementRec
         ChainId::Release | ChainId::Names(_) | ChainId::Tokens(_) | ChainId::Ids => {
             c.system_record(chain).await.map_err(unavailable)
         }
-        ChainId::Repo(r) | ChainId::RepoMeta(r) => {
-            Ok(Box::pin(crate::repo_by_id(c, r)).await.map_err(|_| ExportError::NotFound)?.record)
-        }
+        // Only a missing `RepoOwner` row is no such chain: a `Names` read that failed is an outage, which a lifeboat
+        // asks again, where a 404 would stop it for good.
+        ChainId::Repo(r) | ChainId::RepoMeta(r) => match Box::pin(crate::repo_by_id(c, r)).await {
+            Ok(repo) => Ok(repo.record),
+            Err(e) if e.ends_with("has no RepoOwner row") => Err(ExportError::NotFound.into()),
+            Err(e) => Err(unavailable(e)),
+        },
         ChainId::Authz(a) | ChainId::Identity(a) | ChainId::Actions(a, _) => {
             Box::pin(crate::placement(c, a)).await.map_err(unavailable)?.ok_or(ExportError::NotFound.into())
         }
@@ -220,9 +224,14 @@ async fn record(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<PlacementRec
 async fn log(c: &Ctx<'_>, chain: ChainId, from: Index, limit: u64) -> std::result::Result<StoredLog, Fail> {
     let record = Box::pin(record(c, chain)).await?;
     let to = from.0.saturating_add(limit - 1);
-    let (_, bytes) = Box::pin(graftyard_lookup::log_rows(&c.bindings(), chain, &record, from.0, to))
-        .await
-        .ok_or_else(|| unavailable(format!("no learner or follower of {chain} answered; retry")))?;
+    let Some((_, bytes)) = Box::pin(graftyard_lookup::log_rows(&c.bindings(), chain, &record, from.0, to)).await else {
+        // A group retired for good answers as a chain with no group, 404, so a lifeboat stops asking for it; any
+        // other miss is an outage (`decisions/DECISIONS.md`, "`export-retired`").
+        if Box::pin(graftyard_lookup::retired_group(&c.bindings(), chain, &record)).await {
+            return Err(ExportError::NotFound.into());
+        }
+        return Err(unavailable(format!("no learner or follower of {chain} answered; retry")));
+    };
     let mut page = export::decode_log_page(&bytes).map_err(unavailable)?;
     // A member that installed a snapshot names no archive below its install: its `Archived` entries were never applied
     // there. The objects are still in the record's buckets, so the range comes from the one that holds `from`.

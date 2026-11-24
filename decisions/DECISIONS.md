@@ -10350,6 +10350,30 @@ snapshot rebuild of the shard, which a rule kept outside the log would not.
 **Flip.** A developer enrolled on two lifeboats at once needs both tokens live. That needs a per-host revocation, which
 is a new Tokens format.
 
+### `export-retired`: the export entries read answers a retired group 404, and the lifeboat asks a 404 chain no more, 2026-11-24
+
+**Status.** Built at $0 on branch `export-retired` from main `798d8d0f`, at the lead's request after R59's read. Not hosted: it ships on the next edge day, and the puller with the lifeboat bundle.
+
+**Finding.** The lifeboat's puller did ask for a retired chain. `Puller::pulls` takes every chain it holds a cursor for while the feed is stale, and a chain's cursor exists once the feed carried it. A repository retired or purged after that never leaves `held`, and `pass` skipped any status that was not a page, so the chain was asked again on every pass. The edge answered it 503 "no learner or follower of repo:N answered; retry" (graft-m3f `repo:65577`, retired 2026-11-17, read twice on 2026-11-24, `decisions/OPEN-QUESTIONS.md`, R59), so the loop never ended: up to `PAGES_PER_PASS` of each pass's edge pages went to chains that will never answer [inference from the code; not run hosted].
+
+**Decision.**
+- **The edge.** When no learner or follower of the chain answers `/log_rows`, the entries read asks `graftyard_lookup::retired_group`: each site's registry row and the record's bootstrap names, then every one's `/status`. Only when every member answered not joined with its `retired` row (`retire-sticks`) is the chain answered 404, as `design/DESIGN.md` answers a chain with no group. A registry or status read that failed, a member never joined, or one still joined keeps the 503. A repository with no `RepoOwner` row is 404 as before, but a `Names` read that failed is now a 503, not a 404 that would stop a lifeboat for good.
+- **The puller.** An edge 404 marks the chain gone (`Puller::gone`): the copy keeps what it holds, no source moves it again, and the pass names it in `Report::gone`. A gone chain holds no pass back from current. Any other status is asked again next pass, as before.
+
+**Why.** A retired group refuses every `/join`, so it never answers again, and the lead's ruling was to stop on it. The proof reads members, not the lookup's "no group": every voter writes its own site's registry row before it stores anything, so a live group, replaced or moved, leaves a joined member among those named (`repo-gone`).
+
+**What it beat.**
+- **A halt.** A halt alarms and holds the copy from current for good; a retired chain is the install's own decision, not a fault on the host.
+- **Backing off a 503.** A chain that is only down then waits too, and a retired one is still asked for good.
+- **404 on the lookup's "no group" alone.** That answer is relative to the record the lookup used, and a replaced bootstrap member answers it for a live group (`repo-gone`, the cross-placement window).
+
+**Evidence.**
+- `lifeboat/tests/pass.rs`, `a_chain_the_edge_answers_404_is_asked_no_more`: the gone chain is asked once, never again, and the copy is current while that chain's copy is short of the install's log; a chain the edge answers 503 is asked again. Without the puller's change the test fails (`r.gone` empty).
+- `crates/lookup`, `only_every_member_retired_is_a_retired_group`: three retired answers are proof, and a missing answer, a member never joined, or a joined one is not.
+- edgeboot on both builds.
+
+**Flip.** A retired group that comes back: if a retire ever stops sticking (`retire-sticks` reversed), a 404 would stop a lifeboat on a chain that answers again. Then the puller asks a gone chain again daily.
+
 ### `user-demote`: the edge sends every authenticated user write with its actor, and the leader counts demotions, 2026-11-24
 
 **Status.** Built and tested at $0. The lead ruled it on 2026-11-24, from B0-33 h1A. It is not deployed; it ships

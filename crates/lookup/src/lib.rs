@@ -441,6 +441,53 @@ pub async fn registry_reads(b: &Bindings<'_>, chain: ChainId) -> Vec<graftyard_t
     futures_util::future::join_all(reads).await.into_iter().map(graftyard_types::RowRead::of).collect()
 }
 
+/// Whether `chain`'s group is retired for good: every member that `record`'s bootstrap names and each site's registry
+/// row name answers `/status` not joined with its `retired` row (`retire_proof`). A retired member refuses every
+/// `/join` (`decisions/DECISIONS.md`, "`retire-sticks`"), and every voter writes its own site's row before it stores
+/// anything, so a live group, replaced or moved, leaves a joined member here. A registry or status read that fails
+/// proves nothing. The edge's export reads answer such a chain 404, as a chain with no group, so a lifeboat stops
+/// asking for it (`decisions/DECISIONS.md`, "`export-retired`").
+pub async fn retired_group(b: &Bindings<'_>, chain: ChainId, record: &PlacementRecord) -> bool {
+    let row = |at: SiteId| async move {
+        let stub = b.registry(at, &MemberRegistry::for_chain(at, chain).do_name()).ok()?;
+        let mut res = stub.fetch_with_str(&format!("https://registry/row?chain={chain}")).await.ok()?;
+        match res.status_code() {
+            200 => res.json::<RegistryRow>().await.ok().map(|r| Some((at, r.do_name))),
+            404 => Some(None),
+            _ => None,
+        }
+    };
+    let rows = b.sites.0.iter().map(|s| async move { within(CALL, row(s.id)).await.flatten() });
+    let mut names: Vec<(SiteId, Box<str>)> =
+        record.lookup_order().flat_map(|r| r.bootstrap_members(chain)).map(|m| (m.site, m.do_name)).collect();
+    for r in futures_util::future::join_all(rows).await {
+        match r {
+            Some(row) => names.extend(row),
+            None => return false,
+        }
+    }
+    names.sort();
+    names.dedup();
+    let reads = names.iter().map(|(site, name)| async move {
+        let call = async {
+            let mut r = b.member(*site, name).ok()?.fetch_with_str("https://member/status").await.ok()?;
+            if r.status_code() != 200 {
+                return None;
+            }
+            r.json::<Value>().await.ok()
+        };
+        within(CALL, call).await.flatten()
+    });
+    retire_proof(&futures_util::future::join_all(reads).await)
+}
+
+/// `retired_group`'s rule over the members' `/status` answers: at least one, every one answered, and every one is not
+/// joined with a `retired` time. A member never joined (no `retired` row) or one that did not answer is not proof.
+pub fn retire_proof(answers: &[Option<Value>]) -> bool {
+    !answers.is_empty()
+        && answers.iter().all(|a| a.as_ref().is_some_and(|v| v["joined"] == json!(false) && v["retired"].is_u64()))
+}
+
 /// The record of a chain whose record the caller does not hold (the `Release` group, before a cold isolate has its
 /// genesis): the voters and generation from the first `MemberRegistry` row any site holds for it, with the sites in
 /// the row's order. Its bootstrap names are the row's voters' names at that generation, as `bootstrap_members` builds.
@@ -2857,6 +2904,22 @@ mod tests {
         ] {
             assert!(!is_no_group(other), "{other}");
         }
+    }
+
+    /// `export-retired`: a group is retired for good only when every member named answered not joined with its
+    /// `retired` row. A member never joined (an empty object, no row), one still joined, or one that did not answer
+    /// leaves it a live group or an outage, which the export reads answer 503.
+    #[test]
+    fn only_every_member_retired_is_a_retired_group() {
+        let retired = || Some(json!({ "joined": false, "retired": 1_763_622_565_000u64 }));
+        let fresh = || Some(json!({ "joined": false, "retired": null }));
+        let joined = || Some(json!({ "joined": true, "role": "follower" }));
+        assert!(retire_proof(&[retired(), retired(), retired()]));
+        assert!(retire_proof(&[retired()]));
+        assert!(!retire_proof(&[]));
+        assert!(!retire_proof(&[retired(), retired(), None]));
+        assert!(!retire_proof(&[retired(), retired(), fresh()]));
+        assert!(!retire_proof(&[retired(), joined(), retired()]));
     }
 
     /// A read during a repository's create, before `RepoOwner` commits, is "not created" only when a majority of the
