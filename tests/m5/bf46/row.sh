@@ -45,6 +45,10 @@ log() { { date -u +%FT%TZ; cat; } | scrub >"$L"; cat "$L"; }
 # mint <name> <permission group id>...: an account token scoped to this account, written to $K/<name>.json (0600).
 mint() {
   local name=$1; shift
+  # A rerun after a cut-off setup keeps the token it already minted (m4abf46's first setup died after the mints).
+  if jq -e .success "$K/$name.json" >/dev/null 2>&1; then
+    jq -c --arg n "$name" '{mint: $n, kept: true, id: (.result.id // "" | .[0:8])}' "$K/$name.json"; return
+  fi
   local groups; groups=$(printf '{"id":"%s"},' "$@"); groups="[${groups%,}]"
   ( umask 077
     jq -nc --arg n "$name" --arg a "com.cloudflare.api.account.$CLOUDFLARE_ACCOUNT_ID" --argjson g "$groups" \

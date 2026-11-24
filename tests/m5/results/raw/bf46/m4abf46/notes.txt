@@ -1,0 +1,5 @@
+2026-11-24 m4abf46 notes
+00:07:50Z first setup run cut off by the caller's 58 s timeout during the graft-ops build, after the four mints and the five store writes; setup.log moved aside; row.sh's mint() now keeps a token minted by a cut-off run; rerun 00:09:23Z (setup.log)
+00:11:06Z bf46-mint service started without the graft-m4a env and exited (no tools token); restarted 00:13:03Z with the env
+00:16:35 ops cron re-PUT (the deploy's trigger did not fire, as in BF-7 and the check row)
+00:53Z after teardown: Idle runs still firing (00:52:26Z, 00:53:29Z), the known tail after a removed cron; BF-47 redeploys graft-ops next

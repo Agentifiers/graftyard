@@ -1,0 +1,24 @@
+2026-11-24T00:09:23Z
+05aace32
+{"created_on":"2026-11-23T11:33:35.847283Z","versions":["4bbfd9e5 100"]}
+{"mint":"graft-m4a-bf46-deploy-0","kept":true,"id":"f8b32cfd"}
+{"mint":"graft-m4a-bf46-deploy-1","kept":true,"id":"1ea9306d"}
+{"mint":"graft-m4a-bf46-read-0","kept":true,"id":"d6a9e372"}
+{"mint":"graft-m4a-bf46-read-1","kept":true,"id":"a1a6cc48"}
+{"patch":"graft-m4a-ops-deploy-token","ok":true,"errors":[]}
+{"patch":"graft-m4a-bf46-deploy-token-1","ok":true,"errors":[]}
+{"patch":"graft-m4a-bf46-read-token-1","ok":true,"errors":[]}
+{"patch":"graft-m4a-bf46-read-token-0","ok":true,"errors":[]}
+{"kid2_putvk":{"kid":2,"key":[88,84,111,34,87,12,226,78,137,17,114,214,199,111,104,176,80,158,35,187,116,10,145,32,124,82,239,167,216,186,32,170]}}
+{"patch":"graft-m4a-bf46-mint-wrap-key-1","ok":true,"errors":[]}
+{"test_faults":true,"gate":"pending","cron":"* * * * *","rotate_published_ms":600000,"step_dwell_ms":60000,"slots":{"DEPLOY_TOKEN":["graft-m4a-ops-deploy-token","graft-m4a-bf46-deploy-token-1"],"READ_TOKEN":["graft-m4a-bf46-read-token-0","graft-m4a-bf46-read-token-1"],"MINT_WRAP_KEY":["graft-m4a-mint-wrap-key","graft-m4a-bf46-mint-wrap-key-1"]}}
+graft-ops built from 05aace32
+OPS_ROTATE_PUBLISHED_MS: in this build
+   Compiling thiserror v2.0.21
+   Compiling thiserror-impl v2.0.21
+Uploaded graft-m4a-ops (2.49 sec)
+Deployed graft-m4a-ops triggers (1.01 sec)
+Current Version ID: de3c4bdb-fc97-4f6b-80c9-9612ff6ce09c
+{"created_on":"2026-11-24T00:11:08.726407Z","versions":["de3c4bdb 100"]}
+{"schedules":["* * * * *"]}
+bf46-mint: started, port 31232

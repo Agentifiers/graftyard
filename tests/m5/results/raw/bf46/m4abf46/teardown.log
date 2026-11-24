@@ -1,0 +1,15 @@
+2026-11-24T00:52:14Z
+Service bf46-mint stopped.
+{"schedules":[]}
+Current Version ID: 5f29ee48-a597-460a-9cb3-8b9a4ae4b97a
+{"schedules":[]}
+{"created_on":"2026-11-24T00:53:14.473779Z","versions":["5f29ee48 100"]}
+{"revoke":"graft-m4a-bf46-deploy-0","ok":true,"errors":[]}
+{"revoke":"graft-m4a-bf46-deploy-1","ok":true,"errors":[]}
+{"revoke":"graft-m4a-bf46-read-0","ok":true,"errors":[]}
+{"revoke":"graft-m4a-bf46-read-1","ok":true,"errors":[]}
+{"delete":"graft-m4a-bf46-deploy-token-1","ok":true,"errors":[]}
+{"delete":"graft-m4a-bf46-read-token-0","ok":true,"errors":[]}
+{"delete":"graft-m4a-bf46-read-token-1","ok":true,"errors":[]}
+{"delete":"graft-m4a-bf46-mint-wrap-key-1","ok":true,"errors":[]}
+files shredded, deploy worktree removed
