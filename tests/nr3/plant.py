@@ -59,8 +59,8 @@ MUTANTS = [
      'v.iter().find(|(t, at, l, _)| t == text && *at >= floor && *l == loaded)',
      'v.iter().find(|(_, at, l, _)| *at >= floor && *l == loaded)', SITE),
     ('cache: the answer is stamped with the floor, not the index it was built at', FAM,
-     '    let at = graftyard_fold::meta(&*fold.core).applied.0;\n    let bytes',
-     '    let at = floor.max(graftyard_fold::meta(&*fold.core).applied.0 + 1);\n    let bytes', SITE),
+     '    let at = graftyard_fold::meta(&*fold.core).applied.0;\n    let v = <Repo as Family>::read_json(fold, q);',
+     '    let at = floor.max(graftyard_fold::meta(&*fold.core).applied.0 + 1);\n    let v = <Repo as Family>::read_json(fold, q);', SITE),
     ('spacing: a read whose floor the cache covers waits for a build', FAM,
      '    if narrow_hit(repo, &text, floor, fold.meta.loaded()).is_some() {\n        return None;\n    }', '', SITE),
     ('spacing: never spaced', FAM,
@@ -169,7 +169,8 @@ MUTANTS = [
      '        "comment" => rec::<CommentRow>(cols).author,', '        "comment" => rec::<CommentRow>(cols).author.filter(|_| false),', NARROW),
 ]
 
-ENV = dict(os.environ, CARGO_INCREMENTAL='0')
+ENV = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', os.path.join(ROOT, 'target', 'plants')),
+           CARGO_INCREMENTAL='0')
 JOURNAL = os.path.join(ROOT, 'tests', 'nr3', 'raw', '.plant-journal')
 
 
@@ -204,7 +205,8 @@ def stop(signum, frame):
 def run(t):
     pkg, kind, name = t
     args = ['cargo', 'test', '-q', '-p', pkg, kind, name] if kind == '--test' else ['cargo', 'test', '-q', '-p', pkg, '--lib', name]
-    r = subprocess.run(args, cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=1800)
+    # A hang counts as caught (README, "Planted bugs").
+    r = subprocess.run(['timeout', '-k', '10', '600', *args], cwd=ROOT, env=ENV, capture_output=True, text=True)
     out = r.stdout + r.stderr
     return r.returncode, out, 'error[E' in out or 'could not compile' in out
 
@@ -246,6 +248,8 @@ def main():
             elif code != 0:
                 caught += 1
                 fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ')]
+                if code == 124:
+                    fails = ['(timed out)', *fails]
                 print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]', flush=True)
             else:
                 print(f'{i:2} MISSED  {name}', flush=True)

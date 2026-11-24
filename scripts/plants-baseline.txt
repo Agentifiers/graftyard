@@ -11,4 +11,3 @@ tests/m3/wp3/plant.sh: live-before-move
 tests/m3/wp4/plant.sh: key-cache-never-lapses
 tests/m3/wp4/plant.sh: claims-not-intersected
 tests/m4/wp1/plant.py: a rebuilt store starts past the committed read (replay_from ignored)
-tests/nr3/plant.py: cache: the answer is stamped with the floor, not the index it was built at
