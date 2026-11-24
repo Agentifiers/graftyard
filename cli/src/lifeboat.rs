@@ -233,8 +233,10 @@ fn relative(from: &Path, to: &Path) -> Res<String> {
 /// Workers in one process: the site build as `member` (`GRAFTYARD_LIFEBOAT=1`, the class `Member` on `localDisk`
 /// under `unique_key`), the edge build as `front` in lifeboat mode, the only socket, and the lifeboat build as `puller`
 /// on its own alarm. The front reaches `MEMBER` and `PULLER` by binding; the puller reaches `MEMBER`, and the install
-/// (the feed, the edge) and graft-blob over the network. The copies and the puller's state live under `state`; a new
-/// workerd version gets a fresh `state` and rebuilds from the feed.
+/// (the feed, the edge) and graft-blob over the network, with the system's CA store for HTTPS: workerd's `network`
+/// has no TLS client until `tlsOptions` names one, so every HTTPS fetch to a real install failed ("this client has no
+/// TLS configuration"; BF-53 on graft-m3f, which lifeboatbed's plain-HTTP front never reached). The copies and the
+/// puller's state live under `state`; a new workerd version gets a fresh `state` and rebuilds from the feed.
 pub fn bundle(a: BundleArgs) -> Res<()> {
     let read = |p: &Path| -> Res<Value> {
         serde_json::from_slice(&fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?)
@@ -291,7 +293,7 @@ const config :Workerd.Config = (
     (name = "member", worker = .member),
     (name = "puller", worker = .puller),
     (name = "state", disk = (path = {state}, writable = true)),
-    (name = "internet", network = (allow = ["public", "private"])),
+    (name = "internet", network = (allow = ["public", "private"], tlsOptions = (trustBrowserCas = true))),
   ],
   sockets = [ (name = "front", address = {listen}, {socket}, service = "front"){admin} ],
 );
