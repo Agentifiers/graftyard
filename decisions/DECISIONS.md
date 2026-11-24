@@ -10566,6 +10566,47 @@ counted, throws ignored, N's errors summed in, no resend gap, counts kept across
 **Flip.** A hosted `OpsRoll` swapped back with a healthy N+1 (raise the bound), or one where a bad N+1 served mints
 for longer than one `MINT_RESEND_MS` after its errors crossed the line (count across isolates, as `gate-errors` does).
 
+#### `deployed-bindings`: `graft-ops` uploads a version configured as the deployed one, not as the newest upload (2026-11-24)
+
+**Status.** Code-only (R57's fix), not deployed: graft-m4a is AM2's. Branch `keep-deployed-bindings`.
+
+**Decision.**
+- `Exec::upload` reads the deployment's highest-percentage version (`ops::upload_source`) and sends its bindings as
+  `bindings` (`ops::upload_metadata`), with its compatibility date, flags, limits and container map as before.
+- Only `secret_text` stays in `keep_bindings` (`ops::KEPT_BINDINGS`): a read returns no secret's value, so the upload
+  cannot send one. A Secrets Store binding carries only its store and name, so it is sent like any other.
+
+**Why.** `keep_bindings` keeps "from previous_upload", and an inherited binding defaults to "the most recently uploaded
+version, which may not be the deployed version" (https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/create
+[doc]). On graft-m4a an upload so carried an undeployed version's `FORCE_FORMAT` and `FORMATS_ENABLED` (R57).
+
+**Secrets: what the docs allow.**
+- The script version upload endpoint takes an `inherit` binding's `version_id` only as "latest"; a version id fails
+  with 10057. Only the beta Workers API version endpoints, `/accounts/{account_id}/workers/workers/{worker_id}/versions`,
+  take one, and their docs say "To copy a version, drop `env` from the read before sending it back, and use `inherit`
+  bindings for secrets" (https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/subresources/versions/methods/create
+  [doc]).
+- So a `secret_text` can come from the deployed version only through the beta endpoint, a JSON body with base64
+  modules. Its docs say nothing of keeping static assets, which the edge needs (`keep_assets` on the script
+  endpoint). It stays on the script endpoint; whether `keep_bindings` keeps a `secret_text` from the newest upload or
+  the deployed version is not documented, and R57 keeps it open.
+- In this tree only the test edge's `BED_TOKEN` is a `secret_text` that `graft-ops` uploads under: every product
+  script's secrets are Secrets Store bindings [inference from `workers/*/deploy.mjs`].
+
+**What it beat.**
+- **The beta endpoint for every upload.** It would take secrets by version, but it is beta, its asset handling is
+  undocumented, and it changes the request format of every site day.
+- **Keeping `keep_bindings` and checking after.** A read of the new version can show stray vars, but only after the
+  upload; the fix leaves none to find.
+
+**Evidence.** `crates/release/src/tests/group/run.rs`,
+`r57_an_upload_takes_the_deployed_version_s_bindings_not_the_newest_upload_s`: N at 99%, N+1 at 1%, and a newer
+undeployed version with a stray `FORCE_FORMAT` and another `FORMATS_ENABLED`; the upload takes N's vars, bucket and
+limits, sends no secret, and keeps only `secret_text`. `tests/m0carried/plant212.py`: 4 of 4 caught.
+
+**Flip.** A hosted upload whose `secret_text` came from an undeployed version (move secrets to Secrets Store, or to the
+beta endpoint's `inherit`), or a binding type a read returns in a form an upload refuses (keep that type).
+
 #### `agents-view`: the agents account reads every committed `Release` entry and replays the group's own check (2026-11-24)
 
 **Status.** Code-only, not deployed (AM3-WP1's first slice). `graftyard_release::agents` and the edge's `GET /api/graftyard/v1/release/entries` ship on the next edge day; no agents account exists yet.

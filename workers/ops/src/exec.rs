@@ -12,8 +12,9 @@
 //!   versions and deployments API is called with that token only.
 //! - **Uploads.** The `RELEASES` R2 binding is the release bucket: one prefix per release, `<label>/`, holding
 //!   `release.json`, `release.sig` (64 raw bytes, Ed25519), and every file `release.json` lists. A version uploads with
-//!   `<seq>-<release id>` as its `workers/tag` (`ops::version_tag`) and `keep_bindings` for every binding type, so it carries the deployed
-//!   version's bindings and changes only code [inference: a release that changes a binding is a separate operation].
+//!   `<seq>-<release id>` as its `workers/tag` (`ops::version_tag`) and the deployed version's bindings and runtime
+//!   settings (`ops::upload_metadata`), so it changes only code [inference: a release that changes a binding is a
+//!   separate operation]. A `secret_text`, whose value no read returns, is kept from the newest upload (R57).
 //! - **Pages** are `console_error!("PAGE graft-ops ...")` lines, which the install's log alert matches.
 //! - **Dwell.** `STEP_DWELL_MS` and `FIRST_DAY_MS` lower the dwells on a test install only, and a test-faults build's
 //!   `OPS_ROTATE_PUBLISHED_MS` lowers a `MintWrapKey` `Rotate`'s publish wait (BF-46 hosted).
@@ -602,25 +603,12 @@ impl Exec for Live<'_> {
             .map(|(n, _)| n.as_str())
             .find(|n| *n == "index.js" || *n == "entry.js" || *n == "worker.js")
             .ok_or("the script's modules have no index.js")?;
-        // A version upload keeps no runtime settings from the version before it: it falls back to the 2021-11-02
-        // compatibility date, the default CPU limit, and no containers. So the upload carries the running version's
-        // date, flags, limits, and container map, as wrangler's `--containers-rollout=none` carries the containers.
+        // The deployed version's bindings and runtime settings, read and sent: `keep_bindings` would take them from
+        // the newest upload, deployed or not, and an upload keeps no runtime setting at all (`ops::upload_metadata`).
         let d = self.deployment(s).await?;
-        let (live, _) = d.split.iter().max_by_key(|(_, p)| *p).ok_or("a deployment with no versions")?;
+        let live = ops::upload_source(&d.split).ok_or("a deployment with no versions")?;
         let one = self.api(Method::Get, &format!("/workers/scripts/{name}/versions/{live}"), None, false).await?;
-        let rt = &one["result"]["resources"]["script_runtime"];
-        let mut meta = json!({
-            "main_module": main,
-            "keep_bindings": ["plain_text", "secret_text", "json", "durable_object_namespace", "service", "r2_bucket",
-                              "queue", "secrets_store_secret", "pipelines", "version_metadata", "assets", "workflow"],
-            "keep_assets": true,
-            "annotations": { "workers/tag": tag, "workers/message": "graft-ops upload" },
-        });
-        for k in ["compatibility_date", "compatibility_flags", "limits", "containers"] {
-            if !rt[k].is_null() {
-                meta[k] = rt[k].clone();
-            }
-        }
+        let meta = ops::upload_metadata(&one["result"], main, tag);
         let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
         form.append_with_str("metadata", &meta.to_string()).map_err(|e| format!("{e:?}"))?;
         for (n, b) in modules {
