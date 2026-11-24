@@ -9808,7 +9808,7 @@ reads 0.16 + 0.293 ms, 0.46 ms a call.
 `crates/git/src/export.rs` (`Route::lifeboat_may`) and `workers/edge/src/export.rs` (`lifeboat_claims`);
 `crates/release` (`ReleaseFold::lifeboat_seen`, `ops::silent_lifeboats`) and `workers/ops/src/exec.rs`;
 `workers/site/src/member.rs` (`lifeboat_route`); the new `lifeboat/` crate (`puller`, `status`, `blob`, `acme`). The
-workerd bundle and its bed are the next branch, and Tokens V5 (`lifeboat-revoke`) the next commit. Not hosted.
+workerd bundle and its bed are the next branch, and Tokens V5 is the next commit ("`lifeboat-revoke`"). Not hosted.
 
 **Decision.**
 - **The copy is learners.** Each chain on the lifeboat is a learner (slot 15) of the site script's own member classes,
@@ -9863,3 +9863,43 @@ same code as the sites, which is what `formats:enable` waiting on every lifeboat
 
 **ACME.** DNS-01 is built against a stub (`lifeboat/src/acme.rs`). Real ACME is owed until the operator creates the
 validation-zone account (`decisions/OPEN-QUESTIONS.md`, R50); BF-53 uses a local CA.
+
+### `lifeboat-revoke`: each lifeboat enroll revokes the developer's earlier lifeboat tokens, in Tokens 0x11.5, 2026-11-24
+
+**Status.** M6-WP3, ruled by the lead on 2026-11-24 (option (ii-a)). Built as its own commit on branch `lifeboat-pure`,
+after the pure half: `crates/identity/src/tokens.rs` (`lifeboat_shard`, `TokensEvent::LifeboatRevoked`, wire tag 12 and record byte 13,
+and `StoreLifeboat`'s rule), `crates/identity/src/lib.rs` (`TOKENS_FORMAT_V5`), `workers/site/src/family.rs` (reads
+0x11.5), and `workers/edge/src/lifeboat.rs` (`POST /api/graftyard/v1/lifeboat/tokens`). Not hosted.
+
+**Decision.**
+- **One shard per developer.** The edge draws the token's secret until its hash lands on `lifeboat_shard(account)`
+  (`draw_secret_on`, about 3,072 draws), and the leader refuses a `StoreLifeboat` on any other shard (`WrongShard`).
+- **One entry.** `StoreLifeboat` emits `LifeboatRevoked { hash }` for every lifeboat row of the account on that shard,
+  then `LifeboatRead`. Applying `LifeboatRevoked` removes the row, so the fold blob, a member restored from storage, and
+  a fold rebuilt from the log refuse the earlier token alike. A follower refuses a `LifeboatRevoked` of a row it does not
+  hold.
+- **The edge as the operator** (ruling B). It authenticates the developer's own token, checks the host in its `Release`
+  view, then commits as the operator. Only the operator may submit `StoreLifeboat`.
+- **Format.** Tokens 0x11.5, the next free Tokens version on main `3bf43a16` (0x11.1 to 0x11.4 are taken). It follows the
+  two-release path that 0x11.2 to 0x11.4 took: the site reads it from this release, and the edge sends it only once
+  `FormatsEnable` (the test edge's `FORMATS_ENABLED`, `17.5`) enabled it. Until then the route answers 503, and a
+  member of the release before answers `Unsupported`.
+
+**Why.** A developer's leaked lifeboat token must stop working at their next enroll, and that rule must survive a
+snapshot rebuild of the shard, which a rule kept outside the log would not.
+
+**What it beat.**
+- **(ii-b), a revocation the edge keeps in memory or a cache.** It is lost on a snapshot rebuild, the case that matters most.
+- **(ii-c), a per-host token with no revocation.** It defers the same format change.
+
+**Evidence.**
+- `crates/identity/tests/lifeboat.rs`: after three enrolls the first two tokens are refused, the newest reads, and a
+  neighbour's token on the same shard is kept, on the leader's fold, after every member restores from storage, on the
+  fold blob, and on a fold rebuilt from the log. A token off the account's shard is refused `WrongShard`, a developer's
+  own credential is refused `Forbidden`, and a 0x11.4 member answers `Unsupported`.
+- `tests/m0carried/plant120.py`, 3 of 3 caught: no `LifeboatRevoked` emitted, a `LifeboatRevoked` that removes
+  nothing, and a revocation that takes every lifeboat row of the shard.
+- `crates/git/tests/wire_tags.golden`: `TokensEvent` 12 `LifeboatRevoked` (event byte 13 in `Record`).
+
+**Flip.** A developer enrolled on two lifeboats at once needs both tokens live. That needs a per-host revocation, which
+is a new Tokens format.

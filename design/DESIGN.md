@@ -1242,7 +1242,7 @@ pub enum TokensEvent { Stored { hash: [u8; 32], kind: TokenKind, account: Accoun
                        VerifyingKey { kid: Kid, key: Ed25519Public, retired: Option<Timestamp> },
                        Code { hash: [u8; 32], kind: CodeKind, client: Option<ClientId>, scopes: ScopeSet,
                               account: Option<AccountId>, expires: Timestamp },
-                       CodeApproved { hash: [u8; 32], account: AccountId }, CodeUsed { hash: [u8; 32] } }
+                       CodeApproved { hash: [u8; 32], account: AccountId }, CodeUsed { hash: [u8; 32] }, LifeboatRevoked { hash: [u8; 32] } }
 pub enum CodeKind { Device { user_code: [u8; 32], interval: u8 }, User { device_code: [u8; 32] },
                     Authorization { redirect: Url, pkce: Option<Digest> }, SignInLink }
 /// 1,024 shards per install or front account, on `Tri`. `account_shard` holds the account's `Account` row.
@@ -1362,11 +1362,11 @@ pub struct ExportClaims { pub install: InstallId, pub scope: Scope, pub holder: 
 /// A `lifeboat:read` token is an `OpaqueToken` of kind `Pat` (`ghp_`), so gh and git accept it. Its only claim is the
 /// account in its `TokensEvent::LifeboatRead` row, and it has no expiry. The main edge refuses it, because no `Stored`
 /// row holds its hash. `POST /api/graftyard/v1/lifeboat/tokens` (`{"host": ...}`, the developer's own token, verified
-/// by the edge, which commits `StoreLifeboat` as the operator: one group write, no Cloudflare API call) revokes every
-/// lifeboat token of that developer in the same entry, on its account's `Tokens` shard, and returns the token once.
-/// Served in `/api/v3/meta` and the `X-Graftyard-Lifeboat-Lag` header. The host reports `decoder` to the `Release`
-/// group by signing `LifeboatDecoder` with its key and sending it to `POST /api/graftyard/v1/release/entries`, when
-/// its decoder changes and at least daily, and that daily entry is what the 7-day silence alarm watches.
+/// by the edge, which commits `StoreLifeboat` as the operator: one group write, no Cloudflare API call; 503 until Tokens
+/// 0x11.5) revokes the developer's earlier lifeboat tokens in the same entry (`LifeboatRevoked`) on
+/// `lifeboat_shard(account)`, which the secret is drawn onto, and returns the token once. Served in `/api/v3/meta` and
+/// the lag header. The host signs `LifeboatDecoder` with its key to `POST /api/graftyard/v1/release/entries` at each
+/// decoder change and at least daily, and that daily entry is what the 7-day silence alarm watches.
 pub struct LifeboatStatus { pub decoder: ReleaseId, pub cursor_age: Duration }
 ```
 
