@@ -9849,9 +9849,13 @@ ships on an edge day and a site day. Not hosted: it rides on the next B0-34-shap
 - **The cold mark's order is unchanged.** Changing it was left to this decision; the evidence says no. A passed home
   went last, and site b took mt21's 14 hedged and 73 first-try validates before the kill, so the order moved load
   as `validate-hedge` meant. What was wrong was counting that load as a failover.
-- **`maintStats` adds `deferred_s` and `cpu_p99`**: how long maintenance has been deferred now (the clock
-  `MAINT_DEFER_MAX` bounds, 0 when nothing is deferred) and the client CPU p99 `maintBegin` reads.
-  `tests/fanout/shardprocs.mjs` records them in `/procs`'s `maint`. `longest_hold_s` spans hold calls, not the
+- **`maintStats` adds `deferred_s`, `max_deferred_s` and `cpu_p99`**: how long a start has waited now (since the first
+  start refused after the last one granted, 0 once a start is granted), the longest deferral a granted start had
+  waited (from the first refused start or stopped run, the clock `MAINT_DEFER_MAX` bounds), and the client CPU p99
+  `maintBegin` reads. `tests/fanout/shardprocs.mjs` records them in `/procs`'s `maint`. As first built, `deferred_s`
+  counted from that clock's start to now until a repack completed, so B0-34 mt22's site b read 427 to 667 through its
+  overdue run and 1,485 after load while the run started at 411.5 to 426.6 s, at the 420 s bound
+  (`tests/am1/results/b034-mt22.md`). `longest_hold_s` spans hold calls, not the
   deferral, so neither mt20b's 451 nor mt21's 573 measured the bound.
 
 **Why.** On B0-34 mt21 site b's container read `longest_hold_s` 573 and `max_unkept_held` 846, past 751, with the home
@@ -9881,7 +9885,8 @@ moved try.
 - `crates/git/tests/shard.rs`, `only_a_call_moved_off_a_failed_home_holds_maintenance`: an unmarked call at another site
   holds nothing whatever its `wait`. On main, mt21's first try (`wait` 15 at site b) held.
 - `containers/git/server/maint_test.go`, `TestMaintenanceYieldsToMovedLoad`: `deferred_s` reads 1 + 1 + `yieldHold`
-  after the first stop, `cpu_p99` reads 0.9, and `deferred_s` is 0 once the overdue repack ran to its end.
+  after the first stop and `cpu_p99` 0.9; `deferred_s` is 0 while the granted overdue repack runs (as first built it
+  read 5 there) and after an idle hour, and `max_deferred_s` reads 2 + 2·`yieldHold`, the wait at the grant.
 - `tests/m0carried/plant140.py`, six mutants: a pass marking the home failed, a pass clearing a live failure, a mark
   that never lapses, the mark read off the called site, the home's own call marked, and a URL without `moved=1`.
   `tests/m0carried/plant89.py`'s mutant 12 now plants an unmarked call counting.
