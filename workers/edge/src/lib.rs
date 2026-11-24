@@ -1724,7 +1724,7 @@ fn b64_decode(s: &str) -> Option<Vec<u8>> {
 }
 
 /// The token in `Authorization`: Basic with the token as the password (any username), or `token`/`Bearer`.
-fn token_of(req: &Request) -> Result<Option<String>> {
+pub(crate) fn token_of(req: &Request) -> Result<Option<String>> {
     let Some(a) = req.headers().get("authorization")? else { return Ok(None) };
     let (scheme, rest) = a.split_once(' ').unwrap_or((&a, ""));
     Ok(match scheme.to_ascii_lowercase().as_str() {

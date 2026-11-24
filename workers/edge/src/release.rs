@@ -52,8 +52,9 @@ fn refused(variant: &str, message: String) -> Result<Response> {
 }
 
 pub async fn entries(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
-    // Reads (`GET`) take an App JWT of the install's `graftyard-agent` and are AM3's (`design/AGENT-LAYER.md`, "API
-    // reference"); not built here.
+    if req.method() == Method::Get {
+        return read(c, req).await;
+    }
     if req.method() != Method::Post {
         return answer(405, json!({ "message": "POST a signed entry" }));
     }
@@ -121,6 +122,70 @@ pub async fn entries(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
         return answer(status, out);
     }
     answer(status, out)
+}
+
+/// `GET /api/graftyard/v1/release/entries?after=<index>&per_page=<n>` (`design/AGENT-LAYER.md`, "API reference";
+/// AM3-WP1): the group's committed entries after index `after` (0 reads from the genesis, index 1), at most `per_page`
+/// (default 30, at most 100), each `{index, entry, at}` with `entry` the stored bytes in base64 and `at` the time of the
+/// entry it committed in, which the agents view checks it at. A `Link` `rel="next"` names the next page while more
+/// remain. Only an App JWT of the install's `graftyard-agent` reads it (`ident::graftyard_agent`); the bytes are
+/// signed entries, which carry no secret. Any `Release` member answers from what it applied (`/view`), with no
+/// read-index round, so the agents view, which replays and checks every entry itself and never moves backward
+/// (`graftyard_release::agents::AgentsReleaseView`), may read one entry behind the group and catches up on its next
+/// read. 503 when no member answered.
+async fn read(c: &Ctx<'_>, req: &Request) -> Result<Response> {
+    use base64::Engine as _;
+    if let Err(r) = crate::ident::graftyard_agent(c, req).await {
+        return crate::agents::respond(c, r);
+    }
+    let url = req.url()?;
+    let q = |k: &str| url.query_pairs().find(|(n, _)| n == k).and_then(|(_, v)| v.parse::<u64>().ok());
+    let after = q("after").unwrap_or(0);
+    let per_page = q("per_page").map_or(30, |n| n as usize);
+    let record = match c.system_record(ChainId::Release).await {
+        Ok(r) => r,
+        Err(e) => return answer(503, json!({ "message": format!("no Release group: {e}") })),
+    };
+    let mut members: Vec<(graftyard_types::SiteId, String)> =
+        graftyard_lookup::known_voters(ChainId::Release).into_iter().map(|t| (t.site, t.do_name)).collect();
+    if members.is_empty() {
+        members =
+            record.bootstrap_members(ChainId::Release).into_iter().map(|m| (m.site, m.do_name.to_string())).collect();
+    }
+    let b = c.bindings();
+    let body = json!({ "from": after }).to_string();
+    for (site, name) in &members {
+        let deadline = std::time::Duration::from_millis(graftyard_release::view::VIEW_CALL_MS);
+        let Some((200, v)) = graftyard_lookup::post_within(&b, *site, name, "/view", body.as_bytes(), deadline).await
+        else {
+            continue;
+        };
+        let Some(count) = v["count"].as_u64() else { continue };
+        let page: Vec<(Vec<u8>, graftyard_types::Timestamp)> = v["entries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| {
+                Some((graftyard_lookup::unhex(e[0].as_str()?)?, graftyard_types::Timestamp(e[1].as_u64()?)))
+            })
+            .collect();
+        let out = graftyard_release::agents::feed(after, &page, per_page);
+        let last = out.last().map_or(after, |(i, _, _)| i.0);
+        let rows: Vec<Value> = out
+            .iter()
+            .map(|(i, e, at)| {
+                json!({ "index": i.0, "entry": base64::engine::general_purpose::STANDARD.encode(e), "at": at.0 })
+            })
+            .collect();
+        let mut r = Response::from_json(&rows)?;
+        if last < count {
+            let per = per_page.clamp(1, graftyard_release::agents::ENTRIES_PER_PAGE);
+            let next = format!("<https://{}{ENTRIES_PATH}?per_page={per}&after={last}>; rel=\"next\"", c.cfg.host);
+            r.headers_mut().set("link", &next)?;
+        }
+        return Ok(r);
+    }
+    answer(503, json!({ "message": "no Release member answered" }))
 }
 
 /// How long a `StaleMode` waits for the group's commit before it goes to the members' `pending` rows [guess].
