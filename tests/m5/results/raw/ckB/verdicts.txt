@@ -1,0 +1,202 @@
+== 06:23:07 62a8ed72 ok
+  06:23:11.331 graft-ops Idle
+== 06:24:07 62a8ed72 ok
+  06:24:11.796 graft-ops Idle
+== 06:25:08 9249fa8b ok
+  06:25:12.320 graft-ops Idle
+== 06:26:07 9249fa8b ok
+  06:26:13.262 N+1 e0 a0 r0 x0 sd0 | N e2544 a4193 r103 p99 2000 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  06:26:15.245 N+1 e0 a0 r0 x0 sd0 | N e2643 a4343 r104 p99 2000 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  06:26:17.125 N+1 e0 a0 r0 x0 sd0 | N e2681 a4379 r105 p99 2000 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  06:26:20.261 N+1 e0 a0 r0 x0 sd0 | N e2805 a4492 r106 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(0)
+  06:26:20.993 graft-ops Committed("SiteMode")
+  06:26:20.993 graft-ops Committed("IntentStep")
+  06:26:20.993 graft-ops Deployed(Site(SiteId(1)), [(VersionId(847a6465-495a-41df-937a-344a4ca04b8e), 1), (VersionId(627ed36c-91c4-406a-ab3e-7744c464ee84), 99)])
+  06:26:20.993 graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:27:07 9249fa8b ok
+  06:27:11.012 N+1 e18 a29 r0 x0 sd0 | N e2979 a5139 r38 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(18)
+  06:27:11.581 graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:28:07 9249fa8b ok
+  06:28:10.974 N+1 e37 a65 r0 x0 sd0 | N e5371 a9471 r49 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Starved(37)
+  06:28:11.605 graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:29:07 9249fa8b ok
+  06:29:11.915 N+1 e88 a153 r0 x0 sd0 | N e7803 a13866 r51 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  06:29:12.535 graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:30:07 9249fa8b ok
+  06:30:11.025 N+1 e127 a231 r0 x0 sd0 | N e10161 a18101 r53 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  06:30:11.737 graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:31:08 9249fa8b ok
+  06:31:11.775 N+1 e174 a318 r0 x0 sd0 | N e12442 a22304 r84 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  06:31:12.401 graft-ops Wait { until: Some(Timestamp(1795501878608)), why: "STEP_DWELL" }
+== 06:32:07 9249fa8b ok
+  06:32:10.954 N+1 e218 a401 r0 x0 sd0 | N e14614 a26300 r109 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  06:32:12.353 N+1 e218 a401 r0 x0 sd0 | N e14660 a26377 r109 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  06:32:14.413 N+1 e218 a401 r0 x0 sd0 | N e14773 a26577 r109 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  06:32:15.064 graft-ops Committed("IntentStep")
+  06:32:15.064 graft-ops Deployed(Site(SiteId(1)), [(VersionId(847a6465-495a-41df-937a-344a4ca04b8e), 10), (VersionId(627ed36c-91c4-406a-ab3e-7744c464ee84), 90)])
+  06:32:15.064 graft-ops Wait { until: Some(Timestamp(1795502233211)), why: "STEP_DWELL" }
+== 06:33:07 9249fa8b ok
+  06:33:13.456 N+1 e251 a472 r2 x0 sd0 | N e16308 a29374 r111 p99 1500 | over N p99 39 bp, over 5 s 0 bp -> Pass
+  06:33:14.161 graft-ops Wait { until: Some(Timestamp(1795502233211)), why: "STEP_DWELL" }
+== 06:34:08 9249fa8b ok
+  06:34:11.595 N+1 e380 a718 r5 x0 sd0 | N e17413 a31448 r138 p99 2000 | over N p99 289 bp, over 5 s 0 bp -> Pass
+  06:34:12.236 graft-ops Wait { until: Some(Timestamp(1795502233211)), why: "STEP_DWELL" }
+== 06:35:07 9249fa8b ok
+  06:35:13.829 N+1 e555 a1022 r9 x0 sd0 | N e19022 a34596 r158 p99 3000 | over N p99 72 bp, over 5 s 18 bp -> Pass
+  06:35:14.684 graft-ops Wait { until: Some(Timestamp(1795502233211)), why: "STEP_DWELL" }
+== 06:36:07 9249fa8b ok
+  06:36:11.037 N+1 e720 a1315 r13 x0 sd0 | N e20440 a37275 r180 p99 3000 | over N p99 55 bp, over 5 s 13 bp -> Pass
+  06:36:11.620 graft-ops Wait { until: Some(Timestamp(1795502233211)), why: "STEP_DWELL" }
+== 06:37:07 9249fa8b ok
+  06:37:13.499 N+1 e889 a1646 r13 x0 sd0 | N e22076 a40427 r206 p99 3000 | over N p99 67 bp, over 5 s 22 bp -> Pass
+  06:37:14.230 graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 11845, missed: 6 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1289
+  06:37:15.593 N+1 e889 a1647 r13 x0 sd0 | N e22111 a40507 r206 p99 3000 | over N p99 67 bp, over 5 s 22 bp -> Pass
+  06:37:16.321 graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 11932, missed: 6 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1299
+  06:37:17.437 N+1 e889 a1647 r13 x0 sd0 | N e22125 a40533 r206 p99 3000 | over N p99 67 bp, over 5 s 22 bp -> Pass
+  06:37:18.178 graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 12005, missed: 6 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1307
+  06:37:18.178 graft-ops Committed("SiteMode")
+  06:37:18.178 graft-ops Committed("SiteMode")
+  06:37:18.178 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:38:07 9249fa8b ok
+  06:38:12.864 N+1 e1129 a2056 r14 x0 sd0 | N e24668 a45105 r216 p99 3000 | over N p99 53 bp, over 5 s 17 bp -> Pass
+  06:38:15.032 graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 15895, missed: 6 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 1746
+  06:38:15.032 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:39:07 9249fa8b ok
+  06:39:12.524 N+1 e1465 a2635 r14 x0 sd0 | N e27953 a50728 r216 p99 3000 | over N p99 40 bp, over 5 s 13 bp -> Pass
+  06:39:13.111 graft-ops health: {0: Verdict { burning: false, calm: false }, 1: Verdict { burning: false, calm: false }, 2: Verdict { burning: true, calm: false }} from [SiteHealth { observer: SiteId(0), target: SiteId(1), calls: 20304, missed: 8 }, SiteHealth { observer: SiteId(0), target: SiteId(2), calls: 2235
+  06:39:13.111 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:40:08 9249fa8b ok
+  06:40:14.233 N+1 e1761 a3160 r14 x0 sd0 | N e31082 a56195 r217 p99 3000 | over N p99 34 bp, over 5 s 11 bp -> Pass
+  06:40:14.969 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:41:08 9249fa8b ok
+  06:41:13.377 N+1 e1949 a3498 r14 x0 sd0 | N e33011 a59740 r217 p99 3000 | over N p99 30 bp, over 5 s 10 bp -> Pass
+  06:41:14.219 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:42:07 9249fa8b ok
+  06:42:11.725 N+1 e2141 a3843 r15 x0 sd0 | N e34930 a63240 r217 p99 3000 | over N p99 28 bp, over 5 s 9 bp -> Pass
+  06:42:12.313 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:43:08 9249fa8b ok
+  06:43:13.674 N+1 e2360 a4242 r16 x0 sd0 | N e36987 a67013 r217 p99 2000 | over N p99 118 bp, over 5 s 8 bp -> Pass
+  06:43:14.537 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:44:08 9249fa8b ok
+  06:44:11.282 N+1 e2539 a4568 r16 x0 sd0 | N e38963 a70575 r217 p99 2000 | over N p99 110 bp, over 5 s 7 bp -> Pass
+  06:44:11.945 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:45:08 9249fa8b ok
+  06:45:13.949 N+1 e2788 a5012 r16 x0 sd0 | N e41021 a74317 r217 p99 2000 | over N p99 100 bp, over 5 s 7 bp -> Pass
+  06:45:14.703 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:46:07 9249fa8b ok
+  06:46:10.352 N+1 e2988 a5379 r16 x0 sd0 | N e42895 a77748 r217 p99 1500 | over N p99 130 bp, over 5 s 6 bp -> Pass
+  06:46:10.946 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:49:07 9249fa8b ok
+  06:49:14.080 N+1 e3764 a6734 r18 x0 sd0 | N e50893 a91910 r219 p99 1500 | over N p99 103 bp, over 5 s 5 bp -> Pass
+  06:49:14.886 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:50:08 9249fa8b ok
+  06:50:11.564 N+1 e4086 a7271 r18 x0 sd0 | N e54007 a97208 r220 p99 1500 | over N p99 95 bp, over 5 s 4 bp -> Pass
+  06:50:12.164 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:51:08 9249fa8b ok
+  06:51:15.503 N+1 e4451 a7900 r18 x0 sd0 | N e58186 a104205 r220 p99 1500 | over N p99 87 bp, over 5 s 4 bp -> Pass
+  06:51:16.862 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:52:07 9249fa8b ok
+  06:52:10.768 N+1 e4722 a8359 r18 x0 sd0 | N e60817 a108823 r220 p99 1500 | over N p99 82 bp, over 5 s 4 bp -> Pass
+  06:52:11.334 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:53:08 9249fa8b ok
+  06:53:12.519 N+1 e5034 a8895 r19 x0 sd0 | N e63765 a114027 r220 p99 1500 | over N p99 77 bp, over 5 s 3 bp -> Pass
+  06:53:13.196 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:54:08 9249fa8b ok
+  06:54:12.711 N+1 e5328 a9396 r19 x0 sd0 | N e66851 a119389 r220 p99 1500 | over N p99 73 bp, over 5 s 3 bp -> Pass
+  06:54:13.552 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:55:08 9249fa8b ok
+  06:55:12.851 N+1 e5676 a9973 r19 x0 sd0 | N e70113 a124964 r220 p99 1500 | over N p99 68 bp, over 5 s 3 bp -> Pass
+  06:55:13.549 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:56:08 9249fa8b ok
+  06:56:15.123 N+1 e5982 a10505 r19 x0 sd0 | N e73347 a130595 r220 p99 1500 | over N p99 65 bp, over 5 s 3 bp -> Pass
+  06:56:16.061 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:57:07 9249fa8b ok
+  06:57:10.250 N+1 e6234 a10961 r19 x0 sd0 | N e76296 a135746 r221 p99 1500 | over N p99 62 bp, over 5 s 3 bp -> Pass
+  06:57:10.857 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:58:07 9249fa8b ok
+  06:58:10.275 N+1 e6487 a11405 r19 x0 sd0 | N e79129 a140701 r221 p99 1500 | over N p99 60 bp, over 5 s 3 bp -> Pass
+  06:58:10.896 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 06:59:08 9249fa8b ok
+  06:59:13.916 N+1 e6629 a11650 r19 x0 sd0 | N e80584 a143307 r221 p99 1500 | over N p99 58 bp, over 5 s 3 bp -> Pass
+  06:59:14.681 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:00:08 9249fa8b ok
+  07:00:15.811 N+1 e6629 a11650 r19 x0 sd0 | N e80584 a143307 r221 p99 1500 | over N p99 58 bp, over 5 s 3 bp -> Pass
+  07:00:17.009 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:01:07 9249fa8b ok
+  07:01:13.884 N+1 e6633 a11658 r19 x0 sd0 | N e80600 a143344 r221 p99 1500 | over N p99 58 bp, over 5 s 3 bp -> Pass
+  07:01:14.753 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:02:07 9249fa8b ok
+  07:02:11.458 N+1 e6633 a11658 r19 x0 sd0 | N e80600 a143344 r221 p99 1500 | over N p99 58 bp, over 5 s 3 bp -> Pass
+  07:02:12.284 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:03:08 9249fa8b ok
+  07:03:14.198 N+1 e6633 a11658 r19 x0 sd0 | N e80600 a143344 r221 p99 1500 | over N p99 58 bp, over 5 s 3 bp -> Pass
+  07:03:15.055 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:04:08 9249fa8b ok
+  07:04:15.310 N+1 e6633 a11658 r19 x0 sd0 | N e80600 a143344 r221 p99 1500 | over N p99 58 bp, over 5 s 3 bp -> Pass
+  07:04:16.422 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:05:08 9249fa8b ok
+  07:05:15.585 N+1 e6633 a11658 r19 x0 sd0 | N e80600 a143344 r221 p99 1500 | over N p99 58 bp, over 5 s 3 bp -> Pass
+  07:05:17.073 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:06:08 9249fa8b ok
+  07:06:15.887 N+1 e6637 a11666 r19 x0 sd0 | N e80606 a143367 r221 p99 1500 | over N p99 58 bp, over 5 s 3 bp -> Pass
+  07:06:17.042 graft-ops Wait { until: None, why: "site 2 is drained; the site day waits" }
+== 07:07:07 9249fa8b ok
+  07:07:11.199 N+1 e6702 a11797 r20 x0 sd0 | N e81505 a145031 r234 p99 1500 | over N p99 58 bp, over 5 s 2 bp -> Pass
+  07:07:12.525 N+1 e54 a96 r1 x0 sd0 | N e83518 a148275 r330 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  07:07:14.583 N+1 e82 a142 r1 x0 sd0 | N e83660 a148522 r331 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  07:07:15.165 graft-ops Committed("IntentStep")
+  07:07:15.165 graft-ops Deployed(Site(SiteId(1)), [(VersionId(847a6465-495a-41df-937a-344a4ca04b8e), 50), (VersionId(627ed36c-91c4-406a-ab3e-7744c464ee84), 50)])
+  07:07:15.165 graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:08:07 9249fa8b ok
+  07:08:10.939 N+1 e466 a872 r8 x0 sd0 | N e2646 a4697 r27 p99 1500 | over N p99 21 bp, over 5 s 0 bp -> Pass
+  07:08:11.489 graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:09:08 9249fa8b ok
+  07:09:10.566 N+1 e1273 a2351 r13 x0 sd0 | N e4219 a7530 r34 p99 1500 | over N p99 7 bp, over 5 s 0 bp -> Pass
+  07:09:11.269 graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:10:07 9249fa8b ok
+  07:10:13.863 N+1 e2311 a4253 r28 x0 sd0 | N e5623 a10094 r46 p99 1500 | over N p99 8 bp, over 5 s 0 bp -> Pass
+  07:10:14.694 graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:11:07 9249fa8b ok
+  07:11:11.232 N+1 e3348 a6169 r44 x0 sd0 | N e6895 a12419 r64 p99 1500 | over N p99 11 bp, over 5 s 0 bp -> Pass
+  07:11:11.840 graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:12:07 9249fa8b ok
+  07:12:09.443 N+1 e4538 a8355 r49 x0 sd0 | N e8070 a14552 r70 p99 1500 | over N p99 11 bp, over 5 s 0 bp -> Pass
+  07:12:10.170 graft-ops Wait { until: Some(Timestamp(1795504333421)), why: "STEP_DWELL" }
+== 07:13:07 9249fa8b ok
+  07:13:10.364 N+1 e5797 a10614 r51 x0 sd0 | N e9295 a16796 r73 p99 1500 | over N p99 10 bp, over 5 s 0 bp -> Pass
+  07:13:12.087 N+1 e253 a446 r1 x0 sd0 | N e92077 a163824 r393 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  07:13:14.103 N+1 e300 a535 r1 x0 sd0 | N e92108 a163881 r393 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  07:13:15.912 N+1 e328 a592 r1 x0 sd0 | N e92160 a163974 r393 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  07:13:17.519 N+1 e363 a657 r1 x0 sd0 | N e92209 a164057 r393 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  07:13:19.496 N+1 e427 a770 r1 x0 sd0 | N e92246 a164133 r393 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  07:13:20.185 graft-ops Committed("IntentStep")
+  07:13:20.185 graft-ops Deployed(Site(SiteId(1)), [(VersionId(847a6465-495a-41df-937a-344a4ca04b8e), 100)])
+  07:13:20.185 graft-ops Committed("SiteRelease")
+  07:13:20.185 graft-ops Committed("IntentStep")
+  07:13:20.185 graft-ops Committed("IntentStep")
+  07:13:20.185 graft-ops Wait { until: Some(Timestamp(1795504458211)), why: "first day" }
+== 07:14:07 9249fa8b ok
+  07:14:10.995 N+1 e1658 a3018 r6 x0 sd0 | N e1006 a1803 r3 p99 1500 | over N p99 18 bp, over 5 s 12 bp -> Pass
+  07:14:11.679 graft-ops Wait { until: Some(Timestamp(1795504458211)), why: "first day" }
+== 07:15:07 9249fa8b ok
+  07:15:10.749 N+1 e3626 a6579 r9 x0 sd0 | N e1453 a2620 r3 p99 1500 | over N p99 11 bp, over 5 s 5 bp -> Pass
+  07:15:12.327 N+1 e359 a658 r0 x0 sd0 | N e93326 a166069 r395 p99 1500 | over N p99 0 bp, over 5 s 0 bp -> Pass
+  07:15:13.955 graft-ops Committed("IntentStep")
+  07:15:13.955 graft-ops Committed("IntentDone")
+  07:15:13.955 graft-ops Idle
+== 07:16:07 9249fa8b ok
+  07:16:10.881 graft-ops Idle
+== 07:17:08 9249fa8b ok
+  07:17:13.107 graft-ops Idle
+== 07:18:07 9249fa8b ok
+  07:18:11.784 graft-ops Idle
+== 07:19:07 9249fa8b ok
+  07:19:11.816 graft-ops Idle
+== 07:20:07 9249fa8b ok
+  07:20:13.591 graft-ops Idle
+== 07:21:07 9249fa8b ok
+  07:21:11.388 graft-ops Idle
+== 07:22:08 9249fa8b ok
+  07:22:14.114 graft-ops Idle
+== 07:23:08 9249fa8b ok
+  07:23:14.635 graft-ops Idle

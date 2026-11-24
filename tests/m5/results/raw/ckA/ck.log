@@ -1,0 +1,14 @@
+05:54:16 ROW A start. main dc880f1d (contains gate-pool f9e13961). Day before row: $8.10. Plan: SiteDay{c, R11 e592682c} undo Rollback{c, R10 1a0f0e50}; N+1 c bf647730 (R11, fold entry 275), N c 54bbb423 (R10, site_release c); slow_ms 600 on bf647730 before the 1% split; exec-ckA: no OPS_STEP_MIN_ENTRIES, STEP_DWELL_MS 720000, FIRST_DAY_MS 60000, 1-minute cron
+05:54:19 token graft-m4a-ops-deploy-7 minted (success true id 625f764f issued 2026-11-24T05:54:43Z), PATCHed into graft-m4a-ops-deploy-token
+05:55:57 ops 62a8ed72 deployed 05:56Z from dc880f1d test-faults, exec-ckA.json (no override, 12 min dwells, 60 s first day, 1-minute cron); scratch edge 399bf9cf; tail, gatelog, healthlog; load 1x (2 c-benches, 1 a/b bench) for the 1% step
+05:58:12 ops cron had not fired by 05:59Z; removed and re-added
+06:00:28 PLANT slow_ms 600 on c version bf647730 (R11), for 3 h; fault answer: {"now":1795500053942,"slow":600,"v":"bf647730"}
+06:00:31 intent-A-c-R11 -> {"digest":"728b1aaae1045ea48beda65d6cfafd684fedb1eec8ee7c7bf0e5371b51e44cfc","index":1104,"status":201}
+06:02:26 drain c and 1% split at 06:01:20Z: N+1 bf647730 (R11, slow 600) 1%, N 54bbb423 (R10) 99%; dwell to 06:13:20Z
+06:07:21 row $1.45 at 06:08Z, about $0.13/min at 1x; load stays 1x into 10% (the pooled N+1 needs about 1,000; 2x would cost about as much in total and the $5 stop is the tighter limit)
+06:14:24 LINE 1 PASS: step 1 (1%) committed in the 06:14:08Z run, Starved(499) after its 12 min dwell, no page (pooled floor, gate-pool); 10% split at 06:14:15Z, bf647730 10% / 54bbb423 90%; dwell to 06:26:14Z
+06:16:35 10% window pooled: N+1 618 (06:15:14Z) then 737 (06:16:13Z), continuing from the 1% step's 499, not from 0; row $2.82 at 06:15Z
+06:18:49 LINE 2 PASS: 10% breached in the 06:18:07Z run at 06:18:14Z on GATE_APPLY_LAG (share rule): N+1 1,068 entries / 1,843 answers / 2 refused (pooled from the 1% step's start) vs N 61,821 / 104,941 / 37, 7,696 bp over N's p99 1,500 ms, 0 bp over 5 s (backstop not hit)
+06:18:49 LINE 3: Rollback{c, R10}, then the return steps and IntentDone, all in the 06:18:07Z run (06:18:27Z log); c deployed 54bbb423 100%
+06:18:52 load stopped; fault lifted: {"now":1795501158408,"plan":{"site":null,"from":0,"until":0}}
+06:20:17 DONE row A 06:20Z: IntentDone at entry 363; c 54bbb423 (R10) 100%, Normal; nothing current; graft-ops 62a8ed72 Idle (kept for row B); row $3.61 day $11.57
