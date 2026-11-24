@@ -53,6 +53,18 @@ if [ -n "$run" ]; then
   # (`decisions/DECISIONS.md`, "`edge-refusal`"). An edge without them logs none, and the summary says so.
   python3 tests/fanout/edgefull.py fetch "$from" "$to" $R/edgefull-$TAG.jsonl >> $R/rows-$TAG.status 2>&1
   { echo "edge refusals (edgefull):"; python3 tests/fanout/edgefull.py read $R/edgefull-$TAG.jsonl "$TAG"; } >> $R/rows-$TAG.status 2>&1
+  # G40: each shard container's vCPU over the load window a1 announced (instcpu.py, raw kept), summed per site, so a
+  # home site at its cap with the others idle (concentration) reads apart from busy refusals with spare vCPU (a dearer
+  # validate). The push log's own window starts with setup's pushes, minutes before load.
+  lfrom=$(grep -E " b0-33 run $loadrun: .* s from " "$a1log" | tail -1 | sed -E 's/.* s from ([^ ,]+).*/\1/')
+  lto=$(python3 -c "import sys,datetime as d;print((d.datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'))+d.timedelta(seconds=300)).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$lfrom")
+  python3 tests/fanout/instcpu.py "$lfrom" "$lto" git# > $R/instcpu-$TAG.jsonl 2>> $R/rows-$TAG.status
+  { echo "shard vCPU (instcpu, G40):"; python3 -c "import collections,json,sys
+site=collections.Counter()
+for l in open(sys.argv[1]):
+    d=json.loads(l); v=list(d['vcpu_by_minute'].values()) or [0]; site[(d['name'].split('#')+['?'])[1]]+=sum(v)
+    if max(v,default=0)>=0.5: print(f\"  {d['name']}: peak {max(v):.2f}, mean {sum(v)/len(v):.2f} vCPU over {len(v)} min\")
+print('  vCPU-minutes by site: '+', '.join(f'{k} {v:.1f}' for k,v in sorted(site.items())))" $R/instcpu-$TAG.jsonl; } >> $R/rows-$TAG.status 2>&1
 fi
 # The confound on merged main (B0-33 row B): reask-read's top-ups on the leader (`Trace::TopUp`, kind 34), whole trace.
 python3 -c "import json,lzma,sys
