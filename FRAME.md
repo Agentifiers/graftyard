@@ -363,6 +363,13 @@ Under that direction the orchestrator settled how graft-m6a's BF-50 rows read "L
 - **The runner account is the agents account for test installs** until go-live: `graft-agents-front`, the controller, its `graft-ops` and its Sandboxes for AM3's hosted rows (`build/BUILD-PLAN.md`, AM3-WP1). Its spend counts toward `graft-m4a`, as the runner account's does, under the same $40 install cap.
 - **What it does not test.** The runner account also holds `graft-runners` and the vault stand-in, so the agents account is not isolated from Actions runners or the vault as `design/AGENT-LAYER.md` ("Failure modes", "Deployment modes") requires in production. A production install still gets its own agents account; each AM3 hosted verdict records the stand-in.
 
+### Operator decision, 2026-11-24, AM2 closed
+
+> "Yes close AM2"
+
+- **AM2 is closed.** LM-2 is met, so AM2-WP4 is met (`build/BUILD-PLAN.md`, AM2-WP4, "State (2026-11-24)"): the MCP row (L0-08 on m3fa2 and m3fa3), the swap-back of a bad `graft-mcp` at 1% with the API blocked (R47 row r1 on graft-m4a), and L0-15's `AgentGate` half (42 of 42 on graft-m3f).
+- **What stays open, not as gate lines:** R47's 100% hold for `FrontRoll` and `McpRoll` is in code and is read hosted on the next `McpRoll` row on graft-m4a; R47's `OpsRoll` and `ControllerRoll` gates stay pending; A51 lands with AM3-WP1's controller (`decisions/OPEN-QUESTIONS.md`).
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.

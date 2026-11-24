@@ -126,7 +126,7 @@ export const milestones: Milestone[] = [
     ],
   },
   {
-    id: 'am2', code: 'AM2', name: 'graft-mcp, the remote MCP server', state: 'now', when: 'Gate met 24 November',
+    id: 'am2', code: 'AM2', name: 'graft-mcp, the remote MCP server', state: 'done', when: 'Closed 24 November',
     lead: 'An MCP server at <code>mcp.&lt;host&gt;</code> with its own sign-in and a consent page per client. Its tools cover coordination and provenance, and every text field comes through the trust view.',
     groups: [
       { title: 'The gate, on hosted test installs', items: [
@@ -135,7 +135,7 @@ export const milestones: Milestone[] = [
         'An approval through MCP, or by the agent\'s own requester, never satisfies the agent merge gate: 42 of 42 such merges refused' + row('L0-15'),
       ] },
     ],
-    after: 'One known limit stays open: the swap-back is judged on too few requests at 1% (R47), and its fix is ruled for code.',
+    after: 'One known limit stays open: the swap-back is judged on too few requests at 1% (R47). Its fix, a held and judged 100% step, is built and gets its hosted read on the next MCP release.',
   },
   {
     id: 'am3', code: 'AM3', name: 'The controller and Graftyard-run agents', state: 'next', when: 'First pieces built',
