@@ -2,7 +2,7 @@
 """M4-WP3 actions-cache, the shard's rules (`crates/actions/src/cache.rs`, `crates/actions/src/shard.rs`;
 `decisions/DECISIONS.md`, "`actions-cache`"): the default branch searched before a pull request's base, a low-trust
 run writing the default branch, eviction by newest use, a commit whose chunks do not tile, a commit of another size
-than the reserve's, a stale reservation still holding its key, a hit moving last use every time, a reserve past the entry cap evicting nothing, a range's slice
+than the reserve's, a stale reservation still holding its key, a hit moving last use every time, a reserve past the entry cap evicting nothing, the edge serving the cache before 21.6 is enabled, a range's slice
 read from the wrong offset, and a download capability that does not bind its size. Run from the repository root:
 
     python3 tests/m0carried/plant231.py          # every mutant
@@ -16,7 +16,11 @@ from plant121 import run  # noqa: E402
 C = 'crates/actions/src/cache.rs'
 S = 'crates/actions/src/shard.rs'
 T = ['cargo', 'test', '-q', '-p', 'graftyard-actions', '--lib', 'cache']
+TE = ['cargo', 'test', '-q', '-p', 'graftyard-edge', '--lib', 'cache']
 MUTANTS = [
+    ("the edge serves the cache before 21.6 is enabled", 'workers/edge/src/cache.rs',
+     'enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_CACHE)',
+     'enabled.iter().any(|f| f.family == graftyard_actions::shard::ACTIONS_FORMAT_CACHE.family)', TE),
     ("the default branch is searched before the base branch", C,
      'for s in [Some(run_ref), base, Some(default_branch)]', 'for s in [Some(run_ref), Some(default_branch), base]', T),
     ("any run writes the default branch's scope", C,
