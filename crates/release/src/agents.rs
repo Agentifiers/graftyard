@@ -18,7 +18,8 @@
 //!   while `Pointers.controller` is `Some`, so a `None` pointer follows the deployment split (the base's pin-only rule).
 //!   While a `ControllerRoll`'s split is deployed, `controller_default` is N, and `controller_pin` pins it for an
 //!   isolate whose view has not shown the roll: the split applies only once a verified view says so (LF-7 r1,
-//!   OPEN-QUESTIONS A53).
+//!   OPEN-QUESTIONS A53). A view that is a prefix of the history (not `caught_up`) pins the default too, never its own
+//!   pointer or the split (LM-3 r1, OPEN-QUESTIONS A56).
 //!
 //! The view replays every entry, not only the agents' kinds, because the `Keys`, `prev`, and intent rules are the
 //! group's and depend on the whole history; the endpoint therefore serves every committed entry, and the agents
@@ -47,12 +48,14 @@ impl AgentsAnchor {
 }
 
 /// The part of the install's `Release` fold the agents account acts on: the fold it replayed, from which `index`,
-/// `keys`, `controller`, and `current` are read, and the digest of the entry it applied at each index, from 1, which
-/// an answer at a held index is checked against (32 bytes an entry).
+/// `keys`, `controller`, and `current` are read, the digest of the entry it applied at each index, from 1, which an
+/// answer at a held index is checked against (32 bytes an entry), and whether the last page it took was the edge's last
+/// (`caught_up`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentsReleaseView {
     fold: ReleaseFold,
     applied: Vec<Digest>,
+    caught_up: bool,
 }
 
 /// How many entries one `GET release/entries` page carries at most (`design/AGENT-LAYER.md`, "API reference": lists
@@ -85,6 +88,15 @@ impl AgentsReleaseView {
         &self.fold
     }
 
+    /// Whether the view has taken the edge's last page, one shorter than `ENTRIES_PER_PAGE`, since it last took an
+    /// entry, so it is the group's state as of that read and not a prefix of its history. A full page that took
+    /// entries, or a page refused after it took some, leaves it a prefix until a short page is taken; a page that took
+    /// nothing and is not short changes nothing. A prefix can hold a pin or a roll the rest of the history already
+    /// ended (LM-3 r1, OPEN-QUESTIONS A56).
+    pub fn caught_up(&self) -> bool {
+        self.caught_up
+    }
+
     /// Takes a page of `(index, stored bytes, entry time)` that the edge answered, in order. A page that starts at or
     /// before the view's index comes from a member behind it: an entry the view holds is skipped when its bytes are
     /// the ones applied at that index, never replayed over it, so no answer moves the view to a lower index; other
@@ -93,6 +105,17 @@ impl AgentsReleaseView {
     /// at a genesis signed by the anchored customer key. The first entry that fails stops the page with its refusal,
     /// and the view keeps what it held, with the entries before it. Returns how many entries it took.
     pub fn extend(&mut self, anchor: &AgentsAnchor, page: &[(Index, Vec<u8>, Timestamp)]) -> Result<u64, Refusal> {
+        let held = self.fold.count;
+        let took = self.take(anchor, page);
+        if took.is_ok() && page.len() < ENTRIES_PER_PAGE {
+            self.caught_up = true;
+        } else if self.fold.count > held {
+            self.caught_up = false;
+        }
+        took
+    }
+
+    fn take(&mut self, anchor: &AgentsAnchor, page: &[(Index, Vec<u8>, Timestamp)]) -> Result<u64, Refusal> {
         let a = anchor.anchor();
         let held = self.fold.count;
         let mut n = 0;
@@ -197,12 +220,17 @@ pub fn front_bindings(source: &serde_json::Value, default: Option<VersionId>) ->
 }
 
 /// The version `graft-agents-front` pins a forwarded request to, or `None` for the deployment's split:
-/// - `Pointers.controller` while it is set;
-/// - else nothing while the view, read and verified, holds a `ControllerRoll` running or halted, whose split is the
-///   canary;
-/// - else `default`, the front's `CONTROLLER_DEFAULT`: an isolate that has never read a view, or whose view predates
-///   the roll, pins N and never follows the split to N+1 (LF-7 r1, OPEN-QUESTIONS A53).
+/// - `default`, the front's `CONTROLLER_DEFAULT`, while the view is not `caught_up`: a view that is a prefix of the
+///   history, such as a cold isolate's first read that ran out of time after its full pages, may hold a pointer or a
+///   roll that a later entry ended, so it routes nothing (LM-3 r1, OPEN-QUESTIONS A56);
+/// - else `Pointers.controller` while it is set;
+/// - else nothing while the view holds a `ControllerRoll` running or halted, whose split is the canary;
+/// - else `default`: an isolate that has never read a view, or whose view predates the roll, pins N and never follows
+///   the split to N+1 (LF-7 r1, OPEN-QUESTIONS A53).
 pub fn controller_pin(view: &AgentsReleaseView, default: Option<VersionId>) -> Option<VersionId> {
+    if !view.caught_up() {
+        return default;
+    }
     if let Some(v) = view.controller() {
         return Some(v);
     }
