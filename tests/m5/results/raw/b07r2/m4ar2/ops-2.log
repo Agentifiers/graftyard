@@ -1,0 +1,5 @@
+2026-11-25T14:05:33Z
+{"scripts":{"site/0":"graft-m4a-site-a","site/1":"graft-m4a-site-b","site/2":"graft-m4a-site-c"},"gate":"pass","cron":"* * * * *","step_dwell_ms":420000,"first_day_ms":60000,"step_min_entries":50,"test_faults":true}
+Current Version ID: cbbdcd6d-c958-40fa-8721-f1fa793879bb
+{"ops_schedules":["* * * * *"]}
+{"script":"graft-m4a-ops","created_on":"2026-11-25T14:06:14.215711Z","versions":["cbbdcd6d 100"]}

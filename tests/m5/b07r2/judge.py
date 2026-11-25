@@ -11,7 +11,9 @@ Reads, all on Cloudflare time:
   chains.json      {"c": [...], "ab": [...]}
   answers.txt      every entry this driver posted, one "<label> <answer>" per line
   ops-log.jsonl    graft-ops' Workers Logs lines over the row ({at, msg}), from tests/m5/bf46/logs.py
-  status.jsonl     the scratch Worker's /status polls; the first, before the fault, is each chain's baseline leader
+  status.jsonl     the scratch Worker's /status polls every 30 s; the newest before the fault naming a leader is a
+                   chain's baseline
+  fault.jsonl      the fault's start ({at}, the scratch Worker's clock), from run.log's GRAY FAULT line
 
 Prints one JSON line per gate line and a summary, and exits 0 only when every line passes. B0-07 (build/BUILD-PLAN.md,
 Milestone 0): "Callers on A and B report C, graft-ops undrains B under the 1% lead limit and drains C. Every group led
@@ -20,6 +22,7 @@ group led on C moves within 20 s of its next request". Fail: two sites drained a
 lead's lines for r2: c undrains with no hand Normal, the day reaches IntentDone, and the result names how many c-led
 chains were active in the 50 s window; with none, the 20 s line is not exercised and the row does not pass.
 """
+import gzip
 import json
 import os
 import sys
@@ -31,12 +34,19 @@ ROLE, LEADER = 3, 2
 # A graft-ops run's longest stretch from a commit to its summary line [guess: a run reads the view, the deployments,
 # the gate and 9 health reads, each bounded by VIEW_CALL, and runs end well inside a minute].
 OPS_RUN_MS = 120_000
+# A /status poll's own span: 480 member calls at 6 in flight.
+POLL_MS = 30_000
 
 
 def lines(path):
-    if not os.path.exists(path):
+    """A JSON-lines file, or its committed `.gz`."""
+    if os.path.exists(path):
+        f = open(path)
+    elif os.path.exists(path + ".gz"):
+        f = gzip.open(path + ".gz", "rt")
+    else:
         return []
-    with open(path) as f:
+    with f:
         return [json.loads(x) for x in f if x.strip()]
 
 
@@ -89,17 +99,19 @@ def leader_at(base, rows, t):
     return best[0] if best else None
 
 
-def baseline(status):
-    """chain -> (leader site, term) from the first status poll (taken before the fault), and its time."""
-    if not status:
-        return {}, 0
-    first = status[0]
+def baseline(status, before):
+    """chain -> (leader site, term, poll time): the newest status poll before `before` (the fault) that names a leader
+    for the chain. Idle groups restored from storage know no leader until a request wakes them (F128), so the first
+    poll may name none; the bench wakes them."""
     out = {}
-    for chain, ms in first["groups"].items():
-        lead = [m for m in ms if len(m) > 2 and m[1] == "leader"]
-        if lead:
-            out[chain] = (lead[0][0], lead[0][2])
-    return out, first["at"]
+    for p in status:
+        if p["at"] >= before:
+            break
+        for chain, ms in p["groups"].items():
+            lead = [m for m in ms if len(m) > 2 and m[1] == "leader"]
+            if lead:
+                out[chain] = (lead[0][0], lead[0][2], p["at"])
+    return out
 
 
 def moved_at(rows, td):
@@ -111,10 +123,16 @@ def moved_at(rows, td):
 
 
 def judge(raw, intent):
+    # The group's whole history is in the file; the row judges only what follows its own intent.
     entries = lines(f"{raw}/entries.jsonl")
+    start = next((e["index"] for e in entries if e["kind"] == "Intent" and e["entry"].endswith(f"id {intent}")), None)
+    if start is None:
+        return [{"line": "the measured intent is in the group", "pass": False, "intent": intent}]
+    entries = [e for e in entries if e["index"] >= start]
     polls = lines(f"{raw}/elections.jsonl")
     ops = lines(f"{raw}/ops.jsonl")
-    chains = json.load(open(f"{raw}/chains.json"))
+    with open(f"{raw}/chains.json") as f:
+        chains = json.load(f)
     posted = open(f"{raw}/answers.txt").read() if os.path.exists(f"{raw}/answers.txt") else ""
     ops_log = lines(f"{raw}/ops-log.jsonl")
     out = []
@@ -140,8 +158,13 @@ def judge(raw, intent):
         out.append({"line": "every group led on c moves within 20 s", "pass": False, "why": "c was never drained"})
         return out
     td = drain_c["at"]
-    base, base_at = baseline(lines(f"{raw}/status.jsonl"))
-    rows = {c: [r for r in rs if r[0] > base_at] for c, rs in role_rows(polls).items()}
+    fault = next((x["at"] for x in lines(f"{raw}/fault.jsonl")), td)
+    base = baseline(lines(f"{raw}/status.jsonl"), fault)
+    # A poll reads its chains over up to POLL_MS before its `at`, so role rows from that stretch are applied on top of
+    # its leader; term order keeps an older row from undoing a newer leader. With no baseline, every row applies.
+    every = role_rows(polls)
+    rows = {c: [r for r in every.get(c, []) if c not in base or r[0] > base[c][2] - POLL_MS] for c in chains["c"]}
+    base = {c: v[:2] for c, v in base.items()}
     missed = sorted({(c, s) for p in polls for c, s in p.get("missed", []) if c in chains["c"]})
     by_chain = {}
     for o in ops:

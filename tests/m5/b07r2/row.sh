@@ -285,6 +285,7 @@ run)
     if [ $fault = 0 ] && [ "${cnext:-0}" = 2 ] && [ "$drained" = "[1]" ]; then
       f=$(ck /fault -X POST -d '{"site": 2, "rate": 0.3, "hang_ms": 3000, "for_ms": 3600000}')
       say "GRAY FAULT on c at cloudflare $(echo "$f" | jq .now): rate 0.3, hang_ms 3000; drained $drained"; fault=1
+      echo "$f" | jq -c '{at: .now}' >"$O/fault.jsonl"
     fi
     # The lift: 60 s after c's drain, so the member path has moved every chain first.
     if [ $fault = 1 ] && [ $lifted = 0 ] && [ "$drained" = "[2]" ]; then

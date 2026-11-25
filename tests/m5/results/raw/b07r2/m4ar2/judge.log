@@ -1,0 +1,11 @@
+2026-11-25T14:47:27Z
+graft-ops lines: 173
+measured intent 01M89GE5NFWA3EJ2RBMPSE3GMX
+{"line": "never two sites drained", "pass": true, "most_drained": 1, "modes": [{"index": 563, "at": 1795615624353, "site": 1, "mode": "Drain", "sigs": ["477de5"]}, {"index": 566, "at": 1795616288575, "site": 1, "mode": "Normal", "sigs": ["477de5"]}, {"index": 567, "at": 1795616291753, "site": 2, "mode": "Drain", "sigs": ["477de5"]}, {"index": 568, "at": 1795617308882, "site": 2, "mode": "Normal", "sigs": ["477de5"]}]}
+{"line": "graft-ops undrains b under the lead limit, then drains c", "pass": true, "b_normal": {"index": 566, "at": 1795616288575, "site": 1, "mode": "Normal", "sigs": ["477de5"]}, "c_drain": {"index": 567, "at": 1795616291753, "site": 2, "mode": "Drain", "sigs": ["477de5"]}}
+{"line": "c undrains with no hand Normal", "pass": true, "c_normal": {"index": 568, "at": 1795617308882, "site": 2, "mode": "Normal", "sigs": ["477de5"]}, "graft_ops_committed_it": true, "hand_posts": []}
+{"line": "the day reaches IntentDone", "pass": true, "intent_done": {"at": 1795617913013, "entry": "IntentDone id 01M89GE5NFWA3EJ2RBMPSE3GMX", "index": 575, "kind": "IntentDone", "sigs": ["d38725"]}}
+{"line": "every c-homed chain's leader at the drain is known", "pass": true, "unplaced": [], "c_homed": 160}
+{"line": "c-led chains active in the 50 s before the drain", "pass": true, "led_on_c_at_drain": 32, "active": 31, "idle": 1, "why": null}
+{"line": "every group led on c moves within 20 s (active: of the drain; idle: of its next request)", "pass": true, "passed": 32, "of": 32, "active_max_ms": 18621, "p50_ms": 5044, "max_ms": 18621, "late": [], "members_missed": 13}
+{"verdict": "PASS"}

@@ -1,0 +1,12 @@
+2026-11-25T14:51:10Z
+{"fault_off":[200,200,200]}
+Terminated                 curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$B$1" "${@:2}"
+{"graft-m4a-ops":[]}
+{"park":true,"errors":[]}
+{"graft-m4a-ops":[]}
+{"script":"graft-m4a-ops","created_on":"2026-11-25T14:56:05.928151Z","versions":["ac4cd9a5 100"]}
+{"revoke":"graft-m4a-b07r2-deploy","ok":true}
+Successfully deleted graft-m4a-b07r2-edge
+row token files shredded
+{"count":576,"current":null,"drained":[],"site_release":{"0":"2f379da8","1":"387034ad","2":"4c6729de"},"uploads":["00ed8e77","051f6f61","16bd167b","1a0f0e50","2310a9a4","28af528e","2f379da8","308769e7","3452f14a","387034ad","38b34a9b","3c7fe311","416db57e","419303e4","44c04e9b","44f1ddfe","4c6729de","4d6e33f1","5af23a25","5bc88414","5d0ba4e9","63644eb6","6c2e44e7","761a720d","762a96d1","7def7980","8ee79012","94260ec8","a3a1f620","aa14c304","aab34878","af45659e","b48fa157","bdf8547f","dc9b1966","e23f69e9","e592682c","fcd70122"]}
+spend since setup: $4.09
