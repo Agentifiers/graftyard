@@ -270,6 +270,17 @@ impl DurableObject for Registry {
                 }
                 Response::from_json(&out)
             }
+            // This site's `SshFront` (`ssh#<site>`, the name the edge opens) answering its `GET /status`:
+            // `{"running", "image", "version_image", "banner"}` (workers/site/ssh.mjs, `status`), which never starts
+            // the container. `graft-ops`' `SshHostKeys` probe reads it beside `/ssh_slots` and refuses a running
+            // `graft-sshd` that reads the slot only at start (`workers/ops/src/lib.rs`, `ssh_fronts_ready`).
+            (Method::Get, "/ssh_front") => {
+                let id = crate::SiteEnv::read(&self.env)?.id;
+                let Ok(ns) = self.env.durable_object(&format!("SSHFRONT_{}", id.0)) else {
+                    return Response::error("this site binds no SSHFRONT: SSH is off", 404);
+                };
+                ns.get_by_name(&format!("ssh#{}", id.0))?.fetch_with_str("https://front/status").await
+            }
             // Test installs only: B0-07's site modes (`crate::faults::SiteModes`), in the object `faults`.
             #[cfg(feature = "test-faults")]
             (Method::Get, "/site_modes") | (Method::Put, "/site_modes") => {

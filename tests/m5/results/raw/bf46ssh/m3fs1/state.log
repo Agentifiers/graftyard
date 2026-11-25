@@ -1,0 +1,11 @@
+2026-11-24T23:00:23Z
+b9dd485f
+graft-m3f-site-a ["2026-11-24T21:10:47.154015Z",["89be86c1 100"]] crons []
+graft-m3f-site-b ["2026-11-24T21:10:57.34297Z",["76631c3c 100"]] crons []
+graft-m3f-site-c ["2026-11-24T21:11:07.312342Z",["6f642a8c 100"]] crons []
+graft-m3f-edge ["2026-11-24T21:11:39.482253Z",["68fb3902 100"]] crons []
+graft-m3f-ops ["2026-11-13T03:23:48.706056Z",["3ed6e453 100"]] crons []
+{"count":6,"current":null,"slots":{}}
+meta/ssh {"active":"A","A":["SHA256:TMEOnXhyIwFeNgR39+c4dKwYPTRbXGjPtP2AM3twOoU","SHA256:XEJXBQhWR7JnZrQ0K8JvhuazZ7BMsMec7l5DuWaTGic","SHA256:qgOnPPlr4FnCbHdtT/gSRHICS06iqIZHIalt6zvxvHI"],"B":["SHA256:CTNCAohldbAeYzkqdm5QHMDwt7tFa+tKuyQJXbJFkXU","SHA256:VTDCSGU6Yf9PU0oZKhdbWACyXHUFZ9SCuzEkX+mmmdI","SHA256:aMp29mjtrEZhVRNtBRCuR3KA2zKKJESFaR1et/CF7DA"]}
+store: {"count":19,"bf46":[]}
+2026-11-24T23:00:30Z

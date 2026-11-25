@@ -8,9 +8,11 @@
 //!   `AgentsAnchor`: an entry is taken only at the next index, only when bound to the anchored install, and only under
 //!   the `Keys` chain that starts at a genesis signed by the anchored customer key. So an entry for another install, a
 //!   `Keys` not signed by the customer key of the latest accepted `Keys`, and an entry out of index order are refused,
-//!   and a refused entry moves nothing (`extend`).
+//!   and a refused entry moves nothing (`extend`). An entry at an index the view holds must be the one it applied
+//!   there, byte for byte: other bytes mean the install's signed history holds two entries at one index, which is
+//!   refused as `Equivocation` and pages (LF-8 r1, OPEN-QUESTIONS A55).
 //! - **Never backward, fail static.** A page that starts past the view is a gap, and a page whose entries the view
-//!   already holds adds nothing, so no answer moves the view to a lower index. A refresh that fails keeps the last view;
+//!   already holds, byte for byte, adds nothing, so no answer moves the view to a lower index. A refresh that fails keeps the last view;
 //!   `Freshness` (from `view`) says when to try again and that no request waits on it.
 //! - **The pin.** `controller_override` is the override `graft-agents-front` sets on `graft-controller`: `Some` only
 //!   while `Pointers.controller` is `Some`, so a `None` pointer follows the deployment split (the base's pin-only rule).
@@ -22,7 +24,7 @@
 //! group's and depend on the whole history; the endpoint therefore serves every committed entry, and the agents
 //! account learns no more than the entries' signed bytes, which carry no secret.
 
-use graftyard_types::{Index, Timestamp};
+use graftyard_types::{Digest, Index, Timestamp};
 
 use crate::group::Accepted;
 use crate::types::{IntentId, KeyId, Keys, Script, VersionId};
@@ -45,10 +47,12 @@ impl AgentsAnchor {
 }
 
 /// The part of the install's `Release` fold the agents account acts on: the fold it replayed, from which `index`,
-/// `keys`, `controller`, and `current` are read.
+/// `keys`, `controller`, and `current` are read, and the digest of the entry it applied at each index, from 1, which
+/// an answer at a held index is checked against (32 bytes an entry).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentsReleaseView {
     fold: ReleaseFold,
+    applied: Vec<Digest>,
 }
 
 /// How many entries one `GET release/entries` page carries at most (`design/AGENT-LAYER.md`, "API reference": lists
@@ -82,18 +86,23 @@ impl AgentsReleaseView {
     }
 
     /// Takes a page of `(index, stored bytes, entry time)` that the edge answered, in order. A page that starts at or
-    /// before the view's index comes from a member behind it: the entries the view holds are skipped, never replayed
-    /// over it, so no answer moves the view to a lower index. Every other entry must be the next index, bound to the
-    /// anchored install, and pass the group's `check` on the view's fold, whose `Keys` chain began at a genesis signed
-    /// by the anchored customer key. The first entry that fails stops the page with its refusal, and the view keeps
-    /// what it held, with the entries before it. Returns how many entries it took.
+    /// before the view's index comes from a member behind it: an entry the view holds is skipped when its bytes are
+    /// the ones applied at that index, never replayed over it, so no answer moves the view to a lower index; other
+    /// bytes there are `Equivocation`, two signed histories, and stop the page. Every other entry must be the next
+    /// index, bound to the anchored install, and pass the group's `check` on the view's fold, whose `Keys` chain began
+    /// at a genesis signed by the anchored customer key. The first entry that fails stops the page with its refusal,
+    /// and the view keeps what it held, with the entries before it. Returns how many entries it took.
     pub fn extend(&mut self, anchor: &AgentsAnchor, page: &[(Index, Vec<u8>, Timestamp)]) -> Result<u64, Refusal> {
         let a = anchor.anchor();
         let held = self.fold.count;
         let mut n = 0;
         for (index, bytes, at) in page {
             if index.0 <= held {
-                continue;
+                let i = usize::try_from(index.0).ok().and_then(|i| i.checked_sub(1));
+                if i.and_then(|i| self.applied.get(i)) == Some(&Accepted::digest_of(bytes)) {
+                    continue;
+                }
+                return Err(Refusal::Equivocation { index: index.0 });
             }
             if index.0 != self.fold.count + 1 {
                 return Err(Refusal::BadState("a release/entries page skips an index"));
@@ -101,6 +110,7 @@ impl AgentsReleaseView {
             let ev = Accepted { bytes: bytes.clone().into_boxed_slice() };
             self.fold.check(&a, *at, &ev)?;
             self.fold.apply(&ev, *at);
+            self.applied.push(ev.digest());
             n += 1;
         }
         Ok(n)

@@ -350,6 +350,139 @@ const puller :Workerd.Worker = (
             .unwrap_or_default(),
     );
     write_secret(a.out, &config)?;
-    println!("wrote {} (0600): serve it with `workerd serve {} --experimental`", a.out.display(), a.out.display());
+    let floor = open_files_floor(feed_chains(&feed)?);
+    let state = fs::canonicalize(a.state).map_err(|e| e.to_string())?.display().to_string();
+    let start = base.join("start.sh");
+    let name = a.out.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or("--out names no file")?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o700)
+        .open(&start)
+        .and_then(|mut f| f.write_all(start_script(&name, &state, floor).as_bytes()))
+        .map_err(|e| format!("{}: {e}", start.display()))?;
+    println!(
+        "wrote {} (0600) and {}: start the bundle with it, which raises the open-file limit to at least {floor}",
+        a.out.display(),
+        start.display()
+    );
     Ok(())
+}
+
+/// The fewest open files the bundle starts with: 4 for each chain the install's `export-state` names, at least
+/// `OPEN_FILES_MIN` [guess]. Every chain's copy is a Durable Object with its own SQLite file, which workerd keeps open,
+/// and at the inherited 1,024 every pass failed with `SQLITE_CANTOPEN` once about 1,000 chains were open (BF-53 on
+/// graft-m3f, `tests/m6/results/bf53.md`).
+pub const OPEN_FILES_MIN: u64 = 65_536;
+pub const OPEN_FILES_PER_CHAIN: u64 = 4;
+
+pub fn open_files_floor(chains: u64) -> u64 {
+    (chains * OPEN_FILES_PER_CHAIN).max(OPEN_FILES_MIN)
+}
+
+/// The chains the install's `export-state` names, read with the feed token as the puller reads the feed: 0 before the
+/// feed's first round wrote it.
+fn feed_chains(feed: &Value) -> Res<u64> {
+    let s = |k: &str| feed[k].as_str().map(str::to_string).ok_or_else(|| format!("feed.json: no {k}"));
+    let s3 = graftyard_lifeboat::feed::S3 {
+        endpoint: s("FEED_URL")?,
+        bucket: s("FEED_BUCKET")?,
+        key_id: s("FEED_KEY_ID")?,
+        secret: s("FEED_SECRET")?,
+        region: s("FEED_REGION").unwrap_or_else(|_| "auto".into()),
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?;
+    let signed = s3.get(Some("export-state"), &[], now.as_millis() as u64);
+    let mut req = ureq::get(&signed.url);
+    for (k, v) in &signed.headers {
+        req = req.set(k, v);
+    }
+    let state: Value = match req.call() {
+        Ok(r) => r.into_json().map_err(|e| format!("export-state: {e}"))?,
+        Err(ureq::Error::Status(404, _)) => return Ok(0),
+        Err(e) => return Err(format!("export-state, for the open-file floor: {e}")),
+    };
+    Ok(state["cursors"].as_object().map_or(0, |c| c.len() as u64))
+}
+
+/// A shell word for `s`.
+fn sh(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// `start.sh`: raises the open-file limit to the hard limit, refuses to start below `floor` or below 4 for each copy
+/// `state` holds, whichever is higher (a copy grows past the chains named at bundle time), and runs workerd
+/// (`$WORKERD`, else `workerd` on the path) on the config.
+fn start_script(config: &str, state: &str, floor: u64) -> String {
+    format!(
+        r#"#!/bin/bash
+# Written by `graftyard lifeboat bundle`: starts the bundle with an open-file limit its copies fit in.
+cd "$(dirname "$0")" || exit 1
+floor={floor}
+copies=$(find {state} -name '*.sqlite' 2>/dev/null | wc -l)
+[ $((copies * {per})) -gt $floor ] && floor=$((copies * {per}))
+hard=$(ulimit -Hn)
+[ "$hard" = unlimited ] && hard=$floor
+ulimit -n "$hard" 2>/dev/null
+have=$(ulimit -n)
+if [ "$have" != unlimited ] && [ "$have" -lt "$floor" ]; then
+  echo "lifeboat: the open-file limit is $have (hard $hard), under the bundle's floor of $floor: raise the hard limit (ulimit -Hn, LimitNOFILE= for systemd) and start again" >&2
+  exit 1
+fi
+exec "${{WORKERD:-workerd}}" serve {config} --experimental
+"#,
+        per = OPEN_FILES_PER_CHAIN,
+        config = sh(config),
+        state = sh(state),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::{OPEN_FILES_MIN, open_files_floor, start_script};
+
+    /// The start script refuses a hard limit under the floor, counting the copies the state holds as well as the
+    /// chains named at bundle time, and starts workerd with the limit raised to the hard limit when it fits.
+    #[test]
+    fn start_script_refuses_an_open_file_limit_under_the_floor() {
+        assert_eq!(open_files_floor(10), OPEN_FILES_MIN);
+        assert_eq!(open_files_floor(20_000), 80_000);
+        let d = std::env::temp_dir().join(format!("lbstart-{}", std::process::id()));
+        let state = d.join("st ate");
+        std::fs::create_dir_all(state.join("x")).unwrap();
+        let copies = |n: usize| (0..n).for_each(|i| std::fs::write(state.join(format!("x/{i}.sqlite")), b"").unwrap());
+        copies(5);
+        std::fs::write(d.join("start.sh"), start_script("config.capnp", &state.display().to_string(), 2_000)).unwrap();
+        // A stand-in workerd: prints the soft limit it was started with and its arguments.
+        std::fs::write(d.join("wd"), "#!/bin/bash\necho \"$(ulimit -n) $*\"\n").unwrap();
+        std::fs::set_permissions(d.join("wd"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let run = |hard: u64| {
+            let o = Command::new("bash")
+                .arg("-c")
+                .arg(format!("ulimit -Sn 1024 && ulimit -Hn {hard} && bash ./start.sh"))
+                .env("WORKERD", d.join("wd"))
+                .current_dir(&d)
+                .output()
+                .unwrap();
+            (
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).into_owned(),
+                String::from_utf8_lossy(&o.stderr).into_owned(),
+            )
+        };
+        let (ok, out, err) = run(4_096);
+        assert!(ok, "{err}");
+        assert_eq!(out.trim(), "4096 serve config.capnp --experimental");
+        let (ok, out, err) = run(1_999);
+        assert!(!ok && out.is_empty());
+        assert!(err.contains("under the bundle's floor of 2000"), "{err}");
+        // 600 copies need 2,400, above the 2,000 named at bundle time.
+        copies(600);
+        let (ok, _, err) = run(2_100);
+        assert!(!ok && err.contains("floor of 2400"), "{err}");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 }

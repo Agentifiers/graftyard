@@ -143,7 +143,7 @@ impl Host for Live {
         let mut r = stub
             .fetch_with_request(Request::new_with_init("https://member/import", &init).map_err(err)?)
             .await
-            .map_err(err)?;
+            .map_err(|e| open_files_error(chain, &e.to_string()))?;
         let status = r.status_code();
         let text = r.text().await.map_err(err)?;
         // Not yet: a repository copy whose owner its `Names` copy does not name. The chain stays behind, so the edge
@@ -187,6 +187,23 @@ impl Host for Live {
             200 | 201 => Copied::Kept,
             s => Copied::Status(s),
         })
+    }
+}
+
+/// A copy's import call that failed in workerd itself. The copy cannot see why: workerd opens its SQLite file before
+/// any of the member's code runs, logs `SQLITE_CANTOPEN` on a line of its own, and answers the call with only "internal
+/// error; reference = …". On BF-53 every such failure was the open-file limit (34 passes at the inherited 1,024), so
+/// the pass's error names it and the start script that raises it.
+fn open_files_error(chain: ChainId, e: &str) -> String {
+    if e.contains("SQLITE_CANTOPEN") || e.contains("internal error; reference") {
+        let line = format!(
+            "lifeboat: the copy of {chain} failed in workerd ({e}): if workerd logged SQLITE_CANTOPEN, the open-file \
+             limit is under the bundle's floor; start it with the start.sh `graftyard lifeboat bundle` wrote"
+        );
+        console_error!("{line}");
+        line
+    } else {
+        format!("import {chain}: {e}")
     }
 }
 

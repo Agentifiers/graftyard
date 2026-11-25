@@ -41,6 +41,8 @@ pub struct Reader {
     /// Refreshes that read every page and took them, and refreshes that failed or were refused, in this isolate.
     oks: u64,
     fails: u64,
+    /// Refusals that page (`Refusal::pages`, `Equivocation` among them), each of which the host logs as a `PAGE` line.
+    paged: u64,
     last_error: Option<String>,
 }
 
@@ -59,6 +61,10 @@ impl Reader {
 
     pub fn fails(&self) -> u64 {
         self.fails
+    }
+
+    pub fn paged(&self) -> u64 {
+        self.paged
     }
 
     pub fn last_error(&self) -> Option<&str> {
@@ -82,10 +88,15 @@ impl Reader {
 
     /// Extends the view by `pages` in order, without ending the refresh: what `apply` does with a refresh's pages, and
     /// what the host does with the pages a refresh read before it failed, so a long first read that runs out of time
-    /// keeps what it verified. The first refusal stops it (`AgentsReleaseView::extend`).
+    /// keeps what it verified. The first refusal stops it (`AgentsReleaseView::extend`), and one that pages counts in
+    /// `paged`.
     pub fn take(&mut self, anchor: &AgentsAnchor, pages: &[Page]) -> Result<(), String> {
+        let Reader { view, paged, .. } = self;
         pages.iter().try_for_each(|page| {
-            self.view.extend(anchor, page).map(|_| ()).map_err(|e| format!("{}: {e}", e.variant()))
+            view.extend(anchor, page).map(|_| ()).map_err(|e| {
+                *paged += u64::from(e.pages());
+                format!("{}: {e}", e.variant())
+            })
         })
     }
 

@@ -373,7 +373,9 @@ These are not operator decisions. The run asked them on 2026-10-26 and adopted a
 
 **Evidence.** `design/DESIGN.md`, "Deployment modes", "Install operations", and "Failure modes" (`release control`). `history/review/cloudflare-interrogate.md` CF-ACT-2, CF-ACT-14, CR-ACT-2, and CR-ACT-3. `history/review/cloudflare-rewalk.md`. `history/decisions.tsv` rows 65, 128, and 129.
 
-**Flip.** If Milestone 0 shows an account-owned token with Workers Scripts Edit and Containers Edit cannot deploy a container image, the deploy token moves to a user token held by the customer.
+**Amended 2026-11-24 (OPEN-QUESTIONS A54).** The deploy token also holds Secrets Store Edit: a fresh token with Workers Scripts Edit alone got 10021 "Secrets store binding authorization failed" on a version upload of a script bound to a Secrets Store secret, in the install account and in a second account, while each account's own token uploaded it [measured, `tests/am3/raw/lf7-r2/a54.log`]. Every site script, `graft-mcp`, `graft-ops`, and the agents scripts carry such bindings. Secrets Store Edit also lets the token write the store's secrets, which `graft-ops` reads anyway.
+
+**Flip.** If Milestone 0 shows an account-owned token with Workers Scripts Edit and Containers Edit cannot deploy a container image, the deploy token moves to a user token held by the customer. If a narrower group than Secrets Store Edit (such as a binding-only grant) lets an upload keep a Secrets Store binding, the token takes that instead.
 
 ### Swap-back is a signed pointer, with no API call
 
@@ -8384,7 +8386,11 @@ carries `location` (https://developers.cloudflare.com/api/resources/r2/subresour
 - **`SecretsWrapKey`: probe, switch.** The switch names the slot new values wrap under, which `graft-ops` read from the
   `SECRETS_WRAP_KEY_CURRENT` variable, a redeploy. The probe parses the new slot's key and its slot number. Both slots
   still unwrap; each owner admin's `rewrap-secrets` moves the old values, and only then is the old slot cleared. Until a
-  first `Rotate` commits, the variable stands, so an install that set it keeps its slot.
+  first `Rotate` commits, the variable stands, so an install that set it keeps its slot. The `Rotate`'s own check
+  reads the same slot: with no switch committed, `graftyard_release::ops::active_slot` takes the variable, not the
+  fold's default 0. Reading 0, graft-m4a's `graft-ops`, whose variable names 1 since BF-59, would have refused the real
+  switch to slot 0 as "the active slot" and run a `Rotate` to 1 that moved nothing (found preparing BF-46's hosted
+  rows, 2026-11-24; `a_first_secrets_wrap_key_rotate_reads_the_variable_s_slot` fails on the fold's slot).
 - **`HostedRunnersAppKey`: no `Rotate`.** `graft-runners` lives in the runner account, which holds no `Release` view
   and no install token. The customer adds a new key to the `graftyard-hosted-runners` App, writes it over the one slot
   in the runner account's store, which every sweep re-reads, and removes the old key from the App after 24 h.
@@ -8420,6 +8426,44 @@ and two more. `workers/site`: the `/ssh_slots` parser's tests against an `ssh-ke
 - The runner account gains a view of the install's `Release` group: `HostedRunnersAppKey` gains a step list.
 - A client population that does not use `UpdateHostKeys`: the announce wait buys nothing for it, and the switch needs a
   customer notice instead.
+
+### `sshfront-image`: the SSH front restarts on its version's image; the SshHostKeys probe reads each front's generation, 2026-11-24
+
+**Status.** Code-only, not deployed ($0). Branch `sshfront-image`; it rides graft-m3f's next site day.
+
+**Decision.**
+- `SshFront` (`workers/site/ssh.mjs`, `up`) records the image it started in its storage (`image`). At a session, a
+  running container whose recorded image is not this version's `ssh` image, or that has none recorded (a container an
+  object from before this change started), is destroyed and started on this version's image, as `GitShard`'s
+  `restart_on_image` does. The restart lands at the first session on the new version, which is that site's site day.
+- `graft-sshd`'s banner is `SSH-2.0-graftyard_2`: generation 2 takes the active slot from `keys.graft` (the `Release`
+  view) and re-reads it every minute; the plain `graftyard` builds read it once at start.
+- The object answers `GET /status` (`{running, image, version_image, banner}`, reading the banner over one connection and
+  never starting the container), and each site's Registry serves it at `GET /ssh_front`. The `SshHostKeys` `Rotate`'s
+  probe reads every non-spare site's and refuses a running front below generation 2
+  (`workers/ops/src/lib.rs`, `ssh_fronts_ready`), before its slot check. A stopped front passes: its next session starts
+  this version's image.
+
+**Why.** A new site-script version restarts no running container, and `SshFront` started its container only when none
+ran. On graft-m3f's row m3fs1, sites a and b kept a `graft-sshd` from before R45, which read the slot once at start, so
+after the switch they served slot A and pinned clients failed on site c. DESIGN's front-door bad-deploy row already
+said the image changes when `SshFront` restarts the container; nothing did. A new version already resets the object,
+which ends its in-flight sessions, so restarting at its first session costs no extra session [inference].
+
+**What it beat.**
+- **A full `ContainerDay` for the ssh image** (an `ssh`/`ssh_prev` pair in the view, read by `SshFront`): larger, and
+  not needed for one container per site, which the site day already reaches one site at a time.
+- **A runbook line only** ("restart each front before rotating"): the next install with an old front would miss it,
+  and the probe would pass it as m3fs1's did.
+
+**Evidence.** m3fs1 (`tests/m5/results/m5-wp6.md`, "BF-46 hosted, `SshHostKeys` on graft-m3f, row m3fs1"): sites a and b
+ran image `…4ed05f64`, started before the site day, and served slot A after the switch [measured].
+`workers/site/tests/ssh.test.mjs`: the restart on another image, none under the same one, the restart of an unrecorded
+running container, and `status`. `workers/ops`: `ssh_fronts_ready_wants_every_running_front_on_generation_2`.
+`tests/m0carried/plant214.py`. No hosted row yet.
+
+**Flip.** An SSH front fleet larger than one container per site, or a need to roll the ssh image apart from site code:
+then the ssh image gets its own `ContainerDay` with `ssh` and `ssh_prev` in the view.
 
 ### `vault-roll`: `vault upgrade` is a step of `release roll` on the operator's machine, not a group intent, 2026-11-23
 
@@ -10487,7 +10531,7 @@ is a new Tokens format.
 - **Owed packs.** Packs were tried in `(network, id)` order, 40 a pass, and a 404 stayed owed. With 41 packs the install no longer serves ahead of a live one, the live pack was never copied in 5 passes. graft-m3f's feed still carries stored packs of repositories purged since 2026-11-22.
 
 **Decision.**
-- **Turns.** The edge pulls go round the known chains from the one after `Puller::turn`, `AT_ONCE` (16 [guess]) first pages at once, each chain pulled to its end before the turn passes it. So every chain is asked once a cycle, whatever the budgets.
+- **Turns.** The edge pulls go round the known chains from the one after `Puller::turn`, `AT_ONCE` (64 [guess], 16 until the measurement below) first pages at once, each chain pulled to its end before the turn passes it. So every chain is asked once a cycle, whatever the budgets.
 - **Two budgets.** Pages that carry rows count against `PAGES_PER_PASS` (40); answers with none, a caught-up chain or any status, against `PROBES_PER_PASS` (400 [guess]). At the bundle's 10 s alarm a round of graft-m3f's 3,234 chains takes about 9 passes, about 80 s.
 - **Current while stale.** Only a cycle in which every chain answered caught up (or gone), with none behind or halted, is current, and as of the cycle's start. A pass alone never is while chains remain to ask. With the feed fresh, current is as before.
 - **Packs.** One network at a time round the turns (`in_turns`, as the vault's). A pack the install answers 404 sends one probe of its repository chain a pass: a 404 there (`export-retired`) marks the chain gone and drops that network's owed packs. On a live chain the pack stays owed, is tried again in turn, and is counted in `State::unserved`; one unserved for `UNSERVED_ALARM_MS` (1 h [guess]) alarms in the pass line (`Report::unserved_alarm`, logged as an error), so a real missing pack is never dropped in silence.
@@ -10504,6 +10548,15 @@ is a new Tokens format.
 - `a_stale_round_reaches_every_chain_and_is_current_once_a_cycle_ends`: 900 chains, the last in key order moved, caught up in 3 passes with at most `PROBES_PER_PASS + AT_ONCE` answers each; current as of the cycle's start; a 503 inside a cycle holds it back and a later whole cycle moves it.
 - `owed_packs_go_round_by_network_and_a_gone_networks_are_dropped`: 45 dead packs of a purged network dropped after one probe, a live network's pack copied on the first pass, and an unserved pack on a live chain kept and alarming after an hour.
 - `tests/m0carried/plant200.py`: 8 of 8 native mutants caught; the feed hold's mutant by `tests/exportbed/run.sh`.
+
+**`AT_ONCE` 16 to 64, 2026-11-24 (lead's ruling after BF-53).** BF-53's hosted stale window met the first flip below: a stale pass took about 30 s, a cycle of 3,236 chains about 4.5 min, and the worst lag was 767 s, because the 400 probes queued 16 at a time. Measured on a local bed with the feed stopped: BF-53's own lifeboat state (3,236 chains, copied from the row), the feed answering 503, and an edge stand-in that answers each probe caught up after a delay drawn from BF-53's 1,697 hosted `entries` wall times (p50 341 ms, p90 607 ms, max 7,394 ms) plus 30 ms (`tests/m6/raw/lifeboat-turns/`: `run.sh`, `stub.mjs`, `an.py`, each run's pass lines, status and stand-in counts) [measured, local]:
+
+| `AT_ONCE` | Probes a busy second | A pass's 400 probes | Cycle | Worst lag once current |
+| --- | --- | --- | --- | --- |
+| 16 | 18.5 | about 21.6 s | 268 s | 508 s |
+| 64 | 52.3 | about 7.6 s | 131 s and 150 s | 298 s |
+
+At 16 the bed agrees with BF-53 (a 4.5-minute cycle). At 64 a cycle takes about 2.5 minutes, so the copy is current within the 5-minute alarm, with about 2 seconds to spare at its worst. Measuring moved chains first is not needed yet. The request rate while stale rises with it: about 22 edge requests a second over the run (52 while a pass probes) against about 12 at 16. Each is one Worker request and one follower wake, of the order of $0.05 an hour at list prices [inference, not costed by `scripts/cost.py`], well under the $1 cost flip below, which stays. It is not re-measured hosted; the next lifeboat row re-reads it.
 
 **Flip.**
 - A hosted stale window in which the copy does not reach current within one alarm period (5 minutes): raise the budgets or the concurrency, or list the chains that moved.
@@ -10964,7 +11017,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 #### `controller-default`: while a `ControllerRoll`'s split is deployed, `graft-agents-front` pins N unless its view shows the roll (2026-11-24)
 
-**Status.** Code-only (OPEN-QUESTIONS A53's fix, the lead's ruling (c)); LF-7 r2 is its hosted row.
+**Status.** Built (OPEN-QUESTIONS A53's fix, the lead's ruling (c)); LF-7 r2 passed it hosted on graft-m4a, 2026-11-24 (`tests/am3/results/lf7.md`).
 
 **Decision.**
 - The agents `graft-ops` sets `graft-agents-front`'s `CONTROLLER_DEFAULT` variable to N before it deploys a `graft-controller` split that serves no version 100%, and removes it after the deploy that serves one version 100%: the roll's 100% step, IntentDone's, and an undo's or `Abort`'s return (`agents::controller_default`). It sets it with the settings call, which deploys a front version that carries the deployed version's bindings and that one change. A controller deployment read while the front's value differs sets it and fails the run, so no step commits before the front carries what the deployment needs.
@@ -10986,3 +11039,28 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 **Flip.**
 - A canary that needs cold-isolate traffic to judge N+1, such as a gate that counts too few webhooks at 1% without it.
 - OPEN-QUESTIONS A52's own `graft-agents-front` roll: a front split during a `ControllerRoll` changes which version carries the variable, so the default moves to a binding both front versions read.
+
+#### `agents-equivocation`: the agents view compares an answer at a held index with the entry it applied there (2026-11-25)
+
+**Status.** Built (OPEN-QUESTIONS A55's fix, the lead's ruling of 2026-11-25); native only. The hosted re-read waits for a later row.
+
+**Decision.**
+- `AgentsReleaseView` keeps the digest of the entry it applied at each index (32 bytes an entry). In `extend`, an entry at or below the view's index with the same digest is skipped, as before, because it comes from a member behind. One with another digest is refused as `Refusal::Equivocation { index }`, which stops the page. The view, its index and its pin do not move.
+- `Equivocation` pages (`graftyard_release::pages`). `graft-agents-front` counts it as a failed refresh, with `fails` + 1 and `lastError` naming the index, counts it in `paged` on `/_agents_front/status`, and logs `PAGE graft-agents-front: release/entries refused, Equivocation: index <k> …`. The agents `graft-ops` logs `PAGE graft-agents-ops: …` for the same refusal. The install's log alert matches both, as it does `PAGE graft-ops` lines.
+
+**Why.**
+- Two different entries at one index mean the install's signed history forked: a leaked key or a broken signer. The agents account is the one reader outside the install that would see it. LF-8 r1 showed that skipping hid it: 50 replays with other bytes each counted as an ok refresh and logged nothing (`tests/am3/results/lf8.md`, "Replays").
+- The view already rejects every entry past its index that does not chain, so the check adds a comparison to the only path that took bytes unchecked. It adds no store or failure domain.
+
+**Beat.**
+- Skipping as before, because the view never moves. Rejected: the pin is safe either way, but a fork goes unseen.
+- Comparing only from the last checkpoint. The agents view has no checkpoint, and a full list costs 32 bytes an entry, 32 KB at 1,000 entries, held per isolate.
+
+**Evidence.**
+- `crates/release/src/tests/group/agents.rs`: `a55_other_bytes_at_a_held_index_are_equivocation_and_the_same_bytes_are_skipped`. An equal replay of k or k-1 takes nothing. Other bytes at k or k-1, alone or after equal entries, are `Equivocation { index }` and page, and the view does not move. The next entry lands after an equal replay.
+- `workers/agents-front/tests/front.rs`: `a_page_from_a_member_behind_the_view_moves_nothing`. An answer behind the view with equal bytes is ok. Other bytes at the last held index fail the refresh, page once, and keep the view and pin.
+- `tests/m0carried/plant228.py`: 5 mutants, all caught.
+
+**Flip.**
+- A legitimate history that rewrites an applied index, such as a `Release` restore into the same install id. A restore is a new install (`design/DESIGN.md`, "Install operations"), so none exists now.
+- A view so long that 32 bytes an entry matters to an isolate. Then keep a digest of the entries since a checkpoint the view signs.

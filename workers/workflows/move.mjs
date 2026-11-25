@@ -116,11 +116,17 @@ export async function coordinate(env, event, step) {
     }
   }
   const chains = candidates(rows);
+  // Every surviving member a chain's rows name, so a group whose chosen row answers nothing still has the others.
+  const named = new Map();
+  for (const r of rows) {
+    if (!named.has(r.chain)) named.set(r.chain, []);
+    named.get(r.chain).push({ site: r.site, do_name: r.do_name });
+  }
   for (let i = 0; i < chains.length; i += BATCH) {
     await step.do(`start ${i}`, STEP_RETRY, async () => {
       const instances = chains.slice(i, i + BATCH).map((r) => ({
         id: groupId(intent, r.chain),
-        params: { ...spec, chain: r.chain, row: r },
+        params: { ...spec, chain: r.chain, row: r, rows: named.get(r.chain) },
       }));
       const out = await env.GROUP.createBatch({ instances });
       // 10405: started by an earlier try of this step.
@@ -191,10 +197,14 @@ export function judge(answer, members, lost = null) {
 export async function group(env, event, step) {
   const p = event.payload;
   let member = { site: p.row.site, do_name: p.row.do_name };
-  let members = [member];
+  // Until an answer carries a config, the members the chain's rows name, the chosen row's first: a row's member that
+  // never joined answers 409 and names no other (m6aL, tokens:953).
+  let members = [member, ...(p.rows ?? []).filter((m) => m.do_name !== member.do_name)];
   let started = false;
   // The voter on `from` the first config names: the member this move removes, which the expiry instance wipes.
   let removed = null;
+  // The member last asked to campaign, until an ask names a leader.
+  let campaigned = null;
   for (let k = 0; k < ASKS_MAX; k++) {
     const r = await step.do(`ask ${k}`, STEP_RETRY, async () => {
       try {
@@ -209,8 +219,11 @@ export async function group(env, event, step) {
         return { error: `call: ${e.message}` };
       }
     });
-    members = configMembers(r.config ?? r.error?.notLeader?.config) ?? members;
-    removed ??= members.find((m) => m.site === p.from) ?? null;
+    const named = configMembers(r.config ?? r.error?.notLeader?.config);
+    if (named) {
+      members = named;
+      removed ??= members.find((m) => m.site === p.from) ?? null;
+    }
     const v = judge(r, members, p.dead ? p.from : null);
     if (v.done) {
       const by = members.find((m) => m.site === p.to);
@@ -228,12 +241,25 @@ export async function group(env, event, step) {
     }
     if (v.leader) {
       member = v.leader;
+      campaigned = null;
       continue;
     }
     // The member asked is a live voter with no live leader: it campaigns, as lookup's create asks a home member to
     // (`graftyard_lookup`, `/campaign`). It waits out any promise it holds (`Promised`), so the next ask may find it
-    // still following; ask it again after ASK_EVERY.
+    // still following; ask it again after ASK_EVERY. A voter that campaigned and still names no leader may never win,
+    // as one whose log is behind the other live voter's, and a row's member the config does not name as a voter
+    // cannot lead: the next live voter is asked instead (m6aL: 14 chains whose site 1 voter held only the bootstrap
+    // entry, and 2 whose highest-generation row was a placement try outside the config, campaigned 50 times unanswered).
+    const live = members.filter((m) => !(p.dead && m.site === p.from));
     if (v.campaign) {
+      const at = live.findIndex((m) => m.do_name === member.do_name);
+      if (at < 0 || campaigned === member.do_name) {
+        if (live.length > 0) member = live[(at + 1) % live.length];
+        campaigned = null;
+        await step.sleep(`after ${k}`, ASK_EVERY);
+        continue;
+      }
+      campaigned = member.do_name;
       await step.do(`campaign ${k}`, STEP_RETRY, async () => {
         try {
           const res = await stub(env, "MEMBER", member.site, member.do_name).fetch("https://member/campaign", {
@@ -252,7 +278,6 @@ export async function group(env, event, step) {
     // Held with no step planned (no answer, or a member that knows no leader): ask the next voter the config names,
     // past any on a lost `from`. A held step came from the leader, which is asked again.
     if (v.held && !r.step) {
-      const live = members.filter((m) => !(p.dead && m.site === p.from));
       const at = live.findIndex((m) => m.do_name === member.do_name);
       if (live.length > 0) member = live[(at + 1) % live.length];
     }

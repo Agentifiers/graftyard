@@ -1,0 +1,10 @@
+2026-11-25T01:03:15Z
+b9dd485f
+{"count":16,"current":null,"drained":[],"slots":{"SshHostKeys":{"slot":0,"switched":1795568188637}}}
+{"at":1795567791798,"entry":"Rotate { secret: SshHostKeys, slot: 0 } id 01M882VDEKQBVMAFM8SWBT3PM7","index":11,"kind":"Intent","sigs":["9aeafc"]}
+{"at":1795567827777,"entry":"step 0","index":12,"kind":"IntentStep","sigs":["aaff47"]}
+{"at":1795568186754,"entry":"step 1","index":13,"kind":"IntentStep","sigs":["aaff47"]}
+{"at":1795568188637,"entry":"step 2","index":14,"kind":"IntentStep","sigs":["aaff47"]}
+{"at":1795568190497,"entry":"IntentDone","index":15,"kind":"IntentDone","sigs":["aaff47"]}
+meta/ssh {"active":"A","A":["SHA256:TMEOnXhyIwFeNgR39+c4dKwYPTRbXGjPtP2AM3twOoU","SHA256:XEJXBQhWR7JnZrQ0K8JvhuazZ7BMsMec7l5DuWaTGic","SHA256:qgOnPPlr4FnCbHdtT/gSRHICS06iqIZHIalt6zvxvHI"],"B":["SHA256:34javTLNlyI8cGR4/i1xcEpfGYq7Mu5FK25bJqyTstI","SHA256:Rh8cnvVqzZSAgrxAr/z9BUI4+KcqjKjtfsGRrScY260","SHA256:xSxG/fOt+ddiDjZyN1tfYfu/YpxMGuBSBhrau7exnN4"]}
+2026-11-25T01:03:16Z

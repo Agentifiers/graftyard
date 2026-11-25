@@ -200,7 +200,9 @@ openssl x509 -req -in "$K/tls.csr" -CA "$K/ca.pem" -CAkey "$K/ca.key" -CAcreates
 "$CLI" lifeboat bundle --dir "$B/boat" --builds "$B/builds" --release "$REL" --listen 127.0.0.1:$LP \
   --tls-key "$K/tls.key" --tls-chain "$K/tls.pem" --blob http://127.0.0.1:$BP --admin 127.0.0.1:$AP \
   --state "$B/boat/state" --out "$B/boat/config.capnp" || exit 1
-cd "$B/boat" && { "$WD" serve config.capnp --experimental >"$B/workerd.log" 2>&1 & WDP=$!; cd "$root"; }
+# Through the start script the bundle wrote, as an operator starts it: it raises the open-file limit or refuses.
+[ -x "$B/boat/start.sh" ] || { echo "FAIL: lifeboat bundle wrote no start.sh"; exit 1; }
+{ WORKERD=$WD "$B/boat/start.sh" >"$B/workerd.log" 2>&1 & WDP=$!; }
 for _ in $(seq 60); do curl -s -m 2 -o /dev/null http://127.0.0.1:$AP/status && break; sleep 0.5; done
 L=https://$BOAT:$LP
 lb() { curl -s -m 60 --cacert "$K/ca.pem" "$@"; }

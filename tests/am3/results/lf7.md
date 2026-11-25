@@ -85,3 +85,60 @@ The sampler (`tests/am3/hosted/lf7-sample.mjs`, 2 clients) sent 119,184 signed `
 - End sweep 20:06:33Z: no shard container running.
 - Cost: the row $0.11 on graft-m4a (19:04Z to 20:07Z) and $0.00 on the runner account's `graft-agents-m4a-` scripts;
   graft-m4a's UTC day $18.23 [measured, `acctcost.py`].
+
+## Run r2: pass
+
+Run r2 from main `6dc3aed7`, which carries A53's fix (DECISIONS "`controller-default`", ruling (c)): while a
+`ControllerRoll`'s split is deployed, `graft-agents-front` carries N as `CONTROLLER_DEFAULT`, and an isolate whose view
+does not show the roll pins it. Same driver, same blackhole, same stops; logs in `tests/am3/raw/lf7-r2/`. Start sweep
+21:59Z; **done line 22:49:09Z**. **Pass.** Times below are Cloudflare's; the orb's clock ran 8.6 s behind it, and the
+sampler's rows are compared on the orb's own clock.
+
+| Line | Result |
+| --- | --- |
+| Pointer with the API blocked | the `ControllerPointer` to c1 posted by hand with the agents deploy token invalid (probe 400): 201 at entry 486, 1.6 s from post to answer; the intent went to `Undoing` [measured] |
+| Pins N within `POINTER_TTL` | the first webhook pinned to c1 `d8b368a1` came 125 ms after the 201; 5 unpinned ones in the next 2.2 s also ran on c1; from then on every webhook carried the pin [measured, `hooks.jsonl.gz`] |
+| Webhooks flow during the 10-minute blackhole | 36,404 of 36,406 answered 202 (2 client `fetch failed`), p50 28 ms, p99 63 ms, p99.9 1,086 ms, max 4,462 ms. 48 took 1.0 to 1.3 s: new isolates waiting their bounded first read (`VIEW_CALL_MS`, 1 s), then forwarding pinned. Two took 4.3 and 4.5 s, 398 s in, pinned to c1: a client-side stall, not the front (see "The two 4.4 s webhooks") |
+| **No webhook reaches N+1 after the pin** | **0 of 50,217 reached c2 (`8996a56e`, `test-bad`)** from the pointer's 201 to the end of the run, 36,406 of them during the blackhole. r1 sent 313 there in the same window [measured] |
+| The return | after `unblock`, the agents `graft-ops` deployed c1 100 / c2 0 at 22:46:48Z, removed `CONTROLLER_DEFAULT` (front version `1d05fc0e`, 22:46:50Z), and committed `IntentStep` and `IntentDone` (487, 488); count 489, no intent current, `rolled.Controller` c1 [measured, `final-view.json`] |
+
+**The default, hosted.**
+- **Set before the split:** at the roll's first step the agents `graft-ops` set `CONTROLLER_DEFAULT` to c1. The settings PATCH deployed front version `87adfbaa` at 22:31:48.96Z, then the 1%/99% split at 22:31:49.89Z.
+- **The secret survived:** the PATCH re-sent `FRONT_TOKEN` as the read returns it, with no value, and the token still worked. `/_agents_front/status` with it answered 200 after the set (showing the default) and after the clear.
+- **The canary still ran:** before the pointer, the 1% split sent 50 webhooks to c2 (all 500), from isolates whose verified view showed the roll.
+- **Cleared after:** once the default was removed, webhooks went unpinned to c1, which then served 100% [measured].
+
+**Setup, as r1 except:**
+- **No edge day.** `e9197bf3` was kept: main's edge changes since `65c10004` are ssh meta and the `/_bed/feed` hold, and the row reads neither.
+- **A54's probe** ran in both accounts (`a54.log`). A fresh Workers-Scripts-Write-only token got 10021 on a version upload of a script with a Secrets Store binding, and each account's own token uploaded it.
+- **`agents init`** drew a new executor, `400908f0…`. Re-registering Apps 3801088 and 3866624 committed all 8 commands with the new keys. `Keys` generation 6 is at entry 478.
+- **Scripts:** controller c0 `2ebf755e`, front `ff855802`, agents `graft-ops` `6f220757`.
+- **The agents `graft-ops` cron** fired only after a third schedule reset (empty, yearly, then the minute cron, R52); two resets were not enough this time.
+- **Releases:** c1 `3c7fe311…` and c2 `94260ec8…` uploaded at 479 and 480. N is c1: rolled (481), aborted to itself with the token blocked (482), then c1 `d8b368a1` at 100% and `IntentDone` (484).
+- **The row:**
+  - `release roll c2` committed at 485;
+  - c2 went to 1% at 22:31:49Z;
+  - block, then the pointer at 22:33:34Z;
+  - the fault plan ran from 22:34:51Z to 22:45:33Z;
+  - unblock at 22:45:56Z.
+- **The sampler** sent 60,442 signed `issues` deliveries with 2 clients, from 22:30:14Z to 22:47:56Z.
+
+**Teardown, state left, cost.**
+- **The runner account:** the agents cron is off. The three `graft-agents-m4a-` scripts, their five store secrets, the deploy token, and the bucket with its 12 objects are deleted, and the row's 0600 files are shredded. Only `graft-runners` is left.
+- **graft-m4a:**
+  - edge `e9197bf3` and `graft-ops` `ac4cd9a5` (schedules `[]`) are as before;
+  - the `Release` group is at count 489, no intent current, `Keys` generation 6, whose `agents_executor` seed is deleted;
+  - the fault plan is cleared.
+- **End sweep:** no shard container running.
+- **Cost:** the row $0.08 on graft-m4a (21:55Z to 22:53Z) and $0.00 on the runner account; graft-m4a's UTC day is $18.40 [measured, `acctcost.py`].
+
+**The two 4.4 s webhooks [measured, Workers Logs, read 2026-11-24 23:00Z].**
+- The sampler logged two requests sent 398.20 s and 398.25 s after the fault plan was posted (22:41:26Z on Cloudflare's clock). They answered after 4,462 and 4,250 ms, both 202 and pinned to c1.
+- The sampler sent nothing else for the next 4.25 s, a 4.25 s gap in a stream that otherwise averaged about 41 requests a second. Its two clients each wait for the previous answer, so both stalled at once.
+- Workers Logs for the same window, shifted by the orb clock's 8.6 s:
+  - `graft-agents-m4a-front` ran in DFW until 0.3 s after the first of the two was sent, with wall times of 4 to 19 ms and one 1,000 ms (a refresh waiting `VIEW_CALL_MS`, 0.2 s before).
+  - It logged no invocation for the next 4.4 s.
+  - It resumed with 5 to 11 ms wall times, and `graft-agents-m4a-controller` showed the same gap.
+- So neither Worker held these two requests: no invocation of either script ran during those 4.25 s.
+- The stall sits between the orb's client and Cloudflare's edge: the HTTP/2 connection, or the orb's network. Which one is not known [inference].
+- Separately, Workers Logs shows 26 front invocations with wall times of 2.0 to 3.8 s, from 22:44:53Z to 22:45:37Z. The sampler's connection had moved to LAX by then, so these are new isolates there. The sampler saw their answers in 1.0 to 1.25 s: an invocation's wall time also counts the view refresh it runs under `ctx.wait_until` after it answers, so these are not slow webhooks.

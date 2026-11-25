@@ -41,12 +41,13 @@ pub const OBJECTS_PER_PASS: usize = 100;
 /// Edge pages that carry rows, and pack copies, one pass makes at most [guess]; a pass may run `AT_ONCE` past them.
 pub const PAGES_PER_PASS: usize = 40;
 pub const COPIES_PER_PASS: usize = 40;
-/// Edge answers with no rows (a caught-up chain, or any status) one pass makes at most [guess]: about 80 s a round of
-/// graft-m3f's 3,234 chains at the bundle's 10 s alarm, against the 5-minute lag alarm (`decisions/DECISIONS.md`,
-/// "`lifeboat-turns`").
+/// Edge answers with no rows (a caught-up chain, or any status) one pass makes at most [guess]: a round of graft-m3f's
+/// 3,236 chains took 131 to 150 s at the bundle's 10 s alarm and `AT_ONCE` 64, against the 5-minute lag alarm
+/// (`decisions/DECISIONS.md`, "`lifeboat-turns`").
 pub const PROBES_PER_PASS: usize = 400;
-/// Edge requests in flight at once [guess].
-pub const AT_ONCE: usize = 16;
+/// Edge requests in flight at once [guess]: 64, from 16 after BF-53's stale passes took about 30 s, their probes queued
+/// 16 at a time (`decisions/DECISIONS.md`, "`lifeboat-turns`").
+pub const AT_ONCE: usize = 64;
 /// A pack the install answers 404 on a live repository chain alarms once it has been unserved this long [guess].
 pub const UNSERVED_ALARM_MS: u64 = 3_600_000;
 

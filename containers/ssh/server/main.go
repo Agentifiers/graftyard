@@ -33,8 +33,11 @@ import (
 )
 
 const (
-	// The version string the edge waits for before it forwards a client byte (any "SSH-" banner counts).
-	serverVersion = "SSH-2.0-graftyard"
+	// The version string the edge waits for before it forwards a client byte (any "SSH-" banner counts). `_2` marks
+	// the generation that takes the active slot from `keys.graft` (the `Release` view) and reads it again every
+	// `refreshEvery`; the plain `graftyard` builds read it once at start. graft-ops' `SshHostKeys` probe refuses a
+	// running front below 2 (`workers/ops/src/lib.rs`, `ssh_fronts_ready`).
+	serverVersion = "SSH-2.0-graftyard_2"
 	// B0-24a's front: a 30 s login grace, and client keepalives every 15 s with 4 misses (tests/m0/wp7/front/sshd_config).
 	loginGrace   = 30 * time.Second
 	keepalive    = 15 * time.Second

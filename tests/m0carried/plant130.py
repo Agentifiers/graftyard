@@ -50,8 +50,8 @@ MUTANTS = [
      "    if (lost !== null && (l === null || l === undefined || l === lost)) return { campaign: true };\n",
      "    if (lost !== null && (l === null || l === undefined)) return { campaign: true };\n", WF_T),
     ("a group asks a member on the lost site", WF,
-     "      const live = members.filter((m) => !(p.dead && m.site === p.from));\n",
-     "      const live = members;\n", WF_T),
+     "    const live = members.filter((m) => !(p.dead && m.site === p.from));\n",
+     "    const live = members;\n", WF_T),
 ]
 
 def main():

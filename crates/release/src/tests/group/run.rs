@@ -42,6 +42,8 @@ struct Fake {
     health: BTreeMap<u8, crate::gate::Verdict>,
     /// The account this `graft-ops` runs in: the install's, or the agents account's, which signs with `AGENTS`.
     account: ops::Account,
+    /// What `wrap_var` answers: the host's `SECRETS_WRAP_KEY_CURRENT`.
+    wrap_var: u8,
 }
 
 impl Fake {
@@ -73,6 +75,7 @@ impl Fake {
             started: Vec::new(),
             health: BTreeMap::new(),
             account: ops::Account::Install,
+            wrap_var: 0,
         }
     }
 
@@ -114,6 +117,10 @@ impl Exec for Fake {
 
     fn now(&self) -> Timestamp {
         self.g.at
+    }
+
+    fn wrap_var(&self) -> u8 {
+        self.wrap_var
     }
 
     fn scripts(&self) -> Vec<Script> {
@@ -689,6 +696,31 @@ fn r45_app_credentials_probe_then_switch_with_no_deploy() {
     f.cron(3);
     assert_eq!(f.g.f.slot(SecretName::McpAppKey), 1);
     assert!(f.pages.iter().any(|p| p.contains("McpAppKey")), "{:?}", f.pages);
+}
+
+/// `SecretsWrapKey` before its first `Rotate`: the active slot is `SECRETS_WRAP_KEY_CURRENT`'s, the slot `/wrap` already
+/// wraps under, not the fold's default 0. An install whose variable names 1 (graft-m4a since BF-59) rotates to 0 at
+/// once, and a `Rotate` to 1 is refused as the active slot. After a switch the fold decides, whatever the variable says.
+#[test]
+fn a_first_secrets_wrap_key_rotate_reads_the_variable_s_slot() {
+    let mut f = Fake::new(G::new());
+    f.wrap_var = 1;
+    rotate(&mut f, 60, SecretName::SecretsWrapKey, 0, &CUSTOMER);
+    let log = f.cron(5);
+    assert!(f.g.f.current.is_none(), "{log:?}; pages {:?}", f.pages);
+    assert_eq!(f.rotated.last(), Some(&(SecretName::SecretsWrapKey, 0, crate::RotateStep::Probe)));
+    assert_eq!(f.g.f.slots.get(&SecretName::SecretsWrapKey).map(|(s, _)| *s), Some(0), "switched to 0");
+    // Switched: the fold now decides. A Rotate to 0 again is the active slot even though the variable still says 1.
+    rotate(&mut f, 61, SecretName::SecretsWrapKey, 0, &CUSTOMER);
+    f.cron(2);
+    assert!(f.pages.iter().any(|p| p.contains("SecretsWrapKey to slot 0, the active slot")), "{:?}", f.pages);
+
+    let mut f = Fake::new(G::new());
+    f.wrap_var = 1;
+    rotate(&mut f, 62, SecretName::SecretsWrapKey, 1, &CUSTOMER);
+    f.cron(2);
+    assert!(f.pages.iter().any(|p| p.contains("SecretsWrapKey to slot 1, the active slot")), "{:?}", f.pages);
+    assert!(f.rotated.is_empty(), "no probe of the slot already in use");
 }
 
 /// R45: `SshHostKeys` probes every site's new slot, waits `SSH_ANNOUNCE_FOR` from the probe's commit while each

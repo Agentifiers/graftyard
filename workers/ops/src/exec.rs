@@ -37,8 +37,10 @@
 //!   (`decisions/DECISIONS.md`, "`rotate-probe`"): `DeployToken` lists the install's scripts, `ReadToken` reads one
 //!   site bucket's `location`, and `MintWrapKey`'s steps commit and retire its `VerifyingKey` rows on `TokenShard(0)`.
 //!   R45's holders: `SshHostKeys` reads every non-spare site Registry's `ssh_slots` and wants the same three public
-//!   halves in the new slot everywhere (`crate::ssh_slot_ready`); `McpAppKey`, `McpClientSecret` and `InsightsAppKey`
-//!   read their App's record in the install account's `Authz` fold and want it to list the new value
+//!   halves in the new slot everywhere (`crate::ssh_slot_ready`), and each site's `ssh_front`, refusing a running
+//!   `graft-sshd` below generation 2, which reads the slot only at start (`crate::ssh_fronts_ready`); `McpAppKey`,
+//!   `McpClientSecret` and `InsightsAppKey` read their App's record in the install account's `Authz` fold and want it
+//!   to list the new value
 //!   (`crate::app_lists`); `SecretsWrapKey` wants its new slot's binding (`SECRETS_WRAP_KEY_A` or `_B`) to name that
 //!   slot with a 32-byte key (`crate::wrap_slot_ok`). A test-faults build's `OPS_SSH_ANNOUNCE_MS` lowers
 //!   `SshHostKeys`' announce wait.
@@ -445,11 +447,33 @@ impl<'a> Live<'a> {
         }
         Ok(out)
     }
+
+    /// Every non-spare site's `SshFront` status: its Registry object `ssh`'s `ssh_front`.
+    async fn ssh_fronts(&self) -> std::result::Result<Vec<(u8, crate::SshFrontStatus)>, String> {
+        let mut out = Vec::new();
+        for site in self.sites.0.iter().filter(|s| !s.spare) {
+            let id = site.id.0;
+            let stub = self.bindings().registry(site.id, "ssh").map_err(|e| format!("site {id}: {e}"))?;
+            let mut r = within(VIEW_CALL, stub.fetch_with_str("https://registry/ssh_front"))
+                .await
+                .ok_or_else(|| format!("site {id}: ssh_front did not answer"))?
+                .map_err(|e| format!("site {id}: {e}"))?;
+            if r.status_code() != 200 {
+                return Err(format!("site {id}: ssh_front answered HTTP {}", r.status_code()));
+            }
+            out.push((id, r.json().await.map_err(|e| format!("site {id}: ssh_front: {e}"))?));
+        }
+        Ok(out)
+    }
 }
 
 impl Exec for Live<'_> {
     fn now(&self) -> Timestamp {
         Timestamp(now_ms())
+    }
+
+    fn wrap_var(&self) -> u8 {
+        wrap_var(self.env)
     }
 
     fn scripts(&self) -> Vec<Script> {
@@ -723,10 +747,20 @@ impl Exec for Live<'_> {
                 console_log!("graft-ops Rotate MintWrapKey slot {slot} {step:?}: tokens:0 committed {cmd}");
                 Ok(())
             }
-            // Every graft-sshd announces what its site binds in the slot, so each must bind the same three keys.
+            // Every graft-sshd announces what its site binds in the slot, so each must bind the same three keys, and
+            // each running one must re-read the active slot from the view, or it would serve the old slot after the
+            // switch.
             (SecretName::SshHostKeys, RotateStep::Probe) => {
+                let fronts = self.ssh_fronts().await?;
+                crate::ssh_fronts_ready(&fronts)?;
+                let running = fronts.iter().filter(|(_, f)| f.running).count();
                 let fps = crate::ssh_slot_ready(&self.ssh_slots(slot).await?)?;
-                console_log!("graft-ops Rotate SshHostKeys slot {slot} probe: every site holds {fps:?}");
+                console_log!(
+                    "graft-ops Rotate SshHostKeys slot {slot} probe: {running} of {} fronts running, each at graft-sshd \
+                     generation {} or later; every site holds {fps:?}",
+                    fronts.len(),
+                    crate::SSHD_VIEW_GENERATION
+                );
                 Ok(())
             }
             // The App must already list the new value, or the switch would move every holder to one it refuses.
@@ -893,4 +927,9 @@ pub async fn run(env: &Env) -> Vec<Ran> {
         console_log!("graft-ops {r:?}");
     }
     log
+}
+
+/// `SECRETS_WRAP_KEY_CURRENT`: the slot `SecretsWrapKey` wraps under until a `Rotate` of it switches (default 0).
+pub(crate) fn wrap_var(env: &Env) -> u8 {
+    env.var("SECRETS_WRAP_KEY_CURRENT").ok().and_then(|v| v.to_string().parse().ok()).unwrap_or(0)
 }

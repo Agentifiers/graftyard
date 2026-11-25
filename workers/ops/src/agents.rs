@@ -198,8 +198,13 @@ impl Exec for AgentsLive<'_> {
                 }
             }
             let page = read?;
-            VIEW.with(|v| v.borrow_mut().extend(&self.anchor, &page))
-                .map_err(|e| format!("release/entries after {}: {}: {e}", after.0, e.variant()))?;
+            VIEW.with(|v| v.borrow_mut().extend(&self.anchor, &page)).map_err(|e| {
+                let why = format!("release/entries after {}: {}: {e}", after.0, e.variant());
+                if e.pages() {
+                    self.page(&why);
+                }
+                why
+            })?;
             if page.len() < ENTRIES_PER_PAGE {
                 return Ok(VIEW.with(|v| v.borrow().fold().clone()));
             }

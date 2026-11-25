@@ -1,0 +1,12 @@
+2026-11-25T00:19:44Z
+d4ed774a
+Successfully deleted graft-agents-lf8-front
+Successfully deleted graft-agents-lf8-cold
+Successfully deleted graft-agents-lf8-controller
+Successfully deleted graft-lf8-feed
+{"delete":"graft-agents-lf8-AGENT_APP_KEY","ok":true}
+{"delete":"graft-agents-lf8-WEBHOOK_SECRET","ok":true}
+throwaway keys, forgeries and tokens shredded
+install scripts named graft-lf8-: []
+runner scripts: ["graft-runners"]
+runner store secrets named graft-agents-lf8-: []
