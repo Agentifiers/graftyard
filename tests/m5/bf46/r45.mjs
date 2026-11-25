@@ -73,7 +73,10 @@ if (cmd === "commit") {
   if (bad) process.exit(1);
 } else if (cmd === "unhook") {
   const SINK = process.env.R45_SINK;
-  const have = await api("GET", `/api/v3/repos/${a1}/hooks`, tokens.admin);
+  // A 503 answers an object, not the list (teardown td's first read); read again until it is a list.
+  let have = await api("GET", `/api/v3/repos/${a1}/hooks`, tokens.admin);
+  for (let i = 0; i < 5 && !Array.isArray(have.body); i++) { await sleep(2000); have = await api("GET", `/api/v3/repos/${a1}/hooks`, tokens.admin); }
+  if (!Array.isArray(have.body)) throw new Error(`hooks ${a1}: ${have.status}`);
   let n = 0;
   for (const h of have.body ?? []) if (h.config?.url?.startsWith(`${SINK}/h/`)) { await api("DELETE", `/api/v3/repos/${a1}/hooks/${h.id}`, tokens.admin); n++; }
   console.log(JSON.stringify({ repo: a1, deleted: n, left: (have.body ?? []).length - n }));
@@ -84,6 +87,7 @@ if (cmd === "commit") {
   for (const r of rows) {
     const k = (by[r.kind] ??= { calls: 0, failed: 0, failures: [] });
     k.calls++;
+    if (r.kind.startsWith("cs_")) (k.listed ??= {})[r.listed] = ((k.listed ??= {})[r.listed] ?? 0) + 1;
     if (r.kind === "hook" || r.kind === "j4_hook") (k.slots ??= {})[r.slot ?? "none"] = ((k.slots ??= {})[r.slot ?? "none"] ?? 0) + 1;
     if (!r.ok) { k.failed++; if (k.failures.length < 5) k.failures.push({ at: new Date(r.at).toISOString(), why: r.why }); }
   }
@@ -121,7 +125,25 @@ if (cmd === "commit") {
       const r = await mcpCall(t.access_token, "tools/list", {}, MCP);
       note("mcp_login", r.status === 200, { n, status: r.status, ms: Date.now() - t0, ...(r.status === 200 ? {} : { why: r.text.slice(0, 120) }) });
     } catch (e) {
-      note("mcp_login", false, { n, ms: Date.now() - t0, why: scan(String(e.message ?? e)).slice(0, 160) });
+      const why = scan(String(e.message ?? e)).slice(0, 160);
+      note("mcp_login", false, { n, ms: Date.now() - t0, why });
+      // graft-m4a's edge has not enabled 20.4 and 17.4, so `/mcp/grants` answers 503 after the redemption. A callback
+      // that reached the grant had its code redeemed: the edge checked graft-mcp's client secret against the App's
+      // record (`ident.rs`, `client_secret_ok`). A refused secret is "the host refused the code".
+      const redeemed = /the grant answered|the host did not name the user/.test(why);
+      note("mcp_redeem", redeemed, { n, ms: Date.now() - t0, ...(redeemed ? {} : { why }) });
+    }
+    // McpClientSecret against the record: each slot's secret with a code that never existed, at the edge's
+    // `/login/oauth/access_token`. The record lists it when the answer is `bad_verification_code` (the secret passed,
+    // `ident.rs`), and not when it is `incorrect_client_credentials`. In the body only, never logged.
+    for (const [slot, f] of [["a", process.env.R45_CS_A], ["b", process.env.R45_CS_B]]) {
+      if (!f) continue;
+      const v = secret(JSON.parse(readFileSync(f, "utf8")).value);
+      const body = new URLSearchParams({ client_id: process.env.R45_CLIENT_ID, client_secret: v, code: "r45-no-such-code" });
+      const r = await fetch(`${process.env.GRAFT_EDGE}/login/oauth/access_token`,
+        { method: "POST", headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" }, body });
+      const err = (await r.json().catch(() => ({}))).error ?? `status ${r.status}`;
+      note(`cs_${slot}`, true, { n, listed: err === "bad_verification_code" ? true : err === "incorrect_client_credentials" ? false : null, err });
     }
     // SecretsWrapKey: a hook created with the sink's secret, so the edge has graft-ops wrap it; a ping signs with it
     // after the sequencer unwraps it; the sink answers 200 only when X-Hub-Signature-256 matches.

@@ -91,7 +91,11 @@ record() { node tests/m5/bf46/r45.mjs record "$1"; }
 
 case $STEP in
 state)
-  { node tests/m5/bf46/view.mjs slots
+  # The orb's clock ran 28 s behind Cloudflare in r1 (raw/bf46r45/r1/clock.txt): each state step records the offset
+  # from Cloudflare's Date header, and the results judge phases on Cloudflare time.
+  { t=$(date +%s); d=$(curl -sI https://api.cloudflare.com/client/v4/ | tr -d '\r' | sed -n 's/^[Dd]ate: //p')
+    echo "orb minus Cloudflare: $(( t - $(date -d "$d" +%s) )) s (Date header, 1 s resolution)"
+    node tests/m5/bf46/view.mjs slots
     for n in $SCRIPTS; do deployment "$n"; echo "  versions $(nversions "$n")"; done
     api "$B/workers/scripts/$OPS/schedules" | jq -c '{ops_schedules: [.result.schedules[]?.cron]}'
     api "$B/secrets_store/stores/$STORE/secrets?per_page=100" | jq -c '{store: [.result[] | select(.name | startswith("graft-m4a")) | .name]}'
@@ -192,7 +196,7 @@ sink)
 load)
   case ${3:?start|stop} in
     start) rm -f "$O/stop"
-      amp orb service start bf46-r45-load --command "cd $PWD && source tests/am1/lf13/env-m4a.sh && GRAFT_MCP=$MCPO GRAFT_AUX=https://$AUX_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev R45_SINK=https://$SINK.$CF_WORKERS_SUBDOMAIN.workers.dev R45_J4_SINK=https://$J4SINK.$CF_WORKERS_SUBDOMAIN.workers.dev R45_SINK_SECRET_FILE=$K/sink.secret exec node tests/m5/bf46/r45.mjs load $PWD/$O/load.jsonl $PWD/$O/stop" 2>&1 | head -1 | log ;;
+      amp orb service start bf46-r45-load --command "cd $PWD && source tests/am1/lf13/env-m4a.sh && GRAFT_MCP=$MCPO GRAFT_AUX=https://$AUX_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev R45_SINK=https://$SINK.$CF_WORKERS_SUBDOMAIN.workers.dev R45_J4_SINK=https://$J4SINK.$CF_WORKERS_SUBDOMAIN.workers.dev R45_SINK_SECRET_FILE=$K/sink.secret R45_CS_A=$K/mcp-cs-a.value R45_CS_B=$K/mcp-cs-b.value R45_CLIENT_ID=Iv1.$(printf %016x "$MCP_APP") exec node tests/m5/bf46/r45.mjs load $PWD/$O/load.jsonl $PWD/$O/stop" 2>&1 | head -1 | log ;;
     stop) touch "$O/stop"; sleep 25; amp orb service stop bf46-r45-load 2>&1 | tail -1 | log ;;
   esac ;;
 wrapcheck)

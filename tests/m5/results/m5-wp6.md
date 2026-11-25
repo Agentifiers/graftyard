@@ -510,3 +510,146 @@ from a put to the first read in a running isolate, is the HostedRunnersAppKey ti
 - End sweep: 3 shards of the probe's repository (net 3932163) torn down, then no shard container running.
 - Kept as asked: the `Keys` at Release index 694 and the `graft-m3f-export` bucket.
 - Left running: the three `sshfront` containers on `6085be00`, which stop after `IDLE_MS`.
+
+## BF-46 hosted, R45's four rows on graft-m4a (2026-11-25): pass
+
+Gate line (`build/BUILD-PLAN.md`, M5-WP6): no new script version; zero failed calls; the old value unused after the
+switch. The lead cleared these rows from driver `bf46-r45-m4a` `cd5af1ae` (main `32c0ca7b` plus the driver), with a
+$3 stop across the four and graft-m4a's day at most $35, on AM2's handback (22:50Z).
+- Driver: `tests/m5/bf46/r45-row.sh` (steps), `tests/m5/bf46/r45.mjs` (load and reads), `tests/m5/bf46/r45-sink/`
+  (hook receiver).
+- Logs: `raw/bf46r45/r1/` (the four rows), `r2/` (McpClientSecret's login leg), `td/` (teardown).
+- No site day. Spend on the graft-m4a prefix, 00:00Z to the end sweep: **$0.48**.
+
+**Clock.** The orb's clock ran 28.3 s behind Cloudflare (`raw/bf46r45/r1/clock.txt`).
+- Measured from `Date`-header samples: three at 02:04Z with round trips of 124 to 135 ms, then -27.9 s at 02:11Z and
+  -29 s at 02:26Z. `timedatectl` reported "not synchronized".
+- Load rows carry orb time. Every phase below is split on Cloudflare time: a call starts at `at - ms + 28.3 s`,
+  compared with the `Release` entries' own times (`td/entries.log`).
+- The driver's `state` step now records the offset.
+
+**Set-up** (01:43Z to 01:48Z, orb time):
+- 8 row secrets, drawn on the orb and stored (`secrets.log` shows hashes only).
+- The two Apps' records (`graftyard-mcp` 3670016, `graftyard-insights` 3735552) were rewritten by `PutApp` to list the
+  row's keys and client-secret hashes. AM2-WP3's private halves had been deleted.
+- Row token `graft-m4a-r45-deploy` (`fde512d9…`).
+- `graft-m4a-ops` `ee4b7dd2`: test-faults, with `wrap-slot-var`, both slots of each of the three App secrets bound,
+  and a 1-minute cron. SecretsWrapKey slot 0 is a fresh row secret, slot 1 is `graft-m4a-secrets-wrap-key-b`, and
+  `SECRETS_WRAP_KEY_CURRENT` is 1.
+- `graft-m4a-mcp` `0b92e18f` and its CIMD host, on workers.dev.
+- Receivers: `graft-m4a-r45-sink` for the row's hooks, and `graft-m4-hooksink` (BF-57's name, with BF-57's per-hook
+  secrets) for j4's existing hooks.
+- Nothing in the graftyard.dev zone changed.
+
+**Load, every 20 s:**
+- An OAuth login through graft-mcp, then `tools/list`.
+- Each client-secret slot sent to the edge's `/login/oauth/access_token` with a code that never existed.
+  `bad_verification_code` means the record lists that secret; `incorrect_client_credentials` means it does not
+  (`workers/edge/src/ident.rs`).
+- A hook on `m3org/r45-hooks`: created (graft-ops `/wrap`), then pinged (the `HookSequencer` `/unwrap`s and signs).
+  The receiver checks `X-Hub-Signature-256`, the hook's `Wrapped.slot` is read from the core rows, and the hook is
+  deleted.
+- One of j4's 19 non-slow hooks, pinged and checked the same way. This was the lead's condition: it is the customer
+  case, and nothing on j4 changed.
+
+| Secret | Rotate | Probe (graft-ops log, Cloudflare time) | Switch committed | Result |
+| --- | --- | --- | --- | --- |
+| `McpClientSecret` (r1) | 0 → 1 | 01:56:56.7 "graftyard-mcp lists the new value" | 01:56:58.7 | pass on redemption |
+| `SecretsWrapKey` | 1 → 0 | 02:01:53.0 "SECRETS_WRAP_KEY_A holds slot 0's key" | 02:01:54.6 | pass |
+| `SecretsWrapKey` | 0 → 1 | 02:06:57.8 "SECRETS_WRAP_KEY_B holds slot 1's key" | 02:07:00.0 | pass |
+| `McpAppKey` | 0 → 1 | 02:08:57.7 "graftyard-mcp lists the new value" | 02:09:00.6 | pass (probe and switch) |
+| `InsightsAppKey` | 0 → 1 | 02:10:55.8 "graftyard-insights lists the new value" | 02:10:57.7 | pass (probe and switch) |
+| `McpClientSecret` (r2) | 1 → 0 | 02:16:55.6 "graftyard-mcp lists the new value" | 02:16:57.6 | pass, login leg |
+| `McpAppKey` (teardown) | 1 → 0 | 02:22:54.6 | 02:22:56.4 | back to start |
+| `InsightsAppKey` (teardown) | 1 → 0 | 02:23:54.1 | 02:23:55.8 | back to start |
+
+**No new script version** across any rotation. Sites a `169cd766`, b `89586bfb` and c `969d360b`, ops `ee4b7dd2` and
+mcp `0b92e18f` were the same from the row's deploys to teardown (`versions*.log`). The edge stayed `e9197bf3`, apart
+from r2's reversible change below.
+
+### McpClientSecret r1: measured on redemption
+
+**Every login failed after the redemption** until r2's edge change: graft-mcp's callback answered 502 "the grant
+answered 503". That was 57 of r1's 60 and 14 of 14 before r1 (`load-pre.jsonl`). The other 3 came after r2's edge
+change and reached `tools/list`.
+
+**Cause:** graft-m4a's edge had not enabled formats 20.4 and 17.4, which `POST /api/graftyard/v1/mcp/grants` needs
+(`crates/api/src/mcp.rs`, `grants_inner`). AM2-WP3's teardown removed them from `FORMATS_ENABLED`
+(`tests/am2/results/am2-wp3.md`, row 10), and e9197bf3 carries that list.
+
+**The reader measured instead is the redemption before the grant.** graft-mcp's `host_token` sends its active slot's
+secret, and the edge's `client_secret_ok` checks it against the App's record.
+- Record A only, then A+B: every redemption ok; cs_a listed 11 of 11.
+- After the switch, with the record still A+B: 4 of 4 redemptions ok.
+- Record B only from 01:58:18Z, with the old hash taken off: **42 of 42 redemptions ok, cs_a refused 45 of 45, cs_b
+  listed 45 of 45**. So graft-mcp used B, and A was unused.
+- The lead accepted the redemption as the reader and asked for the login leg on the teardown rotation (r2).
+
+### SecretsWrapKey: pass, two Rotates
+
+With `wrap-slot-var`, the active slot before any `Rotate` was the variable's, 1. So the row ran 1 → 0 → 1, not the
+earlier three-step plan.
+
+| Phase (Cloudflare time) | r45-hooks: new hook, wrap then ping | j4: hook wrapped before the row, ping |
+| --- | --- | --- |
+| Slot 1, before 02:01:54.6 | 25 of 25 good signatures, all slot 1 | 25 of 25 good, slot 1 |
+| Slot 0, to 02:07:00.0 | 15 of 15 good: 14 on slot 0, 1 on slot 1 | 14 of 14 good, slot 1 |
+| Slot 1 again | 20 of 20 good, all slot 1 | 21 of 21 good, slot 1 |
+
+- **0 bad signatures in 120 deliveries.**
+- The one slot-1 hook in the slot-0 phase (3964980) started 0.1 s before the switch back, within the clock's 1 s
+  resolution.
+- Each switch reached the first hook created after it. 3964966 started 16.7 s after the switch to 0 and was on slot
+  0; 3964981 started 23.9 s after the switch to 1 and was on slot 1.
+- j4's old hooks unwrapped and signed while slot 0 was current.
+- Before teardown, `wrapcheck` read j4's 20 hooks, all on slot 1, and r45-hooks empty. So no hook was left on the
+  slot-0 secret that teardown deleted (`td/teardown.log`).
+
+### McpAppKey and InsightsAppKey: probe and switch
+
+No reader exists (R45's ruling), so each row is the probe, which confirms that the App's record lists the new key,
+and the switch. Both passed in both directions (table above).
+
+### McpClientSecret r2: the login leg, pass
+
+**Edge on** (deployed 02:13:11Z, `r2/edge-on.log`):
+- A Workers settings PATCH changed only `FORMATS_ENABLED`: e9197bf3's 26 formats plus 20.4 and 17.4. Every other
+  binding was inherited, so the code stayed e9197bf3's.
+- Version `850b853a`, with 42 bindings. No `FormatsEnable` entry was committed.
+- The first login to reach `tools/list` (200) came at 02:13:24Z.
+
+**Load** (r2's own file, Cloudflare time 02:15:13Z to 02:21:55Z):
+
+| Phase | Logins to `tools/list` | cs_a | cs_b |
+| --- | --- | --- | --- |
+| Record A+B, slot 1 | 5 of 5 | listed | listed |
+| After the switch to 0, record A+B | 4 of 4 | listed | listed |
+| Record A only, from 02:18:48Z (B's hash off) | **7 of 7** | listed 7 | refused 7 |
+
+- **0 failed logins:** 16 of 16, p50 13.6 s, max 16.2 s, each a full OAuth login with CIMD and consent.
+- That includes the logins after B's hash was removed, so graft-mcp used A.
+- One j4 ping answered 503 ("the repository …", a lookup retry) at 02:15:24Z. That was before r2's `Rotate` and outside
+  SecretsWrapKey's row, and the next 12 were good.
+
+**Edge off** (deployed 02:22:01Z, `r2/edge-off.log`):
+- `versions deploy e9197bf3-9dc1-…@100%`.
+- `edgever.py` exits 0: e9197bf3 at 100%.
+- Its `FORMATS_ENABLED` is byte-equal to the list before (`formats-before.txt`), and `/mcp/grants` gives its formats
+  refusal again.
+
+### Teardown (02:22Z to 02:26Z)
+
+- **Slots back to their start:** `McpClientSecret`, `McpAppKey` and `InsightsAppKey` on 0, `SecretsWrapKey` on 1 (the
+  variable's). Count 521, no intent current.
+- **App records:** both restored from apps.json (mcp lists 1 client secret, insights 0). AM2's staged copies were then
+  shredded.
+- **Ops:** `graft-m4a-ops` back to `ac4cd9a5` (full id) at 100%, schedules `[]`.
+- **Deleted:** `graft-m4a-mcp`, `-mcp-aux`, `-r45-sink` and `graft-m4-hooksink`; the 8 row secrets, leaving the
+  store's 7 graft-m4a- secrets. Token `graft-m4a-r45-deploy` revoked, and the row files shredded.
+- **Unhook:** its read met a 503 and threw before `wrapcheck`, which then passed. A second `unhook` found 0 hooks. The
+  driver now retries that read.
+- **End sweep:** 2 shards of r45-hooks (net 65593) torn down, then no shard container running.
+- **Left:** the empty repository `m3org/r45-hooks`.
+
+**A17 is not answered further here.** Every rotation switched between two values bound at deploy, so no value changed
+under a running script. Its open half stays with the `HostedRunnersAppKey` in-place timing row.
