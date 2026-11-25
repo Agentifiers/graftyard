@@ -387,13 +387,14 @@ Under that direction the orchestrator settled how graft-m6a's BF-50 rows read "L
 
 > "If I told you I want as close to GitHub spec as possible within reason, with a few reasonable caveats, what would you do here?" … "Go with that plan: record it in FRAME and start the work"
 
-- **M4 stays open until BF-72 to BF-77 pass hosted**, beside BF-69 to BF-71, which passed (`build/BUILD-PLAN.md`, M4-WP3). They close the gaps a workflow or trust policy written for GitHub would hit:
+- **M4 stays open until BF-72 to BF-78 pass hosted**, beside BF-69 to BF-71, which passed (`build/BUILD-PLAN.md`, M4-WP3). They close the gaps a workflow or trust policy written for GitHub would hit:
   - BF-72: reusable workflows (job-level `uses:`, `with:`, `secrets: inherit`, outputs), and `job_workflow_ref` naming the called workflow (`decisions/OPEN-QUESTIONS.md`, F118);
   - BF-73: the OIDC claims `actor` and `actor_id` (F120), `run_number` (F119), `head_ref` and `base_ref` (F121), and the `sub` customization routes (F122), each read by a relying party's trust policy;
   - BF-74: an install edge on a custom hostname in `graftyard.dev`, with `graftyard oidc bic-rule` applied and the Python-urllib JWKS fetch read before and after (F130);
   - BF-75: the artifacts REST routes, the zip, `gh run download`, delete, and per-artifact `retention-days` (F131);
   - BF-76: `upload-artifact@v4` and `download-artifact@v4` through the `graftyard-actions` forks and the pin map (`design/SHARED.md`, "Actions");
   - BF-77: a repository delete that drops its cache entries (F125's cache half), and a hosted read of `GITHUB_TOKEN` minting and its `permissions`.
+  - BF-78, added by the lead under this decision (2026-11-25): `on: push`. `ActionsTrigger` starts runs only for `pull_request` and `merge_group`, and the edge only for `workflow_dispatch`, so a workflow on `push`, the most common trigger, never runs, though `design/SHARED.md`, "Actions", has a push entry start a run. BF-73's second run is a `workflow_dispatch` run until then.
 - **Known limits that stay, not gate lines:** the `x5t` header (F123: AWS, Vault, and MinIO select keys by `kid`); `graftyard actions import`; an unapproved SHA pin to `upload-artifact@v4` failing until an org admin approves the pin map, as on GHES; and `FormatsEnable` of the Actions formats on a test install (F124).
 - **Cost:** the code is $0. Each hosted row runs on graft-m4a with a stop of at most $3, inside its $40 a UTC day; `graftyard.dev` is the Pro zone the vendor already has, so the custom hostname adds no paid product.
 
