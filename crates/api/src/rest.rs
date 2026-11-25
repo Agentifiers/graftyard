@@ -941,15 +941,15 @@ fn raw_commit_user(raw: &[u8]) -> Option<Value> {
 
 /// A raw commit object's fields, as REST renders them: tree, parents, author and committer (`{name, email, date}`),
 /// and the message without its last newline. `None` for an object that is not a well-formed commit.
-struct RawCommit {
-    tree: ObjectId,
-    parents: Vec<ObjectId>,
-    author: Value,
-    committer: Value,
-    message: String,
+pub(crate) struct RawCommit {
+    pub(crate) tree: ObjectId,
+    pub(crate) parents: Vec<ObjectId>,
+    pub(crate) author: Value,
+    pub(crate) committer: Value,
+    pub(crate) message: String,
 }
 
-fn parse_commit(raw: &[u8]) -> Option<RawCommit> {
+pub(crate) fn parse_commit(raw: &[u8]) -> Option<RawCommit> {
     let split = raw.windows(2).position(|w| w == b"\n\n")?;
     let (headers, message) = (&raw[..split], &raw[split + 2..]);
     let (mut tree, mut parents, mut author, mut committer) = (None, Vec::new(), None, None);

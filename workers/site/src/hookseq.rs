@@ -592,7 +592,7 @@ async fn call(env: &Env, owner: AccountId, site: SiteId, body: &[u8]) -> std::re
 /// The accounts a batch's payloads name: the owner's `Authz` (permissions, kind, the repository's name) through
 /// `fresh`, and the logins of the accounts the tiers name, as the edge reads them (`AccountLogin` rows on each
 /// account's `Names` shard, at most `LOGIN_SHARDS_MAX` shards).
-async fn directory(
+pub(crate) async fn directory(
     h: &Rc<Host<Repo>>,
     repo: RepoId,
     owner: AccountId,

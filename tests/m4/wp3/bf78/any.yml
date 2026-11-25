@@ -1,0 +1,19 @@
+name: bf78-any
+# BF-78 (`tests/m4/wp3/bf78/push.mjs`): every push, with no filter. Its job prints the context the row checks, writes
+# `github.event` to BF78_OUT/event-<run>.json on the runner's host (the orb), and writes one ID token for audience bf78
+# beside it, never to the log.
+on: push
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  any:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: |
+          echo "context event=${{ github.event_name }} ref=${{ github.ref }} sha=${{ github.sha }} actor=${{ github.actor }} run=${{ github.run_id }}"
+          umask 077
+          cat "$GITHUB_EVENT_PATH" >"$BF78_OUT/event-${{ github.run_id }}.json"
+          curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=bf78" |
+            python3 -c 'import json,sys; sys.stdout.write(json.load(sys.stdin)["value"])' >"$BF78_OUT/token-${{ github.run_id }}.jwt"
+          echo "token written: $(wc -c <"$BF78_OUT/token-${{ github.run_id }}.jwt") bytes"

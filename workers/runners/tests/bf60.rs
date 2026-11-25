@@ -196,7 +196,7 @@ impl World {
                 id: RunId(DbId(0)),
                 repo,
                 workflow: ".github/workflows/ci.yml".into(),
-                event: "push".into(),
+                event: "workflow_dispatch".into(),
                 head_sha: [i as u8; 20],
                 head_ref: "refs/heads/main".into(),
                 trigger: (ChainId::Repo(repo), Index(i as u64 + 1)),

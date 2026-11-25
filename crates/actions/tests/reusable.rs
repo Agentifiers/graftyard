@@ -372,6 +372,43 @@ fn a_planned_run_carries_its_actor_and_run_number() {
     assert_eq!(sh.f().run_number(third), Some(3));
 }
 
+/// BF-78 with `reusable`: a pushed workflow that calls a reusable one is one `CreateRunPush` (0x15.12) that also
+/// records the plan, so its called jobs run with it and the run keeps its `github.event`.
+#[test]
+fn a_planned_push_run_keeps_its_plan_and_its_event() {
+    let e = plan(&install(), CALLER).unwrap();
+    let mut sh = Shard::new([READS.as_slice(), &[graftyard_actions::shard::ACTIONS_FORMAT_PUSH]].concat());
+    let run = WorkflowRun {
+        id: RunId(DbId(0)),
+        repo: REPO,
+        workflow: ".github/workflows/ci.yml".into(),
+        event: "push".into(),
+        head_sha: oid(1),
+        head_ref: "refs/heads/main".into(),
+        trigger: (ChainId::Repo(REPO), Index(4)),
+        attempt: 1,
+        concurrency: None,
+        fork: false,
+    };
+    let call = graftyard_actions::runsvc::with_plan(
+        graftyard_actions::runsvc::push_run_call(
+            &run,
+            &e.jobs,
+            &e.declared,
+            true,
+            Some((AccountId(DbId(41)), "octocat")),
+            &json!({"ref": "refs/heads/main"}),
+        ),
+        e.plan.as_ref(),
+    );
+    let (_, op) = graftyard_actions::runsvc::create_run_op(&call).unwrap();
+    assert!(matches!(op, ActionsOp::CreateRunPush { plan: Some(_), .. }), "{op:?}");
+    let Some(Ok(ActionsOut::Run(r))) = sh.cmd(ActionsActor::Operator, op) else { panic!("not created") };
+    assert_eq!(sh.f().run_plan(r), e.plan.as_ref(), "the plan is recorded beside the push run");
+    assert_eq!(sh.f().run_event(r), Some(r#"{"ref":"refs/heads/main"}"#));
+    assert_eq!(sh.f().run_actor(r).map(|(_, l)| l), Some("octocat"));
+}
+
 /// An explicit `secrets:` passes only what it maps, under the called file's names, and a chain A > B > C passes C
 /// only what B passed it, though B inherited everything from A.
 #[test]
@@ -575,12 +612,13 @@ fn a_planned_run_needs_a_reader_of_0x15_9_and_old_folds_keep_their_bytes() {
     let _ = RunnerId(DbId(0));
 }
 
+/// A dispatch's run: a `push` run's create is 0x15.12's (BF-78), whatever else it carries.
 fn dummy_run() -> WorkflowRun {
     WorkflowRun {
         id: RunId(DbId(0)),
         repo: REPO,
         workflow: ".github/workflows/ci.yml".into(),
-        event: "push".into(),
+        event: "workflow_dispatch".into(),
         head_sha: oid(1),
         head_ref: "refs/heads/main".into(),
         trigger: (ChainId::Repo(REPO), Index(5)),

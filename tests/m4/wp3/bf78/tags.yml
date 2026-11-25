@@ -1,0 +1,11 @@
+name: bf78-tags
+# BF-78: tags `v*` only; `paths` never applies to a tag push.
+on:
+  push:
+    tags: ['v*']
+    paths: ['never/**']
+jobs:
+  t:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: echo "context event=${{ github.event_name }} ref=${{ github.ref }}"

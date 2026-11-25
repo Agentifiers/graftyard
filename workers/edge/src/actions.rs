@@ -1264,6 +1264,7 @@ mod tests {
                     actor: None,
                     run_number: None,
                     reusable: None,
+                    event: None,
                 };
                 let m = runsvc::acquire_message(&urls, &run, row, &a);
                 let data = &m["resources"]["endpoints"][0]["data"];

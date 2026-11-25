@@ -509,6 +509,8 @@ pub struct Acquired<'a> {
     pub run_number: Option<u64>,
     /// `JobMessage::reusable`: a planned run's job's contexts, whose `secrets` replace `secrets` above.
     pub reusable: Option<crate::reusable::JobContexts>,
+    /// The run's event payload (`ActionsEvent::RunEvent`, BF-78), `github.event`; none without one.
+    pub event: Option<&'a str>,
 }
 
 /// `github.*` for a job of `run` as plain JSON: what `acquire_message` sends, and what a planned run's `with:` and
@@ -554,6 +556,13 @@ pub fn acquire_message(
         ("job", json!(&*job.spec.name)),
         ("actor", json!(a.actor.unwrap_or(a.owner_login))),
     ]);
+    // BF-78: a `push` run's `github.event`, the payload recorded beside it, as context data.
+    let mut github = github;
+    if let Some(ev) = a.event.and_then(|e| serde_json::from_str::<Value>(e).ok())
+        && let Some(d) = github["d"].as_array_mut()
+    {
+        d.push(json!({"k": "event", "v": context_of(&ev)}));
+    }
     let matrix: Vec<(String, Value)> =
         job.spec.matrix.iter().map(|(k, v)| (k.to_string(), serde_json::from_str(v).unwrap_or(Value::Null))).collect();
     let m = JobMessage {
@@ -681,6 +690,21 @@ pub fn create_run_call(
     b
 }
 
+/// The `/runsvc` `create_run` call of a `push` run (BF-78): `create_run_call`'s, with the pusher when the push names
+/// one and the run's `github.event` (`event`, the push payload), which make it `CreateRunPush` (0x15.12).
+pub fn push_run_call(
+    run: &crate::shard::WorkflowRun,
+    jobs: &[crate::shard::JobSpec],
+    permissions: &crate::specs::Declared,
+    tokens: bool,
+    actor: Option<(graftyard_types::AccountId, &str)>,
+    event: &Value,
+) -> Value {
+    let mut b = create_run_call(run, jobs, permissions, tokens, None, None, actor);
+    b["event"] = json!(event.to_string());
+    b
+}
+
 /// `create_run_call` with the run's `RunPlan` (`crate::reusable`), which only a caller where 0x15.9 is enabled sends.
 pub fn with_plan(mut call: Value, plan: Option<&crate::reusable::RunPlan>) -> Value {
     if let Some(p) = plan {
@@ -689,8 +713,10 @@ pub fn with_plan(mut call: Value, plan: Option<&crate::reusable::RunPlan>) -> Va
     call
 }
 
-/// The command a shard leader commits for a `create_run_call`, with the run's key: `CreateRunPlanned` for one with a
-/// plan (`with_plan`), with its actor when the call names one, `CreateRunAs` (0x15.8) for a call that names its actor,
+/// The command a shard leader commits for a `create_run_call`, with the run's key: `CreateRunPush` (0x15.12) for a
+/// `push` run's call that carries its event (`push_run_call`), with its plan when it has one, `CreateRunPlanned` for
+/// another call with a plan (`with_plan`), with its actor when the call names one, `CreateRunAs` (0x15.8) for a call
+/// that names its actor,
 /// `CreateRunFrom` for a `pull_request` run with a base and a head, `CreateRunOn` for one with a
 /// base alone, else `CreateRunWith` when the call carries permissions, else `CreateRun`.
 pub fn create_run_op(b: &Value) -> Result<(crate::shard::RunKey, crate::shard::ActionsOp), String> {
@@ -700,8 +726,13 @@ pub fn create_run_op(b: &Value) -> Result<(crate::shard::RunKey, crate::shard::A
     let permissions: crate::specs::Declared = serde_json::from_value(b["permissions"].clone()).unwrap_or_default();
     let key = run.key();
     let actor: Option<(graftyard_types::AccountId, Box<str>)> = serde_json::from_value(b["actor"].clone()).ok();
+    let plan = || serde_json::from_value(b["plan"].clone()).map_err(|e| format!("plan: {e}"));
+    if let Some(event) = b["event"].as_str().filter(|_| run.is_push()) {
+        let plan = if b["plan"].is_null() { None } else { Some(plan()?) };
+        return Ok((key, ActionsOp::CreateRunPush { run, jobs, permissions, actor, event: event.into(), plan }));
+    }
     if !b["plan"].is_null() {
-        let plan = serde_json::from_value(b["plan"].clone()).map_err(|e| format!("plan: {e}"))?;
+        let plan = plan()?;
         let base_ref = b["base_ref"].as_str().filter(|_| run.is_pull_request()).map(Into::into);
         let head_ref = b["head_ref"].as_str().filter(|_| run.is_pull_request()).map(Into::into);
         return Ok((key, ActionsOp::CreateRunPlanned { run, jobs, permissions, plan, base_ref, head_ref, actor }));
@@ -920,6 +951,7 @@ mod tests {
             actor: None,
             run_number: None,
             reusable,
+            event: None,
         };
         let plain = acquire_message(&urls, &run, &row, &a(None));
         assert!(plain.get("jobOutputs").is_none());

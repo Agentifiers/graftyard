@@ -1,0 +1,11 @@
+name: bf78-paths
+# BF-78: a push to `main` that changes `src/`, read from the two-dot diff of the old and new tips.
+on:
+  push:
+    branches: [main]
+    paths: ['src/**']
+jobs:
+  p:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: echo "context event=${{ github.event_name }} ref=${{ github.ref }}"

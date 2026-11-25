@@ -67,10 +67,16 @@ pub const ACTIONS_FORMAT_CLAIMS: Format = Format { family: 0x15, version: 8 };
 /// `FormatsEnable` enabled 0x15.9 sends either, after the site day that shipped this reader to every member
 /// (`decisions/DECISIONS.md`, "`reusable`").
 pub const ACTIONS_FORMAT_REUSABLE: Format = Format { family: 0x15, version: 9 };
+/// BF-78's `on: push` (`crate::trigger::push_events`): `CreateRunPush`, whose entry records the run's actor (the
+/// pusher), its number, and its `github.event` (`ActionsEvent::RunEvent`) beside the run, and any `CreateRun` of a
+/// `push` run, whose run key names its ref (`WorkflowRun::key`), so one entry that moves several refs starts a run for
+/// each. Only a site whose site day set `GRAFTYARD_PUSH_TRIGGER` sends one, after the day that shipped this reader to
+/// every member (`decisions/DECISIONS.md`, "`push-trigger`"). 0x15.10 and 0x15.11 are other branches'.
+pub const ACTIONS_FORMAT_PUSH: Format = Format { family: 0x15, version: 12 };
 /// Every Actions format this release reads, which a member's `reads()` is: a format a command can be sent as and a
 /// member does not list is refused `Unsupported` on every site, as 0x15.7 was on main 46ea4200
 /// (`every_command_format_is_read`).
-pub const ACTIONS_FORMATS: [Format; 9] = [
+pub const ACTIONS_FORMATS: [Format; 10] = [
     ACTIONS_FORMAT,
     ACTIONS_FORMAT_MERGE_GROUP,
     ACTIONS_FORMAT_OWNER_MATCH,
@@ -80,6 +86,7 @@ pub const ACTIONS_FORMATS: [Format; 9] = [
     ACTIONS_FORMAT_HEAD_REF,
     ACTIONS_FORMAT_CLAIMS,
     ACTIONS_FORMAT_REUSABLE,
+    ACTIONS_FORMAT_PUSH,
 ];
 
 #[cfg(test)]
@@ -121,9 +128,9 @@ impl WorkflowRun {
     /// `merge_group` event, so a `merge_group` run's key also names its queue ref (after a newline, which no path
     /// holds). Only format 0x15.2 carries such a run, so a member that keys runs the old way never decides one. One
     /// entry also moves several pull requests' heads, so a `pull_request` run's key names its `refs/pull/N/merge`
-    /// the same way, in format 0x15.4.
+    /// the same way, in format 0x15.4, and several branches or tags, so a `push` run's key names its ref, in 0x15.12.
     pub fn key(&self) -> RunKey {
-        let workflow = if self.is_merge_group() || self.is_pull_request() {
+        let workflow = if self.is_merge_group() || self.is_pull_request() || self.is_push() {
             format!("{}\n{}", self.workflow, self.head_ref).into()
         } else {
             self.workflow.clone()
@@ -137,6 +144,10 @@ impl WorkflowRun {
 
     pub fn is_pull_request(&self) -> bool {
         &*self.event == "pull_request"
+    }
+
+    pub fn is_push(&self) -> bool {
+        &*self.event == "push"
     }
 }
 
@@ -272,6 +283,11 @@ pub enum ActionsEvent {
         job: JobId,
         outputs: Vec<(Box<str>, Box<str>)>,
     },
+    /// A `push` run's `github.event`, the push payload as JSON, in its `RunCreated`'s entry (0x15.12, BF-78).
+    RunEvent {
+        run: RunId,
+        payload: Box<str>,
+    },
 }
 
 impl Record for ActionsEvent {
@@ -403,6 +419,8 @@ trait Tables {
     /// A run's plan and a job's outputs, which `decide` never reads, so the scratch drops both.
     fn put_plan(&mut self, _run: RunId, _plan: &crate::reusable::RunPlan) {}
     fn put_outputs(&mut self, _job: JobId, _outputs: &[(Box<str>, Box<str>)]) {}
+    /// A `push` run's payload, which `decide` never reads.
+    fn put_event(&mut self, _run: RunId, _payload: &str) {}
 }
 
 fn is_queued(s: &JobState) -> bool {
@@ -481,6 +499,7 @@ fn apply_event(t: &mut impl Tables, ev: &ActionsEvent, at: Timestamp) {
         ActionsEvent::SubTemplateSet { repo, sub } => t.put_sub(*repo, sub),
         ActionsEvent::RunPlanned { run, plan } => t.put_plan(*run, plan),
         ActionsEvent::JobOutputs { job, outputs } => t.put_outputs(*job, outputs),
+        ActionsEvent::RunEvent { run, payload } => t.put_event(*run, payload),
     }
 }
 
@@ -580,6 +599,9 @@ impl Tables for ActionsFold {
     fn counter(&self, key: &(RepoId, Box<str>)) -> Option<u64> {
         self.more.more.more.more.counters.get(key).copied()
     }
+    fn put_event(&mut self, run: RunId, payload: &str) {
+        self.more.more.more.more.more.more.events.insert(run, payload.into());
+    }
     fn put_number(&mut self, run: RunId, number: u64) {
         let Some(row) = self.runs.get(&run) else { return };
         let key = (row.run.repo, row.run.workflow.clone());
@@ -652,6 +674,10 @@ impl ActionsFold {
     /// The run's number among its workflow's runs (`ActionsEvent::RunNumber`, F119).
     pub fn run_number(&self, r: RunId) -> Option<u64> {
         self.more.more.more.more.numbers.get(&r).copied()
+    }
+    /// A `push` run's `github.event` (`ActionsEvent::RunEvent`, BF-78).
+    pub fn run_event(&self, r: RunId) -> Option<&str> {
+        self.more.more.more.more.more.more.events.get(&r).map(|p| &**p)
     }
     /// The `sub` template repository `repo`'s tokens use: its own setting over the owner's template, the owner's read
     /// from shard 0 and passed in (`org`); `None` for the default `sub` (F122).
@@ -972,6 +998,9 @@ impl Scratch for ActionsScratch<'_> {
             ActionsEvent::RunActor { run, .. } if self.run(*run).is_none() => {
                 Err("an actor for a run the entry did not create".into())
             }
+            ActionsEvent::RunEvent { run, .. } if !self.run(*run).is_some_and(|r| r.run.is_push()) => {
+                Err("a push payload for a run the entry did not create, or not a push run".into())
+            }
             ActionsEvent::RunNumber { run, number } => match self.run(*run) {
                 None => Err("a number for a run the entry did not create".into()),
                 Some(r) if *number != self.number_without(r.run.repo, &r.run.workflow, Some(*run)) => {
@@ -1184,6 +1213,33 @@ pub enum ActionsOp {
         conclusion: crate::job::Conclusion,
         outputs: Vec<(Box<str>, Box<str>)>,
     },
+    /// BF-78's `push` run (0x15.12): `CreateRunWith`, with the pusher when the push names an account
+    /// (`ActionsEvent::RunActor`), always its number (`ActionsEvent::RunNumber`), its `github.event`, the push
+    /// payload as JSON (`ActionsEvent::RunEvent`), and a planned run's `RunPlan` as `CreateRunPlanned` records it.
+    CreateRunPush {
+        run: WorkflowRun,
+        jobs: Vec<JobSpec>,
+        permissions: Vec<(u16, PermissionSet)>,
+        actor: Option<(AccountId, Box<str>)>,
+        event: Box<str>,
+        plan: Option<crate::reusable::RunPlan>,
+    },
+}
+
+impl ActionsOp {
+    /// The run a create command creates.
+    pub fn created(&self) -> Option<&WorkflowRun> {
+        match self {
+            ActionsOp::CreateRun { run, .. }
+            | ActionsOp::CreateRunWith { run, .. }
+            | ActionsOp::CreateRunOn { run, .. }
+            | ActionsOp::CreateRunFrom { run, .. }
+            | ActionsOp::CreateRunAs { run, .. }
+            | ActionsOp::CreateRunPlanned { run, .. }
+            | ActionsOp::CreateRunPush { run, .. } => Some(run),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1470,6 +1526,9 @@ impl Command for ActionsCmd {
 
     fn format(&self) -> Format {
         match &self.op {
+            // A `push` run's key names its ref (0x15.12), so every call that creates one is 0x15.12: a member that
+            // keys runs the old way never applies one.
+            op if op.created().is_some_and(WorkflowRun::is_push) => ACTIONS_FORMAT_PUSH,
             ActionsOp::CreateRun { run, .. } if run.is_merge_group() => ACTIONS_FORMAT_MERGE_GROUP,
             ActionsOp::CreateRun { run, .. } if run.is_pull_request() => ACTIONS_FORMAT_PULL_REQUEST,
             ActionsOp::MatchOwner { .. } => ACTIONS_FORMAT_OWNER_MATCH,
@@ -1539,6 +1598,27 @@ impl Command for ActionsCmd {
                         evs.push(ActionsEvent::RunActor { run: id, actor, login });
                     }
                     evs.push(ActionsEvent::RunNumber { run: id, number: s.next_number(run.repo, &run.workflow) });
+                }
+                Ok((evs, out))
+            }
+            ActionsOp::CreateRunPush { run, jobs, permissions, actor, event, plan } => {
+                only(operator)?;
+                if !run.is_push() {
+                    return Err(ActionsErr::Illegal("CreateRunPush takes a push run".into()));
+                }
+                if let Some(plan) = plan {
+                    crate::reusable::check_plan(plan, jobs.len()).map_err(|e| ActionsErr::Illegal(e.into()))?;
+                }
+                let (mut evs, out) = self.create_run(s, run, jobs, permissions)?;
+                if let ActionsOut::Run(id) = out {
+                    if let Some((actor, login)) = actor.clone() {
+                        evs.push(ActionsEvent::RunActor { run: id, actor, login });
+                    }
+                    evs.push(ActionsEvent::RunNumber { run: id, number: s.next_number(run.repo, &run.workflow) });
+                    evs.push(ActionsEvent::RunEvent { run: id, payload: event.clone() });
+                    if let Some(plan) = plan {
+                        evs.push(ActionsEvent::RunPlanned { run: id, plan: plan.clone() });
+                    }
                 }
                 Ok((evs, out))
             }
@@ -2285,6 +2365,60 @@ mod tests {
             assert_eq!(back, sh.f);
         }
 
+        /// BF-78 (0x15.12): `CreateRunPush` records the pusher, the number, and the run's `github.event` beside it; it
+        /// refuses a run that is not a `push`. A `push` run's key names its ref, so two refs of one entry and one file
+        /// are two runs. A follower refuses a payload for a run the entry did not create or one that is not a push,
+        /// and a fold with no plan or push row keeps 0x15.8's bytes, so the readers day changes no stored fold.
+        #[test]
+        fn a_push_run_records_its_event_and_keys_by_its_ref() {
+            let mut sh = Shard::new();
+            sh.f.ids.apply_block(IdBlock::new(DbId(500), 40).unwrap());
+            let rows = &sh.f.more.more.more.more;
+            let v8 =
+                postcard::to_allocvec(&(&rows.actors, &rows.numbers, &rows.counters, &rows.org_sub, &rows.repo_subs))
+                    .unwrap();
+            assert_eq!(postcard::to_allocvec(rows).unwrap(), v8, "no plan or push row writes 0x15.8's claim rows");
+            let l = LabelSet::parse(["linux"]).unwrap();
+            let op = |r: &str, event: &str| ActionsOp::CreateRunPush {
+                run: WorkflowRun { trigger: (ChainId::Repo(RepoId(DbId(7))), Index(77)), ..run(0, r, event) },
+                jobs: vec![job(0, &l)],
+                permissions: Vec::new(),
+                actor: Some((AccountId(DbId(55)), "octocat".into())),
+                event: format!("{{\"ref\":\"{r}\"}}").into(),
+                plan: None,
+            };
+            assert_eq!(
+                ActionsCmd { actor: ActionsActor::Operator, op: op(MAIN, "push") }.format(),
+                ACTIONS_FORMAT_PUSH
+            );
+            let bare = ActionsCmd {
+                actor: ActionsActor::Operator,
+                op: ActionsOp::CreateRun { run: run(0, MAIN, "push"), jobs: vec![job(0, &l)] },
+            };
+            assert_eq!(bare.format(), ACTIONS_FORMAT_PUSH, "a push run's key is 0x15.12's however it is created");
+            assert!(matches!(
+                sh.run(ActionsActor::Operator, op(MAIN, "workflow_dispatch")),
+                Err(ActionsErr::Illegal(_))
+            ));
+            let ActionsOut::Run(a) = sh.run(ActionsActor::Operator, op(MAIN, "push")).unwrap() else { panic!() };
+            let ActionsOut::Run(b) = sh.run(ActionsActor::Operator, op("refs/tags/v1", "push")).unwrap() else {
+                panic!()
+            };
+            assert_eq!(sh.run(ActionsActor::Operator, op(MAIN, "push")), Err(ActionsErr::Duplicate));
+            assert_eq!(
+                (sh.f.run_event(a), sh.f.run_event(b)),
+                (Some("{\"ref\":\"refs/heads/main\"}"), Some("{\"ref\":\"refs/tags/v1\"}"))
+            );
+            assert_eq!(sh.f.run_actor(a), Some((AccountId(DbId(55)), "octocat")));
+            // Three of the fixture's runs are `ci.yml` of repository 7, so these are its fourth and fifth.
+            assert_eq!((sh.f.run_number(a), sh.f.run_number(b)), (Some(4), Some(5)));
+            let sc = sh.f.scratch_at(Timestamp(sh.at), TierSet::CORE);
+            assert!(sc.check(&ActionsEvent::RunEvent { run: RunId(DbId(1)), payload: "{}".into() }).is_err());
+            assert!(sc.check(&ActionsEvent::RunEvent { run: RunId(DbId(104)), payload: "{}".into() }).is_err());
+            let back: ActionsFold = postcard::from_bytes(&postcard::to_allocvec(&sh.f).unwrap()).unwrap();
+            assert_eq!(back, sh.f);
+        }
+
         /// F122: a repository's `sub` setting over the owner's template, as GHES documents it: the default until the
         /// repository opts out of it, its own keys over the owner's, and the owner's once it opts out with none.
         /// `SetSubTemplate` takes an admin and refuses a key GHES refuses.
@@ -2363,9 +2497,9 @@ mod tests {
                 actor: None,
             },
             ActionsOp::CreateRunPlanned {
-                run: r,
-                jobs: j,
-                permissions: p,
+                run: r.clone(),
+                jobs: j.clone(),
+                permissions: p.clone(),
                 plan: Default::default(),
                 base_ref: None,
                 head_ref: None,
@@ -2377,6 +2511,14 @@ mod tests {
                 conclusion: crate::job::Conclusion::Success,
                 outputs: Vec::new(),
             },
+            ActionsOp::CreateRunPush {
+                run: WorkflowRun { event: "push".into(), ..r },
+                jobs: j,
+                permissions: p,
+                actor: None,
+                event: "{}".into(),
+                plan: None,
+            },
             ActionsOp::SetSubTemplate { repo: None, sub: Default::default() },
             ActionsOp::CacheSweep,
             ActionsOp::ExpireLeases,
@@ -2387,7 +2529,9 @@ mod tests {
             let f = ActionsCmd { actor: ActionsActor::Operator, op: op.clone() }.format();
             assert!(ACTIONS_FORMATS.contains(&f), "{op:?} is sent as {f:?}, which no member reads");
         }
-        assert_eq!(ACTIONS_FORMATS.len(), ACTIONS_FORMATS.iter().map(|f| f.version).max().unwrap() as usize);
+        // 0x15.10 and 0x15.11 are other branches' (the lead's reservation); each joins this list as it merges.
+        let versions: Vec<u16> = ACTIONS_FORMATS.iter().map(|f| f.version).collect();
+        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 12]);
     }
 
     /// A recorded stall moves a live lease and a queued job's `since` by exactly its length, through the fold and
