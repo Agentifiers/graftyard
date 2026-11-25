@@ -1,11 +1,13 @@
 // BF-70's install half on graft-m4a (`tests/m4/wp3/oidc/hosted-row.sh` calls it; `source tests/am1/lf13/env-m4a.sh`).
 //   node tests/m4/wp3/oidc/hosted.mjs action <configure-aws-credentials checkout> <out dir>
 //   node tests/m4/wp3/oidc/hosted.mjs job <runner dir> <out dir> <tag> [fork]
+//   node tests/m4/wp3/oidc/hosted.mjs precheck <runner dir> <out dir>
 //   node tests/m4/wp3/oidc/hosted.mjs unmirror - <out dir>
 // `action` creates the public repository `m3org/bf70-cac` and pushes configure-aws-credentials v6.2.0's tree to it as
 // `main` and tag `v6.2.0` (the install resolves `uses:` only in its own repositories, F90), and records the tree hash,
 // which must equal upstream's; `unmirror` deletes it at teardown. `job` dispatches `hosted.yml` (or, with `fork`,
-// `fork.yml` as a fork pull request's run) on an unmodified runner through `../hosted-run.mjs`, reads every job's
+// `fork.yml` as a fork pull request's run) on an unmodified runner through `../hosted-run.mjs`, `hosted.yml` from a
+// same-repository pull request (`HOSTED_RUN_PR=1`; F127), reads every job's
 // log, and writes `<out>/job-<tag>.json` with what each check saw. It exits 1 when a check fails. It never prints a
 // token: the workflow prints only the kid, the published kids and the claims, and the log scan fails on anything
 // shaped like a JWT.
@@ -51,18 +53,22 @@ if (phase === "action") {
   result("unmirror", { delete: d.status, anonymous_read_after: after.status });
   log(`m3org/bf70-cac: DELETE ${d.status}, anonymous read after ${after.status}`);
   if (![204, 404].includes(d.status) || after.status !== 404) process.exit(1);
-} else if (phase === "job") {
+} else if (phase === "job" || phase === "precheck") {
   const runnerDir = a1;
+  const pre = phase === "precheck";
   const fork = mode === "fork";
   const name = fork ? "bf70-fork" : "bf70";
   const R = `m3org/${name}`;
-  // A dispatch's run key is (repository index, workflow): a label write moves the index, so each job is a new run.
-  const lab = await api("POST", `/api/v3/repos/${R}/labels`, admin, { name: `bf70-${Date.now().toString(36)}`, color: "ededed" });
-  log(`index bump (label): ${lab.status}`);
-  const dir = join(out, `job-${tag}`);
+  if (fork) {
+    // A dispatch's run key is (repository index, workflow): a label write moves the index, so each job is a new run.
+    const lab = await api("POST", `/api/v3/repos/${R}/labels`, admin, { name: `bf70-${Date.now().toString(36)}`, color: "ededed" });
+    log(`index bump (label): ${lab.status}`);
+  }
+  const dir = join(out, pre ? "precheck" : `job-${tag}`);
   execFileSync("rm", ["-rf", join(runnerDir, "_diag"), join(runnerDir, "_work")]);
-  const wf = new URL(fork ? "fork.yml" : "hosted.yml", import.meta.url).pathname;
-  const env = { ...process.env, ...(fork ? { HOSTED_RUN_FORK: "1" } : {}) };
+  const wf = new URL(fork ? "fork.yml" : pre ? "precheck.yml" : "hosted.yml", import.meta.url).pathname;
+  // The fork-PR job stays a dispatch marked fork (no fork route exists); every other job is a pull request's run.
+  const env = { ...process.env, ...(fork ? { HOSTED_RUN_FORK: "1" } : { HOSTED_RUN_PR: "1" }) };
   const r = spawnSync("node", [new URL("../hosted-run.mjs", import.meta.url).pathname, runnerDir, wf, dir, name], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 20 * 60_000 });
   writeFileSync(join(dir, "driver.log"), (r.stdout || "") + (r.stderr || ""));
   const last = JSON.parse(readFileSync(join(dir, "run.jsonl"), "utf8").trim().split("\n").pop());
@@ -82,11 +88,15 @@ if (phase === "action") {
   const concl = Object.fromEntries(last.jobs.map((j) => [j.name, j.s.Completed?.conclusion]));
   const jwt = /eyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{20,}/.test(all);
   let checks;
-  if (fork) {
+  if (pre) {
+    // The lead's precheck: only whether the URL is set; abort the row unless it is.
+    checks = { precheck_succeeded: concl.precheck === "Success", url_set: has("precheck", "ACTIONS_ID_TOKEN_REQUEST_URL set: yes") };
+  } else if (fork) {
     checks = {
       fork_succeeded: concl.fork === "Success",
       fork_no_url: has("fork", "fork, no URL"),
-      fork_refused_403: /idtoken for a fork: 403/.test(text.fork ?? ""),
+      // `may_mint` refuses a fork before it reads the grant, so the 403 names the fork, not a missing grant.
+      fork_refused_403: /idtoken for a fork: 403 .*fork/i.test(text.fork ?? ""),
     };
   } else {
     const v = (text.sts ?? "").match(/verified kid=(\S+) published (\[[^\]]*\]) (\{.*\})/);
@@ -101,13 +111,22 @@ if (phase === "action") {
       denied_no_url: has("denied", "no id-token grant, no URL"),
       denied_refused_403: /idtoken without the grant: 403/.test(text.denied ?? ""),
     };
-    if (v) checks.kid = v[1], checks.published = v[2], checks.claims = JSON.parse(v[3]);
+    if (v) {
+      const c = JSON.parse(v[3]);
+      checks.kid = v[1], checks.published = v[2], checks.claims = c;
+      // The lead's ruling for r2: a same-repository pull request's token.
+      checks.sub_is_pull_request = c.sub === "repo:m3org/bf70:pull_request";
+      checks.event_name_pull_request = c.event_name === "pull_request";
+      // F121's known gap, recorded and not a pass line: GitHub sets base_ref on pull_request, this install leaves it
+      // empty.
+      checks.gap_f121_base_ref = c.base_ref_set === false ? "empty (F121)" : `set: ${c.base_ref_set}`;
+    }
   }
   checks.no_token_in_logs = !jwt;
   const ok = Object.entries(checks).every(([, x]) => x !== false);
-  result(`job-${tag}`, { tag, fork, run: last, conclusions: concl, checks, ok, dir: dir.replace(`${process.cwd()}/`, "") });
-  log(`job ${tag}: ${ok ? "PASS" : "FAIL"} ${JSON.stringify(checks)}`);
+  result(pre ? "precheck" : `job-${tag}`, { tag, fork, run: last, conclusions: concl, checks, ok, dir: dir.replace(`${process.cwd()}/`, "") });
+  log(`${pre ? "precheck" : `job ${tag}`}: ${ok ? "PASS" : "FAIL"} ${JSON.stringify(checks)}`);
   if (!ok) process.exit(1);
 } else {
-  throw new Error("phase: action <cac checkout> <out> | job <runner dir> <out> <tag> [fork] | unmirror - <out>");
+  throw new Error("phase: action <cac checkout> <out> | precheck <runner dir> <out> | job <runner dir> <out> <tag> [fork] | unmirror - <out>");
 }

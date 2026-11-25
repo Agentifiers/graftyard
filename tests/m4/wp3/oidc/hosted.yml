@@ -1,11 +1,12 @@
 name: bf70
-# BF-70 on graft-m4a (`tests/m4/wp3/oidc/hosted-row.sh`): the job granted `id-token: write` takes its ID token to
+# BF-70 on graft-m4a (`tests/m4/wp3/oidc/hosted-row.sh`), started by a same-repository pull request (r2: the site's
+# `ActionsTrigger` sends the jobs' declared permissions where job tokens are on; F127): the job granted `id-token: write` takes its ID token to
 # configure-aws-credentials v6.2.0 against a MinIO STS on the runner's host, which verifies it against the install's
 # published JWKS, then reads a bucket with the credentials; a second token is checked against the JWKS here and taken
 # by MinIO too, and its kid is printed. The job without the grant gets no token URL, and its own token is refused.
 # The install resolves `uses:` only in its own repositories (`decisions/OPEN-QUESTIONS.md`, F90), so the action runs
 # from `m3org/bf70-cac`, a public repository holding v6.2.0's tree (`hosted.mjs setup` records its tree hash).
-on: workflow_dispatch
+on: pull_request
 permissions:
   contents: read
   id-token: write
@@ -52,7 +53,9 @@ jobs:
           assert head["alg"] == "RS256" and claims["aud"] == "sts.amazonaws.com" and claims["exp"] > time.time()
           keep = ("iss", "aud", "sub", "repository", "repository_owner", "ref", "workflow_ref", "job_workflow_ref",
                   "runner_environment", "event_name", "repository_visibility", "run_id", "run_attempt")
-          print("verified kid=" + head["kid"], "published", sorted(keys), json.dumps({c: claims.get(c) for c in keep}))
+          # base_ref and head_ref are printed only as set or empty: F121 leaves them empty.
+          shown = {c: claims.get(c) for c in keep} | {c + "_set": bool(claims.get(c)) for c in ("base_ref", "head_ref")}
+          print("verified kid=" + head["kid"], "published", sorted(keys), json.dumps(shown))
           '
           curl -sf -X POST http://127.0.0.1:9000/ -d Action=AssumeRoleWithWebIdentity -d Version=2011-06-15 \
             --data-urlencode RoleArn=arn:aws:iam::000000000000:role/graftyard --data-urlencode "WebIdentityToken=$t" \
