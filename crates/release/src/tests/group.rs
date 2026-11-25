@@ -880,6 +880,34 @@ fn every_entry_kind_keeps_its_tag_and_bytes() {
     }
 }
 
+/// `SecretName`'s wire tags are append-only too: a `Rotate`'s secret is stored by its tag, so the 13th, `ActionsOidcKey`,
+/// is 12 and the earlier twelve keep theirs.
+#[test]
+fn a_secret_names_tag_never_moves() {
+    for (secret, tag) in [
+        (SecretName::DeployToken, 0u8),
+        (SecretName::SshHostKeys, 4),
+        (SecretName::SecretsWrapKey, 10),
+        (SecretName::HostedRunnersAppKey, 11),
+        (SecretName::ActionsOidcKey, 12),
+    ] {
+        let mut out = Vec::new();
+        crate::types::entry(
+            &mut crate::codec::Enc(&mut out),
+            &ReleaseEntry::Intent(Box::new(crate::types::SignedIntent {
+                id: crate::types::IntentId(Ulid(1)),
+                issued_at: T0,
+                not_after: T0,
+                intent: Intent::Rotate { secret, slot: 1 },
+                undo: Vec::new(),
+            })),
+        );
+        // Tag 2 (`Intent`), the id (16), two times (8 each), then `Intent::Rotate`'s tag, the secret's, and the slot.
+        let at = 1 + 16 + 8 + 8;
+        assert_eq!((out[at + 1], out[at + 2]), (tag, 1), "{secret:?}");
+    }
+}
+
 // ---- The cached view (M5-WP2) ----
 
 use crate::view::{

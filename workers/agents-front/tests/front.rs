@@ -477,3 +477,82 @@ fn the_front_counts_the_controllers_answers_only_under_a_controller_roll_and_flu
     // A cold isolate with no view counts nothing.
     assert!(Tally::default().record(Reader::default().view(), Some(&n1), Some(500), FLUSH_MS).is_none());
 }
+
+/// Uploads releases `from..=to`, one entry each: history that moves the next entries past a page of the feed.
+fn filler(g: &mut Group, from: u8, to: u8) {
+    for n in from..=to {
+        g.upload(n);
+    }
+}
+
+/// A cold isolate's first refresh that read `pages` full pages of `g`, then ran out of time: the host keeps what it
+/// verified (`Reader::take`) and counts the refresh as failed.
+fn cut_short(g: &Group, pages: usize) -> Reader {
+    let a = agents_anchor();
+    let mut r = Reader::default();
+    r.start(0, true);
+    let read: Vec<Page> = (0..pages).map(|k| g.get(k * ENTRIES_PER_PAGE, ENTRIES_PER_PAGE)).collect();
+    assert!(read.iter().all(|p| p.len() == ENTRIES_PER_PAGE), "every page read is full");
+    r.take(&a, &read).expect("the pages verify");
+    r.apply(&a, Err(format!("{pages} pages read within ABANDON_MS, more remain")), 0, 4_000);
+    r
+}
+
+/// LM-3 r1 (OPEN-QUESTIONS A56): a pointer from an earlier roll sits on the first page, and the roll that cleared it on
+/// the second. A cold isolate that read only the first page holds that pointer in its prefix of the history; it pins
+/// `CONTROLLER_DEFAULT`, the current roll's N, not the stale pointer, until a refresh reaches the edge's last page.
+#[test]
+fn a56_a_cold_reader_stopped_between_an_old_pointer_and_the_roll_that_cleared_it_pins_the_default() {
+    let a = agents_anchor();
+    let mut g = rolling();
+    g.pin(2, 3);
+    g.step(2, 0);
+    g.done(2);
+    filler(&mut g, 5, 100);
+    assert!(g.log.len() > ENTRIES_PER_PAGE, "the clearing roll is past the first page");
+    // N is 4 now: a roll to 4 runs to its end, then a roll to 5 at its 1% step.
+    g.roll(3, 4, &[pointer(3)]);
+    g.step(3, 0);
+    g.step(3, 1);
+    g.done(3);
+    g.roll(4, 5, &[pointer(4)]);
+    g.step(4, 0);
+    let n = Some(vid(4));
+    let stale = cut_short(&g, 1);
+    assert_eq!(stale.view().controller(), Some(vid(3)), "the prefix holds the old pointer");
+    assert!(!stale.view().caught_up());
+    assert_eq!(plan(stale.view(), n, SCRIPT).0, n, "a prefix pins the default, not the old pointer");
+    // The next refresh reaches the last page: the roll to 5 is running with no pointer, so the split applies.
+    let mut r = stale.clone();
+    r.start(4_000 + RETRY_MS, false);
+    r.apply(&a, Ok(vec![g.get(ENTRIES_PER_PAGE, ENTRIES_PER_PAGE)]), 4_000 + RETRY_MS, 4_100 + RETRY_MS);
+    assert!(r.view().caught_up());
+    assert_eq!((r.view().index(), plan(r.view(), n, SCRIPT)), (Index(g.log.len() as u64), (None, None)));
+}
+
+/// OPEN-QUESTIONS A56: a prefix that shows a `ControllerRoll` running pins the default too, never the split, because
+/// later entries may have ended the roll or pinned it; a reader that reaches the last page pins `Pointers.controller`
+/// as before, and a full page that takes nothing new keeps it caught up.
+#[test]
+fn a56_a_reader_stopped_mid_history_under_a_running_roll_pins_the_default_and_a_whole_read_pins_the_pointer() {
+    let a = agents_anchor();
+    let mut g = rolling();
+    filler(&mut g, 5, 100);
+    assert!(g.log.len() > ENTRIES_PER_PAGE);
+    g.pin(2, 3);
+    let n = Some(vid(3));
+    let mid = cut_short(&g, 1);
+    assert_eq!((mid.view().current(), mid.view().controller()), (Some(id(2)), None), "the prefix shows the roll");
+    assert_eq!(plan(mid.view(), n, SCRIPT).0, n, "a prefix under a running roll pins the default, never the split");
+    // The whole history, read in pages that end on a short one: the committed pointer pins, whatever the default.
+    let mut r = Reader::default();
+    r.start(0, true);
+    r.apply(&a, Ok(vec![g.get(0, ENTRIES_PER_PAGE), g.get(ENTRIES_PER_PAGE, ENTRIES_PER_PAGE)]), 0, 100);
+    assert!(r.view().caught_up());
+    assert_eq!(plan(r.view(), Some(vid(4)), SCRIPT).0, Some(vid(3)), "a caught-up view pins Pointers.controller");
+    // A member behind answers a full page the view already holds: nothing taken, still caught up.
+    let behind = g.get(0, ENTRIES_PER_PAGE);
+    r.start(POINTER_TTL_MS, false);
+    r.apply(&a, Ok(vec![behind]), POINTER_TTL_MS, POINTER_TTL_MS + 10);
+    assert_eq!((r.view().caught_up(), plan(r.view(), Some(vid(4)), SCRIPT).0), (true, Some(vid(3))));
+}

@@ -1,0 +1,7 @@
+# The plain copies the judge reads; the .xz beside each is what is kept.
+rows-*.json
+configs-*.json
+chains-*.json
+groups.jsonl
+coordinator.json
+read-home.json

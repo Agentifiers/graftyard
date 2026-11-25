@@ -1,0 +1,43 @@
+name: oidc
+on: push
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  sts:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: test -n "$ACTIONS_ID_TOKEN_REQUEST_URL" && test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" && echo "the runner exported both"
+      # BF-70's oracle: configure-aws-credentials v6.2.0 against a local MinIO STS (`tests/m4/wp3/oidc/run.sh`). v6.2.1
+      # and later call GetCallerIdentity, which MinIO does not serve; output-env-credentials false skips the account id.
+      - name: Assume a role with the job's ID token
+        id: aws
+        uses: aws-actions/configure-aws-credentials@v6.2.0
+        with:
+          # MinIO in claim mode maps `repository_owner` to the policy of that name and ignores the ARN; the action takes
+          # only an `arn:aws` one (v6.2.0 dist/index.js: "Source Account ID is needed if the Role Name is provided").
+          role-to-assume: arn:aws:iam::000000000000:role/graftyard
+          aws-region: us-east-1
+          sts-endpoint: http://127.0.0.1:9000
+          output-credentials: true
+          output-env-credentials: false
+      - name: Read the bucket with the issued credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
+        run: aws --endpoint-url http://127.0.0.1:9000 --region us-east-1 s3 ls s3://probe/ && echo "s3 read ok"
+      # The host switched ActionsOidcKey to slot B after the first mint (OIDC_ROTATE_AFTER=1): MinIO, which fetched
+      # the JWKS once at start, takes the B-signed token too.
+      - name: A second token, after the rotation, at MinIO's STS
+        run: |
+          t=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          curl -sf -X POST http://127.0.0.1:9000/ -d Action=AssumeRoleWithWebIdentity -d Version=2011-06-15 \
+            --data-urlencode RoleArn=arn:aws:iam::000000000000:role/graftyard --data-urlencode "WebIdentityToken=$t" \
+            | grep -q '<AccessKeyId>' && echo "second token ok"
+  denied:
+    runs-on: [self-hosted, linux]
+    permissions:
+      contents: read
+    steps:
+      - run: test -z "$ACTIONS_ID_TOKEN_REQUEST_URL" && echo "no id-token grant, no URL"

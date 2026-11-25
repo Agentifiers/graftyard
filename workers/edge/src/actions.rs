@@ -36,6 +36,8 @@ use worker::*;
 use crate::Ctx;
 use crate::api::{Read, read, unavailable};
 
+mod oidc;
+
 pub const SERVICES: &str = "/_services/";
 pub const VIEWER: &str = "/_t/logrelay/repos/";
 
@@ -98,6 +100,12 @@ pub(crate) async fn job_row(c: &Ctx<'_>, chain: ChainId, job: JobId) -> Option<J
 
 /// A request under `/_services/`.
 pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response> {
+    // The OIDC issuer's discovery document and JWKS, which relying parties fetch with no token (`oidc`).
+    if req.method() == Method::Get
+        && let Some(r) = oidc::well_known(c, rest).await?
+    {
+        return Ok(r);
+    }
     let Some(public) = public_key(c) else { return service_error(503) };
     let grant = bearer(&req).and_then(|t| runsvc::verify_token(&t, &public, crate::now()));
     let method = req.method();
@@ -173,6 +181,7 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
                                "secrets": secrets, "variables": variables });
             answer(c, chain, body).await
         }
+        (Method::Get, "run/idtoken", Some((chain, g @ Grant::Job { .. }))) => oidc::idtoken(c, &req, chain, g).await,
         (Method::Post, "run/renewjob", Some((chain, g @ Grant::Job { .. }))) => {
             answer(c, chain, json!({ "op": "renew", "grant": g })).await
         }

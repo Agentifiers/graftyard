@@ -34,6 +34,13 @@ ok=1
 # takes a cold resolve with no guess.
 hdr=(-H 'git-protocol: version=2')
 [ -z "${PRODUCT:-}" ] && hdr+=(-H "x-bed-token: edgeboot-bed" -H "x-graft-link: 7,3")
+# The Actions OIDC issuer's discovery document answers with no token, and its JWKS answers 503 with no site bound,
+# never the run service's 401 (actions-oidc).
+c=$(curl -s -m 30 -o "$B/body" -w '%{http_code}' "http://127.0.0.1:$P/_services/token/.well-known/openid-configuration")
+echo "GET openid-configuration: $c $(head -c 100 "$B/body")"
+{ [ "$c" = 200 ] && grep -q '"jwks_uri":"https://edgeboot.example/_services/token/.well-known/jwks"' "$B/body"; } || { echo "  FAIL: discovery"; ok=0; }
+c=$(curl -s -m 30 -o "$B/body" -w '%{http_code}' "http://127.0.0.1:$P/_services/token/.well-known/jwks")
+echo "GET jwks: $c"; [ "$c" = 503 ] || { echo "  FAIL: jwks with no site is not 503"; ok=0; }
 for p in "/api/v3/repos/o/r" "/api/graftyard/v1/release/entries?after=0" "/o/r.git/info/refs?service=git-upload-pack" \
   "/o/r.git/git-upload-pack"; do
   m=GET; [ "${p##*/}" = git-upload-pack ] && m=POST

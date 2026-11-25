@@ -41,17 +41,29 @@
 #   logs <from> [to] the agents graft-ops's lines in the window
 #   teardown         every graft-agents-m4a- script, secret, token and bucket; the token files shredded
 #   cost [from]      graft-m4a's and the runner account's spend
+#
+# ROW=lm3 runs LM-3's "a bad controller at 1% swaps back" with the same steps, GATE unset, so the agents `graft-ops`
+# judges the roll on graft-agents-front's counts (DECISIONS "`controller-errors`"); its logs go to
+# tests/am3/raw/lm3-<tag>/ and its state to ~/.graft-m4a/lm3. It adds:
+#   probe-deploy     graft-agents-m4a-probe (lm3-probe.js), bound to the graftyard-agent key, for the refusal probes
+#   probe            through it: GET release/errors, then a flush naming a version no upload committed and one over
+#                    FLUSH_CALLS_MAX, each followed by a read, so a refusal is seen to store nothing
+#   errors [since]   the install's stored controller counts since <ms> (default: the roll's start), through the probe
+# The probes run after the verdict (the ControllerPointer committed): an over-cap flush the edge wrongly stored would
+# add 10,001 clean N+1 answers to the gate's input mid-row.
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
 TAG=${1:?tag}; STEP=${2:?step}
-O=tests/am3/raw/lf7-$TAG; mkdir -p "$O"
-W=$HOME/.graft-m4a; K=$W/lf7; mkdir -p "$K"; chmod 700 "$K"
+ROW=${ROW:-lf7}
+O=tests/am3/raw/$ROW-$TAG; mkdir -p "$O"
+W=$HOME/.graft-m4a; K=$W/$ROW; mkdir -p "$K"; chmod 700 "$K"
 P=graft-agents-m4a
 EDGE_NAME=graft-m4a-edge OPS=graft-m4a-ops
-CTRL=$P-controller FRONT=$P-front AOPS=$P-ops BUCKET=$P-releases
+CTRL=$P-controller FRONT=$P-front AOPS=$P-ops BUCKET=$P-releases PROBE=$P-probe
 RSTORE=2b564b906c40496ea9544799904bc93b ISTORE=bfaa0c1573de4775b1b92a12fb89acb4
 EDGE_HOST=$EDGE_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev
 FRONT_URL=https://$FRONT.$CF_RUNNER_WORKERS_SUBDOMAIN.workers.dev
+PROBE_URL=https://$PROBE.$CF_RUNNER_WORKERS_SUBDOMAIN.workers.dev
 B="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
 RB="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_RUNNER_ACCOUNT_ID"
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$1" "${@:2}"; }
@@ -214,7 +226,7 @@ bundles)
       f=; [ $l = c2 ] && f="--features test-bad"
       (cd workers/controller && export PATH=$HOME/.cargo/bin:$PATH && unset CARGO_TARGET_DIR &&
         worker-build --release --out-dir "$K/build-$l" $f >/dev/null 2>&1) && echo "$l built ${f:-plain}"
-      d=$K/rel/$l; rm -rf "$d"; p=lf7$TAG-$l
+      d=$K/rel/$l; rm -rf "$d"; p=$ROW$TAG-$l
       python3 tests/am2/hosted/wp3-bundle.py "$d" "$p" --formats "$fmt" --controller "$K/build-$l" --marker | tee "$K/rel-$l.json"
       openssl pkeyutl -sign -rawin -inkey "$W/release.key" -in "$d/release.json" -out "$d/release.sig"
       (cd "$d" && find . -type f | sed 's#^\./##') | while read -r f; do put "$p/$f" "$d/$f" >/dev/null; done
@@ -225,6 +237,7 @@ roll)
   R=${3:?release id}
   { node tests/m5/bf46/view.mjs pages "$K/pages.json" >/dev/null
     rsplit $CTRL >"$K/dep-ctrl"; echo "controller at roll: $(cat "$K/dep-ctrl")"
+    date +%s%3N >"$O/roll.t0"
     "$G" --config "$W/install.toml" release roll "$R" --entries "$K/pages.json" --key "$W/customer.key" --ttl-s 21600 \
       --edge "$GRAFT_EDGE"
     view 0 | jq -c '{count, current}'
@@ -273,8 +286,8 @@ fault)
 sampler)
   case ${3:?start|stop} in
     start) rm -f "$O/stop"; date -u +%s%3N >>"$O/sampler-starts"
-           amp orb service start lf7-sampler --command "cd $PWD && node tests/am3/hosted/lf7-sample.mjs $FRONT_URL $K/webhook.secret ${4:-4} $PWD/$O/hooks.jsonl $PWD/$O/stop" 2>&1 | head -1 | log ;;
-    stop) touch "$O/stop"; sleep 3; amp orb service stop lf7-sampler 2>&1 | tail -1 | log ;;
+           amp orb service start $ROW-sampler --command "cd $PWD && node tests/am3/hosted/lf7-sample.mjs $FRONT_URL $K/webhook.secret ${4:-4} $PWD/$O/hooks.jsonl $PWD/$O/stop" 2>&1 | head -1 | log ;;
+    stop) touch "$O/stop"; sleep 3; amp orb service stop $ROW-sampler 2>&1 | tail -1 | log ;;
   esac ;;
 status)
   { curl -s -H "x-front-token: $(cat "$K/front.token")" "$FRONT_URL/_agents_front/status" | jq -c .
@@ -291,9 +304,9 @@ logs)
       python3 tests/m5/bf46/logs.py "${5:-$AOPS}" "${3:?from ms}" "${4:-$(date +%s%3N)}" | tail -${6:-60}
   } 2>&1 | log ;;
 teardown)
-  { touch "$O/stop"; amp orb service stop lf7-sampler >/dev/null 2>&1
+  { touch "$O/stop"; amp orb service stop $ROW-sampler >/dev/null 2>&1
     cron $AOPS ""
-    for n in $AOPS $FRONT $CTRL; do runner npx --prefix tests/m0 wrangler delete --name $n --force 2>&1 | tail -1; done
+    for n in $AOPS $FRONT $CTRL $PROBE; do runner npx --prefix tests/m0 wrangler delete --name $n --force 2>&1 | tail -1; done
     for n in $(rapi "$RB/secrets_store/stores/$RSTORE/secrets?per_page=100" | jq -r --arg p "$P-" '.result[] | select(.name | startswith($p)) | .name'); do
       rapi "$RB/secrets_store/stores/$RSTORE/secrets/$(rsecret_id "$n")" -X DELETE | jq -c --arg n "$n" '{delete: $n, ok: .success}'
     done
@@ -303,11 +316,47 @@ teardown)
     for k in $keys; do runner npx --prefix tests/m0 wrangler r2 object delete "$BUCKET/$k" --remote >/dev/null 2>&1; done
     echo "objects deleted: $(echo "$keys" | grep -c .)"
     rapi "$RB/r2/buckets/$BUCKET" -X DELETE | jq -c --arg n $BUCKET '{delete: $n, ok: .success, errors: [.errors[]?.code]}'
-    for f in "$K"/deploy.json "$K"/deploy.value "$K"/front.token "$K"/ctrl.token "$K"/webhook.secret "$K"/webhook.value; do [ -f "$f" ] && shred -u "$f"; done
+    for f in "$K"/deploy.json "$K"/deploy.value "$K"/front.token "$K"/ctrl.token "$K"/webhook.secret "$K"/webhook.value "$K"/probe.token; do [ -f "$f" ] && shred -u "$f"; done
     echo "row token and secret files shredded"
     echo "runner scripts: $(rapi "$RB/workers/scripts" | jq -c '[.result[].id]')"
     echo "runner store secrets named $P-: $(rapi "$RB/secrets_store/stores/$RSTORE/secrets?per_page=100" | jq -c --arg p "$P-" '[.result[] | select(.name | startswith($p)) | .name]')"
     echo "runner buckets: $(rapi "$RB/r2/buckets" | jq -c '[.result.buckets[]?.name]')"
+  } 2>&1 | log ;;
+probe-deploy)
+  { read -r app _ <"$K/app-ids"
+    ( umask 077; [ -s "$K/probe.token" ] || python3 -c 'import os; print(os.urandom(24).hex())' >"$K/probe.token" )
+    mkdir -p "$K/probe" && cp tests/am3/hosted/lm3-probe.js "$K/probe/index.js"
+    jq -n --arg n $PROBE --arg host "$EDGE_HOST" --arg app "$app" --arg store $RSTORE --arg key "$P-AGENTS_APP_KEY_A" \
+      '{name: $n, main: "index.js", compatibility_date: "2026-10-01", workers_dev: true, preview_urls: false,
+        vars: {GRAFTYARD_HOST: $host, AGENT_APP_ID: $app},
+        secrets_store_secrets: [{binding: "AGENT_APP_KEY", store_id: $store, secret_name: $key}]}' >"$K/probe/wrangler.json"
+    (cd "$K/probe" && runner npx --prefix "$OLDPWD/tests/m0" wrangler deploy -c wrangler.json 2>&1 | grep -E "Current Version|rror" | tail -2)
+    runner npx --prefix tests/m0 wrangler secret put PROBE_TOKEN --name $PROBE <"$K/probe.token" 2>&1 | tail -1
+    deployment $PROBE "$RB" rapi
+  } 2>&1 | log ;;
+probe)
+  # A flush naming a version no upload committed (all zeros but one byte, so it parses), then one over the cap
+  # (FLUSH_CALLS_MAX + 1 answers of N+1, no 5xx): each must answer 422 and leave the read unchanged.
+  { since=${3:-$(cat "$O/roll.t0" 2>/dev/null || echo 0)}
+    # N+1 is the version at the smallest share of the controller's split: an upload the group committed, so the
+    # over-cap flush is refused for the cap, not for its version.
+    n1=$(rsplit $CTRL | jq -r 'min_by(.[1]) | .[0] // empty')
+    [ -n "$n1" ] || { echo "STOP: no controller split to name N+1"; exit 3; }
+    echo "N+1 for the over-cap flush: ${n1:0:8}"
+    max=$(grep -oE 'FLUSH_CALLS_MAX: u64 = [0-9_]+' crates/release/src/gate.rs | grep -oE '[0-9_]+$' | tr -d _)
+    jq -nc --argjson since "$since" --arg n1 "$n1" --argjson over "$((max + 1))" \
+      '{since: $since, flushes: [
+         {name: "unknown version", counts: {versions: {"00000000-0000-0000-0000-00000000005a": {answers: 1, fivexx: 0}}, threw: 0, unversioned: {answers: 0, fivexx: 0}}},
+         {name: "over FLUSH_CALLS_MAX", counts: {versions: {($n1): {answers: $over, fivexx: 0}}, threw: 0, unversioned: {answers: 0, fivexx: 0}}}]}' |
+      curl -s -m 60 -X POST -H "x-probe-token: $(cat "$K/probe.token")" -H 'content-type: application/json' --data-binary @- "$PROBE_URL/probe" |
+      tee "$O/probe.json" | jq -c '.before.body.counts as $b | {before: .before.status, sum: $b,
+        flushes: [.flushes[] | {name, post: .post.status, why: .post.body.message, after: .after.status, unchanged: (.after.body.counts == $b)}]}'
+  } 2>&1 | log ;;
+errors)
+  { since=${3:-$(cat "$O/roll.t0" 2>/dev/null || echo 0)}
+    jq -nc --argjson since "$since" '{since: $since, flushes: []}' |
+      curl -s -m 60 -X POST -H "x-probe-token: $(cat "$K/probe.token")" -H 'content-type: application/json' --data-binary @- "$PROBE_URL/probe" |
+      jq -c '{status: .before.status, sites: .before.body.sites, of: .before.body.of, counts: .before.body.counts}'
   } 2>&1 | log ;;
 cost)
   { from=${3:-$(date -u +%Y-%m-%dT00:00:00Z)}
@@ -315,5 +364,5 @@ cost)
     echo "graft-m4a day: $(PREFIX=graft-m4a python3 tests/fanout/acctcost.py "$(date -u +%Y-%m-%dT00:00:00Z)" | head -1 | jq -c '{prefix_usd}')"
     echo "runner $P- from $from: $(runner env PREFIX=$P python3 tests/fanout/acctcost.py "$from" | head -1 | jq -c '{prefix_usd}')"
   } 2>&1 | log ;;
-*) echo "step: state sweep a54 edge init register keys infra controller front ops bundles roll abort block unblock pointer fault sampler status view logs teardown cost"; exit 2 ;;
+*) echo "step: state sweep a54 edge init register keys infra controller front ops bundles roll abort block unblock pointer fault sampler status view logs probe-deploy probe errors teardown cost"; exit 2 ;;
 esac

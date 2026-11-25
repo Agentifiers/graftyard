@@ -1,0 +1,44 @@
+﻿2026-11-25T03:25:54.0612923Z Current runner version: '2.338.2'
+2026-11-25T03:25:54.0618303Z Runner name: 'graftyard-host-runner-1'
+2026-11-25T03:25:54.0618922Z Machine name: '172'
+2026-11-25T03:25:54.0621679Z Prepare workflow directory
+2026-11-25T03:25:54.1120939Z Prepare all required actions
+2026-11-25T03:25:54.1177318Z Getting action download info
+2026-11-25T03:25:54.1923083Z Download action repository 'aws-actions/configure-aws-credentials@v6.2.0' (SHA:e7f100cf4c008499ea8adda475de1042d6975c7b)
+2026-11-25T03:25:54.4700723Z Complete job name: sts
+2026-11-25T03:25:54.5834965Z ##[group]Run test -n "$ACTIONS_ID_TOKEN_REQUEST_URL" && test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" && echo "the runner exported both"
+2026-11-25T03:25:54.5835269Z [36;1mtest -n "$ACTIONS_ID_TOKEN_REQUEST_URL" && test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" && echo "the runner exported both"[0m
+2026-11-25T03:25:54.5853982Z shell: /usr/sbin/bash -e {0}
+2026-11-25T03:25:54.5854372Z ##[endgroup]
+2026-11-25T03:25:54.6029869Z the runner exported both
+2026-11-25T03:25:54.6214693Z ##[group]Run aws-actions/configure-aws-credentials@v6.2.0
+2026-11-25T03:25:54.6214839Z with:
+2026-11-25T03:25:54.6214902Z   role-to-assume: arn:aws:iam::000000000000:role/graftyard
+2026-11-25T03:25:54.6215127Z   aws-region: us-east-1
+2026-11-25T03:25:54.6215171Z   sts-endpoint: http://127.0.0.1:9000
+2026-11-25T03:25:54.6215222Z   output-credentials: true
+2026-11-25T03:25:54.6215262Z   output-env-credentials: false
+2026-11-25T03:25:54.6215350Z   audience: sts.amazonaws.com
+2026-11-25T03:25:54.6215399Z ##[endgroup]
+2026-11-25T03:25:54.8369215Z Assuming role with OIDC
+2026-11-25T03:25:54.9143400Z Authenticated as assumedRoleId undefined
+2026-11-25T03:25:54.9493825Z ##[group]Run aws --endpoint-url http://127.0.0.1:9000 --region us-east-1 s3 ls s3://probe/ && echo "s3 read ok"
+2026-11-25T03:25:54.9494040Z [36;1maws --endpoint-url http://127.0.0.1:9000 --region us-east-1 s3 ls s3://probe/ && echo "s3 read ok"[0m
+2026-11-25T03:25:54.9507735Z shell: /usr/sbin/bash -e {0}
+2026-11-25T03:25:54.9507983Z env:
+2026-11-25T03:25:54.9508345Z   AWS_ACCESS_KEY_ID: ***
+2026-11-25T03:25:54.9508455Z   AWS_SECRET_ACCESS_KEY: ***
+2026-11-25T03:25:54.9508688Z   AWS_SESSION_TOKEN: ***
+2026-11-25T03:25:54.9508809Z ##[endgroup]
+2026-11-25T03:25:55.4446460Z 2026-11-25 03:25:51          6 hello.txt
+2026-11-25T03:25:55.5798060Z s3 read ok
+2026-11-25T03:25:55.5843527Z ##[group]Run t=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+2026-11-25T03:25:55.5844015Z [36;1mt=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')[0m
+2026-11-25T03:25:55.5844178Z [36;1mcurl -sf -X POST http://127.0.0.1:9000/ -d Action=AssumeRoleWithWebIdentity -d Version=2011-06-15 \[0m
+2026-11-25T03:25:55.5844333Z [36;1m  --data-urlencode RoleArn=arn:aws:iam::000000000000:role/graftyard --data-urlencode "WebIdentityToken=$t" \[0m
+2026-11-25T03:25:55.5844475Z [36;1m  | grep -q '<AccessKeyId>' && echo "second token ok"[0m
+2026-11-25T03:25:55.5858784Z shell: /usr/sbin/bash -e {0}
+2026-11-25T03:25:55.5858919Z ##[endgroup]
+2026-11-25T03:25:55.6786658Z second token ok
+2026-11-25T03:25:55.6999035Z Post job cleanup.
+2026-11-25T03:25:55.7956778Z Cleaning up orphan processes

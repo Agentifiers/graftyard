@@ -28,7 +28,7 @@ use crate::config::{InstallToml, Res, now, parse_public_key, random, read_privat
 use crate::genesis::{Answer, post_entry};
 
 /// Every `SecretName`, so `Rotate` parses one by its name.
-const SECRET_NAMES: [SecretName; 12] = [
+const SECRET_NAMES: [SecretName; 13] = [
     SecretName::DeployToken,
     SecretName::ReadToken,
     SecretName::TunnelToken,
@@ -41,6 +41,7 @@ const SECRET_NAMES: [SecretName; 12] = [
     SecretName::WorkspaceAppKey,
     SecretName::SecretsWrapKey,
     SecretName::HostedRunnersAppKey,
+    SecretName::ActionsOidcKey,
 ];
 
 fn field<'a>(v: &'a Value, k: &str) -> Res<&'a Value> {

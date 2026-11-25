@@ -12,6 +12,7 @@ Branch `m4-actions`, from main 2b42214e. The shapes are in `tests/m4/results/m4-
 | BF-55 | `Owner` scope on shard 0, `MatchOwner`, resend, `moved`, `Taken` (`crates/actions/tests/bf55.rs`) | **Pass** (run 2, 11:30Z to 12:17Z, site days 39 to 41): first poll on the new leader's site 11.5 s after the old leader died; 256 of 256 jobs ran once, each matched and acquired once; longest dispatch gap 36.4 s |
 | BF-56 | Pass (both kills) | **Pass**, both kills (23:18Z to 23:24Z, site day 34): every required check concluded, matching its job, at most 10.4 s after the job's `Completed` |
 | BF-59 | `graft-ops` open, reseal, and rewrap (PyNaCl oracle); key rules (`crates/identity/tests/sealed.rs`) | **Pass** (19:07Z to 19:31Z): repository, environment, and org secrets read right before and after both rotations; a fork-PR job sees none; no plaintext in 1,296 committed entries, 34 run files, runner diagnostics, or Workers Logs |
+| BF-69 | `actions-cache` rules (`crates/actions/src/cache.rs`, plant231) | **Pass** (2026-11-25): every line of the row 04:27Z to 05:55Z, and the parallel-save line in its own row 07:07Z to 07:11Z (one dispatch, four jobs, both saves of each key reserving within 1 s, one committing per key), no job failed |
 
 A row passes only hosted, with an unmodified `actions/runner`. The in-memory halves below check the engine's rules on real members first.
 
@@ -183,6 +184,57 @@ Built on branch `gh-token` from main `81ab3b9c`, code-only (`decisions/DECISIONS
 
 **Plants** 58 to 75 in `tests/m4/wp3/plant.py`: all 18 caught. The first run missed 63 ("a token's `jti` is drawn, never the job's": no test read the minted `jti`) and 70 ("every ended job is denied, issued or not": no test cancelled a job no runner held). `only_the_actions_apps_tokens_outlive_an_hour_and_none_outlives_a_day` now checks the grant's `jti`, and the cancel test cancels a queued run; both reruns are caught.
 
+
+## BF-69 hosted: `actions/cache@v4` and `@v5`
+
+Driver `tests/m4/wp3/bf69/bf69.mjs`, workflow `tests/m4/wp3/bf69/cache.yml` (jobs `v4` and `v5`, each 200 MiB of random bytes, 7 chunks), mirror `tests/m4/wp3/bf69/mirror.mjs`. Repository `m3org/bf69` (public), unmodified runner 2.338.2 on two slots. Actions shard `actions:7100001.11`. The `actions` org (7100010) held `actions/cache` (v4 `0057852b`, v5 `caa29612`) and `actions/checkout` (v4 `11d5960a`), pushed from github.com's tags; workflows say `uses: actions/cache@v4` and `@v5` unchanged.
+
+**Install.** Site day 1 (03:46Z, main b37ca7a8, no flag): a bc36f89c, b 059383f0, c cebda537; every live shard leader answered `cache_list` 404 "actions-cache is not enabled". Site day 2 (04:27Z, main 281683f6, `GRAFTYARD_ACTIONS_CACHE=1`, `--oidc bfaa0c15…` for M4-WP4): a 1a489208, b e844af52, c 805df109; 13 of 13 live shard leaders answer `cache_list` "Cache not found". Edge day (04:50Z, main 281683f6, test-faults): d3d76118, R57's diff against e9197bf3 is FORMATS_ENABLED +21.6 and GRAFTYARD_CACHE_LIMIT=1073741824 only, edgever exit 0. Crons [] on every site; reretire OK after each site day.
+
+**Formats.** 0x15.6 is enabled by the sites' flag and the edge's FORMATS_ENABLED, as 21.2 to 21.5 were, not by a Release-group `FormatsEnable`: m4a's `SiteRelease` names R9's uploads (main 801d63ad), which do not report 0x15.6, so `check_reported` refuses it as `NotReported`. A release roll of an upload that reads 0x15.6 would make `FormatsEnable` possible; it was rejected for this row on cost (OPEN-QUESTIONS F124).
+
+**Toolkit.** `isGhes()` is true for any host but github.com, `*.ghe.com` and `*.localhost`; on GHES `getCacheServiceVersion` is v1, whose `isFeatureAvailable` reads only `ACTIONS_CACHE_URL`; `GHESNotSupportedError` is defined but not thrown on this path; `downloadCache` is one plain GET for any non-blob host (dist of v4 and v5). Every job's log shows the v1 calls: `Cache not found`, `Cache saved with key`, `Cache restored from key`.
+
+| Line | Jobs | Result |
+| --- | --- | --- |
+| Save on `main` | 1194827, 1194828 | both `Cache saved` (209,722,421 and 209,722,426 B, 7 chunks each) |
+| Exact restore on `main` | 1194777, 1194778 | both `cache-hit` true, SHA-256 equal to the saved bytes |
+| `f` through restore-keys `bf69-main-` | 1194782, 1194783 | both restored from `v4-`/`v5-bf69-main-1`, `cache-hit` false, SHA-256 equal; then saved `bf69-f-1` |
+| Save on `f`, then `main` | 1194787/88, then 1194792/93 | `f` saved `bf69-fonly-1`; `main` misses it on both majors |
+| Two saves of one key | 1194797/98 (run A), 1194800/01 (run B); then the parallel-save row below | **not met in this row**: every job succeeded, but run B's jobs started 16 s after A's ended, so B restored instead of saving. **Met** in the parallel-save row below |
+| PR into `rel` (restore key `bf69-`, `rel` holds `bf69-rel-1`, `main` holds `bf69-main-1`) | PR #1, 1194817/18 | both restored `rel`'s entry, SHA-256 equal to `rel`'s save |
+| PR into `main` | PR #3, 1194832/33 | both restored `main`'s entry, SHA-256 equal |
+| LRU at 1 GiB | 1194837 to 1194858 | after `bf69-lru-1` and `-2`, R2 holds ids 17, 19, 20, 21, 22 (the five newest commits by the `Cache saved` times; id 18, `v4-bf69-pr-main-miss`, committed 0.16 s before id 17 and was evicted first [inference: ids are assigned at reserve, `created` at commit]; 1,048,612,178 B, each id's bytes equal to its `Cache Size`); every older id's chunks are gone; `lru-1` and `lru-2` restore, `rel-1` misses, on both majors |
+
+No job failed. The 35 objects of the 5 live entries stay in `graft-m4a-site-a-packs` after the repository's delete: a delete does not drop its cache, which the 7-day sweep removes (not waited for).
+
+Found on the way:
+
+- **`actions/checkout@v4` failed every job.** The runner evaluates an action input's default (`repository: ${{ github.repository }}`) only when the message carries every context `input-default-context` names, and `runsvc::job_message` sent `strategy` and `matrix` only for a matrix job: "Unexpected type 'BasicExpressionToken' encountered while reading 'default value for input 'repository''" (job 1194757). Reproduced with `run-host.sh` and fixed on branch `runsvc-ctx` (2caeaee3: both contexts always, empty when there is no matrix; tests/m4/wp3/plant.py #76 CAUGHT); not deployed, so this row's workflow carries its case in `env` and uses no checkout. Checkout's `token: ${{ github.token }}` also needs job tokens (21.5), which m4a does not enable.
+- **The `parallel` case could not prove overlap with two runner slots**, so the line ran again as its own row (below).
+- `main-not-f`'s v5 lookup took 6 min 7 s to answer "not found" (05:27:14Z to 05:33:21Z); the shard's three members were followers when probed before the row and needed a `/campaign` (cf. LM-1's B0-35 note).
+- Neither major declares a `cache-matched-key` output; the driver reads the restored key from the toolkit's log line.
+
+Cost (`acctcost.py`, prefix graft-m4a, UTC day): $0.56 after site day 1, $0.64 at 04:12Z, $1.51 at 05:56Z after teardown. Site day 2, the edge day and the row: **$0.87**, against the $6 stop.
+
+### The parallel-save line, its own row (07:07Z to 07:11Z)
+
+The lead's ruling: the same install, `par.yml` (`tests/m4/wp3/bf69/par.yml`) from one `workflow_dispatch` fanning out to four matrix jobs, two per major, on four runner slots, every leg seeding key `bf69-par-2` and holding its bytes until one time `AT`, so each key's two reserves overlap by construction. Repository `m3org/bf69p`, Actions shard `actions:7100001.12`.
+
+- **Install.** Site day 3 (06:54Z, main 0aa3b507, which carries runsvc-ctx 2caeaee3, `GRAFTYARD_ACTIONS_CACHE=1`, `--oidc`): a eb5c77f2, b c6b12562, c 3a1ea21b; crons []; reretire OK. Edge d3d76118 unchanged.
+- **Mirror name.** The actions are `actions-mirror/cache` (v4 `0057852b`, v5 `caa29612`) and `actions-mirror/checkout` (v4 `11d5960a`) under org `actions-mirror` (7100011), and the workflow says `uses: actions-mirror/cache@v4`, `@v5` and `actions-mirror/checkout@v4`, because m4a holds `actions/cache` and `actions/checkout` `Deleted` for 90 days after BF-69's teardown (a create answers 422).
+- **Checkout, the context fix hosted.** All 8 jobs ran the unmodified `actions/checkout@v4`, whose `repository: ${{ github.repository }}` default now evaluates: every job checked out its run's commit (`bf69.env` hash `aca81e4805a2d979` in the four seeding jobs, `8f339d98176b37ad` in the four reading jobs, each its own commit), and no job log or runner diagnostic holds `BasicExpressionToken`. Deviation, approved by the lead: m4a enables no job tokens (21.5 is off), so checkout's `token` is the repository secret `BF69_READ`, an m3-ci installation token limited to `contents: read` on `bf69p`, set with `gh secret set` from stdin and kept by the driver's scrubber; at the end the driver deleted the secret (204) and revoked the token (`DELETE /installation/token` 204; the token then reads 401).
+
+| Line | Result |
+| --- | --- |
+| Overlap | `AT` 07:09:36Z. The edge's four reserves (`POST …/artifactcache/caches`, Workers Logs): 07:09:46.888Z 201, 07:09:47.086Z 201, 07:09:47.188Z 409, 07:09:47.883Z 409, all inside 1 s. Each key's two reserves came 0.30 s and 0.80 s apart |
+| One save per key commits | v4: job 1376338 (leg b) saved `v4-bf69-par-2` at 07:09:50.413Z (209,722,409 B); job 1376337 (leg a) got "Unable to reserve cache with key v4-bf69-par-2, another job may be creating this cache" (the 409). v5: 1376339 (leg a) saved (209,722,420 B); 1376340 (leg b) got the 409. R2 holds exactly two entries on the shard, ids 1 and 2, 7 chunks each, bytes equal to the saved sizes |
+| Both jobs succeed | all 4, and all 4 of the read after |
+| The read after gets one whole entry | jobs 1376346/47 (v4) and 1376348/49 (v5): `cache-hit` true from `v4-`/`v5-bf69-par-2`, SHA-256 equal to the bytes of the leg whose save committed (`94d003cd…` and `05e134ae…`), not the refused leg's |
+
+**F126 rode along at $0.** The cache steps ran with `ACTIONS_STEP_DEBUG` and `RUNNER_DEBUG`. No lookup or reserve ran past 30 s: the edge served every cache call of the row (33) in at most 10,047 ms (the 200 MiB download), lookups in 1,141 to 1,519 ms. The driver flagged two restore steps over 30 s (jobs 1376346 and 1376349, 34 s each), and the edge logged 5 of their calls inside each gap, so those were a download, not a hold. The toolkit printed no `##[debug]` lines through the runner although both variables reached the step's env; the runner's own debug switch is the job message's `ACTIONS_STEP_DEBUG` variable, which the driver does not set, so a rerun that needs the attempt lines sets it as a repository variable. F126 stays open.
+
+Teardown: `actions-mirror/cache`, `actions-mirror/checkout` and `m3org/bf69p` deleted (404); the `actions-mirror` org stays; the sweep tore down 4 shard containers and found none running after. Cost (`acctcost.py`, prefix graft-m4a, UTC day): $1.58 at 06:50Z, before site day 3; $1.78 at 07:19Z after teardown: **$0.20**, against the $2 stop.
 
 ## Checks
 

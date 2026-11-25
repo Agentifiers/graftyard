@@ -5,6 +5,8 @@
 //! pinned version (`plan`). A `None` pointer sets nothing while the view shows a `ControllerRoll` running, so the
 //! deployment's percentage split picks the version; any other `None` pins `CONTROLLER_DEFAULT`, N while a roll's split
 //! is deployed, so an isolate that has not read the roll never follows the split (DECISIONS "`controller-default`").
+//! All of it only from a view that is `caught_up`: a refresh that stopped before the edge's last page leaves a prefix
+//! of the history, which pins `CONTROLLER_DEFAULT` too (OPEN-QUESTIONS A56).
 //!
 //! - **The view.** One `Reader` per isolate: an `AgentsReleaseView` of the install's `Release` group, read over HTTPS
 //!   from `GET https://<host>/api/graftyard/v1/release/entries` under a `graftyard-agent` App JWT, never through a

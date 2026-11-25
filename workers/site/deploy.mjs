@@ -35,6 +35,10 @@
 // A run without `--ssh` lists the account's Spectrum apps first and refuses while one has this install as its Worker
 // origin, since the new versions would turn SSH off on that hostname; `--ssh-off` turns it off on purpose
 // (`sshguard.mjs`).
+// `--oidc <store id>` binds that store's `ACTIONS_OIDC_KEY_A` and `ACTIONS_OIDC_KEY_B` by the same names: both slots of
+// `ActionsOidcKey`, the RSA-2048 PKCS#8 key Actions ID tokens are signed under (src/actions/oidc.rs), which
+// deploy/actions-oidc/oidckey.mjs writes. The slot signed under is the `Release` view's, so a rotation is no site day:
+// write the idle slot, then the customer's `Rotate`.
 // `--genesis` (test-faults installs only) names the system chains' records, which each site reads from
 // GRAFTYARD_GENESIS in place of the `Release` view; a product install reads them from the genesis its `Release`
 // group accepted, and needs `--anchor` (the trust anchor `graftyard init` wrote: GRAFTYARD_INSTALL and
@@ -78,6 +82,7 @@ const rki = flags.indexOf("--run-key");
 const runKey = rki >= 0 ? flags[rki + 1].split("/") : null;
 const flagValue = (name) => (flags.indexOf(name) >= 0 ? flags[flags.indexOf(name) + 1] : null);
 const sshStore = flagValue("--ssh");
+const oidcStore = flagValue("--oidc");
 const sshImage = flagValue("--ssh-image");
 const edgeScript = flagValue("--edge");
 if (sshStore && !edgeScript) throw new Error("--ssh needs --edge <edge script>, which the SSH front's git requests go to");
@@ -156,9 +161,10 @@ function config(site, targets, own = true, phase1 = false) {
     ],
     r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket }))
       .concat(exportBucket && site.id === feedSite ? [{ binding: "EXPORT", bucket_name: exportBucket }] : []),
-    ...((runKey || sshStore) ? { secrets_store_secrets: [
+    ...((runKey || sshStore || oidcStore) ? { secrets_store_secrets: [
       ...(runKey ? [{ binding: "RUN_SERVICE_KEY", store_id: runKey[0], secret_name: runKey[1] }] : []),
       ...(sshStore ? ["SSH_HOST_KEY_A", "SSH_HOST_KEY_B"].map((n) => ({ binding: n, store_id: sshStore, secret_name: n })) : []),
+      ...(oidcStore ? ["ACTIONS_OIDC_KEY_A", "ACTIONS_OIDC_KEY_B"].map((n) => ({ binding: n, store_id: oidcStore, secret_name: n })) : []),
     ] } : {}),
     ...(auditStream ? { pipelines: [{ binding: "AUDIT_STREAM", stream: auditStream }] } : {}),
     containers: [{

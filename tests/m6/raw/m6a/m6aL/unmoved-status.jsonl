@@ -1,0 +1,9 @@
+{"at":"2026-11-25T04:00:47Z","site":0,"do_name":"tokens:953#1#f0","http":200,"joined":true,"role":"follower","leader":null,"term":2,"commit":4,"last":4,"voters":[0,1,2]}
+{"at":"2026-11-25T04:00:47Z","site":1,"do_name":"tokens:953#1#f1","http":200,"joined":false,"role":null,"leader":null,"term":null,"commit":null,"last":null,"voters":[]}
+{"at":"2026-11-25T04:00:47Z","site":2,"do_name":"tokens:953#1#f2","http":200,"joined":true,"role":"follower","leader":null,"term":2,"commit":4,"last":4,"voters":[0,1,2]}
+{"at":"2026-11-25T04:00:48Z","site":0,"do_name":"repo:0#1795514676#f0","http":200,"joined":true,"role":"follower","leader":null,"term":1,"commit":0,"last":0,"voters":[]}
+{"at":"2026-11-25T04:00:48Z","site":2,"do_name":"repo:0#1795514675#f0","http":200,"joined":true,"role":"follower","leader":null,"term":1,"commit":0,"last":1,"voters":[]}
+{"at":"2026-11-25T04:00:49Z","site":3,"do_name":"repo:0#1795514722#f0","http":200,"joined":true,"role":"follower","leader":null,"term":1,"commit":0,"last":0,"voters":[]}
+{"at":"2026-11-25T04:41:24Z","site":0,"do_name":"tokens:953#1#f0","joined":true,"role":"follower","leader":null,"term":2,"commit":6,"last":6,"voters":[0,1,2]}
+{"at":"2026-11-25T04:41:24Z","site":1,"do_name":"tokens:953#1#f1","joined":false,"role":null,"leader":null,"term":null,"commit":null,"last":null,"voters":[]}
+{"at":"2026-11-25T04:41:25Z","site":2,"do_name":"tokens:953#1#f2","joined":true,"role":"follower","leader":null,"term":2,"commit":6,"last":6,"voters":[0,1,2]}

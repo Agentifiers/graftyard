@@ -72,10 +72,12 @@ pub fn mode(env: &Env) -> bool {
     env.var("GRAFTYARD_LIFEBOAT").is_ok_and(|v| v.to_string() == "1")
 }
 
-/// Whether the lifeboat's front serves `method` on `path`: a read, a git fetch's POST, or a GraphQL query (a mutation
-/// is refused once parsed, `refuses_graphql`). Never a write, the export endpoints, the release endpoint, a token
-/// mint, or a test route: the lifeboat is read-only, and it is no export source.
-pub fn serves(method: &str, path: &str) -> bool {
+/// Whether the lifeboat's front serves `method` on `path` with `query`: a read, a git fetch's POST, or a GraphQL query
+/// (a mutation is refused once parsed, `refuses_graphql`). Never a write, the export endpoints, the release endpoint,
+/// a token mint, or a test route: the lifeboat is read-only, and it is no export source. Neither leg of a push: the
+/// POST, and the GET of its advertisement (`info/refs?service=git-receive-pack`), which would otherwise reach
+/// `receive_pack_stream` and read the refs from the copy for a push the lifeboat could never take.
+pub fn serves(method: &str, path: &str, query: &str) -> bool {
     let off = [
         graftyard_git::export::EXPORT_PREFIX,
         crate::release::ENTRIES_PATH,
@@ -86,6 +88,9 @@ pub fn serves(method: &str, path: &str) -> bool {
     if off.iter().any(|p| path.starts_with(p)) {
         return false;
     }
+    if path.ends_with("/info/refs") && query.split('&').any(|kv| kv == "service=git-receive-pack") {
+        return false;
+    }
     match method {
         "GET" | "HEAD" => true,
         "POST" => path.ends_with("/git-upload-pack") || path == "/api/graphql",
@@ -93,7 +98,8 @@ pub fn serves(method: &str, path: &str) -> bool {
     }
 }
 
-/// The answer to a request the lifeboat does not serve, as GitHub answers a write it cannot take.
+/// The answer to a request the lifeboat does not serve, as GitHub answers a write it cannot take: 503 with no
+/// `Retry-After`, so git stops instead of retrying a push that cannot land here.
 pub fn read_only(c: &Ctx<'_>, path: &str) -> Result<Response> {
     if path.ends_with("/git-receive-pack") || path.ends_with("/info/refs") {
         return crate::text(c.rid, 503, "the lifeboat is read-only\n");
@@ -155,11 +161,12 @@ mod tests {
         for (m, p) in [
             ("GET", "/api/v3/repos/o/r/pulls"),
             ("HEAD", "/api/v3/meta"),
-            ("GET", "/o/r.git/info/refs"),
+            ("GET", "/o/r.git/info/refs?service=git-upload-pack"),
             ("POST", "/o/r.git/git-upload-pack"),
             ("POST", "/api/graphql"),
         ] {
-            assert!(serves(m, p), "{m} {p}");
+            let (p, q) = p.split_once('?').unwrap_or((p, ""));
+            assert!(serves(m, p, q), "{m} {p}?{q}");
         }
         for (m, p) in [
             ("POST", "/api/v3/repos/o/r/issues"),
@@ -167,13 +174,16 @@ mod tests {
             ("DELETE", "/api/v3/repos/o/r"),
             ("PUT", "/api/v3/repos/o/r/pulls/1/merge"),
             ("POST", "/o/r.git/git-receive-pack"),
+            ("GET", "/o/r.git/info/refs?service=git-receive-pack"),
+            ("HEAD", "/o/r/info/refs?x=1&service=git-receive-pack"),
             ("GET", "/api/graftyard/v1/export/batches"),
             ("GET", "/api/graftyard/v1/export/chains/ids/entries?from=1"),
             ("POST", "/api/graftyard/v1/release/entries"),
             ("POST", "/api/graftyard/v1/lifeboat/tokens"),
             ("GET", "/_bed/status"),
         ] {
-            assert!(!serves(m, p), "{m} {p}");
+            let (p, q) = p.split_once('?').unwrap_or((p, ""));
+            assert!(!serves(m, p, q), "{m} {p}?{q}");
         }
     }
 }

@@ -427,6 +427,25 @@ impl<'a> Live<'a> {
             .ok_or_else(|| format!("the install account registers no App {slug}"))
     }
 
+    /// Both `ActionsOidcKey` slots' kids on every non-spare site: its Registry object `oidc`'s `/oidc_slots` `slots`.
+    async fn oidc_slots(&self) -> std::result::Result<Vec<(u8, Value)>, String> {
+        let mut out = Vec::new();
+        for site in self.sites.0.iter().filter(|s| !s.spare) {
+            let id = site.id.0;
+            let stub = self.bindings().registry(site.id, "oidc").map_err(|e| format!("site {id}: {e}"))?;
+            let mut r = within(VIEW_CALL, stub.fetch_with_str("https://registry/oidc_slots"))
+                .await
+                .ok_or_else(|| format!("site {id}: oidc_slots did not answer"))?
+                .map_err(|e| format!("site {id}: {e}"))?;
+            if r.status_code() != 200 {
+                return Err(format!("site {id}: oidc_slots answered HTTP {}", r.status_code()));
+            }
+            let v: Value = r.json().await.map_err(|e| format!("site {id}: oidc_slots: {e}"))?;
+            out.push((id, v["slots"].clone()));
+        }
+        Ok(out)
+    }
+
     /// The new `SshHostKeys` slot's public halves on every non-spare site: its Registry object `ssh`'s `ssh_slots`.
     async fn ssh_slots(&self, slot: u8) -> std::result::Result<Vec<(u8, Vec<crate::SshHostPublic>)>, String> {
         let name = if slot == 0 { "A" } else { "B" };
@@ -763,6 +782,12 @@ impl Exec for Live<'_> {
                 );
                 Ok(())
             }
+            // Every site publishes the new slot's key in its JWKS before the wait, so the wait counts from then.
+            (SecretName::ActionsOidcKey, RotateStep::Probe) => {
+                let kid = crate::oidc_slot_ready(&self.oidc_slots().await?, slot)?;
+                console_log!("graft-ops Rotate ActionsOidcKey slot {slot} probe: every site publishes kid {kid}");
+                Ok(())
+            }
             // The App must already list the new value, or the switch would move every holder to one it refuses.
             (SecretName::McpAppKey | SecretName::McpClientSecret | SecretName::InsightsAppKey, RotateStep::Probe) => {
                 let new = slot_value(self.env, secret, slot).await?;
@@ -904,11 +929,17 @@ pub(crate) fn dwell(env: &Env) -> Dwell {
     let ssh_announce = ms("OPS_SSH_ANNOUNCE_MS").unwrap_or(d.ssh_announce);
     #[cfg(not(feature = "test-faults"))]
     let ssh_announce = d.ssh_announce;
+    // BF-70 on a test install: an `ActionsOidcKey` `Rotate`'s publish wait, read only by a test-faults build.
+    #[cfg(feature = "test-faults")]
+    let oidc_published = ms("OPS_OIDC_PUBLISHED_MS").unwrap_or(d.oidc_published);
+    #[cfg(not(feature = "test-faults"))]
+    let oidc_published = d.oidc_published;
     Dwell {
         step: ms("STEP_DWELL_MS").unwrap_or(d.step),
         first_day: ms("FIRST_DAY_MS").unwrap_or(d.first_day),
         rotate_published,
         ssh_announce,
+        oidc_published,
         lifeboat_silent,
     }
 }

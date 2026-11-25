@@ -282,6 +282,10 @@ pub enum SecretName {
     WorkspaceAppKey,
     SecretsWrapKey,
     HostedRunnersAppKey,
+    /// Actions OIDC's RS256 signing key (`graftyard_actions::oidc`): RSA-2048 PKCS#8 in two slots on every site.
+    /// Appended after the wire tags the M5-WP1 decoder knows, so a member that cannot decode tag 12 refuses a `Rotate`
+    /// naming it; the customer signs the first one only after the site day that ships this reader to every member.
+    ActionsOidcKey,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -704,7 +708,7 @@ fn script(e: &mut Enc, s: &Script) {
     }
 }
 
-const SECRETS: [SecretName; 12] = [
+const SECRETS: [SecretName; 13] = [
     SecretName::DeployToken,
     SecretName::ReadToken,
     SecretName::TunnelToken,
@@ -717,6 +721,7 @@ const SECRETS: [SecretName; 12] = [
     SecretName::WorkspaceAppKey,
     SecretName::SecretsWrapKey,
     SecretName::HostedRunnersAppKey,
+    SecretName::ActionsOidcKey,
 ];
 
 fn intent(e: &mut Enc, i: &Intent) {

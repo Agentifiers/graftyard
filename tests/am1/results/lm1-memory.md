@@ -5459,3 +5459,22 @@ the 209 retired networks**, 131107–131295 and 327680–327699, on every site. 
 (07:43Z). The only objects left in those families belong to the kept fixtures: 131296 (8,142), 65536 (253), 327700
 (127) and 131072 (12). graft-m2b was B0-02's for B0-29 run 5 from 07:43 to 09:15Z, and that thread retired and purged
 its own network 131357.
+
+## 16. A note for B0-35 from BF-69 on graft-m4a (2026-11-25)
+
+BF-69's row (`tests/m4/results/m4-wp3.md`, "BF-69 hosted") found two numbers that bear on B0-35's leaderless groups.
+
+- **Leaderless Actions shards at rest.** After BF-69's site day 2 (04:27Z), all 13 live `actions:7100001.<n>` groups of
+  m3org (shards 6, 13 and 15 have none) were three followers with no leader when read at 04:41Z, 14 min after the new
+  version reset every member. A `/campaign` to site 0 elected each within 6 s, and `cache_list` then answered from
+  site 0 on all 13. Shard 11 was leaderless again when read at 05:53Z, 2 min after the row's last job; a `/campaign`
+  elected it. Production has no `/campaign`, so the first request after a reset must elect (F67).
+- **The 6 min 7 s lookup is not an election wait.** Job 1194793's actions/cache@v5 restore took 367.8 s (05:27:14.153Z
+  to 05:33:21.992Z) to report a miss. The edge logged that job's two lookups at 05:27:21.255Z (1,044 ms, 204) and
+  05:33:28.506Z (2,424 ms, 204) and none between; the row's 42 lookups had p50 1,187 ms and max 2,424 ms. The edge's
+  cache lookup is `graftyard_lookup::call` (`workers/edge/src/cache.rs`, `call` → `actions::runsvc_call`), the same
+  request-driven path as every other leader call: `lookup` reports missed members with `suspect` and a
+  `NotLeader`-without-leader member to every voter, and gives up after `LOOKUP_FOR` (20 s), so the edge answers a
+  miss or a 503 within 20 s. The 365 s matches the toolkit's two attempts at its 3-minute socket timeout plus its
+  5 s retry delay, so the first request was held before the edge logged it (F126).
+

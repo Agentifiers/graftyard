@@ -758,6 +758,44 @@ fn r45_ssh_host_keys_wait_the_announce_before_they_switch() {
     assert_eq!(f.g.f.slot(SecretName::SshHostKeys), 0);
 }
 
+/// `ActionsOidcKey` (actions-oidc): probe every site's JWKS for the new slot's key, wait `OIDC_PUBLISHED_FOR` from the
+/// probe's commit while relying parties refetch it, then switch, with no deploy. A test install's lowered wait
+/// (`OPS_OIDC_PUBLISHED_MS`) moves this wait alone, and neither other wait stands in for it.
+#[test]
+fn an_actions_oidc_key_probes_waits_a_day_then_switches() {
+    let mut f = Fake::new(G::new());
+    rotate(&mut f, 30, SecretName::ActionsOidcKey, 1, &CUSTOMER);
+    let log = block_on(ops::run(&mut f, Dwell::default()));
+    assert_eq!(f.rotated, [(SecretName::ActionsOidcKey, 1, crate::RotateStep::Probe)]);
+    let probed = f.g.f.current.as_deref().unwrap().since;
+    // The 24 h of DESIGN's runbook, written out so a changed constant fails here.
+    let day = 24 * 3_600_000;
+    assert!(matches!(log.last(), Some(Ran::Wait { until: Some(t), .. }) if t.0 == probed.0 + day), "{log:?}");
+    f.g.at = Timestamp(probed.0 + day - 60_000);
+    block_on(ops::run(&mut f, Dwell { rotate_published: 0, ssh_announce: 0, ..Dwell::default() }));
+    assert_eq!(f.g.f.slot(SecretName::ActionsOidcKey), 0, "a minute short, whatever the other waits");
+    f.g.at = Timestamp(probed.0 + day);
+    f.cron(5);
+    assert!(f.g.f.current.is_none());
+    assert_eq!(f.g.f.slot(SecretName::ActionsOidcKey), 1);
+    assert!(f.deploys.is_empty() && f.uploads.is_empty(), "no new script version");
+    let short = Dwell { oidc_published: 120_000, ..Dwell::default() };
+    rotate(&mut f, 31, SecretName::ActionsOidcKey, 0, &CUSTOMER);
+    block_on(ops::run(&mut f, short));
+    let probed = f.g.f.current.as_deref().unwrap().since;
+    f.g.at = Timestamp(probed.0 + 120_000);
+    for _ in 0..5 {
+        block_on(ops::run(&mut f, short));
+    }
+    assert_eq!(f.g.f.slot(SecretName::ActionsOidcKey), 0);
+    // A probe that fails (a site's JWKS lacks the key) pages, and the slot stays.
+    rotate(&mut f, 32, SecretName::ActionsOidcKey, 1, &CUSTOMER);
+    f.rotate_fails = Some(crate::RotateStep::Probe);
+    f.cron(3);
+    assert_eq!(f.g.f.slot(SecretName::ActionsOidcKey), 0);
+    assert!(f.pages.iter().any(|p| p.contains("ActionsOidcKey")), "{:?}", f.pages);
+}
+
 /// A `Rotate` this `graft-ops` does not switch, or one to the active slot, is refused by name: a page each run and no
 /// step, until the customer's `Abort` ends it with the slot unchanged.
 #[test]

@@ -395,6 +395,28 @@ pub fn ssh_fronts_ready(fronts: &[(u8, SshFrontStatus)]) -> Result<(), String> {
     Ok(())
 }
 
+/// The `ActionsOidcKey` `Rotate`'s probe over each non-spare site's `/oidc_slots` `slots`, by site id: the new slot
+/// holds a key on every site, the same `kid` on each, and that key differs from the active slot's, so the switch moves
+/// signing to a key every relying party can already fetch. Answers the new `kid`.
+pub fn oidc_slot_ready(sites: &[(u8, serde_json::Value)], slot: u8) -> Result<String, String> {
+    let (new, old) = if slot == 0 { ("A", "B") } else { ("B", "A") };
+    let mut first: Option<(u8, String)> = None;
+    for (site, slots) in sites {
+        let kid = slots[new].as_str().ok_or_else(|| format!("site {site} publishes no key in slot {new}"))?;
+        if slots[old].as_str() == Some(kid) {
+            return Err(format!("site {site}'s slot {new} holds the active slot's key {kid}"));
+        }
+        match &first {
+            None => first = Some((*site, kid.to_owned())),
+            Some((s0, k0)) if k0 != kid => {
+                return Err(format!("site {site}'s slot {new} kid {kid} differs from site {s0}'s {k0}"));
+            }
+            Some(_) => {}
+        }
+    }
+    first.map(|(_, k)| k).ok_or_else(|| "no non-spare site to probe".into())
+}
+
 #[cfg(target_arch = "wasm32")]
 mod agents;
 #[cfg(target_arch = "wasm32")]
@@ -673,5 +695,25 @@ mod tests {
             (2, front(true, Some("SSH-2.0-graftyard"))),
         ];
         assert!(ssh_fronts_ready(&mix).unwrap_err().starts_with("site 2's running SSH front"));
+    }
+
+    /// `ActionsOidcKey`'s probe: every site publishing one new key in the slot passes and names its kid; a site with
+    /// none, a site whose new slot is the active key, or two sites with different keys fail, naming the site.
+    #[test]
+    fn an_oidc_slot_passes_only_with_one_new_key_on_every_site() {
+        let s = |a: Option<&str>, b: Option<&str>| serde_json::json!({ "A": a, "B": b });
+        let good: Vec<_> = (0..3).map(|i| (i, s(Some("old"), Some("new")))).collect();
+        assert_eq!(oidc_slot_ready(&good, 1).unwrap(), "new");
+        assert_eq!(oidc_slot_ready(&good, 0).unwrap(), "old", "slot 0 is A");
+        let mut missing = good.clone();
+        missing[1].1 = s(Some("old"), None);
+        assert_eq!(oidc_slot_ready(&missing, 1).unwrap_err(), "site 1 publishes no key in slot B");
+        let mut same = good.clone();
+        same[2].1 = s(Some("old"), Some("old"));
+        assert_eq!(oidc_slot_ready(&same, 1).unwrap_err(), "site 2's slot B holds the active slot's key old");
+        let mut differ = good.clone();
+        differ[2].1 = s(Some("old"), Some("other"));
+        assert!(oidc_slot_ready(&differ, 1).unwrap_err().starts_with("site 2's slot B kid other differs"));
+        assert!(oidc_slot_ready(&[], 1).is_err());
     }
 }
