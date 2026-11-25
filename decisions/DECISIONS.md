@@ -9421,6 +9421,36 @@ clearance after this merges and runs on graft-m2b after LM-1's read-memo rows.
 - **Under-read left.** Leader refusals over 50% of pfA's count with both rules live. Then the 23% of lane growth in
   flight is what is left, and the lever moves to the leader's own admission.
 
+**Amended, 2026-11-25 (the lead's ruling after row lr): how a B0-33-shaped row judges its host.** A later row judges
+whether its host is slow by two readings:
+- the host guard's setup reading, the leader's CPU per setup commit (`tests/fanout/hostguard.py`);
+- the learners' read sheds (memguard `shedBy`) with the Agent 429s by route and side kind.
+
+It does not judge by the learners' CPU per request. lr's stop rule called a host clA-like at or under about 6.5 ms per
+learner request. lrA read 11.82 ms and had the best agent line of the four runs, so the stop rule's host test would
+have called a fast row slow.
+- **Why.** Learner CPU per request follows retry traffic as well as the host. Over the first 5 minutes [measured,
+  `tests/am1/results/b033-lr.md`, "Host readings"]:
+
+  | Run | Setup reading (ms) | Learner CPU (s) | Learner requests | ms per request | Learner sheds, 300 s | Side 429 share | Agent/s |
+  |---|---|---|---|---|---|---|---|
+  | clA | 25.7 | 601.3 | | 5.8 | 49,106 | 13.6% | 112.0 |
+  | lnA | 26.4 | 805.7 | 87,657 | 9.19 | 35,710 | 29.0% | 99.8 |
+  | lrA | 23.5 | 608.9 | 51,496 | 11.82 | 14,381 | 8.5% | 126.6 |
+
+  lrA's learners spent clA's CPU on 59% of lnA's requests. They shed fewer reads, so fewer failed reads came back as
+  retries. The cheap retries left the denominator, and each request that remained cost more [inference]. Across the
+  three runs, the learners' sheds and the side 429 share moved with the agent line, and ms per request did not.
+- **What it beat.** Learner ms per request as the host test, lr's stop rule as approved on 2026-11-24.
+- **Flip.** A row whose setup reading and learner sheds both read like clA's or better, but whose agent line falls
+  under 100/s. Then neither reading separates host from build, and the row goes to the lead before any other run.
+
+**Measured note, not a gate (lrA, 2026-11-25).** Comment and label writes still shed about 25% on a fast host.
+Over lrA's 300 s, ok / 429: comment 4,036 / 1,157 (22.3%) and label 3,004 / 1,105 (26.9%). The task path's tier reads
+nearly stopped shedding there: standIn 51, taskEdit 31, leaseRenew 26 and lease 17 of 429. By route, graphql read
+1,477 and rest-repo-write 1,160, against clA's 1,821 and 1,438 [measured, `tests/am1/results/b033-lr.md`, "Side
+writes' 429s by route and kind"]. Every one is a member shed through `shed_for`'s Agent branch, not the advert.
+
 ### `removed-read`: a replaced voter answers a read-index read at once with the config that removed it, 2026-11-23
 
 **Status.** Built at $0, cleared by the lead on 2026-11-23 for F113's warm case, merged with G39 at `5bed46af`, and
