@@ -7,6 +7,9 @@
 #
 #   tests/m4/wp3/oidc/run.sh <runner dir> <configure-aws-credentials checkout> <out dir> [port]
 #
+# HOSTED=1 runs BF-70's hosted workflow (`hosted.yml`) instead, with the action mirrored as `m3org/bf70-cac`, and also
+# checks that the job verified its token against the published JWKS and that the ungranted job's own token got 403.
+#
 # Needs docker (sudo -n) with the images cgr.dev/chainguard/minio and minio-client, and the aws CLI. Exits 0 only when every check holds.
 set -uo pipefail
 runner=$1 cac=$2 out=$3 port=${4:-8792}
@@ -20,8 +23,9 @@ bin=${CARGO_TARGET_DIR:-$repo/target}/release/examples/runsvc_host
 host_log="$out/host"
 mkdir -p "$host_log"
 # The workflow by its repository path, which the token's `workflow` and `workflow_ref` carry.
-(cd "$repo" && OIDC_ROTATE_AFTER=1 MIRROR_EXTRA="aws-actions/configure-aws-credentials=$out/cac.git" \
-  exec "$bin" "$port" tests/m4/wp3/oidc/minio.yml "$host_log") > "$out/host.out" 2>&1 &
+if [ "${HOSTED:-}" = 1 ]; then wf=tests/m4/wp3/oidc/hosted.yml as=m3org/bf70-cac
+else wf=tests/m4/wp3/oidc/minio.yml as=aws-actions/configure-aws-credentials; fi
+(cd "$repo" && OIDC_ROTATE_AFTER=1 MIRROR_EXTRA="$as=$out/cac.git" exec "$bin" "$port" "$wf" "$host_log") > "$out/host.out" 2>&1 &
 host=$!
 for _ in $(seq 60); do curl -sf "http://127.0.0.1:$port/_services/token/.well-known/jwks" >/dev/null && break; sleep 1; done
 sudo -n docker rm -f bf70minio >/dev/null 2>&1
@@ -60,6 +64,10 @@ check "$diag" "the runner exported both" "the runner exported ACTIONS_ID_TOKEN_R
 check "$diag" "s3 read ok" "configure-aws-credentials' credentials read the bucket"
 check "$diag" "second token ok" "MinIO took the token signed after the rotation"
 check "$diag" "no id-token grant, no URL" "a job without the grant got no token URL"
+if [ "${HOSTED:-}" = 1 ]; then
+  check "$diag" "verified kid=[A-Za-z0-9_-]" "the job verified its token against the published JWKS"
+  check "$diag" "idtoken without the grant: 403" "the ungranted job's own token was refused 403"
+fi
 python3 - "$host_log/idtokens.jsonl" <<'PY' || ok=0
 import base64, json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
