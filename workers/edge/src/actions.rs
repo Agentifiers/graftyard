@@ -12,6 +12,7 @@
 //! - **Logs.** The results service's blob URLs point back here, `/_services/blob/<owner>/<shard>/<job>/<kind>-<step>`,
 //!   and a PUT lands in the owner's home bucket at `actions/<job>/<kind>-<step>` while the job is `InProgress`.
 //!   `GET /repos/{o}/{r}/actions/jobs/{id}/logs` reads `actions/<job>/logs-job`.
+//! - **`cache/*`** is actions-cache's cache v1 API and its downloads (`crate::cache`).
 //! - **Live log.** The runner opens `FeedStreamUrl`, `/_services/logrelay/<site>/<job>`, which goes to `LOGRELAY_<site>`,
 //!   the site whose leader took `acquirejob`. A viewer opens `/_t/logrelay/repos/{owner}/{repo}/jobs/{job}`: the edge
 //!   checks read access as for `/_t/ui/repos/...`, then joins the relay of the site the job's shard leader is on now,
@@ -85,13 +86,13 @@ async fn answer(c: &Ctx<'_>, chain: ChainId, body: Value) -> Result<Response> {
 }
 
 /// A shard read (`/read` `{"q": q}`): the `value`.
-async fn shard_read(c: &Ctx<'_>, chain: ChainId, q: Value) -> std::result::Result<Value, String> {
+pub(crate) async fn shard_read(c: &Ctx<'_>, chain: ChainId, q: Value) -> std::result::Result<Value, String> {
     let record = shard_record(c, chain).await?;
     let (v, _) = graftyard_lookup::call(&c.bindings(), chain, &record, "/read", &json!({ "q": q })).await?;
     Ok(v["value"].clone())
 }
 
-async fn job_row(c: &Ctx<'_>, chain: ChainId, job: JobId) -> Option<JobRow> {
+pub(crate) async fn job_row(c: &Ctx<'_>, chain: ChainId, job: JobId) -> Option<JobRow> {
     serde_json::from_value(shard_read(c, chain, json!({ "job": job.0.0 })).await.ok()?).ok()
 }
 
@@ -112,6 +113,10 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
     }
     if let Some(tail) = rest.strip_prefix("blob/") {
         return blob_put(c, &mut req, method, tail).await;
+    }
+    // actions-cache (`crate::cache`), whose chunk uploads and downloads stream and are never read here.
+    if let Some(tail) = rest.strip_prefix("cache/") {
+        return crate::cache::serve(c, req, tail, grant, &public).await;
     }
     let text = req.text().await.unwrap_or_default();
     let b: Value = serde_json::from_str(&text).unwrap_or(Value::Null);

@@ -433,6 +433,7 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
         locked_until: Timestamp(n.0 + 600_000),
         secrets: Vec::new(),
         variables: Vec::new(),
+        cache: false,
     };
     (200, runsvc::acquire_message(&h.urls, &run.run, &j, &a))
 }

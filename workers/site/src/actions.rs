@@ -50,7 +50,7 @@ fn id_of(q: &Value, k: &str) -> Option<DbId> {
 }
 
 /// A request id the tag `0x4158` ("AX") in the top 16 bits, then 112 bits of SHA-256 of `parts`.
-fn rid(parts: &str) -> RequestId {
+pub(crate) fn rid(parts: &str) -> RequestId {
     use sha2::Digest as _;
     let h = sha2::Sha256::new().chain_update(parts).finalize();
     let low = u128::from_be_bytes(h[..16].try_into().expect("16 bytes")) & ((1u128 << 112) - 1);
@@ -69,6 +69,7 @@ impl Family for Actions {
             act::ACTIONS_FORMAT_OWNER_MATCH,
             act::ACTIONS_FORMAT_PULL_REQUEST,
             act::ACTIONS_FORMAT_TOKENS,
+            act::ACTIONS_FORMAT_CACHE,
         ]
     }
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
@@ -76,6 +77,7 @@ impl Family for Actions {
     }
     async fn on_alarm(host: &Rc<Host<Self>>) {
         expire(host).await;
+        crate::actions_cache::sweep(host).await;
         run_owner(host).await;
     }
     fn route_paths() -> &'static [&'static str] {
@@ -259,6 +261,13 @@ pub fn job_tokens(env: &worker::Env) -> bool {
     env.var("GRAFTYARD_JOB_TOKENS").is_ok_and(|v| v.to_string() == "1")
 }
 
+/// Whether a site day set `GRAFTYARD_ACTIONS_CACHE` (`actions-cache`): only then is 0x15.6 sent, by the cache routes
+/// and `CreateRunOn`. A site day sets it only once `FormatsEnable` enabled 0x15.6, after the day that shipped its
+/// reader to every member.
+pub fn actions_cache(env: &worker::Env) -> bool {
+    env.var("GRAFTYARD_ACTIONS_CACHE").is_ok_and(|v| v.to_string() == "1")
+}
+
 /// `ActionsTrigger`'s `create_run` call: the jobs' declared permissions ride along only where `job_tokens`, and only
 /// when a job declared some, so every other run's call is the one it was.
 pub fn create_run_body(
@@ -266,10 +275,17 @@ pub fn create_run_body(
     run: &act::WorkflowRun,
     jobs: &[act::JobSpec],
     permissions: &graftyard_actions::specs::Declared,
+    base: Option<&str>,
 ) -> Value {
     let mut b = json!({ "op": "create_run", "run": run, "jobs": jobs });
     if job_tokens(env) && !permissions.is_empty() {
         b["permissions"] = json!(permissions);
+    }
+    // `actions-cache`: a `pull_request` run's base branch, which its jobs read caches from (`CreateRunOn`).
+    if actions_cache(env)
+        && let Some(base) = base
+    {
+        b["base_ref"] = json!(base);
     }
     b
 }
@@ -505,7 +521,7 @@ fn urls(env: &worker::Env) -> Urls {
 
 /// One command from this leader, waiting for its outcome: `Ok(Ok(out))`, `Ok(Err(refusal))`, or `Err` for a member
 /// that is not the leader or did not commit in 10 s, which the edge answers 503.
-async fn commit(
+pub(crate) async fn commit(
     h: &Rc<Host<Actions>>,
     rid: RequestId,
     actor: ActionsActor,
@@ -540,7 +556,7 @@ async fn commit(
 }
 
 /// A request id for one run-service call: the time, then 80 random bits.
-fn fresh_rid() -> RequestId {
+pub(crate) fn fresh_rid() -> RequestId {
     let mut b = [0u8; 10];
     for x in &mut b {
         *x = (worker::js_sys::Math::random() * 256.0) as u8;
@@ -558,7 +574,7 @@ fn leader_site(h: &Rc<Host<Actions>>) -> Result<(ChainId, u8), Value> {
     Ok((c.join.chain, c.join.me.site.0))
 }
 
-fn refused(status: u16, e: impl std::fmt::Debug) -> Value {
+pub(crate) fn refused(status: u16, e: impl std::fmt::Debug) -> Value {
     json!({ "status": status, "body": { "source": "actions-run-service", "statusCode": status, "message": format!("{e:?}") } })
 }
 
@@ -800,6 +816,7 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 // Opened by the edge through `graft-ops` for this job alone; never logged or stored here.
                 secrets: serde_json::from_value(b["secrets"].clone()).unwrap_or_default(),
                 variables: serde_json::from_value(b["variables"].clone()).unwrap_or_default(),
+                cache: actions_cache(&h.env),
             };
             json!({ "status": 200, "body": runsvc::acquire_message(&urls, &run, &row, &a), "repo": run.repo })
         }
@@ -860,16 +877,22 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
             // `gh-token`: declared permissions come only from a trigger where `job_tokens` (`create_run_body`).
             let permissions: graftyard_actions::specs::Declared =
                 serde_json::from_value(b["permissions"].clone()).unwrap_or_default();
-            let op = if permissions.is_empty() {
-                ActionsOp::CreateRun { run, jobs }
-            } else {
-                ActionsOp::CreateRunWith { run, jobs, permissions }
+            let op = match b["base_ref"].as_str() {
+                Some(base) if run.is_pull_request() => {
+                    ActionsOp::CreateRunOn { run, jobs, permissions, base_ref: base.into() }
+                }
+                _ if permissions.is_empty() => ActionsOp::CreateRun { run, jobs },
+                _ => ActionsOp::CreateRunWith { run, jobs, permissions },
             };
             match commit(h, rid, ActionsActor::Operator, op).await {
                 Ok(Ok(ActionsOut::Run(r))) => json!({ "status": 201, "body": { "run": r } }),
                 Ok(r) => refused(422, r),
                 Err(e) => refused(503, e),
             }
+        }
+        // `actions-cache`: the job's cache calls, which the edge authenticated with the job token.
+        (o, Some(Grant::Job { job, .. })) if o.starts_with("cache_") => {
+            crate::actions_cache::route(h, o, job, &b, &key, &urls, chain, now).await
         }
         _ => refused(401, "no grant for this call"),
     })
