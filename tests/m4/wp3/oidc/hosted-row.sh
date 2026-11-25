@@ -15,7 +15,7 @@
 #               ActionsOidcKey slot, and the install day's cost; the stop is $5 for the row (COST_FROM)
 #   minio       a local MinIO in claim mode (`repository_owner` -> policy `m3org`, bucket `probe` only), pointed at
 #               the edge's openid-configuration
-#   action      `hosted.mjs action`: v6.2.0 on the install as m3org/bf70-cac
+#   action      `hosted.mjs action`: v6.2.0 on the install as m3org/$BF70_REPO-cac
 #   precheck    `hosted.mjs precheck`: one pull_request job that prints only whether ACTIONS_ID_TOKEN_REQUEST_URL is
 #               set; the row stops unless it is (r2, the lead's ruling)
 #   job <t>     `hosted.mjs job`: the granted and ungranted jobs from a same-repository pull request, tag t (before,
@@ -30,7 +30,7 @@
 #   view        the `Release` entries since `ops`, and the active slots
 #   logs        graft-ops' Rotate lines from Workers Logs since `ops`
 #   versions    every script's deployment and version count, to compare with `state`
-#   teardown    MinIO removed; m3org/bf70-cac deleted; graft-m4a-ops parked by version id on the one `ops` found live
+#   teardown    MinIO removed; m3org/$BF70_REPO, -fork and -cac deleted; graft-m4a-ops parked by version id on the one `ops` found live
 #               (OPS_PARKED overrides), cron []; the row token revoked and
 #               its files shredded. ActionsOidcKey stays on slot B: both slots stay written and published, and the
 #               next rotation (to A) needs no new secret.
@@ -45,6 +45,9 @@ TAG=${1:?tag}; STEP=${2:?step}
 O=tests/m4/raw/wp3/oidc-hosted/$TAG; mkdir -p "$O"
 W=$HOME/.graft-m4a; K=$W/bf70; mkdir -p "$K"; chmod 700 "$K"
 STORE=bfaa0c1573de4775b1b92a12fb89acb4
+# Each tag's own repositories (m3org/bf70-<tag>, -cac, -fork): a deleted name stays taken until its retain_until, 90
+# days, so r1's m3org/bf70 and bf70-cac cannot be created again (422 "name already exists"). r1 ran as bf70.
+export BF70_REPO=${BF70_REPO:-bf70-$TAG}
 OPS=graft-m4a-ops
 SCRIPTS="graft-m4a-site-a graft-m4a-site-b graft-m4a-site-c graft-m4a-edge $OPS"
 B="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
@@ -178,7 +181,7 @@ versions)
 teardown)
   { sudo -n docker rm -f bf70minio >/dev/null 2>&1; echo "minio removed"
     node tests/m4/wp3/oidc/hosted.mjs unmirror - "$O"
-    for r in bf70 bf70-fork; do
+    for r in "$BF70_REPO" "$BF70_REPO-fork"; do
       echo "DELETE m3org/$r $(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "authorization: token $(grep '^admin ' "$M3_STATE/m3-tokens.txt" | cut -d' ' -f2)" "$GRAFT_EDGE/api/v3/repos/m3org/$r")"
     done
     reset_cron

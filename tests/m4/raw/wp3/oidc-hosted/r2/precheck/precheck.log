@@ -1,0 +1,12 @@
+2026-11-25T09:25:24.2408933Z Current runner version: '2.338.2'
+2026-11-25T09:25:24.2414343Z Runner name: 'bf70-r2-1'
+2026-11-25T09:25:24.2414798Z Machine name: '172'
+2026-11-25T09:25:24.2417622Z Prepare workflow directory
+2026-11-25T09:25:24.2791532Z Prepare all required actions
+2026-11-25T09:25:24.2890748Z Complete job name: precheck
+2026-11-25T09:25:25.3480418Z ##[group]Run echo "ACTIONS_ID_TOKEN_REQUEST_URL set: $([ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && echo yes || echo no)"
+2026-11-25T09:25:25.3480639Z [36;1mecho "ACTIONS_ID_TOKEN_REQUEST_URL set: $([ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && echo yes || echo no)"[0m
+2026-11-25T09:25:25.3504849Z shell: /usr/sbin/bash -e {0}
+2026-11-25T09:25:25.3505215Z ##[endgroup]
+2026-11-25T09:25:25.3686425Z ACTIONS_ID_TOKEN_REQUEST_URL set: yes
+2026-11-25T09:25:25.3824840Z Cleaning up orphan processes

@@ -1,0 +1,10 @@
+2026-11-25T09:41:05Z
+a4346e1bf
+{"test_faults":true,"gate":"pending","cron":"* * * * *","step_dwell_ms":60000,"oidc_published_ms":300000}
+graft-ops before the row: ac4cd9a5
+graft-ops built from d1cf8e365
+   Compiling thiserror v2.0.21
+   Compiling thiserror-impl v2.0.21
+Current Version ID: 7b541d43-9031-4348-bc05-8189f287a72e
+{"script":"graft-m4a-ops","created_on":"2026-11-25T09:42:16.163481Z","versions":["7b541d43 100"]}
+{"schedules":["* * * * *"]}

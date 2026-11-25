@@ -1,0 +1,32 @@
+{
+  "fork": false,
+  "run": {
+    "t": 15414,
+    "status": {
+      "Completed": "Success"
+    },
+    "jobs": [
+      {
+        "id": 1507349,
+        "name": "precheck",
+        "state": "Completed",
+        "s": {
+          "Completed": {
+            "at": 1795598760030,
+            "conclusion": "Success"
+          }
+        }
+      }
+    ]
+  },
+  "conclusions": {
+    "precheck": "Success"
+  },
+  "checks": {
+    "precheck_succeeded": true,
+    "url_set": true,
+    "no_token_in_logs": true
+  },
+  "ok": true,
+  "dir": "tests/m4/raw/wp3/oidc-hosted/r2/precheck"
+}
