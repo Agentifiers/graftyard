@@ -5,6 +5,9 @@
 - **Pass:** with `GATE` unset and the agents deploy token invalid, a test-bad c2 at 1% breaches `GATE_ERRORS` on
   `graft-agents-front`'s counts, and the agents `graft-ops` commits the pre-signed `ControllerPointer` to c1 itself.
 - **Fail:** no breach, or a webhook reaching c2 after the pin.
+  The lead's ruling after r2 (2026-11-25): a webhook counts against this line only if it reached c2 from an isolate that
+  had already pinned c1, or more than `POINTER_TTL` (5 s) after the pin committed; the propagation inside `POINTER_TTL`
+  that the pass line allows does not. By that line r2 passes. A57 does not gate the clause.
 - **Also:** the two refusal probes once hosted, and the flush peak per 30 s.
 
 Stops: $3 for the row, and graft-m4a's UTC day at most $35. **Stand-in:** the runner account stands in as the agents
