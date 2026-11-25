@@ -779,11 +779,17 @@ one clean pass.
    `access_tokens`.
 3. `repo`, `jobs start`: one `ubuntu-latest` smoke run (20 s) every 4 minutes on `m3org/hrak-jobs`, from before the
    write until after the old key is off.
-4. `put`: a `PATCH` of the one slot, timed by the answer's `Date`.
+4. `put`: a `PATCH` of the one slot, timed by the answer's `Date`. It is refused unless `~/.graft-m4a/hosted/app.pem`
+   is mode 0600 and byte-equal to the value sent, and the record lists keys 1 and 2. A failed `PATCH`, or a pass after
+   it that errs, stops the row with key 1 still listed (the lead's condition, 2026-11-25).
 5. `passes`: every pass from the write on, after at least one full pass.
 6. `only`: key 1 off. The step is refused until the write is 600 s old (an App JWT signed before it lives at most that
    long) and a clean pass has followed it. Then a `mint` with key 2, and `passes` again after one more pass.
-7. `jobs stop`, `state`, `teardown`: the repository is deleted.
+7. `jobs stop`, `state`, `teardown`: the repository is deleted. Then `app.pem` is staged for LM-1's copy of the
+   graft-m4a install material, and its SPKI prefix (not the key) goes into `tests/am1/results/install-m4a.md`.
+
+The lead approved the one-way rotation: key 1's private half exists only in the Secrets Store, which cannot be read
+back, so leaving key 1 listed gives no restore path.
 
 The runbook waits 24 h before it takes the old key off. The row waits 600 s, because the only holder re-reads the key
 at every pass.

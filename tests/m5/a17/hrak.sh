@@ -69,11 +69,21 @@ jobs)
   esac ;;
 put)
   # The runbook's in-place write over the one slot, as `graftyard runners init` writes it (cli/src/cf.rs, put_secret).
-  { id=$(secret | jq -r .id); hdr=$(mktemp)
-    jq -Rsc '{value: ., comment: "HostedRunnersAppKey rotation row"}' "$H/app.pem" |
-      ra -D "$hdr" "$RB/secrets_store/stores/$STORE/secrets/$id" -X PATCH -H 'content-type: application/json' --data-binary @- |
-      jq -c '{patch: "HostedRunnersAppKey", ok: .success, errors: [.errors[]?.code]}'
+  # The lead's condition: the private half stays in ~/.graft-m4a/hosted/app.pem (0600), byte-equal to the value
+  # PATCHed, and the record lists key 2 beside key 1, so a failed write leaves graft-runners on key 1.
+  { [ "$(stat -c %a "$H/app.pem" 2>/dev/null)" = 600 ] || { echo "refused: $H/app.pem missing or not mode 0600"; exit 1; }
+    keys=$(node_ show | jq -c '[.keys[] | "\(.id) \(.spki_sha256)"]')
+    [ "$keys" = "[\"1 31e2cc5bbbbd0dd9\",\"2 $(spki "$H/app.pem")\"]" ] || { echo "refused: the record lists $keys"; exit 1; }
+    body=$(mktemp -p "$H"); chmod 600 "$body"
+    jq -Rsc '{value: ., comment: "HostedRunnersAppKey rotation row"}' "$H/app.pem" >"$body"
+    jq -j .value "$body" | cmp -s - "$H/app.pem" || { shred -u "$body"; echo "refused: the body is not app.pem's bytes"; exit 1; }
+    echo "app.pem 0600, $(wc -c <"$H/app.pem") bytes, byte-equal to the PATCH value; record keys $keys"
+    id=$(secret | jq -r .id); hdr=$(mktemp)
+    ok=$(ra -D "$hdr" "$RB/secrets_store/stores/$STORE/secrets/$id" -X PATCH -H 'content-type: application/json' --data-binary @"$body" |
+      jq -c '{patch: "HostedRunnersAppKey", ok: .success, errors: [.errors[]?.code]}'); shred -u "$body"
+    echo "$ok"
     d=$(tr -d '\r' <"$hdr" | sed -n 's/^[Dd]ate: //p'); rm -f "$hdr"
+    echo "$ok" | jq -e .ok >/dev/null || { echo "stop: the PATCH failed; key 1 stays listed, do not run only"; exit 1; }
     echo $(( $(date -d "$d" +%s) * 1000 )) >"$S/put.ms"
     echo "written: answer Date $d; key SPKI sha256 $(spki "$H/app.pem")"
     secret | jq -c '{name, modified}'
