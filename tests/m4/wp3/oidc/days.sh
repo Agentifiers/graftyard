@@ -34,7 +34,7 @@ SITES="graft-m4a-site-a graft-m4a-site-b graft-m4a-site-c"
 
 case $PH in
 site)
-  { grep -q "build exit 0" /home/user/bf70/site-build.log || { echo "the site build did not finish"; exit 1; }
+  { grep -q "build exit 0" "$HOME/bf70/site-build.log" || { echo "the site build did not finish"; exit 1; }
     for n in $SITES; do echo "before $(deployment $n)"; done
     (cd "$TREE" && node workers/site/deploy.mjs "$W/sites.json" --anchor "$W/install.toml" --image "$IMG" --image-prev "$IMG" \
       --vars "$W/site-vars.json" --skip-build --ops graft-m4a-ops \
