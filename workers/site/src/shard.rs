@@ -873,6 +873,14 @@ impl DurableObject for GitShard {
         if crate::site_down(&self.env) {
             return Response::error("site down", 503);
         }
+        // BM-1's site fault fails this site's container class too, as a region loss would (BM-6: "one site's member and
+        // container classes fail for a day"), so the edge's shard reads go on to the other sites. A plan scoped to
+        // chains or to Raft calls leaves shards alone. Only requests fail: the alarm keeps its own schedule.
+        #[cfg(feature = "test-faults")]
+        if crate::faults::site_fault(&self.env, None, false).await.is_some() {
+            crate::faults::count("site_fault:shard");
+            return Response::error("git shard failing (injected site fault)", 503);
+        }
         let url = req.url()?;
         let site = SiteEnv::read(&self.env)?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;

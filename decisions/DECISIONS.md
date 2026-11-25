@@ -11219,6 +11219,23 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **Flip.** If a member must keep ticking after its own failed call: a hosted row where a leader, idle but for retries, misses a commit, a read, or a transfer's end that a waiting client saw. Then count that case as activity, here first.
 
+### `shard-site-fault`: BM-1's site fault fails the faulted site's git shards too, on test-faults builds, 2026-11-25
+
+**Decision.** `GitShard::fetch` (`workers/site/src/shard.rs`) answers 503 while BM-1's site fault plan names its whole site, as the member class already does (`crate::faults::site_fault` with no chain and `consensus` false). A plan scoped to chains (`chains`) or to Raft calls (`group_only`) leaves shards serving. Only requests fail; a shard's alarm keeps its own schedule. Test-faults builds only, so no product build changes.
+
+**Why.** BM-6's drill needs "one site's member and container classes fail for a day" with "no script version is created" in the span (`build/BUILD-PLAN.md`, M6-WP4). On main only the member class honoured the fault, and a shard honoured only `GRAFTYARD_SITE_DOWN`, which only a site day sets. Faulting the shards that way would create a script version inside the span. With this change the fault plan, which a registry write sets with no deploy, fails both classes, and the edge's shard reads (`shard_read`, `validate`) go on to the other sites, as after a real region loss.
+
+**What it beat.**
+- **`GRAFTYARD_SITE_DOWN` by a site day at the fault's start:** it creates a script version in the span, which BM-6 fails on.
+- **Stopping the shards' containers through `/teardown` at the fault's start:** a stopped shard starts again on its next request, so the container class never fails, it only goes cold.
+- **Failing the alarm too:** an alarm on a faulted site already reaches nothing, since the members it calls fail, and failing it adds nothing a client sees.
+
+**Evidence.** `tests/shardfaultbed/run.sh`, three site scripts of the site's own build (test-faults) in local workerd. Under a whole-site plan on site 0, site 0's shard answered 503 while site 1's answered 200 and site 0's member `/ping` 503. Under a `group_only` plan, a chain-scoped plan and no plan, every shard answered 200 (PASS). On main (c08af716) site 0's shard answered 200 under the whole-site plan (FAIL). `tests/m0carried/plant241.py`, 3 mutants.
+
+**Flip.** If a hosted drill shows the edge serving a faulted site's shard, or failing to fall over to another site's: then the shard's check moves to wherever that request entered, and this entry names it.
+
+**Not exercised by BM-6's drill:** the `ZERO_ACKS` path to `ReplaceMember` (24 h drained, with every call from both other sites missed). The drill replaces on a customer-signed `SiteLost` at fault + 10 min, the operator's path in journey 5, under a full-day fault (orchestrator ruling C, 2026-11-25). `ZERO_ACKS` needs the site drained for 24 h (`crates/release/src/group.rs`) and, from each other site, at least `MIN_CALLS` (300) calls to it with every one missed (`crates/release/src/gate.rs`), so it would add a day of drain before the replace could start. It stays covered by `crates/release/src/tests/group/replace.rs`.
+
 #### `controller-task`: the controller's `Task` is a pure state machine in `graftyard_git::controller` (2026-11-24)
 
 **Status.** Code-only (AM3-WP1's second slice); no controller runs it yet.
