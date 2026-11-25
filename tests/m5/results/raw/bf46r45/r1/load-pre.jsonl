@@ -1,0 +1,42 @@
+{"at":1795571283662,"kind":"mcp_login","ok":false,"n":1,"ms":15659,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571293471,"kind":"hook","ok":true,"n":1,"hook":3964928,"slot":1,"ms":9808,"event":"ping"}
+{"at":1795571299506,"kind":"j4_hook","ok":true,"n":1,"hook":229399,"slot":1,"ms":6035,"event":"ping"}
+{"at":1795571308654,"kind":"mcp_login","ok":false,"n":2,"ms":9148,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571315459,"kind":"hook","ok":true,"n":2,"hook":3964929,"slot":1,"ms":6804,"event":"ping"}
+{"at":1795571321358,"kind":"j4_hook","ok":true,"n":2,"hook":229400,"slot":1,"ms":5899,"event":"ping"}
+{"at":1795571330278,"kind":"mcp_login","ok":false,"n":3,"ms":8920,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571337362,"kind":"hook","ok":true,"n":3,"hook":3964930,"slot":1,"ms":7083,"event":"ping"}
+{"at":1795571343387,"kind":"j4_hook","ok":true,"n":3,"hook":229401,"slot":1,"ms":6025,"event":"ping"}
+{"at":1795571350236,"kind":"mcp_login","ok":false,"n":4,"ms":6849,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571356350,"kind":"hook","ok":true,"n":4,"hook":3964931,"slot":1,"ms":6114,"event":"ping"}
+{"at":1795571361350,"kind":"j4_hook","ok":true,"n":4,"hook":229402,"slot":1,"ms":5000,"event":"ping"}
+{"at":1795571371541,"kind":"mcp_login","ok":false,"n":5,"ms":8153,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571377348,"kind":"hook","ok":true,"n":5,"hook":3964932,"slot":1,"ms":5807,"event":"ping"}
+{"at":1795571382244,"kind":"j4_hook","ok":true,"n":5,"hook":229403,"slot":1,"ms":4896,"event":"ping"}
+{"at":1795571391440,"kind":"mcp_login","ok":false,"n":6,"ms":8050,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571398569,"kind":"hook","ok":true,"n":6,"hook":3964933,"slot":1,"ms":7129,"event":"ping"}
+{"at":1795571403527,"kind":"j4_hook","ok":true,"n":6,"hook":229404,"slot":1,"ms":4958,"event":"ping"}
+{"at":1795571410470,"kind":"mcp_login","ok":false,"n":7,"ms":6943,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571415928,"kind":"hook","ok":true,"n":7,"hook":3964934,"slot":1,"ms":5458,"event":"ping"}
+{"at":1795571420827,"kind":"j4_hook","ok":true,"n":7,"hook":229405,"slot":1,"ms":4899,"event":"ping"}
+{"at":1795571430890,"kind":"mcp_login","ok":false,"n":8,"ms":7362,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571437238,"kind":"hook","ok":true,"n":8,"hook":3964935,"slot":1,"ms":6347,"event":"ping"}
+{"at":1795571441402,"kind":"j4_hook","ok":true,"n":8,"hook":229406,"slot":1,"ms":4164,"event":"ping"}
+{"at":1795571449789,"kind":"mcp_login","ok":false,"n":9,"ms":6260,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571455298,"kind":"hook","ok":true,"n":9,"hook":3964936,"slot":1,"ms":5509,"event":"ping"}
+{"at":1795571460114,"kind":"j4_hook","ok":true,"n":9,"hook":229407,"slot":1,"ms":4815,"event":"ping"}
+{"at":1795571473035,"kind":"mcp_login","ok":false,"n":10,"ms":9505,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571480677,"kind":"hook","ok":true,"n":10,"hook":3964937,"slot":1,"ms":7641,"event":"ping"}
+{"at":1795571486156,"kind":"j4_hook","ok":true,"n":10,"hook":229408,"slot":1,"ms":5479,"event":"ping"}
+{"at":1795571494230,"kind":"mcp_login","ok":false,"n":11,"ms":8074,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571502125,"kind":"hook","ok":true,"n":11,"hook":3964938,"slot":1,"ms":7894,"event":"ping"}
+{"at":1795571507519,"kind":"j4_hook","ok":true,"n":11,"hook":229409,"slot":1,"ms":5394,"event":"ping"}
+{"at":1795571514965,"kind":"mcp_login","ok":false,"n":12,"ms":7445,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571520824,"kind":"hook","ok":true,"n":12,"hook":3964939,"slot":1,"ms":5859,"event":"ping"}
+{"at":1795571525841,"kind":"j4_hook","ok":true,"n":12,"hook":229410,"slot":1,"ms":5017,"event":"ping"}
+{"at":1795571534073,"kind":"mcp_login","ok":false,"n":13,"ms":6552,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571541631,"kind":"hook","ok":true,"n":13,"hook":3964940,"slot":1,"ms":7557,"event":"ping"}
+{"at":1795571546905,"kind":"j4_hook","ok":true,"n":13,"hook":229411,"slot":1,"ms":5274,"event":"ping"}
+{"at":1795571555926,"kind":"mcp_login","ok":false,"n":14,"ms":8404,"why":"callback: 502 <!doctype html><meta charset=utf-8><p>the grant answered 503</p>"}
+{"at":1795571559490,"kind":"hook","ok":false,"n":14,"ms":3563,"why":"hook create 503 {\"documentation_url\":\"https://docs.github.com/enterprise-server@3.22/rest\",\"message\":\"the repository"}
+{"at":1795571565808,"kind":"j4_hook","ok":true,"n":14,"hook":229412,"slot":1,"ms":6318,"event":"ping"}

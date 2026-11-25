@@ -1,0 +1,6 @@
+2026-11-25T02:14:27Z
+5f5d769d
+{"chain":"authz:1","op":"PutApp","outcome":"ok"}
+{"chain":"authz:1","op":"PutApp","outcome":"ok"}
+{"app":3670016,"slug":"graftyard-mcp","callbacks":["https://mcp.m4a.graftyard.dev/callback"],"client_secrets":2}
+{"app":3735552,"slug":"graftyard-insights","callbacks":[],"client_secrets":0}

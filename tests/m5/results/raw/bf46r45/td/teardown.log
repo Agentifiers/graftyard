@@ -1,0 +1,34 @@
+2026-11-25T02:24:19Z
+5f5d769d
+file://<checkout>/tests/m5/bf46/r45.mjs:78
+  for (const h of have.body ?? []) if (h.config?.url?.startsWith(`${SINK}/h/`)) { await api("DELETE", `/api/v3/repos/${a1}/hooks/${h.id}`, tokens.admin); n++; }
+                       ^
+
+TypeError: object is not iterable (cannot read property Symbol(Symbol.iterator))
+    at file://<checkout>/tests/m5/bf46/r45.mjs:78:24
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+Node.js v26.12.0
+{"repo":"m3org/j4","chain":"repo:65536","hooks":20,"slots":{"1":20}}
+{"repo":"m3org/r45-hooks","chain":"repo:65593","hooks":0,"slots":{}}
+no hook on slot 0
+{"graft-m4a-ops":[]}
+graft-ops parked as ac4cd9a5
+╰  SUCCESS  Deployed graft-m4a-ops version ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef at 100% (0.45 sec)
+{"graft-m4a-ops":[]}
+{"script":"graft-m4a-ops","created_on":"2026-11-25T02:25:07.522227Z","versions":["ac4cd9a5 100"]}
+Successfully deleted graft-m4a-mcp
+Successfully deleted graft-m4a-mcp-aux
+Successfully deleted graft-m4a-r45-sink
+Successfully deleted graft-m4-hooksink
+{"delete":"graft-m4a-MCP_CLIENT_SECRET_A","ok":true}
+{"delete":"graft-m4a-MCP_CLIENT_SECRET_B","ok":true}
+{"delete":"graft-m4a-MCP_SEAL_KEY_A","ok":true}
+{"delete":"graft-m4a-r45-MCP_APP_KEY_A","ok":true}
+{"delete":"graft-m4a-r45-MCP_APP_KEY_B","ok":true}
+{"delete":"graft-m4a-r45-INSIGHTS_APP_KEY_A","ok":true}
+{"delete":"graft-m4a-r45-INSIGHTS_APP_KEY_B","ok":true}
+{"delete":"graft-m4a-r45-secrets-wrap-key-a","ok":true}
+{"revoke":"graft-m4a-r45-deploy","ok":true}
+row files shredded
+{"count":521,"current":null,"slots":{"DeployToken":{"slot":0,"switched":1795480526860},"InsightsAppKey":{"slot":0,"switched":1795573435836},"McpAppKey":{"slot":0,"switched":1795573376363},"McpClientSecret":{"slot":0,"switched":1795573017587},"MintWrapKey":{"slot":0,"switched":1795481368373},"ReadToken":{"slot":0,"switched":1795480590257},"SecretsWrapKey":{"slot":1,"switched":1795572420030}}}

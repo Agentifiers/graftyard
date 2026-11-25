@@ -1,0 +1,8 @@
+01:56:56.733 graft-ops Rotate McpClientSecret slot 1 probe: graftyard-mcp lists the new value
+02:01:52.950 graft-ops Rotate SecretsWrapKey slot 0 probe: SECRETS_WRAP_KEY_A holds slot 0's key
+02:06:57.796 graft-ops Rotate SecretsWrapKey slot 1 probe: SECRETS_WRAP_KEY_B holds slot 1's key
+02:08:57.661 graft-ops Rotate McpAppKey slot 1 probe: graftyard-mcp lists the new value
+02:10:55.799 graft-ops Rotate InsightsAppKey slot 1 probe: graftyard-insights lists the new value
+02:16:55.580 graft-ops Rotate McpClientSecret slot 0 probe: graftyard-mcp lists the new value
+02:22:54.590 graft-ops Rotate McpAppKey slot 0 probe: graftyard-mcp lists the new value
+02:23:54.073 graft-ops Rotate InsightsAppKey slot 0 probe: graftyard-insights lists the new value
