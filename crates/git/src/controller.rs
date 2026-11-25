@@ -20,6 +20,8 @@
 
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use graftyard_identity::{Login, RepoName, SessionId, UserId, WorkspaceMode};
 use graftyard_types::Index;
 
@@ -29,25 +31,25 @@ use crate::refs::ObjectId;
 use crate::task::{TaskApiState, run_prefix};
 
 /// A repository by owner and name, as the controller addresses it over REST.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoRef {
     pub owner: Login,
     pub name: RepoName,
 }
 
 /// An issue of the task's base repository.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueRef {
     pub repo: RepoRef,
     pub number: IssueNumber,
 }
 
 /// The Sandbox a running task holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxId(pub Box<str>);
 
 /// Where the task pushes: the repository's fork in the org's `<org>-agents` workspace org, or the base itself.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Workspace {
     Fork(RepoRef),
     InRepo,
@@ -55,7 +57,7 @@ pub enum Workspace {
 
 /// Why no `Workspace` exists for a base: its owner's login plus `-agents` is over the 39-character login limit, so
 /// the workspace org cannot exist (`decisions/OPEN-QUESTIONS.md`, A51).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoWorkspaceOrg;
 
 /// The task's `Workspace` under the org's `agents_workspace`: `Fork(<org>-agents/<repo>)`, the fork keeping the base's
@@ -74,7 +76,7 @@ pub fn workspace(mode: WorkspaceMode, base: &RepoRef) -> Result<Workspace, NoWor
 pub const TASK_WALL: Duration = Duration::from_secs(60 * 60);
 
 /// Counted from each model response's usage. Over any limit the task ends as `Failed { reason }`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskBudget {
     pub task_tokens: u64,
     pub org_month_tokens: u64,
@@ -82,7 +84,7 @@ pub struct TaskBudget {
 }
 
 /// What a task has used so far: its own model tokens, its org's this month with it, and its time since it started.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub task_tokens: u64,
     pub org_month_tokens: u64,
@@ -104,7 +106,7 @@ impl TaskBudget {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
     Queued,
     Running { sandbox: SandboxId, last_push: Option<ObjectId> },
@@ -135,7 +137,7 @@ impl TaskState {
 }
 
 /// What moves a task.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskEvent {
     /// A Sandbox started for a queued task.
     Started {
@@ -175,14 +177,14 @@ pub enum TaskEvent {
 }
 
 /// Where a running task's Sandbox starts its work: the task's last push, or the base when it has none.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Resume {
     Base,
     Push(ObjectId),
 }
 
 /// Why a step is refused.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepErr {
     /// The task is final.
     Final,
@@ -192,7 +194,7 @@ pub enum StepErr {
 
 /// The controller's Graftyard-run task. `snapshot` is `AgentTask.snapshot`, the issue as of the task's create index,
 /// or none for a prompt-only task.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     pub id: SessionId,
     pub issue: Option<IssueRef>,

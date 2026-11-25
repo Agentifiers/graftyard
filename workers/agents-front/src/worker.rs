@@ -11,6 +11,10 @@
 //!   removes after: the pin of an isolate whose view has not shown the roll (`plan`).
 //! - `VERSION`, the version metadata binding, and `FRONT_TOKEN`, a Worker secret: `GET /_agents_front/status` with it
 //!   as `x-front-token` answers this version, the view, and the counts. Without it the route does not exist.
+//! - `GET /_agents_front/pointer` from a caller whose binding `props` are `{"pointer": true}`, which only
+//!   `graft-controller`'s `AGENTS_FRONT` binding sets and no Internet request carries: after the same refresh a
+//!   forwarded request gets, the view's `Pointers.controller` and whether the view is `caught_up`, for its `TaskBox`
+//!   alarms. From anyone else the path is forwarded like any other request.
 //!
 //! The view is read over HTTPS from the install's edge, never through a Durable Object binding: the agents account is
 //! another account. A request waits for the view only on a cold or long-idle isolate whose last refresh did not fail,
@@ -45,6 +49,8 @@ const VERSION_HEADER: &str = "x-graftyard-controller-version";
 const REPORT_HEADER: &str = "x-graftyard-report-version";
 const OVERRIDE_HEADER: &str = "cloudflare-workers-version-overrides";
 const STATUS_PATH: &str = "/_agents_front/status";
+/// `graft-controller`'s `TaskBox` alarms read the pointer here, over their `AGENTS_FRONT` binding.
+const POINTER_PATH: &str = "/_agents_front/pointer";
 const ENTRIES_PATH: &str = "/api/graftyard/v1/release/entries";
 const ERRORS_PATH: &str = "/api/graftyard/v1/release/errors";
 /// How long an App JWT is reused: well inside the 9 minutes `sign_app_jwt` gives it [inference].
@@ -269,6 +275,9 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if let Some(a) = anchor(&env) {
         ensure(&env, &ctx, &a).await;
     }
+    if req.path() == POINTER_PATH && ctx.props::<serde_json::Value>().is_ok_and(|p| p["pointer"] == json!(true)) {
+        return pointer();
+    }
     let script = var(&env, "CONTROLLER_SCRIPT").unwrap_or_default();
     let default = var(&env, "CONTROLLER_DEFAULT").and_then(|v| v.parse::<VersionId>().ok());
     let (pin, overrides) = READER.with(|r| plan(r.borrow().view(), default, &script));
@@ -330,6 +339,17 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     let code = res.status_code();
     Ok(Response::from_body(res.body().clone())?.with_status(code).with_headers(headers))
+}
+
+/// The view's `Pointers.controller` and whether the view is `caught_up`, for `graft-controller`'s `TaskBox` alarms,
+/// after the same refresh a forwarded request gets. A prefix of the history answers `caughtUp: false`, which the box
+/// reads as no answer.
+fn pointer() -> Result<Response> {
+    let body = READER.with(|r| {
+        let v = r.borrow();
+        json!({ "caughtUp": v.view().caught_up(), "controller": v.view().controller().map(|c| c.to_string()) })
+    });
+    Response::from_json(&body)
 }
 
 fn status(env: &Env, req: &Request) -> Result<Response> {

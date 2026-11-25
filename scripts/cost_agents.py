@@ -78,7 +78,9 @@ WEBHOOKS_PER_TASK = 15     # deliveries from the install to the controller per G
                            # runs `graft-agents-front` in the agents account before `graft-controller`
 RELEASE_READS_PER_WEBHOOK = 1.0   # upper bound: a `graft-agents-front` isolate refreshes its `Release` view only on a
                            # request, at most once per POINTER_TTL, from the install's edge and one `Release` member
-STEPS_PER_TASK = 15        # Workflow steps per task: task entry, mint, start, heartbeats, push, PR, checks, finish [guess]
+HEARTBEAT_S = 30           # `graftyard_git::taskbox::HEARTBEAT`: one `TaskBox` alarm per task this often [guess]
+BOX_ROWS_PER_CALL = 1      # the box written back to its storage on each alarm, report, and outbound request
+                           # (`workers/controller/src/taskbox.rs`); each alarm also sets the next, one more row
 SESSION_PUSHES = 1         # one push of the session log blob under refs/graftyard/sessions/ per Graftyard-run task
 SESSION_KB = 200           # compressed, redacted session log per task (candidate C) [guess]
 SESSION_MONTHS = 12        # retention; the default is the org's audit-log retention, priced at 12 months [guess]
@@ -182,7 +184,7 @@ SANDBOX = ("standard-2", 1, 6, 12)   # vCPU, GiB, GB disk (https://developers.cl
 SANDBOX_CPU = 0.5          # active share of the Sandbox vCPU over a task [guess]
 MODEL_USD_PER_TASK = 2.0   # model tokens per Graftyard-run task, the middle of a $1 to $3 range [guess]
 
-AGENT_INCLUDED = dict(workers_req=10e6, workers_cpu=30e6, steps=500_000,
+AGENT_INCLUDED = dict(workers_req=10e6, workers_cpu=30e6, do_req=1e6, do_gbs=400_000, do_rows=50e6,
 	c_mem_gibs=25 * 3600, c_vcpu_s=375 * 60, c_disk_gbs=200 * 3600)
 
 
@@ -411,18 +413,28 @@ def lines(tier):
 
 	# Agents account for Graftyard-run agents: its own plan and allowances. Sandbox compute and models are separate.
 	# Every webhook runs `graft-agents-front`, then `graft-controller`, so it counts twice.
-	reqs = run_tasks * (OUTBOUND_PER_TASK + 2 * WEBHOOKS_PER_TASK + STEPS_PER_TASK)
-	cpu = run_tasks * (OUTBOUND_PER_TASK * 1 + WEBHOOKS_PER_TASK * 3 + STEPS_PER_TASK * 2)
+	reqs = run_tasks * (OUTBOUND_PER_TASK + 2 * WEBHOOKS_PER_TASK)
+	cpu = run_tasks * (OUTBOUND_PER_TASK * 1 + WEBHOOKS_PER_TASK * 3)
 	out["Agents account: Workers Paid"] = price("cf.workers.paid.subscription")
-	out["Agents account: front, outbound router, webhooks, Workflow requests and CPU"] = (
+	out["Agents account: front, outbound router, and webhooks (Workers requests and CPU)"] = (
 		over(reqs, AGENT_INCLUDED["workers_req"]) / 1e6 * price("cf.workers.requests")
 		+ over(cpu, AGENT_INCLUDED["workers_cpu"]) / 1e6 * price("cf.workers.cpu"))
 	# `GET /api/graftyard/v1/release/entries` from the agents account: an edge request and a member request each, priced
 	# with no allowance because the install's own traffic uses it up.
 	out["Install: `Release` reads by the agents account (edge and member requests)"] = (run_tasks * WEBHOOKS_PER_TASK
 		* RELEASE_READS_PER_WEBHOOK / 1e6 * (price("cf.workers.requests") + price("cf.do.requests")))
-	out["Agents account: Workflow steps"] = over(run_tasks * STEPS_PER_TASK, AGENT_INCLUDED["steps"]) / 1e5 * price(
-		"cf.workflows.steps")
+	# One `TaskBox` Durable Object per Graftyard-run task (DECISIONS "`controller-taskbox`"): its start, an alarm every
+	# HEARTBEAT_S, and every outbound request the Sandbox makes, which the router hands to the box. Duration is an
+	# upper bound: the box is priced active for the whole task, since it awaits each forwarded request, model calls
+	# among them, and an idle box between alarms is billed nothing (`cf.do.duration`).
+	alarms = TASK_MIN * 60 / HEARTBEAT_S
+	box_reqs = run_tasks * (1 + alarms + OUTBOUND_PER_TASK)
+	box_gbs = run_tasks * TASK_MIN * 60 * cf.DO_GB
+	box_rows = run_tasks * ((1 + alarms + OUTBOUND_PER_TASK) * BOX_ROWS_PER_CALL + alarms)
+	out["Agents account: TaskBox Durable Objects (requests, duration upper bound, alarm and box rows)"] = (
+		over(box_reqs, AGENT_INCLUDED["do_req"]) / 1e6 * price("cf.do.requests")
+		+ over(box_gbs, AGENT_INCLUDED["do_gbs"]) / 1e6 * price("cf.do.duration")
+		+ over(box_rows, AGENT_INCLUDED["do_rows"]) / 1e6 * price("cf.do.sqlite.rows_written"))
 	return out, diff
 
 

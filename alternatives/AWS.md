@@ -51,7 +51,7 @@ Monthly list prices in US dollars for one install. Both designs are priced on th
 | Setup | 50 developers | 300 developers | 2,000 developers |
 | --- | --- | --- | --- |
 | Cloudflare default, one account and three sites (the base) | $238 | $1,016 | $9,335 |
-| Cloudflare default with the agent layer | $259 | $1,345 | $12,274 |
+| Cloudflare default with the agent layer | $259 | $1,366 | $12,436 |
 | AWS, one Region | $1,287 | $2,573 | $12,432 |
 | AWS, Paired (two Regions plus a witness) | $2,292 | $4,466 | $20,636 |
 | AWS `scrappy`: small-install profile, one Region with a cold recovery Region | $226 | not priced | not priced |
