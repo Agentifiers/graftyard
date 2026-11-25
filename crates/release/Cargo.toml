@@ -10,6 +10,8 @@ publish.workspace = true
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 # 2.x builds for wasm32-unknown-unknown with no default features: verification needs no randomness.
 ed25519-dalek = { version = "2.2", default-features = false }
+# `gate::read_sites` asks every site's `errors` object at once (`join_all`).
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 graftyard-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
