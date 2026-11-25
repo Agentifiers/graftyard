@@ -160,20 +160,28 @@ switch (kase) {
     break;
   }
   case "parallel": {
-    // Two runs of one key at once, on two runner slots each: every job succeeds and one save per major commits.
+    // Two runs of one key at once (two jobs each, v4 and v5, so each major's key is reserved by two jobs together):
+    // every job succeeds, one save per major commits, and a later read restores that save. With two runner slots the
+    // runs' jobs overlap only when both are queued before either starts, so both runs are dispatched first and the
+    // run passes only when each major's two jobs overlap in time.
     onBranch("p", { KEY: "bf69-par-1", RESTORE: "", SEED: 1, MIB });
     const a = await dispatch("p");
     await api("POST", `/api/v3/repos/${R}/issues`, admin, { title: `BF-69 parallel ${Date.now()}` });
     const b = await dispatch("p");
     const r = await runAll([a, b]);
-    const after = { ...r };
     onBranch("p", { KEY: "bf69-par-1", RESTORE: "", SEED: 0, MIB });
     const check = await runAll([await dispatch("p")]);
     const p = parse(check.jobs);
-    const madeBy = Object.fromEntries(["v4", "v5"].map((m) => [m, r.jobs.filter((j) => j.name === m).map((j) => parse([j])[m]?.sha256)]));
+    const span = (j) => { const t = readFileSync(join(out, `${kase}-job-${j.job}.log`), "utf8").split("\n").filter((l) => /^\d{4}-/.test(l)); return [Date.parse(t[0].slice(0, 23) + "Z"), Date.parse(t.at(-1).slice(0, 23) + "Z")]; };
+    const per = Object.fromEntries(["v4", "v5"].map((m) => {
+      const js = r.jobs.filter((j) => j.name === m);
+      const [x, y] = js.map(span);
+      const saved = js.filter((j) => j.cacheLog.some((l) => /Cache saved with key/.test(l))).length;
+      return [m, { jobs: js.map((j) => j.job), overlap: x && y && x[0] < y[1] && y[0] < x[1], saved, made: js.map((j) => parse([j])[m]?.sha256) }];
+    }));
     const ok = r.jobs.length === 4 && r.jobs.every((j) => j.conclusion === "Success")
-      && ["v4", "v5"].every((m) => p[m]?.what === "restored" && madeBy[m].includes(p[m].sha256));
-    result({ ok, madeBy, restored: p, saves: after, check });
+      && ["v4", "v5"].every((m) => per[m].saved >= 1 && p[m]?.what === "restored" && per[m].made.includes(p[m].sha256));
+    result({ ok, overlapped: ["v4", "v5"].every((m) => per[m].overlap), per, restored: p, check });
     break;
   }
   case "rel-seed": {
