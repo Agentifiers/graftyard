@@ -47,6 +47,9 @@ pub enum Status {
     /// Joined: whether its fold holds the tombstone (`purgeable`), whether it is in a group change (`changing`), and
     /// its committed config with that config's index (`config`; `None` before its bootstrap entry commits).
     Joined {
+        /// Its commit index: the highest a joined member answers is what the feed must carry before the retire
+        /// (`decisions/DECISIONS.md`, "`feed-retired`").
+        commit: u64,
         purgeable: bool,
         changing: bool,
         config: Option<(u64, GroupConfig)>,
@@ -270,7 +273,7 @@ mod tests {
     }
 
     fn joined(purgeable: bool, changing: bool) -> Status {
-        Status::Joined { purgeable, changing, config: None }
+        Status::Joined { commit: 0, purgeable, changing, config: None }
     }
 
     /// Within the retention a purge needs `early`; at `retain_until` and after it needs nothing more.
@@ -326,7 +329,7 @@ mod tests {
     }
 
     fn at(config: &GroupConfig, x: u64, purgeable: bool) -> Status {
-        Status::Joined { purgeable, changing: false, config: Some((x, config.clone())) }
+        Status::Joined { commit: 0, purgeable, changing: false, config: Some((x, config.clone())) }
     }
 
     fn row(s: u8, name: &str, st: Status) -> (ChainId, SiteId, Box<str>, Status) {
@@ -434,7 +437,8 @@ mod tests {
         ];
         assert_eq!(order(&members).unwrap()[0], ("repo:65567#1#f1".to_string(), Some(5)));
         let mut moving = members.clone();
-        moving[2].3 = Status::Joined { purgeable: true, changing: true, config: Some((5, degraded.clone())) };
+        moving[2].3 =
+            Status::Joined { commit: 0, purgeable: true, changing: true, config: Some((5, degraded.clone())) };
         assert_eq!(
             order(&moving),
             Err(Refused::Changing { chain: ChainId::Repo(REPO), member: "repo:65567#1#f2".into() })

@@ -114,8 +114,26 @@ held=$(u "/objects?prefix=export/" | python3 -c 'import json,sys; print(len(json
 u "/hold?hold=0" >/dev/null; u "/__scheduled?cron=*/15+*+*+*+*" >/dev/null; sleep 5
 got=$(u "/batches" | python3 -c 'import json,sys; print(sum(1 for b in json.load(sys.stdin) for e in b["entries"] if e[0] == "repo:900002"))')
 [ "$got" -ge 1 ] && echo "ok    released: repo:900002 carried" || { echo "FAIL: the released feed did not carry repo:900002"; ok=0; }
+# `feed-retired` (a): a chain whose leader reported, then every member retired before a round read its tail, as a
+# purge before this fix left them. Its report is planned and no source answers; the round proves it retired and drops
+# the report, logging the entries never exported. A live chain committed beside it is carried and keeps its report.
+u "/hold?hold=1" >/dev/null
+r1=$(u "/drive?chain=repo:900003"); sleep 5
+r2=$(u "/drive?chain=repo:900004"); sleep 5
+echo "retired-to-be: $r1 live: $r2"
+rp=$(u "/reports"); echo "reports held: $rp"
+grep -q '"repo:900003"' <<<"$rp" || { echo "FAIL: repo:900003's leader never reported, so the control does not hold"; ok=0; }
+ret=$(u "/retire?chain=repo:900003"); echo "retire repo:900003: $ret"
+u "/hold?hold=0" >/dev/null; u "/__scheduled?cron=*/15+*+*+*+*" >/dev/null; sleep 25
+rp=$(u "/reports"); echo "reports after: $rp"
+grep -q '"repo:900003"' <<<"$rp" && { echo "FAIL: the retired chain's report is still held"; ok=0; } || echo "ok    retired: repo:900003's report dropped"
+grep -q '"repo:900004"' <<<"$rp" && echo "ok    live: repo:900004's report kept" || { echo "FAIL: the live chain's report was dropped"; ok=0; }
+grep -q "repo:900003 retired with entries .* never exported" "$B/dev.log" && echo "ok    the unexported tail is logged" \
+  || { echo "FAIL: no unexported-entries line for repo:900003"; ok=0; }
+got4=$(u "/batches" | python3 -c 'import json,sys; print(sum(1 for b in json.load(sys.stdin) for e in b["entries"] if e[0] == "repo:900004"))')
+[ "$got4" -ge 1 ] && echo "ok    live: repo:900004 carried" || { echo "FAIL: the live chain was not carried"; ok=0; }
 grep -E "export (feed|report)|does not decode" "$B/dev.log" | sed 's/^/log: /' | head -8
-if grep -qE "export report .*Error|round claim failed|export feed round failed|does not decode" "$B/dev.log"; then
+if grep -qE "export report .*Error|round claim failed|export feed round failed|does not decode|report was not dropped" "$B/dev.log"; then
   echo "FAIL: the feed logged an error"; ok=0
 fi
 n=$(grep -c 'out of bounds\|RuntimeError' "$B/dev.log"); echo "wasm traps: $n"; [ "$n" = 0 ] || ok=0
