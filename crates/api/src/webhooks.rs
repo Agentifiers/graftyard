@@ -285,6 +285,41 @@ pub fn ping(r: &Repo<'_>, id: HookId, row: &HookRow) -> Value {
     envelope(r, None, obj(json!({ "zen": zen, "hook_id": id.0.0, "hook": hook_json(r, id, row) })))
 }
 
+/// One pushed commit as a `push` payload lists it, from its raw object; `None` when the object is not a commit. It
+/// carries no `added`, `removed` or `modified`: only Actions' payload is built from the object, and GHES leaves them out
+/// of that one [doc: GHES 3.22, "Events that trigger workflows", `push`: "The webhook payload available to GitHub
+/// Actions does not include the `added`, `removed`, and `modified` attributes in the `commit` object"].
+pub fn push_commit(r: &Repo<'_>, id: ObjectId, raw: &[u8]) -> Option<Value> {
+    let c = crate::rest::parse_commit(raw)?;
+    let (o, n) = (&r.at.owner, &r.at.name);
+    let person = |v: &Value| json!({ "name": v["name"], "email": v["email"] });
+    Some(json!({
+        "id": id.hex(), "tree_id": c.tree.hex(), "distinct": true, "message": c.message,
+        "timestamp": c.committer["date"], "url": format!("{}/{o}/{n}/commit/{}", r.host.web(), id.hex()),
+        "author": person(&c.author), "committer": person(&c.committer),
+    }))
+}
+
+/// BF-78: a `push` run's `github.event`, the `push` payload with the commits the git cache read (`push_commit`, oldest
+/// first), the head commit, and whether the push was forced, which the webhook's pure half cannot know.
+#[allow(clippy::too_many_arguments)]
+pub fn actions_push(
+    r: &Repo<'_>,
+    name: &RefName,
+    (before, after): (ObjectId, ObjectId),
+    pusher: Option<AccountId>,
+    at: Timestamp,
+    forced: bool,
+    commits: Vec<Value>,
+    head: Value,
+) -> Value {
+    let mut m = push(r, name, before, after, pusher, at);
+    m.insert("forced".into(), json!(forced));
+    m.insert("commits".into(), Value::Array(commits));
+    m.insert("head_commit".into(), head);
+    envelope(r, pusher, m)
+}
+
 fn push(
     r: &Repo<'_>,
     name: &RefName,

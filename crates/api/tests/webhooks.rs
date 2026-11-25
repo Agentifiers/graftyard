@@ -329,6 +329,57 @@ fn a_push_names_both_shas_and_a_synchronize_the_pull_request_it_moved() {
     assert!(sync["repository"].get("permissions").is_none(), "a payload names no caller's permissions");
 }
 
+/// BF-78: a `push` run's `github.event`, built as the `push` webhook with the commits the git cache read. Each commit
+/// is its own object's tree, message, author and committer, with no `added`, `removed` or `modified` (GHES leaves them
+/// out of Actions' payload), `forced` is what the trigger found, and the rest of the webhook's fields stand. It is
+/// written for `gh/validate.py` with the webhooks as `push`.
+#[test]
+fn an_actions_push_payload_carries_the_pushed_commits_and_forced() {
+    let (c, _) = seeded();
+    let (h, d) = (host(), Dir::new(OWNER));
+    let r = c.repo(0, &h, &d);
+    let tree = "4b825dc642cb6eb9a060e54bf8d69288fbe4904c";
+    let raw = |msg: &str, t: u64| {
+        format!(
+            "tree {tree}\nparent {}\nauthor Ann <ann@x.example> {t} +0000\ncommitter Cy <cy@x.example> {} +0000\n\n{msg}\n",
+            oid(1).hex(),
+            t + 60
+        )
+    };
+    let first = graftyard_api::webhooks::push_commit(&r, oid(20), raw("one", 1_700_000_000).as_bytes()).unwrap();
+    let head = graftyard_api::webhooks::push_commit(&r, oid(21), raw("two\n\nbody", 1_700_000_100).as_bytes()).unwrap();
+    assert!(graftyard_api::webhooks::push_commit(&r, oid(22), b"not a commit").is_none());
+    let v = graftyard_api::webhooks::actions_push(
+        &r,
+        &graftyard_git::refs::RefName::parse(b"refs/heads/main").unwrap(),
+        (oid(1), oid(21)),
+        Some(AccountId(DbId(WRITER))),
+        Timestamp(1_700_000_200_000),
+        true,
+        vec![first, head.clone()],
+        head,
+    );
+    assert_eq!(
+        (v["forced"].as_bool(), v["created"].as_bool(), v["deleted"].as_bool()),
+        (Some(true), Some(false), Some(false))
+    );
+    assert_eq!(
+        v["commits"].as_array().unwrap().iter().map(|c| c["id"].clone()).collect::<Vec<_>>(),
+        [json!(oid(20).hex()), json!(oid(21).hex())]
+    );
+    let hc = &v["head_commit"];
+    assert_eq!((hc["message"].as_str(), hc["tree_id"].as_str()), (Some("two\n\nbody"), Some(tree)));
+    assert_eq!((hc["author"]["email"].as_str(), hc["committer"]["name"].as_str()), (Some("ann@x.example"), Some("Cy")));
+    assert_eq!(hc["timestamp"], "2023-11-14T22:16:00Z", "the committer's date, not the author's 22:15:00");
+    assert!(hc.get("added").is_none() && hc.get("modified").is_none(), "Actions' payload leaves them out");
+    assert_eq!((v["pusher"]["name"].as_str(), v["sender"]["login"].as_str()), (Some("alice"), Some("alice")));
+    if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
+        let w = json!({ "key": "push", "body": v });
+        std::fs::write(format!("{dir}/hook-push-actions.webhook.json"), serde_json::to_vec_pretty(&w).unwrap())
+            .unwrap();
+    }
+}
+
 #[test]
 fn a_new_hook_is_pinged_once_and_an_edit_is_not() {
     let (mut c, from) = seeded();

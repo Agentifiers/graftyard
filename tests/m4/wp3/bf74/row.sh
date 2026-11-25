@@ -15,7 +15,8 @@
 #   domain     a Workers Custom Domain CUSTOM -> graft-m4a-edge (`PUT /workers/domains`), and waits for its
 #              certificate; the edge's workers.dev name stays
 #   site       a site day: BF-71's flags (`tests/m4/wp3/bf71/days.sh site`) with GRAFTYARD_HOST=CUSTOM, and with CLAIMS=1
-#              also GRAFTYARD_OIDC_HEAD_REF=1 and GRAFTYARD_OIDC_CLAIMS=1 (BF-73)
+#              also GRAFTYARD_OIDC_HEAD_REF=1 and GRAFTYARD_OIDC_CLAIMS=1 (BF-73), and with PUSH=1 also
+#              GRAFTYARD_PUSH_TRIGGER=1 (BF-78)
 #   edge       an edge day: the live vars, with HOST=CUSTOM, and ADDFMT's formats (BF-73: 21.7,21.8) added to
 #              FORMATS_ENABLED; nothing else may change
 # HOSTV replaces CUSTOM in `site` and `edge` (BF-73's days and `back` keep the workers.dev host), and ROW names the
@@ -92,9 +93,9 @@ site)
   # BF-71's days.sh with only the host changed, its REPO pinned to this checkout and its logs written under this row.
   { sed -e "s#GRAFTYARD_HOST=graft-m4a-edge.\$CF_WORKERS_SUBDOMAIN.workers.dev#GRAFTYARD_HOST=${HOSTV:-$CUSTOM}#" \
       -e "s#^REPO=.*#REPO=$REPO#" -e "s#^O=\$REPO/tests/m4/raw/wp3/bf71#O=$O#" \
-      -e "s#--var GRAFTYARD_JOB_TOKENS=1#--var GRAFTYARD_JOB_TOKENS=1${CLAIMS:+ --var GRAFTYARD_OIDC_HEAD_REF=1 --var GRAFTYARD_OIDC_CLAIMS=1}#" \
-      -e 's#(GRAFTYARD_(JOB|ACTIONS#(GRAFTYARD_(OIDC|JOB|ACTIONS#' "$REPO/tests/m4/wp3/bf71/days.sh" >"$K/days.sh"
-    diff "$REPO/tests/m4/wp3/bf71/days.sh" "$K/days.sh" | grep -c '^>'   # 5 with CLAIMS=1, else 4: host, flags, REPO, O, vars()
+      -e "s#--var GRAFTYARD_JOB_TOKENS=1#--var GRAFTYARD_JOB_TOKENS=1${CLAIMS:+ --var GRAFTYARD_OIDC_HEAD_REF=1 --var GRAFTYARD_OIDC_CLAIMS=1}${PUSH:+ --var GRAFTYARD_PUSH_TRIGGER=1}#" \
+      -e 's#(GRAFTYARD_(JOB|ACTIONS#(GRAFTYARD_(PUSH|OIDC|JOB|ACTIONS#' "$REPO/tests/m4/wp3/bf71/days.sh" >"$K/days.sh"
+    diff "$REPO/tests/m4/wp3/bf71/days.sh" "$K/days.sh" | grep -c '^>'   # 5 with CLAIMS=1 or PUSH=1, else 4: host, flags, REPO, O, vars()
     grep -c "GRAFTYARD_HOST=${HOSTV:-$CUSTOM}" "$K/days.sh"
     bash "$K/days.sh" "${TREE:?TREE, the worktree at the main of the row}" site
   } 2>&1 | log ;;

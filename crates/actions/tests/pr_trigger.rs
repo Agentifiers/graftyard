@@ -540,6 +540,7 @@ fn a_pull_request_runs_granted_job_gets_the_id_token_url_only_with_job_tokens_on
                     actor: None,
                     run_number: None,
                     reusable: None,
+                    event: None,
                 };
                 let msg = graftyard_actions::runsvc::acquire_message(&urls, &row.run, j, &a);
                 let name: &str = if &*j.spec.name == "sts" { "sts" } else { "denied" };
@@ -706,6 +707,7 @@ fn a_pull_request_runs_actor_and_number_ride_with_the_claims_flag() {
                 actor: actor.as_deref(),
                 run_number: f.run_number(r),
                 reusable: None,
+                event: f.run_event(r),
             };
             let msg = graftyard_actions::runsvc::acquire_message(&urls, &row.run, j, &acq);
             let gh = |k: &str| {
@@ -740,5 +742,284 @@ fn a_pull_request_runs_actor_and_number_ride_with_the_claims_flag() {
             (true, false) => vec![],
         };
         assert_eq!(seen, want, "reads {} flag {flag}", reads.len());
+    }
+}
+
+/// BF-78's `on: push` on real members, taken as the site's `ActionsTrigger` takes it (`push_events`, `push_run`,
+/// `push_run_call`, the leader's `create_run_op`). One entry by account 55 moves `main`, creates `rel` and tag `v1`, and
+/// deletes `b`: the delete starts nothing, and the three others each start one run of the catch-all workflow at their
+/// own new commit. The run key names the ref, so the shard creates all three from one entry and refuses a replay of
+/// any. The branch-filtered workflow runs only for `main` and `rel`, the tag-filtered one only for `v1`, the
+/// `branches-ignore: [rel]` one for `main` alone, and the path-filtered one only when the push changed `src/`. Each
+/// run records the pusher, its number, and its `github.event`, which the job message carries with `forced` as the
+/// trigger read it, and its token's `sub` is `repo:o/r:ref:<the pushed ref>` with the pusher as `actor`. A shard that
+/// reads no 0x15.12 refuses the call and commits nothing.
+#[test]
+fn one_entry_of_pushes_starts_a_run_per_matching_ref_at_its_commit() {
+    use graftyard_actions::shard::{
+        ACTIONS_FORMAT_CACHE, ACTIONS_FORMAT_CLAIMS, ACTIONS_FORMAT_HEAD_REF, ACTIONS_FORMAT_PUSH,
+        ACTIONS_FORMAT_TOKENS,
+    };
+    use graftyard_actions::trigger::{push_events, push_run};
+    use serde_json::json;
+    const ANY: &str = "on: push\njobs:\n  t:\n    runs-on: [self-hosted]\n    steps:\n      - run: \"true\"\n";
+    const BRANCHES: &str = "on:\n  push:\n    branches: [main, 'rel*']\njobs:\n  t:\n    runs-on: [self-hosted]\n    steps:\n      - run: a\n";
+    const TAGS: &str =
+        "on:\n  push:\n    tags: ['v*']\njobs:\n  t:\n    runs-on: [self-hosted]\n    steps:\n      - run: a\n";
+    const IGNORE: &str = "on:\n  push:\n    branches-ignore: [rel]\njobs:\n  t:\n    runs-on: [self-hosted]\n    steps:\n      - run: a\n";
+    const PATHS: &str =
+        "on:\n  push:\n    paths: ['src/**']\njobs:\n  t:\n    runs-on: [self-hosted]\n    steps:\n      - run: a\n";
+    let v8 = vec![
+        ACTIONS_FORMAT,
+        ACTIONS_FORMAT_PULL_REQUEST,
+        ACTIONS_FORMAT_TOKENS,
+        ACTIONS_FORMAT_CACHE,
+        ACTIONS_FORMAT_HEAD_REF,
+        ACTIONS_FORMAT_CLAIMS,
+    ];
+    let v12 = [v8.clone(), vec![ACTIONS_FORMAT_PUSH]].concat();
+    let pusher = AccountId(DbId(55));
+    let up = |r: &str, expect: Option<ObjectId>, new: Option<ObjectId>| RefUpdate { name: name(r), expect, new };
+    let push = |w: &mut World| {
+        w.record(vec![RepoEvent::Refs {
+            push: graftyard_raft::RequestId(graftyard_raft::Ulid(700)),
+            actor: Some(pusher),
+            updates: vec![
+                up("refs/heads/main", Some(oid(1)), Some(oid(201))),
+                up("refs/heads/rel", None, Some(oid(202))),
+                up("refs/tags/v1", None, Some(oid(203))),
+                up("refs/heads/b", Some(oid(12)), None),
+            ],
+            pack: None,
+        }])
+    };
+    // On a shard without 0x15.12 the push's call is refused and commits nothing.
+    let mut w = World::new(v8);
+    let e = push(&mut w);
+    let p = push_events(&e, w.now.0).remove(0);
+    let (run, jobs, perms) = push_run(REPO, e.index, WF, ANY, &p, None).unwrap().unwrap();
+    let call = graftyard_actions::runsvc::push_run_call(&run, &jobs, &perms, false, None, &json!({}));
+    let (_, op) = graftyard_actions::runsvc::create_run_op(&call).unwrap();
+    let (now, id) = (w.now, w.id());
+    assert!(!matches!(w.shard.commit(now, id, ActionsCmd { actor: ActionsActor::Operator, op }), Some(Ok(_))));
+    assert!(w.shard.fold().runs.is_empty(), "a member without 0x15.12 commits no push run");
+
+    let mut w = World::new(v12);
+    let e = push(&mut w);
+    let evs = push_events(&e, w.now.0);
+    let refs: Vec<_> = evs.iter().map(|p| (p.r#ref.display(), p.after, p.created(), p.pusher)).collect();
+    assert_eq!(
+        refs,
+        [
+            ("refs/heads/main".to_owned(), oid(201), false, Some(pusher)),
+            ("refs/heads/rel".to_owned(), oid(202), true, Some(pusher)),
+            ("refs/tags/v1".to_owned(), oid(203), true, Some(pusher)),
+        ],
+        "the delete of b starts nothing"
+    );
+    // What each workflow takes: `main` changed `src/`, the others nothing under it.
+    let paths = |p: &graftyard_actions::trigger::PushEvent| -> Option<Vec<&str>> {
+        match p.r#ref.display().as_str() {
+            "refs/heads/main" => Some(vec!["src/lib.rs", "README.md"]),
+            "refs/heads/rel" => Some(vec!["docs/a.md"]),
+            _ => None,
+        }
+    };
+    let matched = |src: &str| -> Vec<String> {
+        evs.iter()
+            .filter(|p| push_run(REPO, e.index, WF, src, p, paths(p).as_deref()).unwrap().is_some())
+            .map(|p| p.r#ref.display())
+            .collect()
+    };
+    assert_eq!(matched(BRANCHES), ["refs/heads/main", "refs/heads/rel"]);
+    assert_eq!(matched(TAGS), ["refs/tags/v1"]);
+    assert_eq!(matched(IGNORE), ["refs/heads/main"], "branches-ignore skips rel and, branch-only, the tag");
+    assert_eq!(matched(PATHS), ["refs/heads/main", "refs/tags/v1"], "a tag push ignores paths");
+    // Each run of the catch-all workflow, committed as the site sends it.
+    let urls = graftyard_actions::runsvc::Urls::new("https://graft.example");
+    let mut got = Vec::new();
+    let mut calls = Vec::new();
+    for p in &evs {
+        let (run, jobs, perms) = push_run(REPO, e.index, WF, ANY, p, paths(p).as_deref()).unwrap().unwrap();
+        let forced = p.r#ref.display() == "refs/heads/main";
+        let event = json!({ "ref": p.r#ref.display(), "after": p.after.hex(), "forced": forced });
+        let call =
+            graftyard_actions::runsvc::push_run_call(&run, &jobs, &perms, false, Some((pusher, "octocat")), &event);
+        let (_, op) = graftyard_actions::runsvc::create_run_op(&call).unwrap();
+        assert!(matches!(op, ActionsOp::CreateRunPush { .. }), "{op:?}");
+        calls.push(op.clone());
+        let (now, id) = (w.now, w.id());
+        let Some(Ok(a)) = w.shard.commit(now, id, ActionsCmd { actor: ActionsActor::Operator, op }) else {
+            panic!("{} did not commit", p.r#ref.display())
+        };
+        let ActionsOut::Run(r) = a.out else { panic!() };
+        let f = w.shard.fold();
+        let (row, j) = (f.run(r).unwrap(), f.run_jobs(r)[0]);
+        let actor = f.run_actor(r).map(|(_, l)| l.to_owned());
+        let acq = graftyard_actions::runsvc::Acquired {
+            repository: "m3org/bf78",
+            owner_login: "m3org",
+            relay_site: 0,
+            github_token: "",
+            job_token: "jt",
+            locked_until: Timestamp(9),
+            secrets: vec![],
+            variables: vec![],
+            cache: false,
+            id_token: false,
+            actor: actor.as_deref(),
+            run_number: f.run_number(r),
+            reusable: None,
+            event: f.run_event(r),
+        };
+        let msg = graftyard_actions::runsvc::acquire_message(&urls, &row.run, j, &acq);
+        let gh = |k: &str| {
+            let d = &msg["contextData"]["github"]["d"];
+            d.as_array().unwrap().iter().find(|e| e["k"] == k).map(|e| e["v"].clone())
+        };
+        let ev = gh("event").expect("github.event");
+        let ev_field = |k: &str| ev["d"].as_array().unwrap().iter().find(|e| e["k"] == k).map(|e| e["v"].clone());
+        let cf = f.claim_facts(j.spec.id, None).unwrap();
+        let facts = cf.facts(
+            "https://graft.example",
+            "m3org/bf78",
+            OWNER,
+            graftyard_identity::Visibility::Private,
+            None,
+            false,
+        );
+        let c = graftyard_actions::oidc::claims(&facts, None, 1, "j");
+        got.push((
+            row.run.head_sha,
+            gh("ref").unwrap(),
+            gh("event_name").unwrap(),
+            gh("actor").unwrap(),
+            gh("run_number").unwrap(),
+            ev_field("forced").unwrap(),
+            c["sub"].clone(),
+            c["actor"].clone(),
+        ));
+    }
+    let sub = |r: &str| json!(format!("repo:m3org/bf78:ref:{r}"));
+    assert_eq!(
+        got,
+        [
+            (
+                oid(201).0,
+                json!("refs/heads/main"),
+                json!("push"),
+                json!("octocat"),
+                json!("1"),
+                json!(true),
+                sub("refs/heads/main"),
+                json!("octocat")
+            ),
+            (
+                oid(202).0,
+                json!("refs/heads/rel"),
+                json!("push"),
+                json!("octocat"),
+                json!("2"),
+                json!(false),
+                sub("refs/heads/rel"),
+                json!("octocat")
+            ),
+            (
+                oid(203).0,
+                json!("refs/tags/v1"),
+                json!("push"),
+                json!("octocat"),
+                json!("3"),
+                json!(false),
+                sub("refs/tags/v1"),
+                json!("octocat")
+            ),
+        ]
+    );
+    assert_eq!(w.shard.fold().runs.len(), 3, "one entry, one file, three refs: three runs");
+    for op in calls {
+        let (now, id) = (w.now, w.id());
+        let again = w.shard.commit(now, id, ActionsCmd { actor: ActionsActor::Operator, op });
+        assert!(
+            matches!(again, Some(Err(CommitError::Refused { err: ActionsErr::Duplicate, .. }))),
+            "a replay creates nothing: {again:?}"
+        );
+    }
+}
+
+/// `push_events`' edges: a force push still runs at its new tip; a ref the entry moves twice is one push from the
+/// first `before` to the last `after`; four tags pushed at once start no tag run while the branch in the same entry
+/// still does; a pull request merged into `main` is a push by the merger; a queue ref, a `refs/pull/` ref, and an
+/// update that leaves the tip where it was start none; and the first-scan guard drops an entry over an hour old.
+#[test]
+fn push_events_skip_deletes_queue_refs_and_more_than_three_tags() {
+    use graftyard_actions::trigger::{PR_REPLAY_MS, push_events};
+    let w = World::new(vec![ACTIONS_FORMAT]);
+    let entry = |evs: Vec<RepoEvent>| {
+        let mut e = w.repo.m(w.repo.leader().unwrap()).log().last().unwrap().clone();
+        e.body = graftyard_raft::EntryBody::Events(evs);
+        e.at = w.now;
+        e
+    };
+    let up = |r: &str, expect: Option<ObjectId>, new: Option<ObjectId>| RefUpdate { name: name(r), expect, new };
+    let refs = |updates: Vec<RefUpdate>| RepoEvent::Refs {
+        push: graftyard_raft::RequestId(graftyard_raft::Ulid(1)),
+        actor: Some(AccountId(DbId(9))),
+        updates,
+        pack: None,
+    };
+    let names = |e: &LogEntry<graftyard_raft::Ev<RepoCmd>>| -> Vec<(String, ObjectId, ObjectId)> {
+        push_events(e, w.now.0).into_iter().map(|p| (p.r#ref.display(), p.before, p.after)).collect()
+    };
+    let mut tags: Vec<RefUpdate> = (1..=4).map(|i| up(&format!("refs/tags/v{i}"), None, Some(oid(300 + i)))).collect();
+    tags.push(up("refs/heads/main", Some(oid(1)), Some(oid(310))));
+    assert_eq!(names(&entry(vec![refs(tags)])), [("refs/heads/main".into(), oid(1), oid(310))]);
+    let three: Vec<RefUpdate> = (1..=3).map(|i| up(&format!("refs/tags/v{i}"), None, Some(oid(300 + i)))).collect();
+    assert_eq!(names(&entry(vec![refs(three)])).len(), 3);
+    let others = vec![
+        up("refs/heads/gh-readonly-queue/main/pr-1-ab", None, Some(oid(320))),
+        up("refs/pull/1/head", None, Some(oid(321))),
+        up("refs/heads/same", Some(oid(5)), Some(oid(5))),
+        up("refs/heads/gone", Some(oid(6)), None),
+    ];
+    assert!(names(&entry(vec![refs(others)])).is_empty());
+    let twice = vec![
+        refs(vec![up("refs/heads/main", Some(oid(1)), Some(oid(330)))]),
+        refs(vec![up("refs/heads/main", Some(oid(330)), Some(oid(331)))]),
+    ];
+    assert_eq!(names(&entry(twice)), [("refs/heads/main".into(), oid(1), oid(331))]);
+    let merged = RepoEvent::Merged {
+        n: IssueNumber(1),
+        base: up("refs/heads/main", Some(oid(1)), Some(oid(340))),
+        head: oid(11),
+        method: graftyard_git::issues::MergeMethod::Merge,
+        also: vec![up("refs/heads/a", Some(oid(11)), None)],
+        pack: None,
+        verified: graftyard_git::merge::TreeDiffDigest(graftyard_types::Digest([0; 32])),
+        engine: graftyard_git::merge::EngineVersion("2.47".into()),
+        by: graftyard_identity::UserId(AccountId(DbId(77))),
+    };
+    let e = entry(vec![merged]);
+    let got = push_events(&e, w.now.0);
+    assert_eq!(
+        got.iter().map(|p| (p.r#ref.display(), p.pusher)).collect::<Vec<_>>(),
+        [("refs/heads/main".into(), Some(AccountId(DbId(77))))]
+    );
+    assert!(push_events(&e, w.now.0 + PR_REPLAY_MS + 1).is_empty(), "an entry over an hour old starts nothing");
+}
+
+/// GHES's skip markers (`push_run`'s caller reads them from the head commit): each marker anywhere, and the
+/// `skip-checks` trailer only as the last line.
+#[test]
+fn a_head_commit_with_a_skip_marker_skips_push_runs() {
+    use graftyard_actions::trigger::skips_ci;
+    for m in
+        ["fix [skip ci]", "[ci skip] x", "a\n\n[no ci]", "[skip actions]", "[actions skip]", "x\n\n\nskip-checks:true"]
+    {
+        assert!(skips_ci(m), "{m:?}");
+    }
+    assert!(skips_ci("x\n\n\nskip-checks: true\n"));
+    for m in ["fix ci", "skip-checks: true\n\nmore", "[skip-ci]", "skip ci"] {
+        assert!(!skips_ci(m), "{m:?}");
     }
 }

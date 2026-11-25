@@ -1,0 +1,10 @@
+name: bf78-ignore
+# BF-78: every branch but `rel/**`; no tag (branches-ignore alone filters branches only).
+on:
+  push:
+    branches-ignore: ['rel/**']
+jobs:
+  i:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: echo "context event=${{ github.event_name }} ref=${{ github.ref }}"

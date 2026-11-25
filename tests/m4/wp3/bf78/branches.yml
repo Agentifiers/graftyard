@@ -1,0 +1,10 @@
+name: bf78-branches
+# BF-78: branches `main` and `rel/**` only, never `rel/**-wip`; no tag.
+on:
+  push:
+    branches: [main, 'rel/**', '!rel/**-wip']
+jobs:
+  b:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: echo "context event=${{ github.event_name }} ref=${{ github.ref }}"

@@ -25,7 +25,8 @@ MUTANTS = [
     ("CreateRunPlanned is sent as 0x15.7", S,
      'ActionsOp::CreateRunPlanned { .. } | ActionsOp::FinishWith { .. } => ACTIONS_FORMAT_REUSABLE,',
      'ActionsOp::CreateRunPlanned { .. } | ActionsOp::FinishWith { .. } => ACTIONS_FORMAT_HEAD_REF,', T),
-    ("a planned run records no plan", S, '                    evs.push(ActionsEvent::RunPlanned { run: id, plan: plan.clone() });\n', '', T),
+    ("a planned run records no plan", S, '                    evs.push(ActionsEvent::RunNumber { run: id, number: s.next_number(run.repo, &run.workflow) });\n                    evs.push(ActionsEvent::RunPlanned { run: id, plan: plan.clone() });\n',
+     '                    evs.push(ActionsEvent::RunNumber { run: id, number: s.next_number(run.repo, &run.workflow) });\n', T),
     ("FinishWith records no outputs", S, '                    evs.push(ActionsEvent::JobOutputs { job: *job, outputs: outputs.clone() });\n', '', T),
     ("the fold reads no outputs", S, 'self.more.more.more.more.more.outputs.get(&j).map(Vec::as_slice)', 'None', T),
     ("a secret output is kept", R, '.filter(|(_, v)| get(v, "isSecret") != Some(Value::Bool(true)))', '', T),
@@ -51,8 +52,8 @@ MUTANTS = [
      '        let version = Version::At { r#ref: from.r#ref.clone(), sha: from.sha };',
      '        let version = Version::Named("main".into());', T),
     ("the leader takes a planned call as a plain run", R, '    if !b["plan"].is_null() {', '    if false {', T),
-    ("the release reads no 0x15.9", S, '    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_REUSABLE,\n];',
-     '    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_CLAIMS,\n];',
+    ("the release reads no 0x15.9", S, '    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_REUSABLE,\n    ACTIONS_FORMAT_PUSH,\n];',
+     '    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_PUSH,\n];',
      ['cargo', 'test', '-q', '-p', 'graftyard-actions', '--lib', 'every_command_format_is_read']),
 ]
 

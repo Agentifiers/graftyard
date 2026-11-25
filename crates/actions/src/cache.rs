@@ -147,10 +147,23 @@ graftyard_identity::tail_serde!(ClaimRows {
 
 /// `reusable`'s rows (format 0x15.9): each planned run's `RunPlan` (`ActionsEvent::RunPlanned`), and each job's
 /// committed outputs (`ActionsEvent::JobOutputs`), which later jobs read as `needs.<id>.outputs`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// BF-78's push rows (0x15.12) are a trailing part of their own, so a fold with none keeps 0x15.9's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlanRows {
     pub plans: BTreeMap<RunId, crate::reusable::RunPlan>,
     pub outputs: BTreeMap<JobId, crate::reusable::Outputs>,
+    pub more: PushRows,
+}
+
+graftyard_identity::tail_serde!(PlanRows {
+    plans: BTreeMap<RunId, crate::reusable::RunPlan>,
+    outputs: BTreeMap<JobId, crate::reusable::Outputs>,
+} more: PushRows);
+
+/// Format 0x15.12's rows (BF-78): each `push` run's `github.event`, the push payload as JSON.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushRows {
+    pub events: BTreeMap<RunId, Box<str>>,
 }
 
 impl CacheRows {

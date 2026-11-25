@@ -21,6 +21,11 @@
 //!   `GRAFTYARD_PR_TRIGGER` to `1`: each `opened`, `synchronize`, and `reopened` in an entry under an hour old asks for
 //!   the pull request's test merge (`crate::prsync::demand`) and commits each matching workflow's `CreateRun` (format
 //!   0x15.4) at the merge commit, on `refs/pull/N/merge`. A conflicting merge starts no run.
+//! - **`push`** (BF-78; `decisions/DECISIONS.md`, "`push-trigger`"), only where a site day set `GRAFTYARD_PUSH_TRIGGER`
+//!   to `1`: each branch or tag an entry under an hour old moves to a commit (`graftyard_actions::trigger::push_events`)
+//!   commits each matching workflow's `CreateRunPush` (format 0x15.12) at that commit, with the pusher, its number, and
+//!   its `github.event`. The git cache gives the changed paths for `paths` filters (`/ui/diff`), the pushed commits
+//!   (`/ui/commits`), and whether it was forced (`/ui/compare`); a head commit that says `[skip ci]` starts none.
 //! - **Tried again** (F84): an item that could not finish (its merge still shed after `DEMAND_TRIES` asks, a read or
 //!   a `CreateRun` that failed) starts again `RETRY_MS` later, alone. An event still not done an hour after its entry is
 //!   given up, `unmerged`.
@@ -36,8 +41,8 @@ use std::rc::Rc;
 use graftyard_actions::shard::{JobSpec, WorkflowRun};
 use graftyard_actions::specs::Declared;
 use graftyard_actions::trigger::{
-    Carried, IN_FLIGHT_MAX, Item, PrEvent, PrTarget, RETRY_MS, Stream, Tried, built, merge_group_run, pr_events,
-    pr_target, pull_request_run,
+    Carried, IN_FLIGHT_MAX, Item, PrEvent, PrTarget, PushEvent, RETRY_MS, Stream, Tried, built, merge_group_run,
+    pr_events, pr_target, pull_request_run, push_events, push_run, skips_ci,
 };
 use graftyard_git as git;
 use graftyard_git::issues::Consumer;
@@ -136,7 +141,7 @@ fn found(h: &Rc<Host<Repo>>) -> Option<Found> {
         git::tiers::get_rec::<git::issues::BranchRule>(core, "rule", &k)
             .is_some_and(|r| r.protection.is_some_and(|p| p.merge_queue.is_some()))
     });
-    if !queued && git::queue::queue_bases(core).is_empty() && !pr_trigger(&h.env) {
+    if !queued && git::queue::queue_bases(core).is_empty() && !pr_trigger(&h.env) && !push_trigger(&h.env) {
         return None;
     }
     let info = git::search::RepoInfo::of(repo, core)?;
@@ -159,6 +164,7 @@ fn pump(h: &Rc<Host<Repo>>) {
     let f = Rc::new(f);
     let now = crate::now_ms();
     let with_prs = pr_trigger(&h.env);
+    let with_pushes = push_trigger(&h.env);
     let (started, commit) = {
         let read = |from: Index| -> std::result::Result<(Vec<Carried>, Index), String> {
             let through = Index(f.applied.0.min(from.0 + BATCH).max(from.0));
@@ -178,6 +184,9 @@ fn pump(h: &Rc<Host<Repo>>) {
                 if with_prs {
                     let core = &c.m.group_fold().fold.core;
                     items.extend(pr_events(core, f.repo, &e, now).into_iter().map(|p| item(Item::Pr(p))));
+                }
+                if with_pushes {
+                    items.extend(push_events(&e, now).into_iter().map(|p| item(Item::Push(p))));
                 }
             }
             Ok((items, through))
@@ -316,6 +325,11 @@ fn reusable(env: &Env) -> bool {
     env.var("GRAFTYARD_REUSABLE").is_ok_and(|v| v.to_string() == "1")
 }
 
+/// Whether a site day set `GRAFTYARD_PUSH_TRIGGER` (BF-78), after the day that shipped format 0x15.12's reader.
+fn push_trigger(env: &Env) -> bool {
+    env.var("GRAFTYARD_PUSH_TRIGGER").is_ok_and(|v| v.to_string() == "1")
+}
+
 /// Whether a site day set `GRAFTYARD_PR_TRIGGER`, after the day that shipped format 0x15.4's reader.
 fn pr_trigger(env: &Env) -> bool {
     env.var("GRAFTYARD_PR_TRIGGER").is_ok_and(|v| v.to_string() == "1")
@@ -337,9 +351,8 @@ async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
             let t0 = crate::now_ms();
             let make = |path: &str, src: &str| merge_group_run(f.repo, c.index, path, src, q);
             let mut times = Times::default();
-            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, None, None, None, &mut times)
-                .await
-            {
+            let call = Call::Run { base: None, head: None, actor: None };
+            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, call, &mut times).await {
                 Ok(n) => {
                     let ms = crate::now_ms() - t0;
                     console_log!(
@@ -357,6 +370,25 @@ async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
             }
         }
         Item::Pr(p) => pull_request_runs(h, &site, &b, f.repo, f.owner, &f.record, c.index, c.at, p).await,
+        Item::Push(p) => {
+            let t0 = crate::now_ms();
+            match push_runs(h, &site, &b, f, c, p).await {
+                Ok(n) => {
+                    console_log!(
+                        "actions push {} {} at {}: {n} runs in {}ms",
+                        f.repo.0.0,
+                        p.r#ref.display(),
+                        c.index.0,
+                        crate::now_ms() - t0
+                    );
+                    Tried::Done
+                }
+                Err(e) => {
+                    console_error!("actions push {} {} at {}: {e}", f.repo.0.0, p.r#ref.display(), c.index.0);
+                    Tried::Again
+                }
+            }
+        }
     }
 }
 
@@ -441,8 +473,8 @@ async fn pull_request_try(
             let head = head.as_ref().map(|h| h.display());
             let actor = run_actor(&h.env, p.actor).await?;
             let actor = actor.as_ref().map(|(a, l)| (*a, l.as_str()));
-            runs_on(&h.env, site, b, repo, owner, record, merge, make, Some(&base), head.as_deref(), actor, &mut times)
-                .await?
+            let call = Call::Run { base: Some(&base), head: head.as_deref(), actor };
+            runs_on(&h.env, site, b, repo, owner, record, merge, make, call, &mut times).await?
         }
         PrTarget::Pending | PrTarget::Conflict | PrTarget::None => 0,
     };
@@ -469,6 +501,151 @@ async fn pull_request_try(
     Ok(if pr_target(&v) == PrTarget::Pending { Tried::Again } else { Tried::Done })
 }
 
+/// The changed paths a `push`'s `paths` filters read, GitHub's two-dot diff of `before` and `after` [doc: GHES 3.22,
+/// "Workflow syntax", "Git diff comparisons": "Pushes to existing branches: A two-dot diff compares the head and base
+/// SHAs directly"]: `/ui/diff` from `before`, which is `before..after` when `before` is an ancestor. `None`, which runs
+/// every path-filtered workflow, for a new ref, a force push (`before` not an ancestor: the diff against the merge base
+/// would not be two-dot), a diff past the 3,000 files the cache lists, or more than 1,000 commits [doc: same section:
+/// "If a push contains more than 1,000 commits, the workflow will always run"]. GitHub diffs a new branch against
+/// the parent of its deepest new commit [doc: same section], which the cache cannot name yet (`decisions/DECISIONS.md`,
+/// "`push-trigger`").
+async fn push_paths(
+    env: &Env,
+    site: &SiteEnv,
+    repo: RepoId,
+    record: &PlacementRecord,
+    p: &PushEvent,
+    forced: bool,
+    ahead: u64,
+) -> std::result::Result<Option<Vec<String>>, String> {
+    if p.created() || forced || ahead > 1_000 {
+        return Ok(None);
+    }
+    let (before, after) = (p.before.hex(), p.after.hex());
+    let Some(d) = ui(env, site, repo, record, "diff", &[("base", &before), ("head", &after)]).await? else {
+        return Ok(None);
+    };
+    if d["truncated"].as_bool() == Some(true) {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    for f in d["files"].as_array().into_iter().flatten() {
+        for k in ["filename", "previous_filename"] {
+            if let Some(n) = f[k].as_str() {
+                out.push(n.to_owned());
+            }
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Push `p`'s runs (BF-78): whether the push was forced and the pushed commits from the git cache, nothing when its
+/// head commit skips CI, then every matching workflow's `CreateRunPush` at `p.after`, with its `github.event` built as
+/// the `push` webhook's (`graftyard_api::webhooks::actions_push`) and the pusher as the run's actor.
+async fn push_runs(
+    h: &Rc<Host<Repo>>,
+    site: &SiteEnv,
+    b: &Bindings<'_>,
+    f: &Found,
+    c: &Carried,
+    p: &PushEvent,
+) -> std::result::Result<usize, String> {
+    let (env, repo, record) = (&h.env, f.repo, &f.record);
+    let (before, after) = (p.before.hex(), p.after.hex());
+    // Forced: the old tip is not an ancestor of the new one (`behind_by` > 0 from `before` to `after`).
+    let (forced, ahead) = if p.created() {
+        (false, 0)
+    } else {
+        let cmp = ui(env, site, repo, record, "compare", &[("base", &before), ("head", &after)]).await?;
+        let cmp = cmp.ok_or("compare: no such commit")?;
+        (cmp["behind_by"].as_u64().unwrap_or(0) > 0, cmp["ahead_by"].as_u64().unwrap_or(0))
+    };
+    // The pushed commits, oldest first: those `after` reaches and `before` does not, which for a force push are the
+    // new ones. A new ref lists its head commit alone [inference: GitHub lists a new branch's commits that no other
+    // branch holds, a set the cache has no route for].
+    let mut raws: Vec<(git::refs::ObjectId, String)> = Vec::new();
+    if !p.created() {
+        let v = ui(env, site, repo, record, "commits", &[("base", &before), ("head", &after)]).await?;
+        for x in v.ok_or("commits: no such commit")?["commits"].as_array().into_iter().flatten() {
+            let id = x["sha"].as_str().and_then(|s| git::refs::ObjectId::parse_hex(s.as_bytes()));
+            if let (Some(id), Some(raw)) = (id, x["raw"].as_str()) {
+                raws.push((id, raw.to_owned()));
+            }
+        }
+    }
+    let head_raw = match raws.iter().find(|(id, _)| *id == p.after) {
+        Some((_, r)) => r.as_bytes().to_vec(),
+        None => head_commit(env, site, repo, record, p.after).await?,
+    };
+    let dir = crate::hookseq::directory(h, repo, f.owner, record).await?;
+    let event = {
+        let host = graftyard_api::wire::Host::new(&crate::hookseq::api_host(env), false).map_err(|e| e.to_string())?;
+        let core = h.core.borrow();
+        let fold = &core.as_ref().ok_or("not joined")?.m.group_fold().fold;
+        let at = dir.home.clone().ok_or("no repository")?;
+        let view = graftyard_api::view::Repo { host: &host, at, core: &fold.core, meta: &fold.meta, dir: &dir };
+        let head = graftyard_api::webhooks::push_commit(&view, p.after, &head_raw).ok_or("the head is not a commit")?;
+        let mut commits: Vec<Value> = raws
+            .iter()
+            .filter_map(|(id, raw)| graftyard_api::webhooks::push_commit(&view, *id, raw.as_bytes()))
+            .collect();
+        if commits.is_empty() {
+            commits.push(head.clone());
+        }
+        let at = graftyard_types::Timestamp(c.at);
+        graftyard_api::webhooks::actions_push(&view, &p.r#ref, (p.before, p.after), p.pusher, at, forced, commits, head)
+    };
+    if skips_ci(event["head_commit"]["message"].as_str().unwrap_or("")) {
+        console_log!("actions push {} {} at {}: skipped by its head commit", repo.0.0, p.r#ref.display(), c.index.0);
+        return Ok(0);
+    }
+    let paths = push_paths(env, site, repo, record, p, forced, ahead).await?;
+    let paths: Option<Vec<&str>> = paths.as_ref().map(|v| v.iter().map(String::as_str).collect());
+    let make = |path: &str, src: &str| push_run(repo, c.index, path, src, p, paths.as_deref());
+    let actor = run_actor(env, p.pusher).await?;
+    let actor = actor.as_ref().map(|(a, l)| (*a, l.as_str()));
+    let mut times = Times::default();
+    runs_on(env, site, b, repo, f.owner, record, p.after, make, Call::Push { actor, event: &event }, &mut times).await
+}
+
+/// Commit `id`'s raw object from this site's git cache shard: a protocol v2 fetch of the commit alone
+/// (`graftyard_git::commit_fetch`), as REST's `GET .../commits/{ref}` reads it on the edge.
+async fn head_commit(
+    env: &Env,
+    site: &SiteEnv,
+    repo: RepoId,
+    record: &PlacementRecord,
+    id: git::refs::ObjectId,
+) -> std::result::Result<Vec<u8>, String> {
+    let me = site.id;
+    let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
+    let stub = env
+        .durable_object(&format!("SHARD_{}", me.0))
+        .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint()))
+        .map_err(|e| e.to_string())?;
+    let rec = serde_json::to_string(record).map_err(|e| e.to_string())?;
+    let url =
+        format!("https://shard/upload-pack?repo={}&wait=30&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
+    let hd = Headers::new();
+    hd.set("git-protocol", "version=2").map_err(|e| e.to_string())?;
+    let mut init = RequestInit::new();
+    let body = git::commit_fetch::request(id);
+    init.with_method(Method::Post).with_headers(hd).with_body(Some(js_sys::Uint8Array::from(&body[..]).into()));
+    let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
+    let mut r = stub.fetch_with_request(req).await.map_err(|e| e.to_string())?;
+    if r.status_code() != 200 {
+        return Err(format!("upload-pack {}: {}", r.status_code(), r.text().await.unwrap_or_default()));
+    }
+    git::commit_fetch::commit_of(&r.bytes().await.map_err(|e| e.to_string())?, id)
+}
+
+/// How `runs_on` calls `create_run`: as the pull request and merge group triggers do (`create_run_body`), or as a
+/// `push` (`runsvc::push_run_call`).
+enum Call<'a> {
+    Run { base: Option<&'a str>, head: Option<&'a str>, actor: Option<(AccountId, &'a str)> },
+    Push { actor: Option<(AccountId, &'a str)>, event: &'a Value },
+}
+
 /// Every matching workflow's run at `tip`, each built by `make` from its path and source; the count created or found
 /// created.
 #[allow(clippy::too_many_arguments)]
@@ -481,9 +658,7 @@ async fn runs_on(
     record: &PlacementRecord,
     tip: git::refs::ObjectId,
     make: impl Fn(&str, &str) -> std::result::Result<Option<(WorkflowRun, Vec<JobSpec>, Declared)>, String>,
-    base: Option<&str>,
-    head: Option<&str>,
-    actor: Option<(AccountId, &str)>,
+    call: Call<'_>,
     times: &mut Times,
 ) -> std::result::Result<usize, String> {
     let commit = tip.hex();
@@ -564,7 +739,19 @@ async fn runs_on(
                 record,
                 "/runsvc",
                 &graftyard_actions::runsvc::with_plan(
-                    crate::actions::create_run_body(env, &run, &jobs, &permissions, base, head, actor),
+                    match &call {
+                        Call::Run { base, head, actor } => {
+                            crate::actions::create_run_body(env, &run, &jobs, &permissions, *base, *head, *actor)
+                        }
+                        Call::Push { actor, event } => graftyard_actions::runsvc::push_run_call(
+                            &run,
+                            &jobs,
+                            &permissions,
+                            crate::actions::job_tokens(env),
+                            *actor,
+                            event,
+                        ),
+                    },
                     plan.as_ref(),
                 ),
             )

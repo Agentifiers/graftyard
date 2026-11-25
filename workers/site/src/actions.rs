@@ -836,10 +836,15 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 worker::console_error!("{chain} logrelay open {}: {e}", job.0.0);
             }
             let names = b["repository"].as_str().unwrap_or("");
-            // F119, F120: the run's recorded actor and number, `github.actor` and `github.run_number`.
-            let (actor, run_number) = h.core.borrow().as_ref().map_or((None, None), |c| {
+            // F119, F120: the run's recorded actor and number, `github.actor` and `github.run_number`; BF-78: a push
+            // run's `github.event`.
+            let (actor, run_number, event) = h.core.borrow().as_ref().map_or((None, None, None), |c| {
                 let f = &c.m.group_fold().fold;
-                (f.run_actor(run.id).map(|(_, l)| l.to_owned()), f.run_number(run.id))
+                (
+                    f.run_actor(run.id).map(|(_, l)| l.to_owned()),
+                    f.run_number(run.id),
+                    f.run_event(run.id).map(String::from),
+                )
             });
             let secrets: Vec<(String, String)> = serde_json::from_value(b["secrets"].clone()).unwrap_or_default();
             let variables: Vec<(String, String)> = serde_json::from_value(b["variables"].clone()).unwrap_or_default();
@@ -877,6 +882,7 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 actor: actor.as_deref(),
                 run_number,
                 reusable,
+                event: event.as_deref(),
             };
             json!({ "status": 200, "body": runsvc::acquire_message(&urls, &run, &row, &a), "repo": run.repo })
         }

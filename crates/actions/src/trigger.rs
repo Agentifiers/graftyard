@@ -3,7 +3,8 @@
 //! which queue refs and pull request events a committed repository entry holds, and the run a workflow file starts on
 //! each. The host reads `.github/workflows/*` at each ref's tip, or at the pull request's current test merge, from the
 //! git cache, commits each run's `CreateRun` on the repository's Actions shard, and then the `ActionsTrigger` cursor
-//! (`crate::shard`'s run key makes a replay create nothing twice).
+//! (`crate::shard`'s run key makes a replay create nothing twice). `on: push` (BF-78; `decisions/DECISIONS.md`,
+//! "`push-trigger`"): every branch or tag a committed entry moves to a new commit, run at that commit.
 
 use graftyard_fold::Read;
 use graftyard_git::hooks::{Subject, webhooks};
@@ -212,6 +213,111 @@ pub struct Carried {
 pub enum Item {
     Queue(Built),
     Pr(PrEvent),
+    Push(PushEvent),
+}
+
+/// One `push` that starts runs: a branch or tag `r#ref` moved from `before` (zero for a new ref) to `after`, by
+/// `pusher`, the run's `github.actor` and the token's `actor` (BF-78).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushEvent {
+    pub r#ref: RefName,
+    pub before: ObjectId,
+    pub after: ObjectId,
+    pub pusher: Option<graftyard_types::AccountId>,
+}
+
+impl PushEvent {
+    pub fn created(&self) -> bool {
+        self.before == ObjectId::ZERO
+    }
+    pub fn tag(&self) -> bool {
+        self.r#ref.as_bytes().starts_with(b"refs/tags/")
+    }
+}
+
+/// More tags than this pushed in one entry start no tag run [doc: GHES 3.22, "Events that trigger workflows",
+/// `push`: "Events will not be created for tags when more than three tags are pushed at once"].
+pub const PUSH_TAGS_MAX: usize = 3;
+
+/// The `push` events of entry `e` that start runs, or none when `e` is more than PR_REPLAY_MS older than `now` (the
+/// first-scan guard, as for pull requests). Each branch or tag the entry moves to a commit is one event: a `Refs` push,
+/// a pull request's `Merged` into its base, and a release's new tag, each with its actor. A ref the entry moves twice
+/// (a merge queue landing several pull requests on one base) is one event from its first `before` to its last
+/// `after`, as GitHub sends one push for the group. A delete starts none [doc: same page, `push`: GITHUB_SHA is the
+/// "Tip commit pushed to the ref"; a deleted branch has none, and GitHub starts no `push` run for it], and neither does
+/// a queue ref, a ref outside `refs/heads/` and `refs/tags/`, or a tag of an entry that pushes more than PUSH_TAGS_MAX.
+pub fn push_events(e: &LogEntry<RepoEvent>, now: u64) -> Vec<PushEvent> {
+    if now.saturating_sub(e.at.0) > PR_REPLAY_MS {
+        return Vec::new();
+    }
+    let EntryBody::Events(evs) = &e.body else { return Vec::new() };
+    let mut out: Vec<PushEvent> = Vec::new();
+    for ev in evs {
+        let pusher = match ev {
+            RepoEvent::Refs { actor, .. } | RepoEvent::Release { actor, .. } => *actor,
+            RepoEvent::Merged { by, .. } => Some(by.0),
+            _ => continue,
+        };
+        for u in ev.updates() {
+            let n = u.name.as_bytes();
+            let named = n.starts_with(b"refs/heads/") || n.starts_with(b"refs/tags/");
+            if !named || n.starts_with(b"refs/heads/gh-readonly-queue/") {
+                continue;
+            }
+            let (before, after) = (u.expect.unwrap_or(ObjectId::ZERO), u.new.unwrap_or(ObjectId::ZERO));
+            match out.iter_mut().find(|p| p.r#ref == u.name) {
+                Some(p) => (p.after, p.pusher) = (after, pusher.or(p.pusher)),
+                None => out.push(PushEvent { r#ref: u.name.clone(), before, after, pusher }),
+            }
+        }
+    }
+    let tags = out.iter().filter(|p| p.tag()).count();
+    out.retain(|p| p.after != ObjectId::ZERO && p.after != p.before && !(p.tag() && tags > PUSH_TAGS_MAX));
+    out
+}
+
+/// The run workflow file `path` (source `src`) starts for push `p`, from entry `index` of `repo`'s chain, at the
+/// pushed commit: `Ok(None)` when its `on:` takes no such `push` (branch, tag, and path filters; `paths` is the files
+/// the push changed, `None` when unknown, which runs it), `Err` when it does not parse or its jobs cannot run.
+pub fn push_run(
+    repo: RepoId,
+    index: Index,
+    path: &str,
+    src: &str,
+    p: &PushEvent,
+    paths: Option<&[&str]>,
+) -> Result<Option<(WorkflowRun, Vec<JobSpec>, crate::specs::Declared)>, String> {
+    let parsed = crate::workflow::parse(path, src);
+    if !parsed.ok() {
+        return Err(parsed.errors.join("; "));
+    }
+    let r#ref = p.r#ref.display();
+    if !parsed.workflow.events.as_ref().is_some_and(|ev| triggers(ev, &Trigger::Push { r#ref: &r#ref, paths })) {
+        return Ok(None);
+    }
+    let (jobs, declared) = crate::specs::job_specs_declared(&parsed.workflow)?;
+    let run = WorkflowRun {
+        id: RunId(DbId(0)),
+        repo,
+        workflow: path.into(),
+        event: "push".into(),
+        head_sha: p.after.0,
+        head_ref: r#ref.into(),
+        trigger: (ChainId::Repo(repo), index),
+        attempt: 1,
+        concurrency: None,
+        fork: false,
+    };
+    Ok(Some((run, jobs, declared)))
+}
+
+/// Whether a push's head commit message skips its `push` runs [doc: GHES 3.22, "Skipping workflow runs": `[skip ci]`,
+/// `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`, or a last trailer `skip-checks:true` or
+/// `skip-checks: true`].
+pub fn skips_ci(message: &str) -> bool {
+    const MARKS: [&str; 5] = ["[skip ci]", "[ci skip]", "[no ci]", "[skip actions]", "[actions skip]"];
+    let last = message.trim_end().lines().last().unwrap_or("");
+    MARKS.iter().any(|m| message.contains(m)) || matches!(last.trim(), "skip-checks:true" | "skip-checks: true")
 }
 
 /// How a round's try of one item ended. `Done`: its runs committed (or the shard already held them), or it starts
@@ -233,7 +339,7 @@ pub fn settle(tried: Vec<(Carried, Tried)>, through: Index, now: u64) -> (Vec<Ca
     for (c, t) in tried {
         match (t, &c.item) {
             (Tried::Done, _) => {}
-            (Tried::Again, Item::Pr(_)) if now.saturating_sub(c.at) > PR_REPLAY_MS => dropped.push(c),
+            (Tried::Again, Item::Pr(_) | Item::Push(_)) if now.saturating_sub(c.at) > PR_REPLAY_MS => dropped.push(c),
             (Tried::Again, _) => carried.push(c),
         }
     }

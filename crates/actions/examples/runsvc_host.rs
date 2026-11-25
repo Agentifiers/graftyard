@@ -733,6 +733,7 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
         actor: actor.as_deref(),
         run_number,
         reusable,
+        event: None,
     };
     (200, runsvc::acquire_message(&h.urls, &run.run, &j, &a))
 }
