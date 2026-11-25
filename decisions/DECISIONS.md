@@ -11287,7 +11287,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - (b) A Durable Object in the agents account: a new store, with a Failure modes row for each class, beside `errors` objects that already exist.
 
 **Evidence.**
-- `crates/release/src/tests/group/errors.rs`: `a57_the_errors_read_sums_the_sites_that_answered_and_a_missed_gate_read_logs_its_pending`; `tests/m0carried/plant239.py`: 5 mutants, all caught.
+- `crates/release/src/tests/group/errors.rs`: `a57_the_errors_read_sums_the_sites_that_answered_and_a_missed_gate_read_logs_its_pending`; `tests/m0carried/plant239.py`: 5 mutants, all caught. `read_sites` adds `futures-util` (`default-features = false`, `alloc`) to `graftyard-release`, which the edge links; both edgeboots passed with 0 traps.
 - `crates/release/src/tests/group/run.rs`: `lm3_a_bad_controller_at_1pct_breaches_on_the_fronts_counts_and_commits_its_pointer_with_the_api_down`; `workers/agents-front/tests/front.rs`: `the_front_counts_the_controllers_answers_only_under_a_controller_roll_and_flushes_by_time_or_count`; `tests/edgeboot/run.sh`: the route answers 401 to no JWT and a bad one.
 - `tests/m0carried/plant233.py`: 8 mutants, all caught.
 
@@ -11375,3 +11375,26 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - `crates/actions/src/oidc.rs` tests: the RFC 7638 example thumbprint, GHES's `sub` examples, every claim of a push token written out by hand, and both slots' tokens verifying through `graftyard_identity::oidc::verify_id_token`.
 
 **Flip.** Two conditions reverse this. If a relying party BF-70 needs refuses RS256 or the bare-key JWKS, add ECDSA or `x5c` first (F123). If the JWKS read on the edge costs a site call per isolate too often, keep the slots in the edge's own variables, which costs a new edge version per rotation.
+
+#### `outbound-pure`: the outbound router decides in pure code and names the credential; the host attaches it (2026-11-25)
+
+**Status.** Built (AM3-WP2, step S1 of the lead's plan for LM-3's kill row, 2026-11-25); native only. The Workers host and the hosted reruns of L0-02 and L0-03 come with S2 to S4.
+
+**Decision.**
+- `graftyard_git::outbound::outbound` takes the Sandbox's request and the task's `Route` (`Route::of`: the `GraftyardHost` arm with the task's base and fork, then the model and registry arms, and the task's refs from `task::run_refs`). It returns a `Forward` or a `Refused` with its rule, as M0-WP14's prototype did.
+- A `Forward` names the credential (`Cred::Agent`, `Cred::Workspace`, `Cred::ModelKey`, or none) and carries the cleaned URL, the headers without any credential the Sandbox set, and the model body as parsed and re-serialized. The Workers host attaches the token or key from its own bindings and sends with `redirect: "manual"`.
+- Where the prototype served Go under `/go/`, a `Registry` arm with `go_modules` is a Go proxy at its root: every path must be a proxy path of a listed module.
+
+**Why.**
+- The rules are the security boundary of A4, so they belong where native tests and plants reach them. Keeping the tokens out of the pure code means no refusal text and no test can carry one.
+- The module sits beside the controller's `Task` and `run_refs`, so the push rule is the same prefix `decide` enforces.
+
+**Beat.**
+- Porting the TypeScript router as is: the controller is Rust, and the rules would then have no native test or plant.
+- Attaching the tokens in the pure function: every caller and test would need real secrets in memory.
+
+**Evidence.**
+- `crates/git/tests/outbound.rs`: every L0-02 variant that reaches the router (`tests/m0/results/m0-wp14.md`), in fork mode and in-repo, beside the positive controls.
+- `tests/m0carried/plant240.py`: 14 mutants, one for each rule, all caught. The first run missed the suffix-host mutant, and the test gained hosts that end in an allowed name.
+
+**Flip.** If the hosted L0-02 rerun shows a variant the pure function cannot see, such as one that depends on the TLS leg, that rule moves to the host with its own test.

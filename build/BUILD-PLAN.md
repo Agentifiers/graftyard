@@ -1614,8 +1614,9 @@ Built (`design/AGENT-LAYER.md`, "Milestones"): the controller, `graftyard agents
 | --- | --- | --- | --- |
 | LF-7 | Bad `graft-controller` at 1% with the deployments API blocked. Submit the pre-signed `ControllerPointer` undo, then blackhole `GET release/entries` for 10 minutes | Every `graft-agents-front` isolate pins N within `POINTER_TTL` of its next request. Webhooks keep flowing on the last view | Any webhook reaches N+1 from an isolate that already pinned N, or more than `POINTER_TTL` after the pin committed, or blocks on the read |
 | LF-8 | `release/entries` with an entry signed for another install id, a `Keys` entry not signed by the anchored customer key, and an entry out of index order | All refused by the agents view, 100 of 100 | Any accepted |
+| LM-3, "a Sandbox killed mid-task resumes" | 10 in-repo tasks under a scripted harness pushing every 15 s, each Sandbox destroyed once at a random point that lands at least once before the first push, between pushes, and during a push; record which each kill hit. The real-harness case is AM3-WP3's | 10 of 10 return to `Running` under a new `SandboxId` from their last acked push, lose at most 2 minutes of work, and finish; every late report from an old `SandboxId` is refused, counted, and logged | Any task stalls past `TASK_IDLE`, restarts from the base after a push, loses more than 2 minutes, or acts on a late report, or one task ends with two live Sandboxes |
 
-It also carries LM-3's "a Sandbox killed mid-task resumes" and "a bad controller at 1% swaps back".
+It also carries LM-3's "a Sandbox killed mid-task resumes" (the row above, after AM3-WP2 and the minimum of AM3-WP3 it needs: `GraftyardRun` creation behind `agents_enabled`, in-repo mode, on the product routes; the lead, 2026-11-25) and "a bad controller at 1% swaps back".
 
 **LM-3 at $0 (2026-11-25, branch `lm3-gate`).** "A bad controller at 1% swaps back": the counted gate is built (DECISIONS "`controller-errors`"; plant233), and its hosted row runs on graft-m4a with a $3 stop. "A Sandbox killed mid-task resumes": the restart rule is built (OPEN-QUESTIONS A10; plant234). Its hosted row waits for AM3-WP2 and WP3 and uses a scripted harness; the real-harness case is AM3-WP3's.
 
@@ -1634,6 +1635,8 @@ It also carries LM-3's "a Sandbox killed mid-task resumes" and "a bad controller
 **Depends on.** AM3-WP1.
 
 **Acceptance.** No gate row of its own. It carries LM-3's rerun of L0-02 and L0-03.
+
+**Built at $0 (2026-11-25, branch `am3-outbound`, step S1 of the lead's plan for LM-3's kill row).** `graftyard_git::outbound`: `outbound`, `Allowed`, and `Route::of` from the controller's `Task`, ported from the M0-WP14 prototype (`tests/m0/src/wp14/router.ts`). It returns the forward (URL without userinfo, headers without the Sandbox's credentials, the credential the host attaches, the model body re-serialized) or the refusal's rule, so no token enters the pure code. `crates/git/tests/outbound.rs` replays every L0-02 variant that reaches the router, in fork mode and in-repo, beside the positive controls; plant240 (14 mutants, one a rule). The Workers host, the Sandbox, and the hosted reruns of L0-02 and L0-03 follow with S2 to S4.
 
 ### AM3-WP3. Graftyard-run tasks and workspaces
 
