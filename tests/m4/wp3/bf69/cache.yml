@@ -1,0 +1,58 @@
+# BF-69 (build/BUILD-PLAN.md, M4-WP3): two jobs, one per actions/cache major (v4 on node20, v5 on node24). The driver
+# writes each case into this file's `env` before it commits it (Graftyard's dispatch takes no `inputs`): KEY, RESTORE
+# (comma-separated restore keys, or empty), SEED (1: write MIB MiB of random bytes when nothing restored, so the post
+# step saves them) and MIB. A pull request's run reads the file from its merge commit. No actions/checkout: on m4a its
+# `repository` default stops the job (the message carried no `strategy`/`matrix` context, lm1 result) and its `token`
+# needs job tokens, which the install does not enable. Each job prints
+# one `BF69` line the driver parses: what it saw in ACTIONS_CACHE_URL, then `restored sha256=… matched=…`, `made
+# sha256=…`, or `miss`.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, rel]
+env:
+  KEY: "__KEY__"
+  RESTORE: "__RESTORE__"
+  SEED: "__SEED__"
+  MIB: "__MIB__"
+jobs:
+  v4:
+    runs-on: self-hosted
+    steps:
+      - id: in
+        run: |
+          rm -rf bf69-data
+          echo "key=v4-$KEY" >>"$GITHUB_OUTPUT"
+          echo "restore=$(echo "$RESTORE" | tr ',' '\n' | sed '/^$/d; s/^/v4-/' | paste -sd, -)" >>"$GITHUB_OUTPUT"
+          echo "BF69 v4 ref=$GITHUB_REF cache_url=$([ -n "$ACTIONS_CACHE_URL" ] && echo set || echo unset)"
+      - id: c
+        uses: actions/cache@v4
+        with:
+          path: bf69-data
+          key: ${{ steps.in.outputs.key }}
+          restore-keys: ${{ steps.in.outputs.restore }}
+      - run: |
+          if [ -f bf69-data/blob ]; then echo "BF69 v4 restored sha256=$(sha256sum bf69-data/blob | cut -d' ' -f1) hit=${{ steps.c.outputs.cache-hit }}"
+          elif [ "$SEED" = 1 ]; then mkdir -p bf69-data && head -c $((MIB * 1048576)) /dev/urandom >bf69-data/blob
+            echo "BF69 v4 made sha256=$(sha256sum bf69-data/blob | cut -d' ' -f1)"
+          else echo "BF69 v4 miss"; fi
+  v5:
+    runs-on: self-hosted
+    steps:
+      - id: in
+        run: |
+          rm -rf bf69-data
+          echo "key=v5-$KEY" >>"$GITHUB_OUTPUT"
+          echo "restore=$(echo "$RESTORE" | tr ',' '\n' | sed '/^$/d; s/^/v5-/' | paste -sd, -)" >>"$GITHUB_OUTPUT"
+          echo "BF69 v5 ref=$GITHUB_REF cache_url=$([ -n "$ACTIONS_CACHE_URL" ] && echo set || echo unset)"
+      - id: c
+        uses: actions/cache@v5
+        with:
+          path: bf69-data
+          key: ${{ steps.in.outputs.key }}
+          restore-keys: ${{ steps.in.outputs.restore }}
+      - run: |
+          if [ -f bf69-data/blob ]; then echo "BF69 v5 restored sha256=$(sha256sum bf69-data/blob | cut -d' ' -f1) hit=${{ steps.c.outputs.cache-hit }}"
+          elif [ "$SEED" = 1 ]; then mkdir -p bf69-data && head -c $((MIB * 1048576)) /dev/urandom >bf69-data/blob
+            echo "BF69 v5 made sha256=$(sha256sum bf69-data/blob | cut -d' ' -f1)"
+          else echo "BF69 v5 miss"; fi
