@@ -36,8 +36,9 @@
 // origin, since the new versions would turn SSH off on that hostname; `--ssh-off` turns it off on purpose
 // (`sshguard.mjs`).
 // `--oidc <store id>` binds that store's `ACTIONS_OIDC_KEY_A` and `ACTIONS_OIDC_KEY_B` by the same names: both slots of
-// `ActionsOidcKey`, the RSA-2048 PKCS#8 key Actions ID tokens are signed under (src/actions/oidc.rs). The slot signed
-// under is the `Release` view's, so a rotation is no site day: write the idle slot, then the customer's `Rotate`.
+// `ActionsOidcKey`, the RSA-2048 PKCS#8 key Actions ID tokens are signed under (src/actions/oidc.rs), which
+// deploy/actions-oidc/oidckey.mjs writes. The slot signed under is the `Release` view's, so a rotation is no site day:
+// write the idle slot, then the customer's `Rotate`.
 // `--genesis` (test-faults installs only) names the system chains' records, which each site reads from
 // GRAFTYARD_GENESIS in place of the `Release` view; a product install reads them from the genesis its `Release`
 // group accepted, and needs `--anchor` (the trust anchor `graftyard init` wrote: GRAFTYARD_INSTALL and
