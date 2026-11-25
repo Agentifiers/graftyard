@@ -63,6 +63,8 @@ struct Counts {
     flushes: u64,
     flush_fails: u64,
     last_flush_error: Option<String>,
+    /// The most calls one flush of this isolate carried, against `FLUSH_CALLS_MAX` (DECISIONS "`controller-errors`").
+    peak_flush_calls: u64,
 }
 
 /// The `graftyard-agent` key, read from the Secrets Store once per isolate, and the last JWT signed with it.
@@ -192,6 +194,7 @@ async fn refresh(env: Env, anchor: AgentsAnchor, start: u64) {
 /// One flush of the controller's counts to the install's edge, beside a request, within `VIEW_CALL_MS`. The edge stores
 /// it only when every version it names is a `Controller` version the group uploaded (`gate::accept_flush`).
 async fn flush(env: Env, host: String, counts: graftyard_release::gate::ScriptErrors) {
+    let calls = graftyard_release::gate::calls(&counts);
     let sent = async {
         let jwt = jwt(&env, now_ms()).await?;
         let headers = Headers::new();
@@ -214,6 +217,7 @@ async fn flush(env: Env, host: String, counts: graftyard_release::gate::ScriptEr
         .unwrap_or_else(|| Err(format!("{ERRORS_PATH}: no answer within {VIEW_CALL_MS} ms")));
     COUNTS.with(|c| {
         let mut c = c.borrow_mut();
+        c.peak_flush_calls = c.peak_flush_calls.max(calls);
         match out {
             Ok(()) => c.flushes += 1,
             Err(e) => {
@@ -353,7 +357,8 @@ fn status(env: &Env, req: &Request) -> Result<Response> {
         let c = c.borrow();
         json!({ "requests": c.requests, "pinned": c.pinned, "thrown": c.thrown, "mismatches": c.mismatches,
                 "firstMismatch": c.first_mismatch, "lastMismatch": c.last_mismatch, "flushes": c.flushes,
-                "flushFails": c.flush_fails, "lastFlushError": c.last_flush_error })
+                "flushFails": c.flush_fails, "lastFlushError": c.last_flush_error,
+                "peakFlushCalls": c.peak_flush_calls })
     });
     let default = var(env, "CONTROLLER_DEFAULT");
     Response::from_json(
