@@ -389,10 +389,10 @@ One occurrence is not a claim and has no row: `design/SHARED.md`, "Read this fir
 
 | Group | Rows |
 | --- | --- |
-| Foundation and protocol | 111 |
+| Foundation and protocol | 112 |
 | Cloudflare platform facts | 25 |
 | Git and storage | 42 |
 | Release and operations | 61 |
 | Agents | 47 |
 | Costs | 13 |
-| Total | 299 |
+| Total | 300 |
