@@ -99,6 +99,9 @@ test("the coordinator takes every chain at its highest generation, single-copy p
   assert.equal(out.groups, 2);
   const started = [...env.GROUP.status.values()].map((v) => [v.params.chain, v.params.row.generation, v.params.row.site]);
   assert.deepEqual(started, [["repo:7", 2, 2], ["repo:8", 1, 1]]);
+  // Each group also gets every member its chain's rows name, on every surviving site.
+  const rows7 = env.GROUP.status.get("01JC0000000000000000000000-repo_7").params.rows;
+  assert.deepEqual(rows7, [{ site: 1, do_name: "repo:7#1#f1" }, { site: 2, do_name: "repo:7#2#f2" }]);
   assert.deepEqual(log, ["refill single null", "refill single 40", "createBatch 2", "refill all null", "refill all 40"]);
 });
 
@@ -253,8 +256,41 @@ test("a group whose leader was on the lost site asks a live voter to campaign, t
     if (!led) return ok({ error: { notLeader: { term: 3, leader: 0, config: { index: 3, config: cfg } } } });
     return ok({ step: "Done", ok: { step: "Done" }, config: [3, cfg] });
   });
-  const event = { instanceId: "g3", payload: { from: 0, to: 3, dead: true, chain: "tokens:7", row: { site: 1, do_name: "tokens:7#1#f1" } } };
+  const event = { instanceId: "g3", payload: { from: 0, to: 3, dead: true, chain: "repo:7", row: { site: 1, do_name: "repo:7#1#f1" } } };
   const out = await group(env, event, new Step());
   assert.deepEqual(asked, ["1/move", "1/campaign", "1/move"]);
   assert.equal(out.asks, 2);
+});
+
+// m6aL: site 1's voter held only the bootstrap entry, so its campaigns never won; site 2's could. And a row's member
+// outside the config (a later placement try) is passed over for the config's voters.
+test("a group whose asked voter campaigns and never leads asks the next live voter to campaign", async () => {
+  for (const row of [{ site: 1, do_name: "repo:7#1#f1" }, { site: 1, do_name: "repo:7#2#f1" }]) {
+    const cfg = { normal: P([V(0), V(1), V(2)], 0) };
+    const asked = [];
+    let led = false;
+    const env = { sites: SITES, EXPIRE: workflow([]) };
+    env.MEMBER_0 = ns(async () => assert.fail("the lost member was asked"));
+    const none = { error: { notLeader: { term: 2, leader: null, config: { index: 1, config: cfg } } } };
+    env.MEMBER_1 = ns(async (name, url) => {
+      asked.push(`${name}${url.slice(url.lastIndexOf("/"))}`);
+      if (url.endsWith("/campaign")) return ok({ verdict: "started" });
+      return ok(led ? { error: { notLeader: { term: 3, leader: 2, config: { index: 1, config: cfg } } } } : none);
+    });
+    env.MEMBER_2 = ns(async (name, url) => {
+      asked.push(`${name}${url.slice(url.lastIndexOf("/"))}`);
+      if (url.endsWith("/campaign")) {
+        led = true;
+        return ok({ verdict: "started" });
+      }
+      if (!led) return ok(none);
+      return ok({ step: "Done", ok: { step: "Done" }, config: [1, cfg] });
+    });
+    const event = { instanceId: "g4", payload: { from: 0, to: 3, dead: true, chain: "tokens:7", row } };
+    const out = await group(env, event, new Step());
+    assert.equal(out.chain, "tokens:7");
+    assert.ok(!asked.includes("repo:7#2#f1/campaign"), `a non-voter campaigned: ${asked}`);
+    assert.ok(asked.includes("repo:7#1#f2/campaign"), `site 2 never campaigned: ${asked}`);
+    assert.ok(asked.length < 12, `${asked.length} asks: ${asked}`);
+  }
 });
