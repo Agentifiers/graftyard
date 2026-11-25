@@ -65,7 +65,22 @@ fn writable(r: &Value) -> Value {
     r
 }
 
+/// Why a `workers.dev` host can never serve the issuer to Python's default agent: Cloudflare's own zone runs Browser
+/// Integrity Check on every `workers.dev` request, and "You cannot turn off this check for a `workers.dev` hostname"
+/// [doc: https://developers.cloudflare.com/workers/configuration/routing/workers-dev/].
+pub const WORKERS_DEV: &str = "the host is on workers.dev, whose Browser Integrity Check cannot be turned off \
+     (https://developers.cloudflare.com/workers/configuration/routing/workers-dev/), so a relying party on Python's \
+     default agent is refused 1010 before the edge runs; serve the edge on a custom host in the install's zone";
+
+fn on_workers_dev(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    h == "workers.dev" || h.ends_with(".workers.dev")
+}
+
 pub fn bic_rule(cf: &Cf, zone: &str, host: &str) -> Res<Done> {
+    if on_workers_dev(host) {
+        return Err(format!("refused for {host}: {WORKERS_DEV}"));
+    }
     let want = rule(host);
     let done = match cf.phase_entrypoint(zone, PHASE)? {
         None => {
@@ -113,6 +128,19 @@ fn read_back(cf: &Cf, zone: &str, want: &Value) -> Res<()> {
     if n == 1 { Ok(()) } else { Err(format!("read back: {n} rules named {RULE_REF} as written, want 1")) }
 }
 
+/// Why the fetch of `url` failed: on a workers.dev host, the cause that no rule can remove; elsewhere, the rule to run.
+fn refusal(url: &str, status: u16, text: &str) -> String {
+    let host = url.split("://").nth(1).unwrap_or(url).split(['/', ':']).next().unwrap_or("");
+    if on_workers_dev(host) {
+        format!("GET {url} as {CHECK_AGENT}: HTTP {status}: {WORKERS_DEV}")
+    } else {
+        let body: String = text.chars().take(80).collect();
+        format!(
+            "GET {url} as {CHECK_AGENT}: HTTP {status}: {body} (Browser Integrity Check? run `graftyard oidc bic-rule`)"
+        )
+    }
+}
+
 /// The issuer's JWKS fetched as a stock Python client: Ok with the number of keys on 200, Err on anything else.
 pub fn check(edge: &str) -> Res<usize> {
     let url = format!("{}{ISSUER_PATH}/.well-known/jwks", edge.trim_end_matches('/'));
@@ -122,10 +150,7 @@ pub fn check(edge: &str) -> Res<usize> {
         Err(e) => return Err(format!("GET {url}: {e}")),
     };
     if status != 200 {
-        return Err(format!(
-            "GET {url} as {CHECK_AGENT}: HTTP {status}: {} (Browser Integrity Check? run `graftyard oidc bic-rule`)",
-            text.chars().take(80).collect::<String>()
-        ));
+        return Err(refusal(&url, status, &text));
     }
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("GET {url}: not JSON: {e}"))?;
     v["keys"].as_array().map(Vec::len).ok_or_else(|| format!("GET {url}: no keys"))
@@ -241,6 +266,32 @@ mod tests {
         assert_eq!(rules["rules"].as_array().unwrap().len(), 2);
         assert_eq!(rules["rules"][1]["id"], json!("mine"));
         assert!(rules["rules"][1]["expression"].as_str().unwrap().contains("\"git.example\""));
+    }
+
+    /// A workers.dev host is refused before any API call, naming the cause.
+    #[test]
+    fn bic_rule_refuses_a_workers_dev_host() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (cf, _rx) = stub(Value::Null, log.clone());
+        let e = bic_rule(&cf, "z", "graft-m4a-edge.acme.workers.dev").unwrap_err();
+        assert!(e.contains("workers.dev") && e.contains("cannot be turned off"), "{e}");
+        assert!(log.lock().unwrap().is_empty(), "{:?}", log.lock().unwrap());
+        // A custom host whose name merely contains or ends in the string, in another domain, is not refused.
+        assert_eq!(bic_rule(&cf, "z", "git.notworkers.dev").unwrap(), Done::Created);
+    }
+
+    /// On a workers.dev edge the check's failure says why it can never pass, not only "403"; on a custom host it names
+    /// the rule to run instead.
+    #[test]
+    fn the_check_names_workers_dev_as_the_cause() {
+        let wd = super::refusal(
+            "https://graft-m4a-edge.acme.workers.dev/_services/token/.well-known/jwks",
+            403,
+            "error code: 1010",
+        );
+        assert!(wd.contains("cannot be turned off") && wd.contains("custom host") && wd.contains("HTTP 403"), "{wd}");
+        let own = super::refusal("https://git.example/_services/token/.well-known/jwks", 403, "error code: 1010");
+        assert!(own.contains("bic-rule") && !own.contains("cannot be turned off"), "{own}");
     }
 
     /// The check sends Python's agent and passes only a 200 with keys; BIC's 403 fails it naming the cause.
