@@ -13,6 +13,7 @@ pub mod launch;
 pub mod oidc;
 pub mod relay;
 pub mod rest;
+pub mod reusable;
 pub mod run_owner;
 pub mod runsvc;
 pub mod shard;

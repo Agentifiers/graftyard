@@ -48,10 +48,10 @@ MUTANTS = [
     ("CreateRunAs is sent as 0x15.7", S,
      'ActionsOp::CreateRunAs { .. } | ActionsOp::SetSubTemplate { .. } => ACTIONS_FORMAT_CLAIMS,',
      'ActionsOp::CreateRunAs { .. } | ActionsOp::SetSubTemplate { .. } => ACTIONS_FORMAT_HEAD_REF,', TT),
-    ("the release reads no 0x15.8", S, '    ACTIONS_FORMAT_HEAD_REF,\n    ACTIONS_FORMAT_CLAIMS,\n];',
-     '    ACTIONS_FORMAT_HEAD_REF,\n    ACTIONS_FORMAT_HEAD_REF,\n];', TF),
-    ("the release reads no 0x15.7, as main 46ea4200's sites", S, '    ACTIONS_FORMAT_CACHE,\n    ACTIONS_FORMAT_HEAD_REF,\n    ACTIONS_FORMAT_CLAIMS,\n];',
-     '    ACTIONS_FORMAT_CACHE,\n    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_CLAIMS,\n];', TF),
+    ("the release reads no 0x15.8", S, '    ACTIONS_FORMAT_HEAD_REF,\n    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_REUSABLE,\n];',
+     '    ACTIONS_FORMAT_HEAD_REF,\n    ACTIONS_FORMAT_HEAD_REF,\n    ACTIONS_FORMAT_REUSABLE,\n];', TF),
+    ("the release reads no 0x15.7, as main 46ea4200's sites", S, '    ACTIONS_FORMAT_CACHE,\n    ACTIONS_FORMAT_HEAD_REF,\n    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_REUSABLE,\n];',
+     '    ACTIONS_FORMAT_CACHE,\n    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_REUSABLE,\n];', TF),
 ]
 
 if __name__ == '__main__':

@@ -1,0 +1,30 @@
+# BF-72: a caller whose job `uses:` a workflow in another repository of the org at a tag, with `with:` inputs,
+# `secrets: inherit`, and an output a later job reads; the called job requests `id-token: write` through the
+# caller's `permissions:`, which its jobs take. Local: `tests/m4/wp3/bf72/run.sh`; hosted: `bf72.mjs`.
+name: bf72-caller
+on: workflow_dispatch
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: [self-hosted]
+    outputs:
+      target: ${{ steps.t.outputs.target }}
+    steps:
+      - id: t
+        run: echo "target=prod-7" >> "$GITHUB_OUTPUT"
+  call:
+    needs: build
+    uses: octo/shared/.github/workflows/deploy.yml@v1
+    with:
+      target: ${{ needs.build.outputs.target }}
+      dry: true
+    secrets: inherit
+  after:
+    needs: call
+    runs-on: [self-hosted]
+    steps:
+      - run: |
+          echo "BF72 after url=${{ needs.call.outputs.url }} result=${{ needs.call.result }}"
+          test "${{ needs.call.outputs.url }}" = "https://prod-7.example/v1"

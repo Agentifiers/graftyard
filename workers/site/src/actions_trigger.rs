@@ -309,6 +309,13 @@ async fn run_actor(env: &Env, actor: Option<AccountId>) -> std::result::Result<O
     Ok(Some((a, crate::activity::login_of(env, a).await?)))
 }
 
+/// Whether a site day set `GRAFTYARD_REUSABLE` (`decisions/DECISIONS.md`, "`reusable`"): only then is a planned run's
+/// 0x15.9 `CreateRunPlanned` sent. A site day sets it only once `FormatsEnable` enabled 0x15.9, after the day that
+/// shipped its reader to every member.
+fn reusable(env: &Env) -> bool {
+    env.var("GRAFTYARD_REUSABLE").is_ok_and(|v| v.to_string() == "1")
+}
+
 /// Whether a site day set `GRAFTYARD_PR_TRIGGER`, after the day that shipped format 0x15.4's reader.
 fn pr_trigger(env: &Env) -> bool {
     env.var("GRAFTYARD_PR_TRIGGER").is_ok_and(|v| v.to_string() == "1")
@@ -505,9 +512,44 @@ async fn runs_on(
             continue;
         };
         let src = blob["text"].as_str().unwrap_or_default();
-        let (run, jobs, permissions) = match make(&path, src) {
+        let (run, mut jobs, mut permissions) = match make(&path, src) {
             Ok(Some(x)) => x,
             Ok(None) => continue,
+            Err(e) => {
+                console_error!("actions trigger {} {path}: {e}", repo.0.0);
+                continue;
+            }
+        };
+        // `reusable`: a workflow that calls one in this repository, read at this commit, or whose jobs declare
+        // `outputs:`, is created with its plan where a site day set `GRAFTYARD_REUSABLE` (0x15.9). A call into another
+        // repository is the edge's dispatch's alone (`decisions/OPEN-QUESTIONS.md`, F132), and such a workflow is
+        // skipped, as one that does not parse.
+        let parsed = graftyard_actions::workflow::parse(&path, src);
+        let origin = graftyard_actions::reusable::Origin {
+            repo: None,
+            path: path.clone(),
+            r#ref: run.head_ref.to_string(),
+            sha: tip.0,
+        };
+        let t = crate::now_ms();
+        let planned = graftyard_actions::reusable::plan_run(&parsed.workflow, &origin, reusable(env), |w| async move {
+            use graftyard_actions::reusable::{Fetched, Origin, Version};
+            let (None, Version::At { r#ref, sha }) = (&w.repo, &w.version) else {
+                return Err("a call into another repository is not taken from a push or pull request yet".into());
+            };
+            let commit = git::refs::ObjectId(*sha).hex();
+            let blob = ui(env, site, repo, record, "blob", &[("commit", &commit), ("path", &w.path)]).await?;
+            let src = blob.ok_or("not found")?["text"].as_str().unwrap_or_default().to_owned();
+            Ok(Fetched { origin: Origin { repo: None, path: w.path, r#ref: r#ref.clone(), sha: *sha }, src })
+        })
+        .await;
+        times.reads += crate::now_ms().saturating_sub(t);
+        let plan = match planned {
+            Ok(Some(e)) => {
+                (jobs, permissions) = (e.jobs, e.declared);
+                e.plan
+            }
+            Ok(None) => None,
             Err(e) => {
                 console_error!("actions trigger {} {path}: {e}", repo.0.0);
                 continue;
@@ -521,7 +563,10 @@ async fn runs_on(
                 chain,
                 record,
                 "/runsvc",
-                &crate::actions::create_run_body(env, &run, &jobs, &permissions, base, head, actor),
+                &graftyard_actions::runsvc::with_plan(
+                    crate::actions::create_run_body(env, &run, &jobs, &permissions, base, head, actor),
+                    plan.as_ref(),
+                ),
             )
             .await
         }

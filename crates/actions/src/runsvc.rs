@@ -345,6 +345,21 @@ pub fn job_cancellation(message_id: u64, job: JobId) -> Value {
     json!({"messageId": message_id, "messageType": "JobCancellation", "body": body.to_string()})
 }
 
+/// `completejob`'s `outputs`, `{name: {value, isSecret}}` as the runner's `VariableValue`s: each name and value, in
+/// name order, a secret one left out (the runner already skips any output that holds a masked value).
+pub fn outputs(b: &Value) -> Vec<(Box<str>, Box<str>)> {
+    let get = |v: &Value, k: &str| v.get(k).or_else(|| v.get(format!("{}{}", k[..1].to_uppercase(), &k[1..]))).cloned();
+    let mut out: Vec<(Box<str>, Box<str>)> = b["outputs"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, v)| get(v, "isSecret") != Some(Value::Bool(true)))
+        .filter_map(|(k, v)| Some((k.as_str().into(), get(v, "value")?.as_str()?.into())))
+        .collect();
+    out.sort();
+    out
+}
+
 /// `completejob`'s `conclusion` as a job's (`succeededWithIssues` succeeded; `abandoned` is the runner losing the
 /// job, a failure).
 pub fn conclusion(s: &str) -> Option<Conclusion> {
@@ -395,6 +410,10 @@ pub struct JobMessage<'a> {
     pub cache: bool,
     /// The job is granted `id-token: write`, so the message names `GenerateIdTokenUrl` (`crate::oidc`).
     pub id_token: bool,
+    /// A planned run's job's `needs` and `inputs` (`crate::reusable::contexts`), plain JSON, and its `outputs:` token,
+    /// which the runner evaluates after the steps and sends back in `completejob` (`JobOutputs`). `None` for a run
+    /// with no plan, whose message is the one it was.
+    pub reusable: Option<crate::reusable::JobContexts>,
 }
 
 /// The `acquirejob` answer: the runner's `AgentJobRequestMessage` with `messageType` `RunnerJobRequest`
@@ -435,10 +454,14 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
     let empty = || json!({"t": 2});
     ctx.insert("strategy".into(), if m.strategy.is_null() { empty() } else { m.strategy.clone() });
     ctx.insert("matrix".into(), if m.matrix.is_null() { empty() } else { m.matrix.clone() });
-    ctx.insert("needs".into(), json!({"t": 2}));
-    ctx.insert("inputs".into(), json!({"t": 2}));
+    let (needs, inputs) = match &m.reusable {
+        Some(r) => (context_of(&r.needs), context_of(&r.inputs)),
+        None => (json!({"t": 2}), json!({"t": 2})),
+    };
+    ctx.insert("needs".into(), needs);
+    ctx.insert("inputs".into(), inputs);
     ctx.insert("vars".into(), ctx_dict(m.variables.iter().map(|(k, v)| (k.as_str(), Value::from(v.clone())))));
-    json!({
+    let mut msg = json!({
         "messageType": "RunnerJobRequest",
         "plan": {"scopeIdentifier": job_guid(3, 0), "planType": "actions", "version": 1, "planId": job_guid(2, m.run_id)},
         "timeline": {"id": job_guid(1, m.job.0.0)},
@@ -457,7 +480,12 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
         "steps": m.steps,
         "workspace": {},
         "mask": m.secrets.iter().map(|(_, v)| json!({"type": "regex", "value": v})).collect::<Vec<_>>(),
-    })
+    });
+    // `AgentJobRequestMessage.JobOutputs`, a template token (`Runner.Worker/JobExtension.cs:803`).
+    if let Some(o) = m.reusable.as_ref().and_then(|r| r.outputs.clone()) {
+        msg["jobOutputs"] = o;
+    }
+    msg
 }
 
 /// What `acquire_message` needs beyond the fold: the repository's name, the token the job's `GITHUB_TOKEN` is, the
@@ -479,6 +507,28 @@ pub struct Acquired<'a> {
     pub actor: Option<&'a str>,
     /// The run's number (`ActionsEvent::RunNumber`, F119), `github.run_number`; 1 without one.
     pub run_number: Option<u64>,
+    /// `JobMessage::reusable`: a planned run's job's contexts, whose `secrets` replace `secrets` above.
+    pub reusable: Option<crate::reusable::JobContexts>,
+}
+
+/// `github.*` for a job of `run` as plain JSON: what `acquire_message` sends, and what a planned run's `with:` and
+/// `on.workflow_call.outputs` are evaluated over (`crate::reusable::contexts`), with the run's actor and number as `Acquired` holds them.
+pub fn github_json(
+    urls: &Urls,
+    run: &crate::shard::WorkflowRun,
+    job: &crate::shard::JobRow,
+    repository: &str,
+    owner: &str,
+    actor: Option<&str>,
+    run_number: Option<u64>,
+) -> Value {
+    let hex: String = run.head_sha.iter().map(|b| format!("{b:02x}")).collect();
+    json!({
+        "repository": repository, "repository_owner": owner, "event_name": &*run.event, "ref": &*run.head_ref,
+        "sha": hex, "server_url": urls.server, "api_url": format!("{}/api/v3", urls.server), "workflow": &*run.workflow,
+        "run_id": run.id.0.0.to_string(), "run_number": run_number.unwrap_or(1).to_string(), "run_attempt": run.attempt.to_string(),
+        "job": &*job.spec.name, "actor": actor.unwrap_or(owner),
+    })
 }
 
 /// The `acquirejob` answer for `job` of `run`, as `job_message` renders it, with `github.*` from the run.
@@ -521,13 +571,14 @@ pub fn acquire_message(
         },
         strategy: Value::Null,
         steps: serde_json::from_str(&job.spec.steps).unwrap_or(Value::Array(Vec::new())),
-        secrets: a.secrets.clone(),
+        secrets: a.reusable.as_ref().map_or_else(|| a.secrets.clone(), |r| r.secrets.clone()),
         variables: a.variables.clone(),
         github_token: a.github_token,
         job_token: a.job_token,
         locked_until: &graftyard_wire::time::iso(a.locked_until),
         cache: a.cache,
         id_token: a.id_token,
+        reusable: a.reusable.clone(),
     };
     job_message(urls, &m)
 }
@@ -630,8 +681,17 @@ pub fn create_run_call(
     b
 }
 
-/// The command a shard leader commits for a `create_run_call`, with the run's key: `CreateRunAs` (0x15.8) for a call
-/// that names its actor, `CreateRunFrom` for a `pull_request` run with a base and a head, `CreateRunOn` for one with a
+/// `create_run_call` with the run's `RunPlan` (`crate::reusable`), which only a caller where 0x15.9 is enabled sends.
+pub fn with_plan(mut call: Value, plan: Option<&crate::reusable::RunPlan>) -> Value {
+    if let Some(p) = plan {
+        call["plan"] = json!(p);
+    }
+    call
+}
+
+/// The command a shard leader commits for a `create_run_call`, with the run's key: `CreateRunPlanned` for one with a
+/// plan (`with_plan`), with its actor when the call names one, `CreateRunAs` (0x15.8) for a call that names its actor,
+/// `CreateRunFrom` for a `pull_request` run with a base and a head, `CreateRunOn` for one with a
 /// base alone, else `CreateRunWith` when the call carries permissions, else `CreateRun`.
 pub fn create_run_op(b: &Value) -> Result<(crate::shard::RunKey, crate::shard::ActionsOp), String> {
     use crate::shard::ActionsOp;
@@ -640,6 +700,12 @@ pub fn create_run_op(b: &Value) -> Result<(crate::shard::RunKey, crate::shard::A
     let permissions: crate::specs::Declared = serde_json::from_value(b["permissions"].clone()).unwrap_or_default();
     let key = run.key();
     let actor: Option<(graftyard_types::AccountId, Box<str>)> = serde_json::from_value(b["actor"].clone()).ok();
+    if !b["plan"].is_null() {
+        let plan = serde_json::from_value(b["plan"].clone()).map_err(|e| format!("plan: {e}"))?;
+        let base_ref = b["base_ref"].as_str().filter(|_| run.is_pull_request()).map(Into::into);
+        let head_ref = b["head_ref"].as_str().filter(|_| run.is_pull_request()).map(Into::into);
+        return Ok((key, ActionsOp::CreateRunPlanned { run, jobs, permissions, plan, base_ref, head_ref, actor }));
+    }
     let (base, head) = (b["base_ref"].as_str(), b["head_ref"].as_str());
     if let Some(actor) = actor {
         let (base_ref, head_ref) = (base.map(Into::into), head.map(Into::into));
@@ -778,6 +844,7 @@ mod tests {
             locked_until: "2026-11-18T00:00:00Z",
             cache: false,
             id_token: false,
+            reusable: None,
         };
         let v = job_message(&urls, &m);
         // A job without a matrix still carries both contexts, or the runner fails any step whose action defaults
@@ -806,6 +873,71 @@ mod tests {
             json!("https://graft.example/_services/run/idtoken?api-version=2.0")
         );
         assert!(data(&v)["FeedStreamUrl"].is_string());
+    }
+
+    /// `reusable`: a planned run's job carries its `needs` and `inputs` as context data, its call's secrets in place
+    /// of the repository's (masked), and its `outputs:` as `jobOutputs`, which the runner evaluates after the steps
+    /// (`Runner.Worker/JobExtension.cs:803`). A message with no plan keeps empty contexts and no `jobOutputs`.
+    #[test]
+    fn a_job_message_carries_a_planned_jobs_contexts() {
+        use crate::shard::{JobRow, JobSpec, WorkflowRun};
+        let urls = Urls::new("https://graft.example");
+        let run = WorkflowRun {
+            id: crate::RunId(DbId(3)),
+            repo: graftyard_types::RepoId(DbId(7)),
+            workflow: "w.yml".into(),
+            event: "push".into(),
+            head_sha: [1; 20],
+            head_ref: "refs/heads/main".into(),
+            trigger: (ChainId::Repo(graftyard_types::RepoId(DbId(7))), graftyard_types::Index(1)),
+            attempt: 1,
+            concurrency: None,
+            fork: false,
+        };
+        let spec = JobSpec {
+            id: JobId(DbId(9)),
+            name: "call / deploy".into(),
+            labels: crate::LabelSet::parse(["x"]).unwrap(),
+            needs: Default::default(),
+            matrix: Default::default(),
+            environment: None,
+            steps: "[]".into(),
+        };
+        let row =
+            JobRow { run: run.id, spec, state: crate::JobState::Pending { needs: Default::default() }, version: 0 };
+        let outputs = json!({"type": 2, "map": [{"Key": "url", "Value": {"type": 3, "expr": "steps.d.outputs.url"}}]});
+        let a = |reusable| Acquired {
+            repository: "o/r",
+            owner_login: "o",
+            relay_site: 0,
+            github_token: "",
+            job_token: "t",
+            locked_until: Timestamp(9),
+            secrets: vec![("REPO_ONLY".into(), "r-1".into())],
+            variables: vec![],
+            cache: false,
+            id_token: false,
+            actor: None,
+            run_number: None,
+            reusable,
+        };
+        let plain = acquire_message(&urls, &run, &row, &a(None));
+        assert!(plain.get("jobOutputs").is_none());
+        assert_eq!(plain["contextData"]["needs"], json!({"t": 2}));
+        assert_eq!(plain["variables"]["REPO_ONLY"]["value"], json!("r-1"));
+        let c = crate::reusable::JobContexts {
+            needs: json!({"prep": {"result": "success", "outputs": {"u": "x"}}}),
+            inputs: json!({"target": "prod", "dry": true}),
+            secrets: vec![("DEPLOY_KEY".into(), "k-1".into())],
+            outputs: Some(outputs.clone()),
+        };
+        let m = acquire_message(&urls, &run, &row, &a(Some(c)));
+        assert_eq!(m["jobOutputs"], outputs);
+        assert_eq!(m["contextData"]["inputs"], context_of(&json!({"target": "prod", "dry": true})));
+        assert_eq!(m["contextData"]["needs"]["d"][0]["k"], json!("prep"));
+        assert_eq!(m["variables"]["DEPLOY_KEY"]["value"], json!("k-1"));
+        assert!(m["variables"].get("REPO_ONLY").is_none(), "a called job gets only what its call passes");
+        assert_eq!(m["mask"], json!([{"type": "regex", "value": "k-1"}]));
     }
 
     #[test]

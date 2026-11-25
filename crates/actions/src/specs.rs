@@ -25,7 +25,27 @@ pub fn job_specs(w: &Workflow) -> Result<Vec<JobSpec>, String> {
 
 /// `job_specs` and each job's declared permissions, each matrix leg its own position.
 pub fn job_specs_declared(w: &Workflow) -> Result<(Vec<JobSpec>, Declared), String> {
-    // The workflow's jobs in an order where every need comes first; `needs` are checked acyclic by the parser.
+    // Each workflow job's positions in the output, which its dependents' `needs` name.
+    let mut at: Vec<Vec<usize>> = vec![Vec::new(); w.jobs.len()];
+    let mut out: Vec<JobSpec> = Vec::new();
+    let mut declared: Declared = Vec::new();
+    for i in order(w)? {
+        let j = &w.jobs[i];
+        let o = ordinary(w, j)?;
+        let needs: SmallVec<[JobId; 4]> = needs_at(w, j, &at).into_iter().map(|p| JobId(DbId(p as i64))).collect();
+        for (name, m) in o.legs.clone() {
+            at[i].push(out.len());
+            if let Some(p) = &o.perms {
+                declared.push((out.len() as u16, p.clone()));
+            }
+            out.push(o.spec(name, m, needs.clone()));
+        }
+    }
+    Ok((out, declared))
+}
+
+/// The workflow's jobs in an order where every need comes first; `needs` are checked acyclic by the parser.
+pub(crate) fn order(w: &Workflow) -> Result<Vec<usize>, String> {
     let mut order: Vec<usize> = Vec::new();
     let mut placed = vec![false; w.jobs.len()];
     while order.len() < w.jobs.len() {
@@ -42,80 +62,102 @@ pub fn job_specs_declared(w: &Workflow) -> Result<(Vec<JobSpec>, Declared), Stri
             return Err("a job's needs name a job that is not in the workflow".into());
         }
     }
-    // Each workflow job's positions in the output, which its dependents' `needs` name.
-    let mut at: Vec<Vec<usize>> = vec![Vec::new(); w.jobs.len()];
-    let mut out: Vec<JobSpec> = Vec::new();
-    let mut declared: Declared = Vec::new();
-    for i in order {
-        let j = &w.jobs[i];
-        let perms = crate::token::declared(w.permissions.as_ref(), j.permissions.as_ref())
-            .map_err(|e| format!("{}: {e}", j.id))?;
-        let labels: Vec<String> = match j.runs_on.as_ref().map(|n| &n.t) {
-            Some(T::Str(s)) => vec![s.clone()],
-            Some(T::Seq(v)) => v.iter().filter_map(|n| n.str().map(String::from)).collect(),
-            _ => vec!["self-hosted".into()],
-        };
-        let labels = LabelSet::parse(&labels).map_err(|e| format!("{}: runs-on: {e}", j.id))?;
-        let needs: SmallVec<[JobId; 4]> = j
-            .needs
-            .iter()
-            .flatten()
-            .filter_map(|n| w.jobs.iter().position(|x| &x.id == n))
-            .flat_map(|p| at[p].clone())
-            .map(|p| JobId(DbId(p as i64)))
-            .collect();
-        // The job message carries no `environmentVariables`, so the workflow's and the job's `env` reach the runner
-        // as each step's own: workflow, then job, then the step's keys, a later key replacing an earlier one, which
-        // is the runner's order (decisions/DECISIONS.md, "M4-WP3: job and workflow `env` ride on each step").
-        let steps: Vec<_> = j
-            .steps
-            .iter()
-            .map(|s| {
-                let mut s = s.clone();
-                s.env = [w.env.as_ref(), j.env.as_ref(), s.env.as_ref()].into_iter().flatten().fold(None, merge_env);
-                s
-            })
-            .collect();
-        let steps: Box<str> = runsvc::steps_json(&steps).to_string().into();
-        let configs = matrix::expand(j.strategy.as_ref(), j.name.str())
-            .map_err(|e| format!("{}: {}", j.id, e.join("; ")))?
-            .map(|s| s.configurations)
-            .unwrap_or_default();
-        let name = j.name.str().map_or_else(|| j.id.clone(), String::from);
-        // `environment: prod` or `environment: {name: prod, url: ...}`; an expression is not resolved here, so such a
-        // job reads no environment's rows [inference: no gate names an expression environment].
-        let environment: Option<Box<str>> = j
-            .environment
-            .as_ref()
-            .and_then(|e| e.str().or_else(|| e.get("name")?.str()))
-            .filter(|n| !n.contains("${{"))
-            .map(Into::into);
-        let mut one = |name: String, m: SmallVec<[(Box<str>, Box<str>); 4]>| {
-            at[i].push(out.len());
-            if let Some(p) = &perms {
-                declared.push((out.len() as u16, p.clone()));
-            }
-            out.push(JobSpec {
-                id: JobId(DbId(0)),
-                name: name.into(),
-                labels: labels.clone(),
-                needs: needs.clone(),
-                matrix: m,
-                environment: environment.clone(),
-                steps: steps.clone(),
-            });
-        };
-        let with_matrix: Vec<_> = configs.iter().filter(|c| c.matrix != matrix::Data::Null).collect();
-        if with_matrix.is_empty() {
-            one(name.clone(), SmallVec::new());
-        }
-        for c in with_matrix {
-            let matrix::Data::Map(pairs) = &c.matrix else { continue };
-            let m = pairs.iter().map(|(k, v)| (k.as_str().into(), v.json().to_string().into())).collect();
-            one(c.name.clone().unwrap_or_else(|| name.clone()), m);
+    Ok(order)
+}
+
+/// The positions job `j`'s `needs` name, from each earlier workflow job's positions `at`.
+pub(crate) fn needs_at(w: &Workflow, j: &crate::workflow::Job, at: &[Vec<usize>]) -> Vec<usize> {
+    j.needs
+        .iter()
+        .flatten()
+        .filter_map(|n| w.jobs.iter().position(|x| &x.id == n))
+        .flat_map(|p| at[p].clone())
+        .collect()
+}
+
+/// What one workflow job's specs share, and its legs: each matrix configuration's name and matrix, or the job's
+/// name alone.
+pub(crate) struct Ordinary {
+    pub labels: LabelSet,
+    pub steps: Box<str>,
+    pub environment: Option<Box<str>>,
+    pub perms: Option<PermissionSet>,
+    pub legs: Vec<crate::reusable::Leg>,
+}
+
+impl Ordinary {
+    pub fn spec(
+        &self,
+        name: String,
+        matrix: SmallVec<[(Box<str>, Box<str>); 4]>,
+        needs: SmallVec<[JobId; 4]>,
+    ) -> JobSpec {
+        JobSpec {
+            id: JobId(DbId(0)),
+            name: name.into(),
+            labels: self.labels.clone(),
+            needs,
+            matrix,
+            environment: self.environment.clone(),
+            steps: self.steps.clone(),
         }
     }
-    Ok((out, declared))
+}
+
+/// Job `j` of `w` as its specs: labels, steps with `env` merged, environment, declared permissions, and legs.
+pub(crate) fn ordinary(w: &Workflow, j: &crate::workflow::Job) -> Result<Ordinary, String> {
+    let perms =
+        crate::token::declared(w.permissions.as_ref(), j.permissions.as_ref()).map_err(|e| format!("{}: {e}", j.id))?;
+    let labels: Vec<String> = match j.runs_on.as_ref().map(|n| &n.t) {
+        Some(T::Str(s)) => vec![s.clone()],
+        Some(T::Seq(v)) => v.iter().filter_map(|n| n.str().map(String::from)).collect(),
+        _ => vec!["self-hosted".into()],
+    };
+    let labels = LabelSet::parse(&labels).map_err(|e| format!("{}: runs-on: {e}", j.id))?;
+    // The job message carries no `environmentVariables`, so the workflow's and the job's `env` reach the runner
+    // as each step's own: workflow, then job, then the step's keys, a later key replacing an earlier one, which
+    // is the runner's order (decisions/DECISIONS.md, "M4-WP3: job and workflow `env` ride on each step").
+    let steps: Vec<_> = j
+        .steps
+        .iter()
+        .map(|s| {
+            let mut s = s.clone();
+            s.env = [w.env.as_ref(), j.env.as_ref(), s.env.as_ref()].into_iter().flatten().fold(None, merge_env);
+            s
+        })
+        .collect();
+    let steps: Box<str> = runsvc::steps_json(&steps).to_string().into();
+    // `environment: prod` or `environment: {name: prod, url: ...}`; an expression is not resolved here, so such a
+    // job reads no environment's rows [inference: no gate names an expression environment].
+    let environment: Option<Box<str>> = j
+        .environment
+        .as_ref()
+        .and_then(|e| e.str().or_else(|| e.get("name")?.str()))
+        .filter(|n| !n.contains("${{"))
+        .map(Into::into);
+    Ok(Ordinary { labels, steps, environment, perms, legs: legs(j)? })
+}
+
+/// Job `j`'s legs: each matrix configuration's name and matrix, named as the runner's `MatrixBuilder` names it, or
+/// the job's name alone.
+pub(crate) fn legs(j: &crate::workflow::Job) -> Result<Vec<crate::reusable::Leg>, String> {
+    let configs = matrix::expand(j.strategy.as_ref(), j.name.str())
+        .map_err(|e| format!("{}: {}", j.id, e.join("; ")))?
+        .map(|s| s.configurations)
+        .unwrap_or_default();
+    let name = j.name.str().map_or_else(|| j.id.clone(), String::from);
+    let with_matrix: Vec<_> = configs.iter().filter(|c| c.matrix != matrix::Data::Null).collect();
+    if with_matrix.is_empty() {
+        return Ok(vec![(name, SmallVec::new())]);
+    }
+    Ok(with_matrix
+        .into_iter()
+        .filter_map(|c| {
+            let matrix::Data::Map(pairs) = &c.matrix else { return None };
+            let m = pairs.iter().map(|(k, v)| (k.as_str().into(), v.json().to_string().into())).collect();
+            Some((c.name.clone().unwrap_or_else(|| name.clone()), m))
+        })
+        .collect())
 }
 
 /// `inner`'s keys over `outer`'s. An `env` that is one expression, not a mapping, cannot be merged by key, so the

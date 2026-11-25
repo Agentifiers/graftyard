@@ -123,8 +123,9 @@ graftyard_identity::tail_serde!(HeadRows {
 } more: ClaimRows);
 
 /// Format 0x15.8's rows (F119, F120, F122): each run's actor and number, each `(repository, workflow)`'s last run
-/// number, and the owner's and each repository's `sub` customization.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// number, and the owner's and each repository's `sub` customization. Reusable workflows' rows (0x15.9) are a trailing
+/// part of their own, so a fold with none keeps 0x15.8's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClaimRows {
     pub actors: BTreeMap<RunId, (graftyard_types::AccountId, Box<str>)>,
     pub numbers: BTreeMap<RunId, u64>,
@@ -133,6 +134,23 @@ pub struct ClaimRows {
     pub org_sub: Option<Vec<Box<str>>>,
     /// Each repository's setting (`PUT /repos/{o}/{r}/actions/oidc/customization/sub`), on its own shard.
     pub repo_subs: BTreeMap<RepoId, crate::oidc::RepoSub>,
+    pub more: PlanRows,
+}
+
+graftyard_identity::tail_serde!(ClaimRows {
+    actors: BTreeMap<RunId, (graftyard_types::AccountId, Box<str>)>,
+    numbers: BTreeMap<RunId, u64>,
+    counters: BTreeMap<(RepoId, Box<str>), u64>,
+    org_sub: Option<Vec<Box<str>>>,
+    repo_subs: BTreeMap<RepoId, crate::oidc::RepoSub>,
+} more: PlanRows);
+
+/// `reusable`'s rows (format 0x15.9): each planned run's `RunPlan` (`ActionsEvent::RunPlanned`), and each job's
+/// committed outputs (`ActionsEvent::JobOutputs`), which later jobs read as `needs.<id>.outputs`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanRows {
+    pub plans: BTreeMap<RunId, crate::reusable::RunPlan>,
+    pub outputs: BTreeMap<JobId, crate::reusable::Outputs>,
 }
 
 impl CacheRows {

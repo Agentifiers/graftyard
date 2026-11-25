@@ -40,7 +40,7 @@ pub struct Step {
     pub timeout_minutes: Option<Node>,
 }
 
-/// A reusable-workflow call (`jobs.<id>.uses`). Parsed and kept; running one is not built yet.
+/// A reusable-workflow call (`jobs.<id>.uses`), which `crate::specs::plan` expands into the called workflow's jobs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Call {
     pub uses: String,
@@ -84,6 +84,12 @@ pub struct Workflow {
     pub jobs: Vec<Job>,
     /// The workflow's `permissions:`, which each job without its own takes. Not in the oracle's JSON.
     pub permissions: Option<Node>,
+    /// `on.workflow_call.outputs` as written, each output's `value` an expression over `jobs` (`crate::reusable`).
+    /// Not in the oracle's JSON: `@actions/workflow-parser` 0.3.61 leaves it a TODO.
+    pub call_outputs: Option<Node>,
+    /// `on.workflow_call.inputs` as written: the oracle's JSON drops a `number` input's `type`, which `with:` typing
+    /// needs (`crate::reusable`).
+    pub call_inputs: Option<Node>,
 }
 
 /// A parsed workflow file. `errors` are the oracle's messages; a workflow with any is not run.
@@ -196,6 +202,8 @@ fn wrong(n: &Node, what: &str, want: &str) -> String {
 
 struct Cx {
     errs: Errors,
+    call_outputs: Option<Node>,
+    call_inputs: Option<Node>,
 }
 
 impl Cx {
@@ -259,7 +267,7 @@ pub fn parse(file: &str, src: &str) -> Parsed {
     if !errs.list.is_empty() {
         return Parsed { workflow: Workflow::default(), errors: errs.list, read_failed: true };
     }
-    let mut cx = Cx { errs };
+    let mut cx = Cx { errs, call_outputs: None, call_inputs: None };
     let mut w = Workflow::default();
     if let Some(pairs) = cx.mapping(&root, "root") {
         for (k, v) in pairs {
@@ -275,6 +283,8 @@ pub fn parse(file: &str, src: &str) -> Parsed {
             }
         }
     }
+    w.call_outputs = cx.call_outputs.take();
+    w.call_inputs = cx.call_inputs.take();
     Parsed { workflow: w, errors: cx.errs.list, read_failed: false }
 }
 
@@ -531,6 +541,7 @@ fn convert_call_event(cx: &mut Cx, m: &[(Node, Node)]) -> Map<String, Value> {
             Some("inputs") => {
                 if let Some(im) = cx.mapping(v, "workflow dispatch inputs") {
                     out.insert("inputs".into(), Value::Object(convert_inputs(cx, im, true)));
+                    cx.call_inputs = Some(v.clone());
                 }
             }
             Some("secrets") => {
@@ -559,6 +570,7 @@ fn convert_call_event(cx: &mut Cx, m: &[(Node, Node)]) -> Map<String, Value> {
                     out.insert("secrets".into(), Value::Object(secrets));
                 }
             }
+            Some("outputs") => cx.call_outputs = cx.mapping(v, "workflow call outputs").map(|_| v.clone()),
             _ => {}
         }
     }
