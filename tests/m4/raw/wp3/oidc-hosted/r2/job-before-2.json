@@ -1,0 +1,50 @@
+{
+  "tag": "before",
+  "fork": false,
+  "run": {
+    "t": 72927,
+    "status": "InProgress",
+    "jobs": [
+      {
+        "id": 1507357,
+        "name": "sts",
+        "state": "Completed",
+        "s": {
+          "Completed": {
+            "at": 1795599137407,
+            "conclusion": "Failure"
+          }
+        }
+      },
+      {
+        "id": 1507358,
+        "name": "denied",
+        "state": "Completed",
+        "s": {
+          "Completed": {
+            "at": 1795599155723,
+            "conclusion": "Success"
+          }
+        }
+      }
+    ]
+  },
+  "conclusions": {
+    "sts": "Failure",
+    "denied": "Success"
+  },
+  "checks": {
+    "sts_succeeded": false,
+    "denied_succeeded": true,
+    "exported_both": true,
+    "action_from_install": true,
+    "s3_read_ok": true,
+    "verified_against_jwks": false,
+    "second_token_ok": false,
+    "denied_no_url": true,
+    "denied_refused_403": true,
+    "no_token_in_logs": true
+  },
+  "ok": false,
+  "dir": "tests/m4/raw/wp3/oidc-hosted/r2/job-before"
+}

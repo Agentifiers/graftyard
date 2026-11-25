@@ -1,11 +1,12 @@
 name: bf70
-# BF-70 on graft-m4a (`tests/m4/wp3/oidc/hosted-row.sh`): the job granted `id-token: write` takes its ID token to
+# BF-70 on graft-m4a (`tests/m4/wp3/oidc/hosted-row.sh`), started by a same-repository pull request (r2: the site's
+# `ActionsTrigger` sends the jobs' declared permissions where job tokens are on; F127): the job granted `id-token: write` takes its ID token to
 # configure-aws-credentials v6.2.0 against a MinIO STS on the runner's host, which verifies it against the install's
 # published JWKS, then reads a bucket with the credentials; a second token is checked against the JWKS here and taken
 # by MinIO too, and its kid is printed. The job without the grant gets no token URL, and its own token is refused.
 # The install resolves `uses:` only in its own repositories (`decisions/OPEN-QUESTIONS.md`, F90), so the action runs
 # from `m3org/bf70-cac`, a public repository holding v6.2.0's tree (`hosted.mjs setup` records its tree hash).
-on: workflow_dispatch
+on: pull_request
 permissions:
   contents: read
   id-token: write
@@ -43,16 +44,20 @@ jobs:
           b = lambda s: base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
           h, p, s = sys.stdin.read().strip().split(".")
           head, claims = json.loads(b(h)), json.loads(b(p))
-          disc = json.load(urllib.request.urlopen(claims["iss"] + "/.well-known/openid-configuration", timeout=20))
+          # A named user agent: workers.dev answers the Python-urllib default with 403 "error code: 1010" (r2, first try).
+          get = lambda u: json.load(urllib.request.urlopen(urllib.request.Request(u, headers={"user-agent": "bf70-verify"}), timeout=20))
+          disc = get(claims["iss"] + "/.well-known/openid-configuration")
           assert disc["issuer"] == claims["iss"], "issuer"
-          keys = {k["kid"]: k for k in json.load(urllib.request.urlopen(disc["jwks_uri"], timeout=20))["keys"]}
+          keys = {k["kid"]: k for k in get(disc["jwks_uri"])["keys"]}
           k = keys[head["kid"]]
           pub = rsa.RSAPublicNumbers(int.from_bytes(b(k["e"]), "big"), int.from_bytes(b(k["n"]), "big")).public_key()
           pub.verify(b(s), (h + "." + p).encode(), padding.PKCS1v15(), hashes.SHA256())
           assert head["alg"] == "RS256" and claims["aud"] == "sts.amazonaws.com" and claims["exp"] > time.time()
           keep = ("iss", "aud", "sub", "repository", "repository_owner", "ref", "workflow_ref", "job_workflow_ref",
                   "runner_environment", "event_name", "repository_visibility", "run_id", "run_attempt")
-          print("verified kid=" + head["kid"], "published", sorted(keys), json.dumps({c: claims.get(c) for c in keep}))
+          # base_ref and head_ref are printed only as set or empty: F121 leaves them empty.
+          shown = {c: claims.get(c) for c in keep} | {c + "_set": bool(claims.get(c)) for c in ("base_ref", "head_ref")}
+          print("verified kid=" + head["kid"], "published", sorted(keys), json.dumps(shown))
           '
           curl -sf -X POST http://127.0.0.1:9000/ -d Action=AssumeRoleWithWebIdentity -d Version=2011-06-15 \
             --data-urlencode RoleArn=arn:aws:iam::000000000000:role/graftyard --data-urlencode "WebIdentityToken=$t" \

@@ -6243,6 +6243,38 @@ Report the served share, the `tierOff` count and its share of 503s whenever they
 
 **Amended by `tier-off-elect` (2026-11-19).** M4-WP4 found a liveness hole on graft-m4a (main 67483ab9): repo:65536 (j4), a group read only by whole-tier dumps, sat at term 4 with all three voters followers and no leader at 01:00:09Z and 01:07:12Z, f0 and f2 at applied 5,493 to 5,497 and `#2#f1` at 5,248; every edge tier read answered 503 shed and no member campaigned until a plain member `/read` on f0 at 01:08:19Z (`tests/m4/raw/wp4/b035-j4-*.json`, branch `b035-m4a54`). Before this rule a dump every member declined went `Spread::Leader` to `call_opt`, whose lookup reports a leaderless group with `suspect` and so starts its election: F67's request-driven trigger for a reads-only group. As first built, the rule shed it instead whenever any member answered `notLeader`, a `notLeader` naming no leader included, so a group read only by dumps and `ls-refs` never elected, against F67's 30 s bound. Now `spread_verdict` splits the decline: a member named a leader, `TierOff` as before; some answered `notLeader` and none named one, `Elect`, which sends `{"q": {"probe": true}}` (never the dump) the leader's way by `call_opt`, so its lookup reports the leaderless group and a voter campaigns, and then sheds the dump as `TierOff` does (503 with `Retry-After: 1`, logged `tierOff`); the client's retry lands on a follower with a leader. The dump is never sent to the new leader, which would rebuild m53's post-change bursts. Evidence: `a_leaderless_group_read_only_by_dumps_elects_and_never_serves_the_dump` (`crates/lookup/src/lib.rs`) drives one lookup over three voters answering `notLeader` naming none, finds the new leader within 30 s, and checks only the probe went the leader's way; it fails with the verdict `TierOff` (tier-off-leader as first built). `tests/tieroff/plant.py` adds three plants (that verdict, the decline counted as absent, and `Elect` sending the dump): 12 of 12 caught. Edge code only (`crates/lookup`), so it ships on an edge day.
 
+**Amended by `elect-again` (2026-11-25, F128).** The HostedRunnersAppKey row r1 on graft-m4a (main d1cf8e36) found
+that a quiet repository's first whole-tier read answers 503: `m3org/hrak-jobs` (repo:65596) answered its first
+Actions call after each idle gap of 3 to 4 minutes 503 "(tierOff)", and the client's retry about 5 s later 201
+(`tests/m5/results/m5-wp6.md`, "HostedRunnersAppKey, end to end: row r1"). The cause is not tier loading: a member
+restored from storage has its metadata tier loaded at once (`Repo::load_fold`), since each input writes both tiers in
+one transaction. It is that every member of an idle group restored from storage is a follower that knows no leader,
+and an idle leader sends nothing, so each member answers a read-index read `notLeader` naming none, and the pass's
+verdict is `Elect`. Its probe reports the group, the member that led resumes its `led_term` (repo:65596's f0 held
+`ledTerm` 2 at 07:55Z), and its round teaches the followers the leader within a second; but the pass shed the read
+anyway and only the retry was served. Now, when the probe's `call_opt` finds a leader, `spread_pass` asks the
+members once more in the same request, and sheds only if that second pass too finds no member to serve the read.
+The second pass runs at most once, and only if a whole pass (SPREAD_TRIES times FOLLOWER_CALL) still ends inside
+LOOKUP_FOR from the read's start. The dump still never runs on the leader, so the rule above stands whole; the change
+is edge code only (`crates/lookup`), and ships on an edge day. Two things came with it. `Elect`'s shed has its own
+reason, `(elect)` (`graftyard_lookup::ELECT`), and the edge logs it `{"shed": "elect"}`, apart from `tierOff`. And
+every `TierOff` or `Elect` verdict logs one line naming each member asked, its answer's term, leader, config index and
+`removed`, and the config index the isolate held (`spread_line`), on every install. Evidence:
+`a_leaderless_group_read_only_by_dumps_elects_and_never_serves_the_dump` now drives a whole pass over three
+followers that name no leader until the probe and checks that a follower serves the dump in the same pass, that only
+the probe goes the leader's way, that a second pass runs once and never past LOOKUP_FOR, and that its shed names
+ELECT and not TIER_OFF; it fails on main at "not shed". `an_idle_group_restored_whole_resumes_its_leader_on_one_report`
+(`crates/raft/tests/leadership.rs`) pins the raft half: an idle group restored whole elects nothing on its own, one
+`suspect` report answers `Resumed` without a new term, and then every member names the leader. `tests/tieroff/plant.py`
+adds five plants (no second pass, the second pass as a loop, the second pass past LOOKUP_FOR, the two reasons merged,
+the edge logging an Elect shed as `tierOff`). The rejected alternative was a raft change, a leader appending to a
+follower it hears was restored: it changes member behaviour for what the edge fixes in one place.
+
+**A note on earlier counts.** Until `elect-again`, an `Elect` shed carried TIER_OFF's reason and was logged
+`{"shed": "tierOff"}`. So every `tierOff` count recorded before it, the flip's halves and B0-33 m53 to m57's rows
+included, counts the sheds of leaderless groups too. Those numbers stand as written; read each as an upper bound on
+this rule's own sheds. `tests/fanout/tieroff503.py` now counts `elect` apart, on an edge that logs it.
+
 ### `pro-default`: the default zone plan is Pro at every tier, 2026-11-19
 
 **Decision.** The default zone plan is Pro at 50, 300, and 2,000 developers, with Cloudflare's 100 MB request body limit on HTTPS pushes. Business (200 MB) and Enterprise (up to 5 GB, and native SSH through Spectrum) remain install options, priced outside the tables. `scripts/cost.py` prices Pro at every tier (`PLAN`), and the `pro-plan` lever is gone from `scripts/cost.py` and `scripts/cost_agents.py`. The edge's own cap, its `report-status` message, the 413 runbook, and install preflight are unchanged: they already read the cap from the install's plan (`design/DESIGN.md`, Scale, "Push size").
@@ -11287,7 +11319,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - (b) A Durable Object in the agents account: a new store, with a Failure modes row for each class, beside `errors` objects that already exist.
 
 **Evidence.**
-- `crates/release/src/tests/group/errors.rs`: `a57_the_errors_read_sums_the_sites_that_answered_and_a_missed_gate_read_logs_its_pending`; `tests/m0carried/plant239.py`: 5 mutants, all caught.
+- `crates/release/src/tests/group/errors.rs`: `a57_the_errors_read_sums_the_sites_that_answered_and_a_missed_gate_read_logs_its_pending`; `tests/m0carried/plant239.py`: 5 mutants, all caught. `read_sites` adds `futures-util` (`default-features = false`, `alloc`) to `graftyard-release`, which the edge links; both edgeboots passed with 0 traps.
 - `crates/release/src/tests/group/run.rs`: `lm3_a_bad_controller_at_1pct_breaches_on_the_fronts_counts_and_commits_its_pointer_with_the_api_down`; `workers/agents-front/tests/front.rs`: `the_front_counts_the_controllers_answers_only_under_a_controller_roll_and_flushes_by_time_or_count`; `tests/edgeboot/run.sh`: the route answers 401 to no JWT and a bad one.
 - `tests/m0carried/plant233.py`: 8 mutants, all caught.
 
@@ -11375,3 +11407,26 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - `crates/actions/src/oidc.rs` tests: the RFC 7638 example thumbprint, GHES's `sub` examples, every claim of a push token written out by hand, and both slots' tokens verifying through `graftyard_identity::oidc::verify_id_token`.
 
 **Flip.** Two conditions reverse this. If a relying party BF-70 needs refuses RS256 or the bare-key JWKS, add ECDSA or `x5c` first (F123). If the JWKS read on the edge costs a site call per isolate too often, keep the slots in the edge's own variables, which costs a new edge version per rotation.
+
+#### `outbound-pure`: the outbound router decides in pure code and names the credential; the host attaches it (2026-11-25)
+
+**Status.** Built (AM3-WP2, step S1 of the lead's plan for LM-3's kill row, 2026-11-25); native only. The Workers host and the hosted reruns of L0-02 and L0-03 come with S2 to S4.
+
+**Decision.**
+- `graftyard_git::outbound::outbound` takes the Sandbox's request and the task's `Route` (`Route::of`: the `GraftyardHost` arm with the task's base and fork, then the model and registry arms, and the task's refs from `task::run_refs`). It returns a `Forward` or a `Refused` with its rule, as M0-WP14's prototype did.
+- A `Forward` names the credential (`Cred::Agent`, `Cred::Workspace`, `Cred::ModelKey`, or none) and carries the cleaned URL, the headers without any credential the Sandbox set, and the model body as parsed and re-serialized. The Workers host attaches the token or key from its own bindings and sends with `redirect: "manual"`.
+- Where the prototype served Go under `/go/`, a `Registry` arm with `go_modules` is a Go proxy at its root: every path must be a proxy path of a listed module.
+
+**Why.**
+- The rules are the security boundary of A4, so they belong where native tests and plants reach them. Keeping the tokens out of the pure code means no refusal text and no test can carry one.
+- The module sits beside the controller's `Task` and `run_refs`, so the push rule is the same prefix `decide` enforces.
+
+**Beat.**
+- Porting the TypeScript router as is: the controller is Rust, and the rules would then have no native test or plant.
+- Attaching the tokens in the pure function: every caller and test would need real secrets in memory.
+
+**Evidence.**
+- `crates/git/tests/outbound.rs`: every L0-02 variant that reaches the router (`tests/m0/results/m0-wp14.md`), in fork mode and in-repo, beside the positive controls.
+- `tests/m0carried/plant240.py`: 14 mutants, one for each rule, all caught. The first run missed the suffix-host mutant, and the test gained hosts that end in an allowed name.
+
+**Flip.** If the hosted L0-02 rerun shows a variant the pure function cannot see, such as one that depends on the TLS leg, that rule moves to the host with its own test.

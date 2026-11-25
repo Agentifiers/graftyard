@@ -495,8 +495,8 @@ pub struct TaskBudget { pub task_tokens: u64, pub org_month_tokens: u64, pub wal
 /// reach the router. The router refuses plain HTTP, never follows a redirect, and holds the task in the entrypoint's
 /// props, because a container has 128 intercept entries and none can be removed while it runs [measured, `tests/m0/results/m0-wp14.md`, L0-02;
 /// doc, https://developers.cloudflare.com/containers/api/durable-object-container/]. A request no `Allowed` arm
-/// matches is refused. On the Graftyard host it always overwrites `Authorization`, `Cookie`, and URL userinfo with the
-/// task's token, and refuses receive-pack commands outside the task's prefix and every status or check-run write.
+/// matches is refused. On the Graftyard host the task's token replaces `Authorization`, `Cookie`, and URL userinfo, and
+/// it refuses receive-pack outside the task's prefix and status or check-run writes (`graftyard_git::outbound`; plant240).
 pub fn outbound(req: Request, task: &Task, tokens: &TokenCache) -> Result<Request, Refused>;
 pub enum Allowed {
     /// Smart HTTP on the base and fork repositories, and REST under `/api/v3/repos/{base or fork}/`, matched

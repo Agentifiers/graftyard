@@ -1,0 +1,50 @@
+2026-11-25T09:33:17.0202596Z Current runner version: '2.338.2'
+2026-11-25T09:33:17.0207114Z Runner name: 'bf70-r2-1'
+2026-11-25T09:33:17.0207453Z Machine name: '172'
+2026-11-25T09:33:17.0209499Z Prepare workflow directory
+2026-11-25T09:33:17.0548795Z Prepare all required actions
+2026-11-25T09:33:17.0593423Z Getting action download info
+2026-11-25T09:33:19.0769338Z Download action repository 'm3org/bf70-r2-cac@v6.2.0' (SHA:2a183bb2689ecb8ec87670bbecac42adadf45906)
+2026-11-25T09:33:21.4083092Z Complete job name: sts
+2026-11-25T09:33:21.4632652Z ##[group]Run test -n "$ACTIONS_ID_TOKEN_REQUEST_URL" && test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" && echo "the runner exported both"
+2026-11-25T09:33:21.4632809Z [36;1mtest -n "$ACTIONS_ID_TOKEN_REQUEST_URL" && test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" && echo "the runner exported both"[0m
+2026-11-25T09:33:21.4648161Z shell: /usr/sbin/bash -e {0}
+2026-11-25T09:33:21.4648482Z ##[endgroup]
+2026-11-25T09:33:21.4776379Z the runner exported both
+2026-11-25T09:33:21.4930072Z ##[group]Run m3org/bf70-r2-cac@v6.2.0
+2026-11-25T09:33:21.4930361Z with:
+2026-11-25T09:33:21.4930523Z   role-to-assume: arn:aws:iam::000000000000:role/graftyard
+2026-11-25T09:33:21.4930580Z   aws-region: us-east-1
+2026-11-25T09:33:21.4930604Z   sts-endpoint: http://127.0.0.1:9000
+2026-11-25T09:33:21.4930634Z   output-credentials: true
+2026-11-25T09:33:21.4930697Z   output-env-credentials: false
+2026-11-25T09:33:21.4930730Z   audience: sts.amazonaws.com
+2026-11-25T09:33:21.4930774Z ##[endgroup]
+2026-11-25T09:33:23.7280367Z Assuming role with OIDC
+2026-11-25T09:33:24.0758469Z Retry AssumeRole: attempt 1 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 49ms.
+2026-11-25T09:33:24.1254958Z Assuming role with OIDC
+2026-11-25T09:33:24.1689210Z Retry AssumeRole: attempt 2 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 41ms.
+2026-11-25T09:33:24.2105813Z Assuming role with OIDC
+2026-11-25T09:33:24.2533147Z Retry AssumeRole: attempt 3 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 52ms.
+2026-11-25T09:33:24.3059227Z Assuming role with OIDC
+2026-11-25T09:33:24.3484074Z Retry AssumeRole: attempt 4 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 272ms.
+2026-11-25T09:33:24.6217918Z Assuming role with OIDC
+2026-11-25T09:33:24.6646130Z Retry AssumeRole: attempt 5 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 496ms.
+2026-11-25T09:33:25.1621862Z Assuming role with OIDC
+2026-11-25T09:33:25.1906955Z Retry AssumeRole: attempt 6 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 1174ms.
+2026-11-25T09:33:26.3666031Z Assuming role with OIDC
+2026-11-25T09:33:26.4068165Z Retry AssumeRole: attempt 7 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 1605ms.
+2026-11-25T09:33:28.0145569Z Assuming role with OIDC
+2026-11-25T09:33:28.0420024Z Retry AssumeRole: attempt 8 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 554ms.
+2026-11-25T09:33:28.5972704Z Assuming role with OIDC
+2026-11-25T09:33:28.6245001Z Retry AssumeRole: attempt 9 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 2956ms.
+2026-11-25T09:33:31.5839274Z Assuming role with OIDC
+2026-11-25T09:33:31.6098793Z Retry AssumeRole: attempt 10 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 13840ms.
+2026-11-25T09:33:45.4601234Z Assuming role with OIDC
+2026-11-25T09:33:45.5003913Z Retry AssumeRole: attempt 11 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 3505ms.
+2026-11-25T09:33:49.0082382Z Assuming role with OIDC
+2026-11-25T09:33:49.0305930Z Retry AssumeRole: attempt 12 of 12 failed: Could not assume role with OIDC: Token is not valid yet. Retrying after 59760ms.
+2026-11-25T09:34:48.7963621Z Retry AssumeRole: reached max retries (12); giving up.
+2026-11-25T09:34:48.8018517Z ##[error]Could not assume role with OIDC: Token is not valid yet
+2026-11-25T09:34:48.8294838Z Post job cleanup.
+2026-11-25T09:34:48.9215359Z Cleaning up orphan processes

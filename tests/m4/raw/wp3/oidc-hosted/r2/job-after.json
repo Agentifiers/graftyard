@@ -1,0 +1,74 @@
+{
+  "tag": "after",
+  "fork": false,
+  "run": {
+    "t": 46843,
+    "status": {
+      "Completed": "Success"
+    },
+    "jobs": [
+      {
+        "id": 1507372,
+        "name": "sts",
+        "state": "Completed",
+        "s": {
+          "Completed": {
+            "at": 1795600792743,
+            "conclusion": "Success"
+          }
+        }
+      },
+      {
+        "id": 1507373,
+        "name": "denied",
+        "state": "Completed",
+        "s": {
+          "Completed": {
+            "at": 1795600812887,
+            "conclusion": "Success"
+          }
+        }
+      }
+    ]
+  },
+  "conclusions": {
+    "sts": "Success",
+    "denied": "Success"
+  },
+  "checks": {
+    "sts_succeeded": true,
+    "denied_succeeded": true,
+    "exported_both": true,
+    "action_from_install": true,
+    "s3_read_ok": true,
+    "verified_against_jwks": true,
+    "second_token_ok": true,
+    "denied_no_url": true,
+    "denied_refused_403": true,
+    "kid": "g-7DvKNwFRNdKn5xF8YpU1tlE7H2n65FfIVhvJS8mLk",
+    "published": "['g-7DvKNwFRNdKn5xF8YpU1tlE7H2n65FfIVhvJS8mLk', 'xGTXBDFSTAgZPaEknItTcA4H69VLmaXS4XMnKlWWDDA']",
+    "claims": {
+      "iss": "https://graft-m4a-edge.<sub>.workers.dev/_services/token",
+      "aud": "sts.amazonaws.com",
+      "sub": "repo:m3org/bf70-r2:pull_request",
+      "repository": "m3org/bf70-r2",
+      "repository_owner": "m3org",
+      "ref": "refs/pull/7/merge",
+      "workflow_ref": "m3org/bf70-r2/.github/workflows/hosted.yml@refs/pull/7/merge",
+      "job_workflow_ref": "m3org/bf70-r2/.github/workflows/hosted.yml@refs/pull/7/merge",
+      "runner_environment": "self-hosted",
+      "event_name": "pull_request",
+      "repository_visibility": "private",
+      "run_id": "1507371",
+      "run_attempt": "1",
+      "base_ref_set": false,
+      "head_ref_set": false
+    },
+    "sub_is_pull_request": true,
+    "event_name_pull_request": true,
+    "gap_f121_base_ref": "empty (F121)",
+    "no_token_in_logs": true
+  },
+  "ok": true,
+  "dir": "tests/m4/raw/wp3/oidc-hosted/r2/job-after"
+}

@@ -1,0 +1,13 @@
+2026-11-25T09:10:44Z
+a4346e1bf
+discovery: {"issuer":"https://graft-m4a-edge.<sub>.workers.dev/_services/token","jwks_uri":"https://graft-m4a-edge.<sub>.workers.dev/_services/token/.well-known/jwks"}
+jwks kids: ["xGTXBDFSTAgZPaEknItTcA4H69VLmaXS4XMnKlWWDDA","g-7DvKNwFRNdKn5xF8YpU1tlE7H2n65FfIVhvJS8mLk"]
+{"script":"graft-m4a-site-a","created_on":"2026-11-25T09:03:44.782846Z","versions":["91113a0f 100"]} versions 100
+{"script":"graft-m4a-site-b","created_on":"2026-11-25T09:03:54.049861Z","versions":["2a82f589 100"]} versions 100
+{"script":"graft-m4a-site-c","created_on":"2026-11-25T09:04:02.36413Z","versions":["8469d9ef 100"]} versions 100
+{"script":"graft-m4a-edge","created_on":"2026-11-25T09:07:52.396832Z","versions":["330560d3 100"]} versions 47
+{"script":"graft-m4a-ops","created_on":"2026-11-25T02:25:07.522227Z","versions":["ac4cd9a5 100"]} versions 51
+{"ops_schedules":[]}
+{"count":543,"current":null,"ActionsOidcKey":0}
+install day: {"prefix_usd":2.2}
+row so far: {"prefix_usd":0.01} (stop at $5)

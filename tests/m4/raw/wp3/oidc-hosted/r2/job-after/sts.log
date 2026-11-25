@@ -1,0 +1,67 @@
+2026-11-25T09:59:37.3191516Z Current runner version: '2.338.2'
+2026-11-25T09:59:37.3196805Z Runner name: 'bf70-r2-1'
+2026-11-25T09:59:37.3197349Z Machine name: '172'
+2026-11-25T09:59:37.3199711Z Prepare workflow directory
+2026-11-25T09:59:37.3604703Z Prepare all required actions
+2026-11-25T09:59:37.3651918Z Getting action download info
+2026-11-25T09:59:39.9841488Z Download action repository 'm3org/bf70-r2-cac@v6.2.0' (SHA:2a183bb2689ecb8ec87670bbecac42adadf45906)
+2026-11-25T09:59:41.9665873Z Complete job name: sts
+2026-11-25T09:59:42.0348528Z ##[group]Run test -n "$ACTIONS_ID_TOKEN_REQUEST_URL" && test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" && echo "the runner exported both"
+2026-11-25T09:59:42.0348729Z [36;1mtest -n "$ACTIONS_ID_TOKEN_REQUEST_URL" && test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" && echo "the runner exported both"[0m
+2026-11-25T09:59:42.0367839Z shell: /usr/sbin/bash -e {0}
+2026-11-25T09:59:42.0368560Z ##[endgroup]
+2026-11-25T09:59:42.0497041Z the runner exported both
+2026-11-25T09:59:42.0666620Z ##[group]Run m3org/bf70-r2-cac@v6.2.0
+2026-11-25T09:59:42.0666912Z with:
+2026-11-25T09:59:42.0666969Z   role-to-assume: arn:aws:iam::000000000000:role/graftyard
+2026-11-25T09:59:42.0667057Z   aws-region: us-east-1
+2026-11-25T09:59:42.0667105Z   sts-endpoint: http://127.0.0.1:9000
+2026-11-25T09:59:42.0667152Z   output-credentials: true
+2026-11-25T09:59:42.0667204Z   output-env-credentials: false
+2026-11-25T09:59:42.0667365Z   audience: sts.amazonaws.com
+2026-11-25T09:59:42.0667437Z ##[endgroup]
+2026-11-25T09:59:43.9723274Z Assuming role with OIDC
+2026-11-25T09:59:44.0476221Z Authenticated as assumedRoleId undefined
+2026-11-25T09:59:44.0709045Z ##[group]Run aws --endpoint-url http://127.0.0.1:9000 --region us-east-1 s3 ls s3://probe/ && echo "s3 read ok"
+2026-11-25T09:59:44.0709172Z [36;1maws --endpoint-url http://127.0.0.1:9000 --region us-east-1 s3 ls s3://probe/ && echo "s3 read ok"[0m
+2026-11-25T09:59:44.0722881Z shell: /usr/sbin/bash -e {0}
+2026-11-25T09:59:44.0722952Z env:
+2026-11-25T09:59:44.0723346Z   AWS_ACCESS_KEY_ID: ***
+2026-11-25T09:59:44.0723485Z   AWS_SECRET_ACCESS_KEY: ***
+2026-11-25T09:59:44.0723747Z   AWS_SESSION_TOKEN: ***
+2026-11-25T09:59:44.0723801Z ##[endgroup]
+2026-11-25T09:59:44.4972069Z 2026-11-25 09:11:01          6 hello.txt
+2026-11-25T09:59:44.6203755Z s3 read ok
+2026-11-25T09:59:44.6230373Z ##[group]Run t=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+2026-11-25T09:59:44.6230850Z [36;1mt=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')[0m
+2026-11-25T09:59:44.6231053Z [36;1mecho "$t" | python3 -c '[0m
+2026-11-25T09:59:44.6231134Z [36;1mimport base64, json, sys, time, urllib.request[0m
+2026-11-25T09:59:44.6231256Z [36;1mfrom cryptography.hazmat.primitives import hashes[0m
+2026-11-25T09:59:44.6231372Z [36;1mfrom cryptography.hazmat.primitives.asymmetric import padding, rsa[0m
+2026-11-25T09:59:44.6231461Z [36;1mb = lambda s: base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))[0m
+2026-11-25T09:59:44.6231576Z [36;1mh, p, s = sys.stdin.read().strip().split(".")[0m
+2026-11-25T09:59:44.6231772Z [36;1mhead, claims = json.loads(b(h)), json.loads(b(p))[0m
+2026-11-25T09:59:44.6231842Z [36;1m# A named user agent: workers.dev answers the Python-urllib default with 403 "error code: 1010" (r2, first try).[0m
+2026-11-25T09:59:44.6231960Z [36;1mget = lambda u: json.load(urllib.request.urlopen(urllib.request.Request(u, headers={"user-agent": "bf70-verify"}), timeout=20))[0m
+2026-11-25T09:59:44.6232121Z [36;1mdisc = get(claims["iss"] + "/.well-known/openid-configuration")[0m
+2026-11-25T09:59:44.6232251Z [36;1massert disc["issuer"] == claims["iss"], "issuer"[0m
+2026-11-25T09:59:44.6232310Z [36;1mkeys = {k["kid"]: k for k in get(disc["jwks_uri"])["keys"]}[0m
+2026-11-25T09:59:44.6232454Z [36;1mk = keys[head["kid"]][0m
+2026-11-25T09:59:44.6232932Z [36;1mpub = rsa.RSAPublicNumbers(int.from_bytes(b(k["e"]), "big"), int.from_bytes(b(k["n"]), "big")).public_key()[0m
+2026-11-25T09:59:44.6233067Z [36;1mpub.verify(b(s), (h + "." + p).encode(), padding.PKCS1v15(), hashes.SHA256())[0m
+2026-11-25T09:59:44.6233185Z [36;1massert head["alg"] == "RS256" and claims["aud"] == "sts.amazonaws.com" and claims["exp"] > time.time()[0m
+2026-11-25T09:59:44.6233248Z [36;1mkeep = ("iss", "aud", "sub", "repository", "repository_owner", "ref", "workflow_ref", "job_workflow_ref",[0m
+2026-11-25T09:59:44.6233363Z [36;1m        "runner_environment", "event_name", "repository_visibility", "run_id", "run_attempt")[0m
+2026-11-25T09:59:44.6233425Z [36;1m# base_ref and head_ref are printed only as set or empty: F121 leaves them empty.[0m
+2026-11-25T09:59:44.6233540Z [36;1mshown = {c: claims.get(c) for c in keep} | {c + "_set": bool(claims.get(c)) for c in ("base_ref", "head_ref")}[0m
+2026-11-25T09:59:44.6233632Z [36;1mprint("verified kid=" + head["kid"], "published", sorted(keys), json.dumps(shown))[0m
+2026-11-25T09:59:44.6233697Z [36;1m'[0m
+2026-11-25T09:59:44.6233854Z [36;1mcurl -sf -X POST http://127.0.0.1:9000/ -d Action=AssumeRoleWithWebIdentity -d Version=2011-06-15 \[0m
+2026-11-25T09:59:44.6233993Z [36;1m  --data-urlencode RoleArn=arn:aws:iam::000000000000:role/graftyard --data-urlencode "WebIdentityToken=$t" \[0m
+2026-11-25T09:59:44.6234057Z [36;1m  | grep -q '<AccessKeyId>' && echo "second token ok"[0m
+2026-11-25T09:59:44.6255745Z shell: /usr/sbin/bash -e {0}
+2026-11-25T09:59:44.6255847Z ##[endgroup]
+2026-11-25T09:59:47.1128099Z verified kid=g-7DvKNwFRNdKn5xF8YpU1tlE7H2n65FfIVhvJS8mLk published ['g-7DvKNwFRNdKn5xF8YpU1tlE7H2n65FfIVhvJS8mLk', 'xGTXBDFSTAgZPaEknItTcA4H69VLmaXS4XMnKlWWDDA'] {"iss": "https://graft-m4a-edge.<sub>.workers.dev/_services/token", "aud": "sts.amazonaws.com", "sub": "repo:m3org/bf70-r2:pull_request", "repository": "m3org/bf70-r2", "repository_owner": "m3org", "ref": "refs/pull/7/merge", "workflow_ref": "m3org/bf70-r2/.github/workflows/hosted.yml@refs/pull/7/merge", "job_workflow_ref": "m3org/bf70-r2/.github/workflows/hosted.yml@refs/pull/7/merge", "runner_environment": "self-hosted", "event_name": "pull_request", "repository_visibility": "private", "run_id": "1507371", "run_attempt": "1", "base_ref_set": false, "head_ref_set": false}
+2026-11-25T09:59:47.2127405Z second token ok
+2026-11-25T09:59:47.2895002Z Post job cleanup.
+2026-11-25T09:59:47.5830619Z Cleaning up orphan processes
