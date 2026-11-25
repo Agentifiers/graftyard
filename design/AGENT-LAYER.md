@@ -1025,7 +1025,7 @@ Rows added after the final pass, by the implementability walk (`history/review/w
 - Is an org's audit-log retention right for session logs, which are scanned and redacted but may still hold secrets? The 12 months priced is a [guess].
 - Model tokens at $2 a Graftyard-run task are a [guess] that dominates a platform engineer's bill. The controller's budgets bound it. M0-WP14 did not measure it, because it made no model calls. It needs each harness run on a fixed task through `ModelInference`, which already sees every response's usage.
 - Does a `graft-controller` version pinned by a `fetch()` override also pin the Workflow instances it creates, or do their steps run on the deployment's current version? If they do not, `ControllerPointer` swap-back covers only new webhook handling, and running tasks keep the bad version's step code until `ControllerRoll` or `Abort` redeploys [unverified].
-- Does a changed Secrets Store value reach a bound script with no new script version? `graftyard apps init` and App-key rotation in the site scripts assume it does [inference from the binding's async `get()`].
+- Does a changed Secrets Store value reach a bound script with no new script version? Yes: an in-place write reached three running isolates within 4 s, with no new version, so `graftyard apps init` and App-key rotation can rely on it [measured, `tests/m5/results/m5-wp6.md`, "A17, the Secrets Store visibility row"].
 - Does GHES let `graftyard-agent`, installed on the base, open a PR whose head is in the `<org>-agents` fork when the same App is installed on the fork with `contents: read`? Shape, "First-party Apps", installs it on both for that reason [unverified].
 
 ## Synthesis decision

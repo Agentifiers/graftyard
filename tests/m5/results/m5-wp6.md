@@ -707,3 +707,46 @@ included Workers requests and Durable Object time: estimated under $0.05, with a
   first, the store slot PATCHed, `graft-runners`' next pass confirming 201 on `access_tokens`, then the old key off.
 - That App is registered on graft-m4a, the edge `graft-runners` points at. So that row runs on graft-m4a after
   BF-69: a `PutApp` and a store write, no site day, about $0.05.
+
+## A17, the Secrets Store visibility row (2026-11-25, runner account, row p1): yes, within 4 s
+
+Run under the lead's go, from `a17-plan` `e07346e7`. Driver `tests/m5/a17/row.sh`, analysis `tests/m5/a17/analyze.py`,
+logs `raw/a17/p1/`.
+- Probe `graft-a17-probe` (version `a034fe73`) bound to a throwaway secret `graft-a17-probe` in the runner account's
+  `graft-runners` store.
+- Every time below is Cloudflare's: the writes' `Date` headers and the Worker's own `Date.now()`. The orb ran 28 to
+  29 s behind (`put*.log`).
+- Done line 03:19:23Z, the teardown. Spend: the graft-m4a prefix stayed at $0.53 for the UTC day ($0.52 before);
+  the runner account read $0.00 from 03:00Z (`acctcost.py`).
+
+**Result: a new value reaches a running isolate within 4 s, with no new version.** Each write was a `PATCH` over the
+one slot, as `HostedRunnersAppKey` is rotated. `Date` has 1 s resolution, so each true write time is up to 1 s after
+the times shown.
+
+| Write | `Date` | enam watch | weur watch | apac watch | Orb sampler (`/h`, every second) |
+| --- | --- | --- | --- | --- | --- |
+| v1 `605712ec` | 03:07:25 | +1.71 s | +2.21 s | +1.92 s | last old read +0.62 s, first new +1.81 s |
+| v2 `7c49fe55` | 03:12:29 | +1.10 s | +1.33 s | +1.18 s | last old +1.48 s, first new +2.57 s |
+| v3 `c91e0fd7` | 03:17:30 | +3.50 s | +3.47 s | +3.46 s | last old +1.93 s, first new +3.06 s |
+
+- **Same isolate.** Each watch object kept one isolate id across all four values: enam `c13ceb32`, weur `50bcc6a7`,
+  apac `d17776a8`, with 835 one-second reads each. So the new value reached a running isolate that had read the old
+  one, and no restart was involved.
+- **The sampler agrees.** Its 743 reads went to 65 isolates in LAX, PDX and SJC. 10 to 12 of those isolates served the
+  old value before each write and the new one after it. No read 4 s or more after a write returned an older value.
+- **No new version.** The probe stayed at version `a034fe73` (2 versions: deploy and `PROBE_TOKEN`), with no new
+  version after any write (`versions*.log`).
+- **One gap.** The sampler missed 13 s from 03:07:47Z (10 empty lines, curl's 5 s timeout), after v1 had switched,
+  outside every measured window.
+- **Untouched.** `graft-runners` and `HostedRunnersAppKey` are unchanged (`before.log` and `after.log` are identical):
+  8 versions, `13193b05` at 100% since 2026-11-20, the secret modified 2026-11-19, cron `*/5`.
+- **Teardown:** the probe and the secret are deleted, files shredded. The runner account holds only `graft-runners`
+  and `HostedRunnersAppKey`.
+
+**What this settles:**
+- A holder that reads a Secrets Store binding at use sees an in-place write within seconds: `graft-runners` re-reads
+  at each pass, and the edge re-reads `/ssh_slots` after its 60 s cache.
+- The two-slot `Rotate` design is not needed for visibility. It stays for the probe-then-switch order and the
+  undo it gives.
+- Not measured: a holder that caches the value in isolate memory sees it only when its cache ends. That is the
+  holder's code, not the platform's.

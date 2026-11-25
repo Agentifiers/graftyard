@@ -20,12 +20,13 @@ NAME=graft-a17-probe
 RB="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_RUNNER_ACCOUNT_ID"
 ra() { curl -s -H "Authorization: Bearer $CLOUDFLARE_RUNNER_API_TOKEN" "$@"; }
 runner() { CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_RUNNER_ACCOUNT_ID CLOUDFLARE_API_TOKEN=$CLOUDFLARE_RUNNER_API_TOKEN "$@"; }
-scrub() { sed -e "s/$CLOUDFLARE_RUNNER_ACCOUNT_ID/<runner-account>/g" -e "s/${CF_WORKERS_SUBDOMAIN:-none}/<sub>/g" -e "s#$HOME/#~/#g"; }
+scrub() { sed -e "s/$CLOUDFLARE_RUNNER_ACCOUNT_ID/<runner-account>/g" -e "s/${CF_RUNNER_WORKERS_SUBDOMAIN:-none}/<runner-sub>/g" -e "s/${CF_WORKERS_SUBDOMAIN:-none}/<sub>/g" -e "s#$HOME/#~/#g"; }
 N=$(ls "$O" | grep -c "^$STEP" || true)
 L="$O/$STEP$( [ "$N" -gt 0 ] && echo "-$((N + 1))" ).log"
 log() { { date -u +%FT%TZ; git rev-parse --short HEAD; cat; } | scrub >"$L"; cat "$L"; }
 STORE=$(ra "$RB/secrets_store/stores" | jq -r '.result[] | select(.name == "graft-runners") | .id')
-URL=https://$NAME.$CF_WORKERS_SUBDOMAIN.workers.dev
+# The runner account has its own workers.dev subdomain; the install account's answers 1042 for this script.
+URL=https://$NAME.${CF_RUNNER_WORKERS_SUBDOMAIN:?}.workers.dev
 secret_id() { ra "$RB/secrets_store/stores/$STORE/secrets?per_page=100" | jq -r --arg n "$NAME" '.result[] | select(.name == $n) | .id'; }
 draw() { ( umask 077; python3 -c 'import os; print(os.urandom(24).hex())' | jq -Rc '{value: .}' >"$1" ); }
 h16() { jq -r .value "$1" | tr -d '\n' | sha256sum | cut -c1-16; }

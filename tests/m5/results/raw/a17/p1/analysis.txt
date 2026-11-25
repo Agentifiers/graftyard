@@ -1,0 +1,11 @@
+watch log: log-5.log
+enam {'isolates': ['c13ceb32'], 'ticks': 835, 'delays': [1.71, 1.1, 3.5]}
+weur {'isolates': ['50bcc6a7'], 'ticks': 836, 'delays': [2.21, 1.33, 3.47]}
+apac {'isolates': ['d17776a8'], 'ticks': 835, 'delays': [1.92, 1.18, 3.46]}
+sampler rows 743 isolates 65 colos ['LAX', 'PDX', 'SJC']
+v1 Date 03:07:25 reads 253 old 1 last old +0.62s first new +1.81s other 0
+   isolates on both sides: 10
+v2 Date 03:12:29 reads 267 old 2 last old +1.48s first new +2.57s other 0
+   isolates on both sides: 10
+v3 Date 03:17:30 reads 113 old 2 last old +1.93s first new +3.06s other 0
+   isolates on both sides: 12
