@@ -1,0 +1,10 @@
+2026-11-25T12:43:01Z
+c40141d81
+before {"script":"graft-m4a-edge","created_on":"2026-11-25T09:07:52.396832Z","versions":["330560d3 100"]}
+deploy exit 0
+Current Version ID: 3c453149-1b68-4fba-9d80-56baf66b6555
+binding diff (plain text; only GRAFTYARD_ARTIFACTS may change):
+>   "GRAFTYARD_ARTIFACTS": "1",
+after {"script":"graft-m4a-edge","created_on":"2026-11-25T12:46:22.490314Z","versions":["3c453149 100"]}
+edge: graft-m4a-edge serves 3c453149 at 100% (rev [INFO]: 🌀  Compiling to Wasm...), as ~/wt-heap/tests/m4/raw/wp3/bf71/edge-deploy.raw deployed
+edgever exit 0
