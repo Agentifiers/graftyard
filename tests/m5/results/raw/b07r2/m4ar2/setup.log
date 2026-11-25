@@ -1,0 +1,34 @@
+2026-11-25T13:26:57Z
+setup from 2026-11-25T13:26:57Z; stop $6
+{"count":548,"current":null,"drained":[],"site_release":{"0":"2f379da8","1":"4c6729de","2":"4c6729de"},"uploads":["00ed8e77","051f6f61","16bd167b","1a0f0e50","2310a9a4","28af528e","2f379da8","308769e7","3452f14a","3c7fe311","416db57e","419303e4","44c04e9b","44f1ddfe","4c6729de","4d6e33f1","5af23a25","5bc88414","5d0ba4e9","63644eb6","6c2e44e7","761a720d","762a96d1","7def7980","8ee79012","94260ec8","a3a1f620","aa14c304","aab34878","af45659e","b48fa157","bdf8547f","dc9b1966","e23f69e9","e592682c","fcd70122"]}
+{"script":"graft-m4a-ops","created_on":"2026-11-25T10:01:29.231073Z","versions":["ac4cd9a5 100"]}
+{"mint":"graft-m4a-b07r2-deploy","ok":true,"id":"ff83f94a","errors":[]}
+{"patch":"graft-m4a-ops-deploy-token","ok":true,"errors":[]}
+put n/formats.txt
+put n/release.json
+put n/release.sig
+put n/site/index.js
+put n/site/index_bg.wasm
+put n/site/marker.js
+put n1/formats.txt
+put n1/release.json
+put n1/release.sig
+put n1/site/index.js
+put n1/site/index_bg.wasm
+put n1/site/marker.js
+Current Version ID: 0beb5f8d-1178-4245-8a09-c798d9ff90e5
+✨ Success! Uploaded secret TOKEN
+chains from repo:7634000
+{"ok":20,"of":20}
+{"ok":20,"of":20}
+{"ok":20,"of":20}
+{"ok":19,"of":20}
+{"ok":20,"of":20}
+{"ok":19,"of":20}
+{"ok":20,"of":20}
+{"ok":20,"of":20}
+{"ok":13,"of":20}
+{"ok":19,"of":20}
+c voters: 160 of 160
+ab voters: 40 of 40
+spend since setup: $0.09

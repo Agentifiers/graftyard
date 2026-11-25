@@ -506,7 +506,7 @@ Raw records in `raw/ckA/` and `raw/ckB/`:
 - `health.txt`: every voter's `site_health` each minute.
 - `leaders.txt` (row B): the leader site of the 160 c-homed chains every 10 s.
 
-## B0-07 r2: the plan (2026-11-25, driver `tests/m5/b07r2/`, not yet run)
+## B0-07 r2: the plan (2026-11-25, driver `tests/m5/b07r2/`; run the same day, result below)
 
 Row B's shape on graft-m4a, with `graft-ops` from merged main so `calm-one` (R53's fix) is in, and the per-group line
 measured from each chain's own members. The lead approved the driver at $0 on 2026-11-25; it runs only after the lead
@@ -551,3 +551,121 @@ minute by `roll` and `run`; at it the load and fault go off and the row is held 
 **Not covered.** The election trace lives in each member's memory (`ELECT_MAX` 2,000 rows), so an isolate reset between
 polls loses rows; the 20 s poll keeps the loss to rows written in the 20 s before a reset, and `judge.py` counts each
 member it could not read (`members_missed`).
+
+## B0-07 r2: result (2026-11-25, main `f08c570e`, graft-m4a)
+
+**Result: PASS on every line.** `graft-ops` undrained b under the lead limit and drained c, then undrained c on its own
+after the lift, with no hand `Normal`. The day reached `IntentDone`. All 32 chains led on c at the drain moved within
+20 s: 31 were active in the 50 s before it and 1 was idle. The active max was 18,621 ms and the p50 5,044 ms. R53's fix
+(`calm-one`) has now run hosted, so B0-07 closes. Done line 14:47:04Z (Cloudflare time). The lead had the verdict at
+about 14:52Z.
+
+**Setup.**
+- Site day from `f08c570e` (test-faults, BF-70 r2's flags) at 13:21Z: a `2f8a1178`, b `dd18f535`, c `b9960b91`. Crons
+  `[]`, reretire OK. The edge stayed on `3c453149`.
+- N `38b34a9b…` and N+1 `387034ad…` are that build plus a marker each, with 27 formats.
+- From 13:26:57Z: 160 c-homed chains from `repo:7634000` and 40 a-homed from `repo:7634500`. Voters were known for 200
+  of 200; 9 of 200 warm writes missed.
+- `graft-m4a-ops` `914cb38f` (60 s dwells) ran `SiteDay{b, N}` to `IntentDone` (entry 561), so b reported N. Then
+  `cbbdcd6d` (420 s dwells, 1-minute cron) ran the measured day.
+
+**Incident, the deploy token (A54).** The row's first deploy token held Workers Scripts Write and Workers Containers
+Write only. `graft-ops`' first version upload answered 10021 "Secrets store binding authorization failed", the case
+DECISIONS's A54 amendment records. The token was re-minted with Secrets Store Write and PATCHed into
+`graft-m4a-ops-deploy-token`, the old one was revoked, and the uploads then committed. The driver now mints that
+permission (`row.sh setup`).
+
+**The measured day** (intent `01M89GE5NFWA3EJ2RBMPSE3GMX`; the group's times):
+
+| Index | Time | Entry |
+| --- | --- | --- |
+| 562 | 14:06:32.817Z | `Intent` `SiteDay{b, N+1}`, undo `Rollback{b, N}` |
+| 563, 564 | 14:07:04.353Z, 14:07:06.166Z | `SiteMode` Drain b, step 0 (1%) |
+| 565 | 14:15:07.631Z | step 1 (10%) |
+| | 14:15:12.762Z | the gray fault on c: rate 0.3, 3 s hangs (the scratch Worker's clock) |
+| 566 | 14:18:08.575Z | `SiteMode` Normal b, drain key, 175.8 s after the fault |
+| 567 | 14:18:11.753Z | `SiteMode` Drain c, drain key, 179.0 s after the fault, in the same run |
+| | 14:19:38.344Z | the fault lifted, 86.6 s after the drain |
+| 568 | 14:35:08.882Z | `SiteMode` Normal c, drain key, **committed by `graft-ops`** (its `Committed("SiteMode")` at 14:35:18.986Z). The driver posted no `SiteMode` |
+| 569 to 574 | 14:35:11.719Z to 14:45:08.981Z | steps 2 to 6, with `SiteRelease` b N+1 at 571 |
+| 575 | 14:45:13.013Z | `IntentDone` |
+
+c's calm came from observer a alone while b was lead-limited (`calm: limited Some(SiteId(1))`, first `calm: true` for
+c at 14:35:08.716Z), as `calm-one` says. Afterwards the group held 576 entries, with no intent current, nothing drained,
+and site_release b = `387034ad`.
+
+**Lines** (`judge.py` on the committed raws, `raw/b07r2/m4ar2/verdict.jsonl`):
+
+| Line | Result |
+| --- | --- |
+| Never two sites drained | pass: at most 1 |
+| `graft-ops` undrains b under the lead limit, then drains c | pass: 566, then 567 |
+| c undrains with no hand `Normal` | pass: 568 by `graft-ops`; hand posts none |
+| The day reaches `IntentDone` | pass: 575 |
+| Every c-homed chain's leader at the drain is known | pass: 160 of 160 |
+| c-led chains active in the 50 s before the drain | **32 led on c at the drain: 31 active, 1 idle**. The benches wrote every c-homed chain, so no extra load was needed |
+| Every group led on c moves within 20 s | pass: **32 of 32**. Active max 18,621 ms (`repo:7634050`), p50 5,044 ms. 4 moved after 10 s and 2 after 15 s. 13 member reads missed |
+
+**Not measured.** Member reads that missed lose only the role rows written in the 20 s before an isolate reset (the
+plan's "Not covered"). The 1 idle chain (`repo:7634040`) moved 1.6 s after the drain and 0.56 s after its next
+request.
+
+### The judge's four fixes, and that none turned a fail into a pass
+
+`judge.py` was changed during the run, after the raws began to arrive and before the verdict. On the same raws, the
+pre-run judge (`196c2ffa`) answers FAIL (`raw/b07r2/m4ar2/verdict-196c2ffa.jsonl`). It judges the wrong day: it takes
+the group's first c drain, entry 36 on 2026-11-22. From there:
+- "no hand Normal" fails, because that day's Normal c (entry 43) has no `graft-ops` line in this row's log;
+- it finds 37 chains on c, 0 active, with moves of about 268,000 s;
+- "leader known" fails with 95 unplaced.
+
+| Fix | Line it changes | Why the old rule was wrong, not strict | Effect on these raws | Case that still fails a late move (`test_judge.py`) |
+| --- | --- | --- | --- | --- |
+| 1. Judge only entries from the measured intent on; a missing intent fails | every line that reads entries | The file holds the group's whole history (576 entries), so "first c drain" found another day's drain three days earlier. Judging that day is a different row, not a stricter one | the drain becomes 567 and the Normal 568. With this fix alone the per-group line reads 31 of 31, p50 4,690 ms, max 18,621 ms | an earlier day drained c and the chain moved 5 s after it; on the measured day it moves at 25 s: FAIL, naming it. Also: an intent missing from the group fails |
+| 2. Baseline is the newest pre-fault `/status` poll naming a leader, not the first poll | "leader known", and which chains count as led on c | The first poll (14:06:50.8Z) named a leader for only 65 of 160 c-chains, because a group restored from storage reports no leader until a request wakes it (F128). Polls 2 to 12 named 158 to 160. The old rule then also dropped every role row before the first poll, so a chain whose last election predates the poll could never be placed | places `repo:7634079`: c won term 2 at 14:06:42.6Z, before the first poll, and it moved 5,776 ms after the drain. Led on c goes from 31 to 32; nothing else changes | the first poll names no leader, a later pre-fault poll names c, and the chain moves at 25 s: FAIL. Under the old rule the same chain is unplaced and the row still fails |
+| 3. Role rows from `POLL_MS` (30 s) before a poll apply on top of it | which chains count as led on c | A poll's `at` is when it ends; it reads 480 member calls at 6 in flight over up to 30 s. A role row inside that span may be newer than what the poll read, and dropping it misplaces the leader. Term order keeps an older row from undoing a newer leader | none alone (32 of 32 with `POLL_MS` 0); without fix 4 as well, 2 chains are misplaced on c (below) | the poll read a leading at term 2, c won term 3 5 s before the poll's `at`, and moves at 25 s: FAIL |
+| 4. The baseline stops at the fault (`fault.jsonl`, written by `row.sh run`) | which chains count as led on c | With fix 2, "newest before X" has to stop where members start to hang. Polls under the fault read c's members timing out and keep stale claims | none alone (32 of 32 with the drain as the cut); without fix 3 as well, the same 2 chains | a poll under the fault keeps a's stale term-1 claim, and the chain led on c moves at 25 s: FAIL |
+
+Every case also has a control. The same chain moved at 15 s passes, and moved at 25 s with all four fixes, it fails.
+Removing any one fix makes exactly its own case go wrong. The pre-run judge answers FAIL on cases 1 to 3 too, but not
+because it saw the late move:
+- case 1: it judges the earlier day (a move at 3,625 s);
+- case 2: it calls the chain unplaced;
+- case 3: it finds no chain led on c.
+
+It judges case 4 correctly, because its first poll is before the fault. Checked by swapping each rule back in a scratch
+copy and running `python3 tests/m5/b07r2/test_judge.py`.
+
+**What the fixes did to the verdict.**
+- The pre-run judge's FAIL on these raws is a verdict on 2026-11-22's day, not on this one.
+- With fix 1 held, all eight on/off combinations of fixes 2 to 4 were run on these raws. Seven read 32 of 32 within
+  20 s, max 18,621 ms, 0 unplaced.
+- Fix 2 alone adds `repo:7634079` (moved at 5.8 s) next to the pre-run baseline, and closes "leader known".
+- The eighth combination has fix 2 with neither 3 nor 4. It reads 34 led on c, with 2 "late": `repo:7634098` at
+  1,259 s and `repo:7634104` at 1,043 s. Neither moved late. Each member's own role rows show a won them before the
+  drain: a leader at terms 13 and 11 at 14:17:37.293Z and 14:17:34.048Z, with c follower at 14:17:37.380Z, 34 to 38 s
+  before 14:18:11.753Z. The 14:18:22.5Z poll reads a leading both.
+- In that combination the baseline is the 14:17:39.8Z poll, which still named c as leader at terms 12 and 10. It read
+  c's members before their step-down, at least 2.4 s before its `at`, and with `POLL_MS` 0 the rows that correct it
+  are dropped. That is the poll-span error fix 3 removes. Fix 4 avoids it too, because it keeps the baseline out of the
+  fault, where elections run.
+- So no chain the measured day moved late was dropped or judged on time by a fix. The only verdicts the fixes change
+  are the pre-run judge's other-day verdict and two stale-poll misplacements.
+
+**Cost.** $4.09 on graft-m4a from setup (13:26:57Z) to teardown, against the $6 stop. That is $4.36 including the
+13:20Z site day. m4a's UTC day was $7.45 at 14:50Z.
+
+**Teardown (14:51Z to 14:56Z).**
+- The fault is off (200 from each site).
+- `graft-m4a-ops` is parked on `ac4cd9a5` by version id, with schedules `[]`. The first cron reset's `PUT` hung for 4
+  minutes with no answer; it was killed, and the second reset after the park read `[]`.
+- `graft-m4a-b07r2-deploy` is revoked, so `graft-m4a-ops-deploy-token` holds a revoked token, and the next `graft-ops`
+  upload mints its own. `graft-m4a-b07r2-edge` is deleted (404). The row's token files are shredded.
+- Left running: sites a `2f8a1178`, b `421db7d6` (`graft-ops`' N+1 day), c `b9960b91`; edge `3c453149`; every cron
+  `[]`. No intent is current and nothing is drained.
+
+**Raw records** in `raw/b07r2/m4ar2/`:
+- the phase logs (`state`, `siteday`, `bundles`, `setup`, `ops`, `roll`, `run`, `judge` and `teardown`);
+- `entries.jsonl`, `ops-log.jsonl`, `chains.json`, `voters-*.json`, `answers.txt`, `fault.jsonl` and `intent.id`;
+- `ops.jsonl.gz`, `elections.jsonl.gz` and `status.jsonl.gz`, which `judge.py` reads compressed;
+- `verdict.jsonl` (this judge) and `verdict-196c2ffa.jsonl` (the pre-run judge, on the same raws).
