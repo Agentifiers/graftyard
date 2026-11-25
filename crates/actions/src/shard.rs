@@ -518,10 +518,14 @@ impl ActionsFold {
         default_branch: &str,
     ) -> Result<Option<(CacheId, &CacheEntry)>, ActionsErr> {
         let run = self.cache_run(job)?;
-        let base = self.more.more.bases.get(&run.id).map(|b| &**b);
+        let base = self.run_base(run.id);
         let scopes = crate::cache::scopes(&run.head_ref, base, default_branch);
         let mine = self.more.more.entries.iter().filter(|(_, e)| e.repo == run.repo).map(|(k, v)| (*k, v));
         Ok(crate::cache::find(mine, keys, version, &scopes))
+    }
+    /// A `pull_request` run's base branch (`ActionsEvent::RunBase`), which its jobs' ID tokens carry as `base_ref`.
+    pub fn run_base(&self, r: RunId) -> Option<&str> {
+        self.more.more.bases.get(&r).map(|b| &**b)
     }
     /// The run of a running job, which a cache call acts for.
     pub fn cache_run(&self, job: JobId) -> Result<&WorkflowRun, ActionsErr> {
@@ -1681,7 +1685,23 @@ mod tests {
                 base_ref: "refs/heads/rel".into(),
             };
             let ActionsOut::Run(r) = sh.run(ActionsActor::Operator, op).unwrap() else { panic!() };
-            assert_eq!(sh.f.more.more.bases.get(&r).map(|b| &**b), Some("refs/heads/rel"));
+            assert_eq!(sh.f.run_base(r), Some("refs/heads/rel"));
+            // Its jobs' ID tokens carry the base as GitHub does, the short name (F121).
+            let row = sh.f.run_jobs(r)[0].clone();
+            let rrow = &sh.f.run(r).unwrap().run;
+            let facts = crate::oidc::Facts {
+                server: "https://graft.example",
+                repository: "octo/hello",
+                repository_id: RepoId(DbId(7)),
+                owner_id: graftyard_types::AccountId(DbId(1)),
+                visibility: graftyard_identity::Visibility::Private,
+                enterprise: None,
+                run: rrow,
+                job: &row,
+                hosted: false,
+                base_ref: sh.f.run_base(r),
+            };
+            assert_eq!(crate::oidc::claims(&facts, None, 1, "j")["base_ref"], serde_json::json!("rel"));
             // The run's job reads `rel`'s entry over a newer one on `main`, then `main`'s once `rel` has none.
             let pj = sh.f.run_jobs(r)[0].spec.id;
             let rr = RunnerId(DbId(999));
