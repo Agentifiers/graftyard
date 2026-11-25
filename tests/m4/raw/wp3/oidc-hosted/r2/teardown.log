@@ -1,0 +1,14 @@
+2026-11-25T10:01:13Z
+a4346e1bf
+minio removed
+2026-11-25T10:01:17.357Z m3org/bf70-r2-cac: DELETE 204, anonymous read after 200
+DELETE m3org/bf70-r2 204
+DELETE m3org/bf70-r2-fork 204
+{"schedules":[]}
+parking graft-ops on ac4cd9a5
+╰  SUCCESS  Deployed graft-m4a-ops version ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef at 100% (0.32 sec)
+{"schedules":[]}
+{"script":"graft-m4a-ops","created_on":"2026-11-25T10:01:29.231073Z","versions":["ac4cd9a5 100"]}
+{"revoke":"graft-m4a-bf70-deploy","ok":true}
+row files shredded
+{"count":548,"current":null,"ActionsOidcKey":{"slot":1,"switched":1795600723977}}

@@ -1,0 +1,6 @@
+2026-11-25T09:26:14.168Z repository m3org/bf70-r2 has .github/workflows/hosted.yml at 1d1e011f60ffd9d0301c910de668bdaddbbac478 on bf-pr-mwvx5az2
+2026-11-25T09:26:17.823Z runner 1 (id 1507350) started
+2026-11-25T09:26:21.070Z pull request #3 from bf-pr-mwvx5az2 into main
+2026-11-25T09:26:26.199Z run 1507351 created by pull request #3 after 5 s
+2026-11-25T09:27:28.731Z runner 2 (id 1507354) started
+2026-11-25T09:27:48.053Z all 2 jobs completed after 82 s: [[1507352,"Failure"],[1507353,"Success"]]

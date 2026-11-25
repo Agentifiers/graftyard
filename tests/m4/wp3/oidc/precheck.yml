@@ -1,0 +1,15 @@
+name: bf70-precheck
+# BF-70 r2's precheck (`tests/m4/wp3/oidc/hosted-row.sh precheck`): one job on a same-repository pull request that
+# declares `id-token: write` and prints only whether the runner exported the token URL, never its value. The row
+# aborts unless it reads "set: yes" (the lead's ruling, 2026-11-25).
+on: pull_request
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  precheck:
+    runs-on: [self-hosted, linux]
+    steps:
+      # A block scalar: a plain scalar holding ": " is a YAML mapping error (the install's trigger refused r2's first try).
+      - run: |
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: $([ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && echo yes || echo no)"

@@ -1,0 +1,34 @@
+{
+  "tag": "fork",
+  "fork": true,
+  "run": {
+    "t": 19380,
+    "status": {
+      "Completed": "Success"
+    },
+    "jobs": [
+      {
+        "id": 1194863,
+        "name": "fork",
+        "state": "Completed",
+        "s": {
+          "Completed": {
+            "at": 1795599611439,
+            "conclusion": "Success"
+          }
+        }
+      }
+    ]
+  },
+  "conclusions": {
+    "fork": "Success"
+  },
+  "checks": {
+    "fork_succeeded": true,
+    "fork_no_url": true,
+    "fork_refused_403": true,
+    "no_token_in_logs": true
+  },
+  "ok": true,
+  "dir": "tests/m4/raw/wp3/oidc-hosted/r2/job-fork"
+}

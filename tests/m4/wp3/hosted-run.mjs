@@ -7,6 +7,10 @@
 // jobs until each completed, starting a new runner after each job while jobs remain. With kill-after-s, the runner's
 // process tree is killed that many seconds into the first job and the script then waits for the lease to end it
 // (BF-4). Writes `<out>/run.jsonl` (one line per poll) and `<out>/runner-<n>.out`.
+// `HOSTED_RUN_PR=1` starts the run as a same-repository pull request's instead of a dispatch (BF-70 r2: the site's
+// `ActionsTrigger`, which sends the jobs' declared permissions where job tokens are on): `main` holds only a README,
+// and each call pushes a fresh branch whose one commit adds the workflow, opens a pull request from it into `main`,
+// and takes the `pull_request` run that appears for `refs/pull/N/merge`.
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -33,13 +37,16 @@ for (let i = 0; !g.clone().ok; i++) {
   await sleep(3000);
 }
 const path = `.github/workflows/${basename(wf)}`;
+const asPr = process.env.HOSTED_RUN_PR === "1";
+const branch = `bf-pr-${Date.now().toString(36)}`;
+if (asPr) g.run(["checkout", "-q", "-b", branch]);
 mkdirSync(join(g.wt, ".github/workflows"), { recursive: true });
 writeFileSync(join(g.wt, path), readFileSync(wf));
 g.run(["add", "-A"]);
 if (g.run(["commit", "-q", "-m", `Add ${path}`]).ok) {
-  if (!g.run(["push", "-q", "origin", "HEAD:refs/heads/main"]).ok) throw new Error("push");
+  if (!g.run(["push", "-q", "origin", `HEAD:refs/heads/${asPr ? branch : "main"}`]).ok) throw new Error("push");
 }
-log(`repository ${R} has ${path} at ${g.run(["rev-parse", "HEAD"]).out.trim()}`);
+log(`repository ${R} has ${path} at ${g.run(["rev-parse", "HEAD"]).out.trim()}${asPr ? ` on ${branch}` : ""}`);
 
 const A = `/api/graftyard/v1/repos/${R}/actions`;
 let n = 0;
@@ -76,9 +83,33 @@ async function retry503(what, call) {
     await sleep(2000);
   }
 }
-const d = must("dispatch", await retry503("dispatch", () => api("POST", `${A}/dispatch`, admin, { workflow: path, ref: "main", ...(fork ? { fork: true } : {}) })), 201, 200);
-const run = d.run;
-log(`run ${run} created on ${d.shard} with ${d.jobs} jobs`);
+let run;
+if (asPr) {
+  // The runs before this pull request's, so the new one is the run that was not listed.
+  const before = new Set((must("runs", await retry503("runs", () => api("GET", `${A}/runs`, admin))).runs ?? []).map((r) => r.id));
+  const gql = async (query, variables) => {
+    const b = must("graphql", await retry503("graphql", () => api("POST", "/api/graphql", admin, { query, variables })));
+    if (b.errors) throw new Error(`graphql: ${JSON.stringify(b.errors).slice(0, 400)}`);
+    return b.data;
+  };
+  const repoId = (await gql(`query { repository(owner: "m3org", name: "${name}") { id } }`)).repository.id;
+  const pr = (await gql("mutation($i: CreatePullRequestInput!) { createPullRequest(input: $i) { pullRequest { number } } }",
+    { i: { repositoryId: repoId, baseRefName: "main", headRefName: branch, title: `${name} ${branch}`, body: "hosted-run.mjs" } })).createPullRequest.pullRequest;
+  log(`pull request #${pr.number} from ${branch} into main`);
+  const t = Date.now();
+  for (;;) {
+    const list = must("runs", await retry503("runs", () => api("GET", `${A}/runs`, admin))).runs ?? [];
+    const r = list.find((r) => !before.has(r.id) && r.head_ref === `refs/pull/${pr.number}/merge`);
+    if (r) { run = r.id; break; }
+    if (Date.now() - t > 600_000) throw new Error(`no pull_request run for #${pr.number} in 10 min`);
+    await sleep(3000);
+  }
+  log(`run ${run} created by pull request #${pr.number} after ${Math.round((Date.now() - t) / 1000)} s`);
+} else {
+  const d = must("dispatch", await retry503("dispatch", () => api("POST", `${A}/dispatch`, admin, { workflow: path, ref: "main", ...(fork ? { fork: true } : {}) })), 201, 200);
+  run = d.run;
+  log(`run ${run} created on ${d.shard} with ${d.jobs} jobs`);
+}
 const t0 = Date.now();
 let killed = null;
 for (;;) {
