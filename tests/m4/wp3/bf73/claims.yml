@@ -1,0 +1,19 @@
+name: bf73-claims
+# BF-73 on graft-m4a (`tests/m4/wp3/bf73/row.sh`): one job granted `id-token: write`, started by a same-repository
+# pull request and by `workflow_dispatch`. It prints the job message's `github.actor` and `github.run_number` (F119,
+# F120), and writes one ID token for audience `bf73` to BF73_TOKEN_OUT on the runner's host (the orb), which
+# `claims.mjs` checks against trust policies with `tests/m4/wp3/bf74/rp.py`. The token itself is never printed.
+on: [pull_request, workflow_dispatch]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  claims:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: |
+          echo "context actor=${{ github.actor }} run_number=${{ github.run_number }} event=${{ github.event_name }}"
+          umask 077
+          curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=bf73" |
+            python3 -c 'import json,sys; sys.stdout.write(json.load(sys.stdin)["value"])' >"$BF73_TOKEN_OUT"
+          echo "token written: $(wc -c <"$BF73_TOKEN_OUT") bytes"
