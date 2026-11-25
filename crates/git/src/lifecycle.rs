@@ -176,7 +176,7 @@ pub fn of_step(step: &graftyard_identity::finish::RepoStep, request: RequestId) 
         RepoStep::Delete { retain_until } => {
             Some(Ok(Lifecycle { op: LifecycleOp::Delete { retain_until: *retain_until }, request }))
         }
-        RepoStep::Move { .. } | RepoStep::Settings { .. } => None,
+        RepoStep::Move { .. } | RepoStep::Settings { .. } | RepoStep::DropActions => None,
     }
 }
 

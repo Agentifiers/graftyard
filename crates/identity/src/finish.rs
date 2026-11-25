@@ -63,6 +63,9 @@ pub enum RepoStep {
     Init { owner: AccountId, enterprise: Option<AccountId>, init: Box<str> },
     /// A delete's tombstone on the chain (32.17), with the name's `retain_until`.
     Delete { retain_until: Timestamp },
+    /// F125: a deleted repository's Actions cache entries and their chunks, and its artifacts, which live on the
+    /// owner's Actions shard and home bucket, not on its chain. The site drops them; a drop run twice finds nothing.
+    DropActions,
 }
 
 /// How long the finisher keeps trying a create's first settings before it aborts the create and releases its name
@@ -133,8 +136,11 @@ pub fn create(
 /// tombstone, while the owner's fold still holds the name so, the `RepoOwner` row names the owner, and the chain has
 /// a group that holds no `Deleted`. `Err(())` asks for the chain's state, which is read only once the row names the
 /// owner: the site finds the chain's members through it, and a chain with no row was never written. Nothing is owed
-/// once `retain_until` passed, when the chain would refuse the tombstone anyway.
+/// once `retain_until` passed, when the chain would refuse the tombstone anyway. Once the chain holds its tombstone,
+/// the delete owes the repository's Actions caches and artifacts while `actions_held` reads any (F125), so a delete
+/// the edge finished in band still drops them, and the plan after the drop owes nothing.
 #[allow(clippy::result_unit_err)]
+#[allow(clippy::too_many_arguments)]
 pub fn delete(
     owner: AccountId,
     repo: RepoId,
@@ -142,13 +148,16 @@ pub fn delete(
     authz: &AuthzFold,
     repo_owner: Option<AccountId>,
     life: Option<RepoLife>,
+    actions_held: bool,
     now: Timestamp,
 ) -> Result<Option<Step>, ()> {
     if authz.deleted(repo) != Some(retain_until) || now >= retain_until || repo_owner != Some(owner) {
         return Ok(None);
     }
     Ok(match life.ok_or(())? {
-        RepoLife::NoGroup | RepoLife::Deleted => None,
+        RepoLife::NoGroup => None,
+        RepoLife::Deleted if actions_held => Some(Step::Repo(repo, RepoStep::DropActions)),
+        RepoLife::Deleted => None,
         RepoLife::Open | RepoLife::Created => Some(Step::Repo(repo, RepoStep::Delete { retain_until })),
     })
 }

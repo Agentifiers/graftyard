@@ -14,6 +14,12 @@
 //!   writes chunks to; once a day per shard and isolate, `cleanup` deletes any prefix no live entry names.
 //! - **The sweep** in the leader's alarm commits `CacheSweep` once the earliest entry is due, and arms the alarm for
 //!   the next one.
+//! - **A repository delete** (F125): the `Audit` finisher's delete, once the chain holds its tombstone, reads whether
+//!   the repository still holds entries here or artifacts in the home bucket (`repo_held`), and drops them
+//!   (`drop_repo`): `cache_drop_repo` on the shard's leader commits `CacheDropRepo`, whose `CacheEvicted` names every
+//!   entry of that repository and no other's, and deletes their chunks after it as any eviction does; the finisher then
+//!   deletes the repository's artifact prefix. A leader built before it answers the unknown op 401, so the batch fails
+//!   and the finisher runs it again after `RETRY_MS`.
 
 use std::rc::Rc;
 
@@ -246,6 +252,86 @@ async fn cleanup(h: &Rc<Host<Actions>>, chain: ChainId, now: u64) {
             worker::console_error!("{chain} cache cleanup {}: {e}", id.0);
         }
     }
+}
+
+/// `cache_drop_repo` `{repo}` on the shard's leader (F125): every entry of the repository evicted, their chunks deleted
+/// after the commit. A retry commits nothing, since `decide` finds no entry left.
+pub async fn drop_route(h: &Rc<Host<Actions>>, chain: ChainId, b: &Value) -> Value {
+    if !actions_cache(&h.env) {
+        return refused(404, "actions-cache is not enabled on this install");
+    }
+    let Some(repo) = b["repo"].as_i64().map(|r| graftyard_types::RepoId(graftyard_types::DbId(r))) else {
+        return refused(400, "repo");
+    };
+    match commit_then_delete(h, chain, fresh_rid(), ActionsActor::Operator, ActionsOp::CacheDropRepo { repo }).await {
+        Ok(Ok(_)) => json!({ "status": 204, "body": null }),
+        Ok(Err(e)) => refused(422, e),
+        Err(e) => refused(503, e),
+    }
+}
+
+/// The repository's Actions shard under its owner, and the owner's home bucket.
+fn actions_of(
+    env: &worker::Env,
+    owner: graftyard_types::AccountId,
+    record: &graftyard_types::PlacementRecord,
+    repo: graftyard_types::RepoId,
+) -> Result<(ChainId, worker::Bucket), String> {
+    let chain = ChainId::Actions(owner, graftyard_actions::actions_shard(repo));
+    let bucket = env.bucket(&format!("BUCKET_{}", record.home.0)).map_err(|e| e.to_string())?;
+    Ok((chain, bucket))
+}
+
+/// Whether a deleted repository still holds cache entries on its owner's shard or artifacts in its home bucket (F125).
+/// A shard with no group holds none; a leader that does not answer `repoCaches` is an error, so the finisher waits for
+/// one that does rather than skip the drop.
+pub async fn repo_held(
+    env: &worker::Env,
+    owner: graftyard_types::AccountId,
+    record: &graftyard_types::PlacementRecord,
+    repo: graftyard_types::RepoId,
+) -> Result<bool, String> {
+    let (chain, bucket) = actions_of(env, owner, record, repo)?;
+    if actions_cache(env) {
+        let site = crate::SiteEnv::read(env).map_err(|e| e.to_string())?;
+        let b = graftyard_lookup::Bindings { env, sites: &site.sites };
+        let q = json!({ "q": { "repoCaches": repo.0.0 } }).to_string();
+        if let Some((v, _, _)) = graftyard_lookup::call_opt(&b, chain, record, "/read", q.as_bytes()).await? {
+            let n = v["value"]["repoCaches"].as_u64().ok_or_else(|| format!("{chain}: no repoCaches in {v}"))?;
+            if n > 0 {
+                return Ok(true);
+            }
+        }
+    }
+    let l = bucket
+        .list()
+        .prefix(graftyard_actions::artifacts::repo_prefix(chain, repo))
+        .limit(1)
+        .execute()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(!l.objects().is_empty())
+}
+
+/// The drop itself (F125): the shard leader's `cache_drop_repo`, then the artifact prefix. `Err` on any refusal, so
+/// the finisher's batch runs again.
+pub async fn drop_repo(
+    env: &worker::Env,
+    b: &graftyard_lookup::Bindings<'_>,
+    owner: graftyard_types::AccountId,
+    record: &graftyard_types::PlacementRecord,
+    repo: graftyard_types::RepoId,
+) -> Result<(), String> {
+    let (chain, bucket) = actions_of(env, owner, record, repo)?;
+    if actions_cache(env) {
+        let body = json!({ "op": "cache_drop_repo", "repo": repo.0.0 }).to_string();
+        if let Some((v, _, _)) = graftyard_lookup::call_opt(b, chain, record, "/runsvc", body.as_bytes()).await?
+            && v["status"].as_u64() != Some(204)
+        {
+            return Err(format!("{chain} cache_drop_repo {}: {v}", repo.0.0));
+        }
+    }
+    delete_prefix(&bucket, &graftyard_actions::artifacts::repo_prefix(chain, repo)).await
 }
 
 async fn delete_prefix(b: &worker::Bucket, prefix: &str) -> Result<(), String> {

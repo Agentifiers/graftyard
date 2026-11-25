@@ -776,6 +776,7 @@ actions::shard::ActionsOp 14 CacheCommit 0e0201010001
 actions::shard::ActionsOp 15 CacheUse 0f01
 actions::shard::ActionsOp 16 CacheSweep 10
 actions::shard::ActionsOp 17 CreateRunOn 1102020161016101010101010101010101010101010101010101010161067265706f3a310101000000000161
+actions::shard::ActionsOp 18 CacheDropRepo 1202
 actions::shard::ActionsActor 0 Operator 00
 actions::shard::ActionsActor 1 Admin 0102
 actions::shard::ActionsActor 2 Runner 0202

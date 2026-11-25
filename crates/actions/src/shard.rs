@@ -864,6 +864,13 @@ pub enum ActionsOp {
         permissions: Vec<(u16, PermissionSet)>,
         base_ref: Box<str>,
     },
+    /// F125: a deleted repository's cache entries, every one of them and no other repository's, which the `Audit`
+    /// finisher's delete sends (`crate::cache`; `design/SHARED.md`, "Repository repair, tombstones, and retention").
+    /// It commits only `CacheEvicted`, an 0x15.6 event, so it is format 0x15.6: it reaches the leader only as a
+    /// `/runsvc` call, and no entry type holds a command.
+    CacheDropRepo {
+        repo: RepoId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1158,6 +1165,7 @@ impl Command for ActionsCmd {
             | ActionsOp::CacheCommit { .. }
             | ActionsOp::CacheUse { .. }
             | ActionsOp::CacheSweep
+            | ActionsOp::CacheDropRepo { .. }
             | ActionsOp::CreateRunOn { .. } => ACTIONS_FORMAT_CACHE,
             _ => ACTIONS_FORMAT,
         }
@@ -1212,6 +1220,16 @@ impl Command for ActionsCmd {
                     return none();
                 }
                 let mut ids = ids;
+                ids.sort();
+                Ok((smallvec![ActionsEvent::CacheEvicted { ids }], ActionsOut::Done))
+            }
+            ActionsOp::CacheDropRepo { repo } => {
+                only(operator)?;
+                let mut ids: Vec<CacheId> =
+                    s.cache_entries().filter(|(_, e)| e.repo == *repo).map(|(id, _)| id).collect();
+                if ids.is_empty() {
+                    return none();
+                }
                 ids.sort();
                 Ok((smallvec![ActionsEvent::CacheEvicted { ids }], ActionsOut::Done))
             }
@@ -1639,6 +1657,35 @@ mod tests {
             sh.run(ActionsActor::Operator, ActionsOp::CacheSweep).unwrap();
             assert_eq!(sh.ids(), [b.0], "a expired; the reservation was stale");
             assert_eq!(sh.f.more.more.due(), Some(Timestamp(sh.entry(b).last_used.0 + CACHE_UNUSED_MS)));
+        }
+
+        /// F125: dropping a deleted repository evicts all of its entries, reserved and committed, and none of
+        /// another repository's on the same shard; a second drop finds nothing and writes nothing; only the operator
+        /// sends it.
+        #[test]
+        fn a_repository_drop_evicts_only_that_repositorys_entries() {
+            let mut sh = Shard::new();
+            let a1 = sh.save(101, "a1", 1, CACHE_REPO_MAX);
+            let a2 = sh.reserve(103, "a2", 1).unwrap();
+            let other = CacheEntry {
+                repo: RepoId(DbId(8)),
+                scope: MAIN.into(),
+                key: "b".into(),
+                version: "v".into(),
+                size: 1,
+                created: Timestamp(T0),
+                last_used: Timestamp(T0),
+                state: CacheState::Committed,
+            };
+            let b = CacheId(sh.f.more.more.next + 1);
+            sh.f.more.more.entries.insert(b, other);
+            let drop = ActionsOp::CacheDropRepo { repo: RepoId(DbId(7)) };
+            assert_eq!(sh.run(ActionsActor::Job(JobId(DbId(101))), drop.clone()), Err(ActionsErr::Forbidden));
+            sh.run(ActionsActor::Operator, drop.clone()).unwrap();
+            assert_eq!(sh.ids(), [b.0], "a1 ({a1:?}) and a2 ({a2:?}) went, repository 8's entry stayed");
+            let n = sh.n;
+            sh.run(ActionsActor::Operator, drop).unwrap();
+            assert_eq!(sh.n, n, "a retried drop writes nothing");
         }
 
         /// Past the shard's entry cap a reserve evicts its least recently used entries first.

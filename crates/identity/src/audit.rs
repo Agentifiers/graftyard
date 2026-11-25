@@ -174,6 +174,9 @@ pub struct RepoRead {
     /// Whether the chain has a group, and whether it holds `Created` or `Deleted` (F59). A chain with no group reads
     /// as `NoGroup`, with no voters.
     pub life: RepoLife,
+    /// F125: read only for a chain that holds `Deleted`: whether the owner's Actions shard still holds any of the
+    /// repository's cache entries, or its home bucket any of its artifacts. Always `false` otherwise.
+    pub actions_held: bool,
 }
 
 /// The credentials an account lists (`GET /user/keys`, PATs, OAuth tokens): not installation, refresh, or lifeboat
@@ -403,11 +406,11 @@ pub fn plan<'a>(
             let Some(AuditRead::Authz(authz)) = read(a) else { return Err(a) };
             let repo_owner = names(ChainId::Names(name_shard(&NameKey::Repo(*repo))))?.repo_owner(*repo);
             let rc = ChainId::Repo(*repo);
-            let life = match read(rc) {
-                Some(AuditRead::Repo(r)) => Some(r.life),
-                _ => None,
+            let (life, held) = match read(rc) {
+                Some(AuditRead::Repo(r)) => (Some(r.life), r.actions_held),
+                _ => (None, false),
             };
-            finish::delete(*owner, *repo, *retain_until, authz, repo_owner, life, now).map_err(|()| rc)?
+            finish::delete(*owner, *repo, *retain_until, authz, repo_owner, life, held, now).map_err(|()| rc)?
         }
     })
 }
