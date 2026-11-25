@@ -157,11 +157,13 @@ PY
 setup)
   { date -u +%FT%TZ >"$O/setup.iso"; echo "setup from $(cat "$O/setup.iso"); stop \$$STOP"
     cur 0; deployment $OPS
-    # graft-ops' deploy token (Workers Scripts Write, Workers Containers Write), PATCHed into its secret.
+    # graft-ops' deploy token (Workers Scripts Write, Workers Containers Write, Secrets Store Write: without the last a
+    # version upload of a script bound to a Secrets Store secret answers 10021, DECISIONS's A54 amendment), PATCHed in.
     [ -s "$K/deploy.json" ] || ( umask 077
       jq -nc --arg a "com.cloudflare.api.account.$CLOUDFLARE_ACCOUNT_ID" --arg n $DEPLOY_TOKEN \
         '{name: $n, policies: [{effect: "allow", resources: {($a): "*"},
-          permission_groups: [{id: "e086da7e2179491d91ee5f35b3ca210a"}, {id: "bdbcd690c763475a985e8641dddc09f7"}]}]}' |
+          permission_groups: [{id: "e086da7e2179491d91ee5f35b3ca210a"}, {id: "bdbcd690c763475a985e8641dddc09f7"},
+            {id: "adc8fa2bc6124928a8b3314dc63a1235"}]}]}' |
         api /tokens -X POST -H 'content-type: application/json' --data-binary @- >"$K/deploy.json" )
     jq -c --arg n $DEPLOY_TOKEN '{mint: $n, ok: .success, id: (.result.id // "" | .[0:8]), errors: [.errors[]?.code]}' "$K/deploy.json"
     ( umask 077; jq -c '{value: .result.value}' "$K/deploy.json" >"$K/deploy.value" )
