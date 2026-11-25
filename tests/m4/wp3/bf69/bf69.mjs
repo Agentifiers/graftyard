@@ -38,7 +38,7 @@ function onBranch(br, env, from = "main") {
   const base = g.run(["rev-parse", "-q", "--verify", `origin/${br}`]).ok ? `origin/${br}` : `origin/${from}`;
   g.run(["checkout", "-q", "-B", br, base]);
   mkdirSync(join(g.wt, ".github/workflows"), { recursive: true });
-  writeFileSync(join(g.wt, WF), readFileSync(new URL("./cache.yml", import.meta.url)));
+  writeFileSync(join(g.wt, WF), Object.entries(env).reduce((t, [k, v]) => t.replaceAll(`__${k}__`, String(v)), readFileSync(new URL("./cache.yml", import.meta.url), "utf8")));
   writeFileSync(join(g.wt, "bf69.env"), Object.entries(env).map(([k, v]) => `${k}=${JSON.stringify(String(v))}`).join("\n") + "\n");
   g.run(["add", "-A"]);
   g.run(["commit", "-q", "--allow-empty", "-m", `BF-69 ${kase} on ${br}`]);
@@ -68,7 +68,10 @@ function startRunner(slot) {
   })();
 }
 const jobsOf = async (run) => {
-  const v = must("run", await api("GET", `${A}/runs/${run}`, admin)).value;
+  let r;
+  // A 503 (a tier read the leader shed) is retried, as a client would.
+  for (let i = 0; (r = await api("GET", `${A}/runs/${run}`, admin)).status === 503 && i < 12; i++) await sleep(5000);
+  const v = must("run", r).value;
   return v.jobs.map((j) => ({ id: j.spec.id, name: j.spec.name, state: Object.keys(j.state)[0], s: j.state }));
 };
 async function jobLog(id) {
@@ -109,7 +112,9 @@ const dispatch = async (br) => must(`dispatch ${br}`, await api("POST", `${A}/di
 const parse = (jobs) => Object.fromEntries(jobs.map((j) => {
   const l = j.bf69.find((x) => / (restored|made|miss)/.test(x)) ?? "";
   const m = l.match(/ (restored|made|miss)(?: sha256=(\w+))?(?: hit=(\w*))?(?: matched=(\S*))?/);
-  return [j.name, { conclusion: j.conclusion, what: m?.[1], sha256: m?.[2], hit: m?.[3], matched: m?.[4], url: (j.bf69.find((x) => /cache_url=/.test(x)) ?? "").split("cache_url=")[1] }];
+  // Neither major declares a `cache-matched-key` output, so the key restored from is the toolkit's own log line.
+  const matched = (j.cacheLog.find((x) => /Cache restored from key: /.test(x)) ?? "").split("Cache restored from key: ")[1]?.trim();
+  return [j.name, { conclusion: j.conclusion, what: m?.[1], sha256: m?.[2], hit: m?.[3], matched, url: (j.bf69.find((x) => /cache_url=/.test(x)) ?? "").split("cache_url=")[1] }];
 }));
 const saved = () => { try { return JSON.parse(readFileSync(join(out, "saved.json"), "utf8")); } catch { return {}; } };
 const save = (k, v) => writeFileSync(join(out, "saved.json"), JSON.stringify({ ...saved(), [k]: v }, null, 1));
@@ -136,7 +141,7 @@ switch (kase) {
     onBranch("f", { KEY: "bf69-f-1", RESTORE: "bf69-main-", SEED: 0, MIB });
     const r = await runAll([await dispatch("f")]);
     const p = parse(r.jobs), s = saved().main;
-    result({ ok: expect(p, { v4: { what: "restored", hit: "false", sha256: s.v4, matched: "bf69-main-1-v4", conclusion: "Success" }, v5: { what: "restored", hit: "false", sha256: s.v5, matched: "bf69-main-1-v5", conclusion: "Success" } }), want: s, parsed: p, ...r });
+    result({ ok: expect(p, { v4: { what: "restored", hit: "false", sha256: s.v4, matched: "v4-bf69-main-1", conclusion: "Success" }, v5: { what: "restored", hit: "false", sha256: s.v5, matched: "v5-bf69-main-1", conclusion: "Success" } }), want: s, parsed: p, ...r });
     break;
   }
   case "f-save": {
@@ -185,7 +190,7 @@ switch (kase) {
     // A pull request into `rel` (or `main`) whose restore key `bf69-` matches both branches' entries: it must restore
     // its base's entry (rel's, the base scope before the default branch), and for `main` main's.
     const base = kase === "pr-rel" ? "rel" : "main";
-    const head = `pr-${base}`;
+    const head = `pr-${base}-${Date.now() % 100000}`;
     onBranch(head, { KEY: `bf69-pr-${base}-miss`, RESTORE: "bf69-", SEED: 0, MIB }, base);
     const repoNode = (await gql(`query { repository(owner: "m3org", name: "${NAME}") { id } }`)).data.repository;
     const c = await gql("mutation($i: CreatePullRequestInput!) { createPullRequest(input: $i) { pullRequest { id number } } }", {
@@ -203,32 +208,39 @@ switch (kase) {
     const r = await runAll(runs.slice(0, 1));
     const p = parse(r.jobs), s = saved()[base];
     const matchedPrefix = base === "rel" ? "bf69-rel-1" : "bf69-main-1";
-    result({ ok: expect(p, { v4: { what: "restored", sha256: s.v4, matched: `${matchedPrefix}-v4`, conclusion: "Success" }, v5: { what: "restored", sha256: s.v5, matched: `${matchedPrefix}-v5`, conclusion: "Success" } }), pr: pr.number, want: s, parsed: p, ...r });
+    result({ ok: expect(p, { v4: { what: "restored", sha256: s.v4, matched: `v4-${matchedPrefix}`, conclusion: "Success" }, v5: { what: "restored", sha256: s.v5, matched: `v5-${matchedPrefix}`, conclusion: "Success" } }), pr: pr.number, want: s, parsed: p, ...r });
     break;
   }
   case "lru": {
-    // With the edge's GRAFTYARD_CACHE_LIMIT at 1 GiB and every entry 200 MiB (two per run, v4 and v5), a commit past
-    // 1 GiB evicts the repository's least recently used entries. Before: the entries so far (main 2, f 2, fonly 2,
-    // par 2, rel 2 = 10 x 200 MiB, already over, so earlier commits evicted too). Here: touch main's entries (a hit),
-    // then save two new keys on main, then read which keys still hit. The least recently used, not main's, must go.
-    onBranch("main", { KEY: "bf69-main-1", RESTORE: "", SEED: 0, MIB });
-    const touch = await runAll([await dispatch("main")]);
+    // GRAFTYARD_CACHE_LIMIT is 1 GiB and every entry about 200 MiB, so at most five live. A hit moves last use only
+    // when the last was over CACHE_USED_EVERY_MS (1 h) ago, so inside one row last use is the commit's time and the
+    // least recently used is the oldest commit (`created` is set at commit; ids are assigned at reserve, so two jobs
+    // committing together keep ids out of commit order). Save two new keys on main, then: R2 holds chunks for at most
+    // 1 GiB, one more entry would pass it, the evicted entries' chunks are deleted; the new keys restore and rel's
+    // older entry no longer does.
     const keys = ["bf69-lru-1", "bf69-lru-2"];
     const saves = [];
     for (const k of keys) {
       onBranch("main", { KEY: k, RESTORE: "", SEED: 1, MIB });
       saves.push(await runAll([await dispatch("main")]));
     }
+    const CF = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/r2/buckets/graft-m4a-site-a-packs/objects`;
+    const r2 = (await (await fetch(`${CF}?prefix=${encodeURIComponent("actions/cache/")}&per_page=1000`, { headers: { authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` } })).json()).result ?? [];
+    const byId = {};
+    for (const o of r2) { const id = Number(o.key.split("/")[3]); byId[id] = (byId[id] ?? 0) + o.size; }
+    const ids = Object.keys(byId).map(Number).sort((x, y) => x - y);
+    const total = ids.reduce((t, id) => t + byId[id], 0);
     const probe = {};
-    for (const k of ["bf69-main-1", ...keys, "bf69-rel-1", "bf69-par-1", "bf69-fonly-1"]) {
-      const br = k === "bf69-rel-1" ? "rel" : k === "bf69-fonly-1" ? "f" : k === "bf69-par-1" ? "p" : "main";
+    for (const [k, br] of [["bf69-lru-1", "main"], ["bf69-lru-2", "main"], ["bf69-rel-1", "rel"]]) {
       onBranch(br, { KEY: k, RESTORE: "", SEED: 0, MIB });
       probe[k] = parse((await runAll([await dispatch(br)])).jobs);
     }
-    const hits = Object.fromEntries(Object.entries(probe).map(([k, p]) => [k, Object.fromEntries(Object.entries(p).map(([m, x]) => [m, x.what]))]));
-    const ok = ["bf69-main-1", ...keys].every((k) => hits[k].v4 === "restored" && hits[k].v5 === "restored")
-      && touch.jobs.every((j) => j.conclusion === "Success") && saves.every((r) => r.jobs.every((j) => j.conclusion === "Success"));
-    result({ ok, hits, touch: parse(touch.jobs) });
+    const what = Object.fromEntries(Object.entries(probe).map(([k, p]) => [k, [p.v4?.what, p.v5?.what]]));
+    const ok = saves.every((r) => r.jobs.every((j) => j.conclusion === "Success")) && total <= 1073741824
+      && total + Math.min(...Object.values(byId)) > 1073741824
+      && what["bf69-lru-1"].every((w) => w === "restored") && what["bf69-lru-2"].every((w) => w === "restored")
+      && what["bf69-rel-1"].every((w) => w === "miss");
+    result({ ok, r2: { ids, bytes: byId, total }, what });
     break;
   }
   case "chunks": {
