@@ -4,13 +4,15 @@
 # `rw` declares `contents: write`, `issues: write` and `statuses: write`, the control that the token writes what it
 # may. Probes: read the repository, open an issue, set a commit status, list artifacts (`actions: read`, which no job
 # here grants), and push a branch over HTTPS with the token. The step is repeated, not a YAML anchor, so the file
-# parses wherever GHES 3.22's does.
+# parses wherever GHES 3.22's does. The runner exports no GITHUB_TOKEN of its own, as on GitHub: each step maps
+# `github.token` into its env, which BF-77's first run (2026-11-25 22:28Z) lacked, so every probe ran without a token.
 on: workflow_dispatch
 jobs:
   default:
     runs-on: [self-hosted]
     steps:
-      - run: |
+      - env: { GITHUB_TOKEN: "${{ github.token }}" }
+        run: |
           set -u
           api() { curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "authorization: token $GITHUB_TOKEN" -H 'content-type: application/json' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$2" ${3:+--data "$3"}; }
           echo "BF77 $GITHUB_JOB read $(api GET '')"
@@ -26,7 +28,8 @@ jobs:
     runs-on: [self-hosted]
     permissions: { contents: read }
     steps:
-      - run: |
+      - env: { GITHUB_TOKEN: "${{ github.token }}" }
+        run: |
           set -u
           api() { curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "authorization: token $GITHUB_TOKEN" -H 'content-type: application/json' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$2" ${3:+--data "$3"}; }
           echo "BF77 $GITHUB_JOB read $(api GET '')"
@@ -42,7 +45,8 @@ jobs:
     runs-on: [self-hosted]
     permissions: { contents: write, issues: write, statuses: write }
     steps:
-      - run: |
+      - env: { GITHUB_TOKEN: "${{ github.token }}" }
+        run: |
           set -u
           api() { curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "authorization: token $GITHUB_TOKEN" -H 'content-type: application/json' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$2" ${3:+--data "$3"}; }
           echo "BF77 $GITHUB_JOB read $(api GET '')"

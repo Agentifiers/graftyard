@@ -22,6 +22,9 @@ const admin = tokens.admin;
 const repoRoot = new URL("../../../..", import.meta.url).pathname;
 const jit = process.env.JITCONFIG ?? join(process.env.CARGO_TARGET_DIR ?? join(repoRoot, "target"), "release/examples/jitconfig");
 const mirror = process.env.MIRROR_ORG ?? "actions-mirror";
+// CACHE_MIRROR: the org holding `cache` when `actions-mirror/cache` is held Deleted (BF-69's teardown, 2026-11-25), as
+// `actions-mirror2` on graft-m4a; DEL_REPO renames the delete half's repository after a first run deleted it.
+const cacheMirror = process.env.CACHE_MIRROR ?? mirror;
 const must = (w, r, ...ok) => { if (!(ok.length ? ok : [200, 201]).includes(r.status)) throw new Error(`${w}: ${r.status} ${JSON.stringify(r.body).slice(0, 400)}`); return r.body; };
 const t0 = new Date();
 const fails = [];
@@ -47,7 +50,7 @@ async function runWorkflow(name, file, priv = false) {
   const g = new Git(R).as(admin);
   for (let i = 0; !g.clone().ok; i++) { if (i > 10) throw new Error("clone"); await sleep(3000); }
   mkdirSync(join(g.wt, ".github/workflows"), { recursive: true });
-  writeFileSync(join(g.wt, WF), readFileSync(new URL(`./${file}`, import.meta.url), "utf8").replaceAll("uses: actions/", `uses: ${mirror}/`));
+  writeFileSync(join(g.wt, WF), readFileSync(new URL(`./${file}`, import.meta.url), "utf8").replaceAll("uses: actions/cache@", `uses: ${cacheMirror}/cache@`).replaceAll("uses: actions/", `uses: ${mirror}/`));
   g.run(["add", "-A"]);
   g.run(["commit", "-q", "--allow-empty", "-m", "BF-77"]);
   if (!g.run(["push", "-q", "origin", "HEAD:refs/heads/main"]).ok) throw new Error("push");
@@ -92,7 +95,7 @@ async function runWorkflow(name, file, priv = false) {
 }
 
 // ---- the delete half
-const del = await runWorkflow("bf77-del", "seed.yml");
+const del = await runWorkflow(process.env.DEL_REPO ?? "bf77-del", "seed.yml");
 check(Object.values(del.logs).every((j) => j.conclusion === "Success"), `seed jobs: ${JSON.stringify(Object.fromEntries(Object.entries(del.logs).map(([k, v]) => [k, v.conclusion])))}`);
 const listed = must("caches", await api("GET", `/api/v3/repos/${del.R}/actions/caches`, admin), 200, 404);
 const shard = (await objects(BUCKETS[0], "actions/artifacts/")).find((k) => k.includes(`/${del.repo}/`))?.split("/")[2];

@@ -1,0 +1,72 @@
+2026-11-25T22:11:40.9175106Z Current runner version: '2.338.2'
+2026-11-25T22:11:40.9180155Z Runner name: 'bf75-1'
+2026-11-25T22:11:40.9180605Z Machine name: '172'
+2026-11-25T22:11:40.9182792Z Prepare workflow directory
+2026-11-25T22:11:40.9594812Z Prepare all required actions
+2026-11-25T22:11:40.9651647Z Getting action download info
+2026-11-25T22:11:48.0741796Z Download action repository 'actions-mirror/upload-artifact@v3.2.2' (SHA:c6a366c94c3e0affe28c06c8df20a878f24da3cf)
+2026-11-25T22:11:50.5504406Z Complete job name: up
+2026-11-25T22:11:50.6218120Z ##[group]Run set -eu
+2026-11-25T22:11:50.6218495Z [36;1mset -eu[0m
+2026-11-25T22:11:50.6218523Z [36;1mmkdir -p keep/dir short[0m
+2026-11-25T22:11:50.6218548Z [36;1myes 'compressible text for the gzipped path' | head -c 3000000 > keep/dir/text.txt[0m
+2026-11-25T22:11:50.6218610Z [36;1mhead -c 9000000 /dev/urandom > keep/random.bin[0m
+2026-11-25T22:11:50.6218634Z [36;1m: > keep/empty.txt[0m
+2026-11-25T22:11:50.6218658Z [36;1mhead -c 4000 /dev/urandom > short/s.bin[0m
+2026-11-25T22:11:50.6218808Z [36;1m(cd keep && sha256sum dir/text.txt random.bin empty.txt | sed 's/^/BF75 SUM keep /')[0m
+2026-11-25T22:11:50.6218834Z [36;1m(cd short && sha256sum s.bin | sed 's/^/BF75 SUM short /')[0m
+2026-11-25T22:11:50.6242117Z shell: /usr/sbin/bash -e {0}
+2026-11-25T22:11:50.6242538Z ##[endgroup]
+2026-11-25T22:11:50.6438654Z yes: standard output: Broken pipe
+2026-11-25T22:11:50.7100623Z BF75 SUM keep c55d8c02763d89b13e6166df7649a3aaebdf89729af21e454a79d207f53c147d  dir/text.txt
+2026-11-25T22:11:50.7102047Z BF75 SUM keep e08fd7b4f048ba599eb587f6df6070b00096ed78e28134b190eb46120242b5e9  random.bin
+2026-11-25T22:11:50.7104498Z BF75 SUM keep e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  empty.txt
+2026-11-25T22:11:50.7136096Z BF75 SUM short b0c1ccfe027d08690e5b19bf0dcdab972da91e34f3c281419c4fc93db7904395  s.bin
+2026-11-25T22:11:50.7284839Z ##[group]Run actions-mirror/upload-artifact@v3.2.2
+2026-11-25T22:11:50.7284965Z with:
+2026-11-25T22:11:50.7285018Z   name: keep
+2026-11-25T22:11:50.7285132Z   path: keep
+2026-11-25T22:11:50.7285168Z   if-no-files-found: warn
+2026-11-25T22:11:50.7285201Z   include-hidden-files: false
+2026-11-25T22:11:50.7285228Z ##[endgroup]
+2026-11-25T22:11:50.9680134Z With the provided path, there will be 3 files uploaded
+2026-11-25T22:11:50.9680449Z Starting artifact upload
+2026-11-25T22:11:50.9680572Z For more detailed logs during the artifact upload process, enable step-debugging: https://docs.github.com/actions/monitoring-and-troubleshooting-workflows/enabling-debug-logging#enabling-step-debug-logging
+2026-11-25T22:11:50.9680725Z Artifact name is valid!
+2026-11-25T22:11:52.6548661Z Container for artifact "keep" successfully created. Starting upload of file(s)
+2026-11-25T22:11:57.6856658Z Uploaded ~/tmp/runner/_work/bf75/bf75/keep/random.bin (93.2%) bytes 0:8388607
+2026-11-25T22:11:59.9990405Z Uploaded ~/tmp/runner/_work/bf75/bf75/keep/random.bin (100.0%) bytes 8388608:8999999
+2026-11-25T22:12:00.0019736Z Total size of all the files uploaded is 9008793 bytes
+2026-11-25T22:12:00.0020513Z File upload process has finished. Finalizing the artifact upload
+2026-11-25T22:12:02.2382969Z Artifact has been finalized. All files have been successfully uploaded!
+2026-11-25T22:12:02.2383226Z 
+2026-11-25T22:12:02.2383305Z The raw size of all the files that were specified for upload is 12000000 bytes
+2026-11-25T22:12:02.2383414Z The size of all the files that were uploaded is 9008793 bytes. This takes into account any gzip compression used to reduce the upload size, time and storage
+2026-11-25T22:12:02.2383628Z 
+2026-11-25T22:12:02.2383718Z Note: The size of downloaded zips can differ significantly from the reported size. For more information see: https://github.com/actions/upload-artifact#zipped-artifact-downloads 
+2026-11-25T22:12:02.2384224Z 
+2026-11-25T22:12:02.2384490Z Artifact keep has been successfully uploaded!
+2026-11-25T22:12:02.2577984Z ##[group]Run actions-mirror/upload-artifact@v3.2.2
+2026-11-25T22:12:02.2578154Z with:
+2026-11-25T22:12:02.2578213Z   name: short
+2026-11-25T22:12:02.2578638Z   path: short
+2026-11-25T22:12:02.2578716Z   retention-days: 1
+2026-11-25T22:12:02.2578744Z   if-no-files-found: warn
+2026-11-25T22:12:02.2578769Z   include-hidden-files: false
+2026-11-25T22:12:02.2578809Z ##[endgroup]
+2026-11-25T22:12:02.3261449Z With the provided path, there will be 1 file uploaded
+2026-11-25T22:12:02.3263783Z Starting artifact upload
+2026-11-25T22:12:02.3263961Z For more detailed logs during the artifact upload process, enable step-debugging: https://docs.github.com/actions/monitoring-and-troubleshooting-workflows/enabling-debug-logging#enabling-step-debug-logging
+2026-11-25T22:12:02.3264250Z Artifact name is valid!
+2026-11-25T22:12:03.6772273Z Container for artifact "short" successfully created. Starting upload of file(s)
+2026-11-25T22:12:05.9702971Z Total size of all the files uploaded is 4000 bytes
+2026-11-25T22:12:05.9706332Z File upload process has finished. Finalizing the artifact upload
+2026-11-25T22:12:07.9645625Z Artifact has been finalized. All files have been successfully uploaded!
+2026-11-25T22:12:07.9645978Z 
+2026-11-25T22:12:07.9646076Z The raw size of all the files that were specified for upload is 4000 bytes
+2026-11-25T22:12:07.9646153Z The size of all the files that were uploaded is 4000 bytes. This takes into account any gzip compression used to reduce the upload size, time and storage
+2026-11-25T22:12:07.9646267Z 
+2026-11-25T22:12:07.9646465Z Note: The size of downloaded zips can differ significantly from the reported size. For more information see: https://github.com/actions/upload-artifact#zipped-artifact-downloads 
+2026-11-25T22:12:07.9646497Z 
+2026-11-25T22:12:07.9646527Z Artifact short has been successfully uploaded!
+2026-11-25T22:12:07.9854852Z Cleaning up orphan processes

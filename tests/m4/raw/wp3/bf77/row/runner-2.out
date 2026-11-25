@@ -1,0 +1,11 @@
+
+√ Connected to GitHub
+
+Current runner version: '2.338.2'
+2026-11-25 22:36:43Z: Listening for Jobs
+2026-11-25 22:36:49Z: Running job: default
+2026-11-25 22:37:02Z: Job default completed with result: Succeeded
+√ Removed .credentials
+√ Removed .runner
+Runner listener exit with 0 return code, stop the service, no retry needed.
+Exiting runner...

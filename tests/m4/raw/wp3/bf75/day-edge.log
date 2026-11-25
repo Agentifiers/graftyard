@@ -1,0 +1,13 @@
+2026-11-25T22:05:20Z
+6b48a6dc5
+kept as live: 
+before {"script":"graft-m4a-edge","created_on":"2026-11-25T20:49:32.257441Z","versions":["8961d390 100"]}
+deploy exit 0
+   Compiling thiserror-impl v2.0.21
+   Compiling thiserror v1.0.69
+   Compiling thiserror-impl v1.0.69
+Current Version ID: 78130d2f-7de1-433b-9d4e-30a31fe30236
+binding diff (plain text; only GRAFTYARD_ARTIFACTS may change, and only from absent to 1):
+after {"script":"graft-m4a-edge","created_on":"2026-11-25T22:09:58.554015Z","versions":["78130d2f 100"]}
+edge: graft-m4a-edge serves 78130d2f at 100% (rev [INFO]: 🌀  Compiling to Wasm...), as ~/wt-heap/tests/m4/raw/wp3/bf75/edge-deploy.raw deployed
+edgever exit 0
