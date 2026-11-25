@@ -1,0 +1,5 @@
+2026-11-24T23:26Z reachability probe (throwaway scripts, deleted after)
+runner Worker -> runner workers.dev Worker: 404, Cloudflare error 1042 (same-account fetch)
+runner Worker with compatibility flag global_fetch_strictly_public -> same: 200
+runner Worker -> install-account workers.dev Worker: 200 (as LF-7's front reached graft-m4a-edge)
+decision: the forger runs in the install account as graft-lf8-feed, so graft-agents-front deploys unmodified, vars only
