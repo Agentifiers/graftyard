@@ -63,6 +63,11 @@ mismatch line below. `AgentsReleaseView::extend` skips any entry at or below its
 member, or a forger, that answers a different entry at an applied index reads as a healthy refresh. That entry is
 equivocation, not staleness. OPEN-QUESTIONS A55 asks whether the view should alarm on it.
 
+**Since fixed (2026-11-25, DECISIONS "`agents-equivocation`"; native only).** The view now keeps each applied index's
+digest, and other bytes at a held index are refused as `Equivocation { index }`. That counts as a failed refresh, raises
+`paged` on the front's status, and logs `PAGE graft-agents-front`. The replays in r1 ran before this fix. A later LF-8
+row should expect `Equivocation` for each replay, and `run.mjs` and `lf8forge` now check for it.
+
 ## Notes
 
 - Every forwarded webhook logged `ALARM graft-agents-front: graft-controller pinned to 03011f8a-… answered from …`,

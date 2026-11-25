@@ -227,6 +227,11 @@ pub enum Refusal {
     PastLastStep { kind: &'static str, steps: u8 },
     #[error("{0}")]
     BadState(&'static str),
+    /// The agents view only (`agents::AgentsReleaseView::extend`): an answer at an index the view holds whose bytes are
+    /// not the entry it applied there, so the install's signed history holds two entries at one index, a key
+    /// compromise or a broken signer. It pages.
+    #[error("index {index} holds another entry than the one this view applied there: two signed histories")]
+    Equivocation { index: u64 },
     /// `FormatsEnable` before every site and lifeboat reports a release that reads the format (SHARED rule 3).
     #[error("format {format} is not read by the release {by} reports")]
     NotReported { format: Format, by: Box<str> },
@@ -267,6 +272,7 @@ impl Refusal {
             Refusal::WrongStep { .. } => "WrongStep",
             Refusal::PastLastStep { .. } => "PastLastStep",
             Refusal::BadState(_) => "BadState",
+            Refusal::Equivocation { .. } => "Equivocation",
             Refusal::NotReported { .. } => "NotReported",
             Refusal::BadRecord(_) => "BadRecord",
             Refusal::Rejected(_) => "Rejected",
@@ -283,7 +289,7 @@ impl Refusal {
 
     /// Whether the refusal pages: the group refuses and pages on a release, pointer, `Rollback`, or `Abort` that cannot
     /// read an enabled format (rule 4), and on a second drain-key drain (`design/DESIGN.md`, Shape, "Release group").
-    /// The edge and `graft-ops` write a `PAGE` line for each.
+    /// The edge and `graft-ops` write a `PAGE` line for each, and the agents view's readers one for `Equivocation`.
     pub fn pages(&self) -> bool {
         pages(self.variant())
     }
@@ -299,7 +305,7 @@ impl Refusal {
 
 /// `Refusal::pages` by the variant name a member's answer carries.
 pub fn pages(variant: &str) -> bool {
-    matches!(variant, "UnreadableFormat" | "DrainGuard")
+    matches!(variant, "UnreadableFormat" | "DrainGuard" | "Equivocation")
 }
 
 fn bad_genesis(why: impl Into<String>) -> Refusal {

@@ -233,7 +233,12 @@ impl Accepted {
     }
 
     pub fn digest(&self) -> Digest {
-        Digest(Sha256::digest(&self.bytes).into())
+        Self::digest_of(&self.bytes)
+    }
+
+    /// The digest of stored entry bytes: what `prev` names and the agents view compares a held index by.
+    pub fn digest_of(bytes: &[u8]) -> Digest {
+        Digest(Sha256::digest(bytes).into())
     }
 }
 

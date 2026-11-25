@@ -27,7 +27,7 @@ MUTANTS = [
     ("LF-8: an entry out of index order is taken", AG,
      '            if index.0 != self.fold.count + 1 {', '            if false {', REL),
     ("an entry the view holds is replayed over it, moving it to a lower index", AG,
-     '            if index.0 <= held {\n                continue;\n            }\n', '', REL),
+     '            if index.0 <= held {\n', '            if index.0 <= held && false {\n', REL),
     ("a refresh whose entry is refused keeps nothing it held", AG,
      '            self.fold.check(&a, *at, &ev)?;',
      '            if let Err(e) = self.fold.check(&a, *at, &ev) {\n                *self = AgentsReleaseView::default();\n'

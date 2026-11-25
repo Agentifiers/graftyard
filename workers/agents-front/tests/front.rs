@@ -369,13 +369,18 @@ fn a_page_from_a_member_behind_the_view_moves_nothing() {
         assert_eq!((r.view().index(), r.view().controller()), (Index(n as u64), Some(vid(3))));
         assert_eq!(r.fails(), 0, "an answer behind the view is an answer, not a failure");
     }
+    assert_eq!(r0.paged(), 0);
     // Other bytes at an index the view holds, such as a history from before the pointer with its last entry replaced:
-    // still nothing.
+    // two signed histories (OPEN-QUESTIONS A55). The refresh fails and pages, naming the index; the view and its pin
+    // stay as held.
     let mut older = g.get(0, 100);
     older[n - 1] = (Index(n as u64), g.log[n - 2].0.clone(), g.log[n - 2].1);
     let mut r = r0.clone();
-    r.apply(&a, Ok(vec![older]), 1, 1);
+    r.start(POINTER_TTL_MS, false);
+    r.apply(&a, Ok(vec![older]), POINTER_TTL_MS, POINTER_TTL_MS);
     assert_eq!((r.view(), plan(r.view(), None, SCRIPT).1), (r0.view(), plan(r0.view(), None, SCRIPT).1));
+    assert_eq!((r.oks(), r.fails(), r.paged()), (r0.oks(), 1, 1));
+    assert!(r.last_error().unwrap().starts_with(&format!("Equivocation: index {n} ")), "{:?}", r.last_error());
 }
 
 #[test]

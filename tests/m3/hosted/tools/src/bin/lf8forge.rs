@@ -29,9 +29,8 @@
 //! - `keys`: a `Keys` at the next generation, the control's index and prev, signed by a key that is not the anchored
 //!   customer key: the vendor, the executor, the agents executor, a stranger, or a new customer key alone (20 each).
 //! - `order`: the control's exact bytes at the wrong index: a gap (index + 2 to + 8, 50), or a replay at an index the
-//!   view holds with other bytes (the control at the last held index, 25, or at the one before it, 25). A replay at
-//!   a held index is skipped by design (`AgentsReleaseView::extend`: "entries the view holds are skipped"), so its
-//!   check is that the view does not move and does not take the bytes, not a refusal.
+//!   view holds with other bytes (the control at the last held index, 25, or at the one before it, 25), which the
+//!   view refuses as `Equivocation` naming that index (OPEN-QUESTIONS A55).
 
 use std::fs;
 use std::io::Write as _;
@@ -347,12 +346,9 @@ fn main() {
             assert_eq!(refused(&view, index, &control_bytes), graftyard_release::Refusal::BadState("a release/entries page skips an index"));
         } else {
             assert_ne!(g.log[index as usize - 1].0, control_bytes, "a replay carries other bytes than the held entry");
-            // A held index is skipped: the view keeps its fold, its index and its pin, and takes nothing.
-            let mut w = view.clone();
-            assert_eq!(w.extend(&agents_anchor, &[(Index(index), control_bytes.clone(), at)]), Ok(0));
-            assert_eq!(w, view, "a replay moves nothing");
+            assert_eq!(refused(&view, index, &control_bytes), graftyard_release::Refusal::Equivocation { index });
         }
-        let expect = if case == "gap" { "skips an index".to_string() } else { String::new() };
+        let expect = if case == "gap" { "skips an index".to_string() } else { format!("index {index} holds another entry") };
         push("order", k, case, index, control_bytes.clone(), "index", expect);
     }
 

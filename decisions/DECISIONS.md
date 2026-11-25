@@ -10965,3 +10965,28 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 **Flip.**
 - A canary that needs cold-isolate traffic to judge N+1, such as a gate that counts too few webhooks at 1% without it.
 - OPEN-QUESTIONS A52's own `graft-agents-front` roll: a front split during a `ControllerRoll` changes which version carries the variable, so the default moves to a binding both front versions read.
+
+#### `agents-equivocation`: the agents view compares an answer at a held index with the entry it applied there (2026-11-25)
+
+**Status.** Built (OPEN-QUESTIONS A55's fix, the lead's ruling of 2026-11-25); native only. The hosted re-read waits for a later row.
+
+**Decision.**
+- `AgentsReleaseView` keeps the digest of the entry it applied at each index (32 bytes an entry). In `extend`, an entry at or below the view's index with the same digest is skipped, as before, because it comes from a member behind. One with another digest is refused as `Refusal::Equivocation { index }`, which stops the page. The view, its index and its pin do not move.
+- `Equivocation` pages (`graftyard_release::pages`). `graft-agents-front` counts it as a failed refresh, with `fails` + 1 and `lastError` naming the index, counts it in `paged` on `/_agents_front/status`, and logs `PAGE graft-agents-front: release/entries refused, Equivocation: index <k> …`. The agents `graft-ops` logs `PAGE graft-agents-ops: …` for the same refusal. The install's log alert matches both, as it does `PAGE graft-ops` lines.
+
+**Why.**
+- Two different entries at one index mean the install's signed history forked: a leaked key or a broken signer. The agents account is the one reader outside the install that would see it. LF-8 r1 showed that skipping hid it: 50 replays with other bytes each counted as an ok refresh and logged nothing (`tests/am3/results/lf8.md`, "Replays").
+- The view already rejects every entry past its index that does not chain, so the check adds a comparison to the only path that took bytes unchecked. It adds no store or failure domain.
+
+**Beat.**
+- Skipping as before, because the view never moves. Rejected: the pin is safe either way, but a fork goes unseen.
+- Comparing only from the last checkpoint. The agents view has no checkpoint, and a full list costs 32 bytes an entry, 32 KB at 1,000 entries, held per isolate.
+
+**Evidence.**
+- `crates/release/src/tests/group/agents.rs`: `a55_other_bytes_at_a_held_index_are_equivocation_and_the_same_bytes_are_skipped`. An equal replay of k or k-1 takes nothing. Other bytes at k or k-1, alone or after equal entries, are `Equivocation { index }` and page, and the view does not move. The next entry lands after an equal replay.
+- `workers/agents-front/tests/front.rs`: `a_page_from_a_member_behind_the_view_moves_nothing`. An answer behind the view with equal bytes is ok. Other bytes at the last held index fail the refresh, page once, and keep the view and pin.
+- `tests/m0carried/plant228.py`: 5 mutants, all caught.
+
+**Flip.**
+- A legitimate history that rewrites an applied index, such as a `Release` restore into the same install id. A restore is a new install (`design/DESIGN.md`, "Install operations"), so none exists now.
+- A view so long that 32 bytes an entry matters to an isolate. Then keep a digest of the entries since a checkpoint the view signs.

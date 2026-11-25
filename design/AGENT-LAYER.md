@@ -463,14 +463,14 @@ pub struct AgentsAnchor { pub install: InstallId, pub customer: Ed25519Public, p
 /// The part of the install's `Release` fold the agents account acts on, built from `GET
 /// /api/graftyard/v1/release/entries?after=<index>` ("API reference"). An entry is accepted only in index order, only
 /// when its `Bound.install` is `AgentsAnchor.install`, and only under a key that the accepted `Keys` chain names,
-/// starting from a genesis signed by `AgentsAnchor.customer`. A `graft-agents-front` isolate refreshes it on a request
-/// once it is older than POINTER_TTL, never to a lower index, and keeps the last value when a refresh fails, so no
-/// webhook waits on the install. The agents `graft-ops` reads the same view each minute and executes `ControllerRoll`,
-/// `Rotate` of an agents-account secret, `Halt`, `Resume`, and `Abort` for `Script::AgentsFront` and
-/// `Script::Controller` with the agents account's deploy token. It records its uploads and steps as `ReleaseUploaded`,
-/// `IntentStep`, and `IntentDone`, signed with `Keys.agents_executor`, and submits them, and the pre-signed
-/// `ControllerPointer` undo on a gate breach, through `POST /api/graftyard/v1/release/entries`. Both readers
-/// authenticate with an App JWT signed by the `graftyard-agent` key from the agents Secrets Store.
+/// starting from a genesis signed by `AgentsAnchor.customer`. Other bytes at a held index page as `Equivocation`
+/// (DECISIONS "`agents-equivocation`"). A `graft-agents-front` isolate refreshes it on a request once it is older than
+/// POINTER_TTL, never to a lower index, and keeps the last value when a refresh fails, so no webhook waits on the
+/// install. The agents `graft-ops` reads the same view each minute and executes `ControllerRoll`, `Rotate` of an
+/// agents-account secret, `Halt`, `Resume`, and `Abort` for `Script::AgentsFront` and `Script::Controller` with the
+/// agents account's deploy token. It records its uploads and steps as `ReleaseUploaded`, `IntentStep`, and
+/// `IntentDone`, signed with `Keys.agents_executor`, and submits them and the pre-signed `ControllerPointer` undo on a
+/// gate breach through `POST release/entries`. Both readers sign App JWTs with the `graftyard-agent` key.
 pub struct AgentsReleaseView { pub index: Index, pub keys: Keys, pub controller: Option<VersionId>,
                                pub current: Option<IntentId> }
 /// `graft-agents-front`, on the controller's webhook hostname, forwards every request to `graft-controller` over a
