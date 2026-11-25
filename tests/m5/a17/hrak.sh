@@ -36,6 +36,9 @@ secret() { ra "$RB/secrets_store/stores/$STORE/secrets?per_page=100" | jq -c '.r
 cfms() { echo $(( $(date -d "$(curl -sI https://api.cloudflare.com/client/v4/ | tr -d '\r' | sed -n 's/^[Dd]ate: //p')" +%s) * 1000 )); }
 spki() { openssl pkey -in "$1" -pubout -outform DER 2>/dev/null | sha256sum | cut -c1-16; }
 node_() { node tests/m5/a17/hrak.mjs "$@"; }
+# Error lines: every `graft-runners: ` line but the RunnerBox's "launched N s after arm" (workers/runners/box.mjs), its
+# one info line under that prefix. r1's first `only` was refused on that line, which a pass with the new key wrote.
+errs() { grep 'graft-runners: ' "$1" | grep -vc 'graft-runners: launched '; }
 passes_since() {  # every graft-runners pass line and error line from $1 (Cloudflare ms) to now
   CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_RUNNER_ACCOUNT_ID CLOUDFLARE_API_TOKEN=$CLOUDFLARE_RUNNER_API_TOKEN \
     MATCH=graft-runners KEEP=graft-runners python3 tests/m5/bf46/logs.py graft-runners "$1" "$(cfms)"
@@ -90,14 +93,14 @@ put)
   } 2>&1 | log ;;
 passes)
   { p=$(cat "$S/put.ms"); passes_since "$p" | tee "$S/passes.jsonl"
-    n=$(grep -c '"graft-runners pass:' "$S/passes.jsonl"); e=$(grep -c 'graft-runners: ' "$S/passes.jsonl")
+    n=$(grep -c '"graft-runners pass:' "$S/passes.jsonl"); e=$(errs "$S/passes.jsonl")
     echo "since the put ($(date -u -d @$((p / 1000)) +%TZ)): $n passes, $e error lines"
   } 2>&1 | log ;;
 only)
   { p=$(cat "$S/put.ms"); age=$(( ($(cfms) - p) / 1000 ))
     [ "$age" -lt 600 ] && { echo "refused: the put is $age s old, under an old App JWT's 600 s"; exit 1; }
     passes_since "$p" >"$S/passes.jsonl"
-    grep -q '"graft-runners pass:' "$S/passes.jsonl" && ! grep -q 'graft-runners: ' "$S/passes.jsonl" ||
+    grep -q '"graft-runners pass:' "$S/passes.jsonl" && [ "$(errs "$S/passes.jsonl")" = 0 ] ||
       { echo "refused: no clean pass since the put"; cat "$S/passes.jsonl"; exit 1; }
     node_ only 2 && node_ mint "$H/app.pem"
   } 2>&1 | log ;;

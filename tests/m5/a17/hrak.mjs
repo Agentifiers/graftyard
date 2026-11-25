@@ -77,9 +77,13 @@ if (cmd === "show") {
     const stop = existsSync(a2), now = Date.now();
     if (!stop && now >= next) {
       next = now + every;
-      const r = await api("POST", `${A}/dispatch`, admin, { workflow: WF, ref: "main" });
+      // A 503 is a shed read (`Retry-After: 1`): r1's new repository's chain shed its tier reads as `tierOff` from
+      // 07:34 to about 07:38:50Z, so a dispatch is retried every 2 s for up to a minute, and each try is counted.
+      let r, tries = 0;
+      do { if (tries++) await sleep(2000); r = await api("POST", `${A}/dispatch`, admin, { workflow: WF, ref: "main" }); }
+      while (r.status === 503 && tries < 30);
       const id = r.status === 201 ? r.body.run : null;
-      row(rows, { t: now, date: r.headers.date ?? null, dispatch: r.status, run: id });
+      row(rows, { t: now, date: r.headers.date ?? null, dispatch: r.status, tries, run: id });
       if (id) runs.set(id, { dispatched: now, date: r.headers.date, state: null });
     }
     for (const [id, e] of runs) {
