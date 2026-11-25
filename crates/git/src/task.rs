@@ -35,6 +35,8 @@ pub const SUMMARY_MAX: usize = 64 << 10;
 pub const RUN_PREFIX: &str = "refs/heads/graftyard/";
 /// The slug of the first-party App that pushes for Graftyard-run tasks. Its token may carry another App's task.
 pub const WORKSPACE_SLUG: &str = "graftyard-workspace";
+/// The slug of the controller's App, the `app` of every Graftyard-run task.
+pub const AGENT_SLUG: &str = "graftyard-agent";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TaskKind {
@@ -403,6 +405,40 @@ pub fn token_task(
 
 // ---- the task commands' `decide` (`IssueOp::CreateTask`, `UpdateTask`, `CancelTask`) ----
 
+/// What both creates check once the creator passed: the session is new, the summary and issue are valid, and neither
+/// open-task cap is reached.
+#[allow(clippy::too_many_arguments)]
+fn admit(
+    core: &dyn Read,
+    ctx: &TaskCtx<'_>,
+    owner: &dyn AuthzRead,
+    session: &SessionId,
+    requester: Option<UserId>,
+    app: AppId,
+    summary: &str,
+    issue: Option<IssueNumber>,
+) -> Result<(), TaskErr> {
+    if task_core(core, session).is_some() {
+        return Err(TaskErr::SessionExists);
+    }
+    if summary.len() > SUMMARY_MAX {
+        return Err(TaskErr::Invalid("summary"));
+    }
+    if let Some(i) = issue
+        && (i.0 == 0 || i.0 > get_rec::<u32>(core, "counter", &[]).unwrap_or(0))
+    {
+        return Err(TaskErr::Invalid("issue_number"));
+    }
+    let (mine, all) = open_counts(core, owner, ctx.repo, ctx.at, requester, app);
+    if all >= usize::from(TASKS_OPEN_PER_REPO) {
+        return Err(TaskErr::Cap { repo: true });
+    }
+    if mine >= usize::from(TASKS_OPEN_PER_REQUESTER) {
+        return Err(TaskErr::Cap { repo: false });
+    }
+    Ok(())
+}
+
 /// `POST .../tasks` with `kind: external`: what the edge parsed from the body. `session` is the bare name or
 /// `<app_id>.<name>`, which `decide` scopes to the calling App; `requester` is the login the edge resolved.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,6 +447,57 @@ pub struct NewTask {
     pub requester: Option<UserId>,
     pub issue: Option<IssueNumber>,
     pub summary: Box<str>,
+}
+
+/// `POST .../tasks` without `kind` (AM3-WP3, format 32.28): a Graftyard-run task on an issue, a prompt, or both. The
+/// host mints its session from the request (`run_session`), so the body names none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewRun {
+    pub issue: Option<IssueNumber>,
+    pub prompt: Option<Box<str>>,
+    pub summary: Box<str>,
+}
+
+/// A Graftyard-run task's id, minted by the host from the create's request id: the request's 128 bits as a UUID of
+/// version 8 (RFC 9562's custom layout). The same request always mints the same id, and a duplicate of it replays the
+/// stored outcome before `decide` runs.
+pub fn run_session(request: graftyard_types::RequestId) -> SessionId {
+    let u = request.0.0;
+    let u = (u & !(0xf << 76)) | (0x8 << 76);
+    SessionId::Run((u & !(0x3 << 62)) | (0x2 << 62))
+}
+
+/// The install's `graftyard-agent` and its live installation on the repository's owner, when `graftyard-workspace` is
+/// installed there too: the App and installation a Graftyard-run task records, from the install's `AgentApp` rows and
+/// the owner's installations. `None` when either App is not registered as `GraftyardRun`, or not installed on `repo`.
+pub fn run_apps(
+    install: &graftyard_identity::AuthzFold,
+    owner: &graftyard_identity::AuthzFold,
+    repo: RepoId,
+) -> Option<(AppId, InstallationId)> {
+    let run_app = |slug: &str| {
+        install.more.more.agent_apps.values().find_map(|r| {
+            (r.kind == AgentKind::GraftyardRun && install.app(r.app).is_some_and(|a| a.slug.as_str() == slug))
+                .then_some(r.app)
+        })
+    };
+    let installed = |app: AppId| {
+        owner.more.installations.iter().find_map(|(id, s)| {
+            s.row
+                .as_ref()
+                .is_some_and(|r| {
+                    r.app == app
+                        && match &r.repos {
+                            RepoScope::All => true,
+                            RepoScope::Selected(ids) => ids.contains(&repo),
+                        }
+                })
+                .then_some(*id)
+        })
+    };
+    installed(run_app(WORKSPACE_SLUG)?)?;
+    let agent = run_app(AGENT_SLUG)?;
+    Some((agent, installed(agent)?))
 }
 
 /// Why a task command was refused. Each maps to the API reference's status (`graftyard_api::tasks`).
@@ -434,6 +521,17 @@ pub enum TaskErr {
     HostState,
     /// 409: the task is final (or, for a Graftyard-run task, paused), with the state it reads as.
     Final(TaskApiState),
+    // ---- AM3-WP3, a Graftyard-run create ----
+    /// 403: not a human user credential that may write the repository's contents (an installation token, an
+    /// `AgentApp`'s user-to-server token, a reader, or a token without `contents: write`).
+    NotWriter,
+    /// 422: the org's `OrgPolicy.agents_enabled` is off, its default.
+    AgentsOff,
+    /// 422: the org's `agents_workspace` is `Fork`, which is not built yet (in-repo mode only, AM3-WP3's minimum).
+    ForkMode,
+    /// 422: the install's `graftyard-agent` or `graftyard-workspace` is not registered as `GraftyardRun`, or not
+    /// installed on the repository.
+    NoRunApps,
 }
 
 /// The entry's time and the folds a task command reads: the owner's `Authz`, for permissions and derived states, and
@@ -449,6 +547,13 @@ pub struct TaskCtx<'a> {
     /// Format 32.14: the command may write `LeaseRelease`, so a command that makes the task final releases its leases
     /// in the same command (AM1-WP4). Before it they count as released anyway, because `holds` reads the task final.
     pub leases: bool,
+    /// The command's request id, which a Graftyard-run create mints its session from (`run_session`).
+    pub request: graftyard_types::RequestId,
+    /// A user's credential may write the repository's contents within its own limits, and is not an `AgentApp`'s
+    /// user-to-server token: what a Graftyard-run create needs beyond `perm`.
+    pub human_writer: bool,
+    /// `run_apps`, read for a Graftyard-run create only.
+    pub run: Option<(AppId, InstallationId)>,
 }
 
 type Decided = Result<(smallvec::SmallVec<[crate::repo::RepoEvent; 4]>, crate::issue_ops::IssueOut), TaskErr>;
@@ -516,25 +621,8 @@ pub fn decide(
                 Some(s @ SessionId::External { app: a, .. }) if a == app => s,
                 _ => return Err(TaskErr::BadSession),
             };
-            if task_core(core, &session).is_some() {
-                return Err(TaskErr::SessionExists);
-            }
-            if n.summary.len() > SUMMARY_MAX {
-                return Err(TaskErr::Invalid("summary"));
-            }
-            if let Some(i) = n.issue
-                && (i.0 == 0 || i.0 > get_rec::<u32>(core, "counter", &[]).unwrap_or(0))
-            {
-                return Err(TaskErr::Invalid("issue_number"));
-            }
             let owner = ctx.owner.ok_or(TaskErr::NotYours)?;
-            let (mine, all) = open_counts(core, owner, ctx.repo, ctx.at, n.requester, app);
-            if all >= usize::from(TASKS_OPEN_PER_REPO) {
-                return Err(TaskErr::Cap { repo: true });
-            }
-            if mine >= usize::from(TASKS_OPEN_PER_REQUESTER) {
-                return Err(TaskErr::Cap { repo: false });
-            }
+            admit(core, ctx, owner, &session, n.requester, app, &n.summary, n.issue)?;
             let t = AgentTask {
                 session: session.clone(),
                 kind: TaskKind::External,
@@ -547,6 +635,47 @@ pub fn decide(
                 issue: n.issue,
                 snapshot: ctx.applied,
                 prompt: None,
+                pr: None,
+                summary: n.summary.clone(),
+            };
+            Ok((smallvec::smallvec![RepoEvent::TaskCreated(t)], IssueOut::Task(session)))
+        }
+        IssueOp::CreateRun(n) => {
+            // A human writer's create (`design/AGENT-LAYER.md`, Shape, "Tasks and the activity feed"). The controller's
+            // exception for an issue assigned to its bot, and fork mode, are AM3-WP3's rest.
+            let TaskActor::User(u) = actor else { return Err(TaskErr::NotWriter) };
+            if !ctx.human_writer || ctx.perm < Some(RepoPermission::Write) {
+                return Err(TaskErr::NotWriter);
+            }
+            let owner = ctx.owner.ok_or(TaskErr::NotYours)?;
+            let policy = owner.policy();
+            if !policy.agents_enabled {
+                return Err(TaskErr::AgentsOff);
+            }
+            if policy.agents_workspace != graftyard_identity::WorkspaceMode::InRepo {
+                return Err(TaskErr::ForkMode);
+            }
+            let (app, installation) = ctx.run.ok_or(TaskErr::NoRunApps)?;
+            if n.issue.is_none() && n.prompt.is_none() {
+                return Err(TaskErr::Invalid("prompt"));
+            }
+            if n.prompt.as_ref().is_some_and(|p| p.len() > PROMPT_MAX) {
+                return Err(TaskErr::Invalid("prompt"));
+            }
+            let session = run_session(ctx.request);
+            admit(core, ctx, owner, &session, Some(u), app, &n.summary, n.issue)?;
+            let t = AgentTask {
+                session: session.clone(),
+                kind: TaskKind::GraftyardRun,
+                state: TaskApiState::Queued,
+                prefix: run_prefix(&session),
+                requester: Some(u),
+                app,
+                installation,
+                creator: actor,
+                issue: n.issue,
+                snapshot: ctx.applied,
+                prompt: n.prompt.clone(),
                 pr: None,
                 summary: n.summary.clone(),
             };

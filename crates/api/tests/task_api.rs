@@ -603,3 +603,73 @@ fn a_leader_rendered_reply_is_the_edge_rendered_reply() {
     assert!(c.render_lacks_authz());
     assert!(c.replay(&[]).authz.is_none());
 }
+
+/// AM3-WP3's `graftyard_task` delivery: a human writer's Graftyard-run create renders the API reference's payload
+/// (`action`, `task` with its prompt, `repository`, `sender`) with the App's `installation`, and the controller reads
+/// back the task it starts from that payload alone (`Task::of_delivery`): its id, base, requester, and in-repo
+/// workspace. An external task's create carries no `graftyard_task`.
+#[test]
+fn the_graftyard_task_payload_is_what_the_controller_starts_from() {
+    use graftyard_git::controller::{Delivery, TASK_WALL, Task, TaskBudget, Workspace};
+    use graftyard_git::hooks::{Subject, TASK_EVENT, webhooks};
+    use graftyard_identity::WorkspaceMode::InRepo;
+    let mut w = World::new();
+    register_own(&mut w, RUN, "graftyard-agent");
+    w.flag(AgentApp { app: RUN, kind: AgentKind::GraftyardRun, confine: None });
+    const WS: AppId = AppId(DbId(8));
+    register_own(&mut w, WS, "graftyard-workspace");
+    w.flag(AgentApp { app: WS, kind: AgentKind::GraftyardRun, confine: None });
+    let c = claims(WS);
+    let row = InstallationRow { app: WS, repos: c.repos.clone(), permissions: everything() };
+    w.ident.owner.apply(&AuthzEvent::Installation { id: c.installation, row: Some(row), not_before: Timestamp(0) });
+    w.ident.owner.apply(&AuthzEvent::OrgAgents { enabled: true, workspace: InRepo });
+    w.flag(claude_row());
+    w.commit(issue(app(CLAUDE), create("ext", WRITER))).unwrap();
+    let op = IssueOp::CreateRun(task_rules::NewRun {
+        issue: None,
+        prompt: Some("fix the flaky test".into()),
+        summary: "".into(),
+    });
+    let out = w.commit(RepoCmd::Issue(Box::new(IssueCall::new(op, user(WRITER), RequestId(Ulid(0x51)), Value::Null))));
+    let Ok(RepoOut::Issue(o)) = out else { panic!("{out:?}") };
+    let IssueOut::Task(id) = o.out else { panic!() };
+    let f = w.fold();
+    let (h, d) = (host(), Dir);
+    let r = Repo { host: &h, at: at(REPO), core: &f.core, meta: &f.meta, dir: &d };
+    let l = w.repo.leader();
+    let mut bodies = Vec::new();
+    for e in w.repo.members[l.0 as usize].log() {
+        for hook in webhooks(&f.core, REPO, e).into_iter().filter(|x| x.event == TASK_EVENT) {
+            assert!(matches!(&hook.subject, Subject::Task { session, .. } if *session == id), "only the run task's");
+            let v = graftyard_api::webhooks::payload(&r, &hook, None, e.at).expect("a payload");
+            bodies.push(graftyard_api::webhooks::with_installation(v, claims(RUN).installation));
+        }
+    }
+    let [p] = bodies.as_slice() else { panic!("one delivery, got {}", bodies.len()) };
+    assert_eq!(p["action"], "created");
+    assert_eq!((p["task"]["id"].as_str(), p["task"]["kind"].as_str()), (Some(&*id.text()), Some("graftyard_run")));
+    assert_eq!(p["task"]["prompt"], "fix the flaky test");
+    assert_eq!(p["task"]["app_id"], RUN.0.0);
+    assert_eq!(p["sender"]["login"], "alice");
+    assert_eq!(p["installation"]["id"], claims(RUN).installation.0.0);
+    assert_eq!(p["repository"]["full_name"], "o/r7");
+    let budget = TaskBudget { task_tokens: 10, org_month_tokens: 100, wall: TASK_WALL };
+    let (action, t) = Task::of_delivery(p, InRepo, budget).expect("the controller's task");
+    assert_eq!(action, Delivery::Created);
+    assert_eq!(
+        (t.id.clone(), t.requester, t.workspace.clone()),
+        (id.clone(), UserId(AccountId(DbId(WRITER))), Workspace::InRepo)
+    );
+    assert_eq!((t.base.owner.as_str(), t.base.name.as_str()), ("o", "r7"));
+    assert_eq!(t.branch, task_rules::run_prefix(&id).unwrap());
+    // A payload for an external task, or with the task's state moved on, starts nothing.
+    let mut ext = p.clone();
+    ext["task"]["kind"] = json!("external");
+    assert!(Task::of_delivery(&ext, InRepo, budget).is_none());
+    let mut late = p.clone();
+    late["task"]["state"] = json!("in_progress");
+    assert!(Task::of_delivery(&late, InRepo, budget).is_none());
+    let mut cancel = p.clone();
+    cancel["action"] = json!("cancelled");
+    assert_eq!(Task::of_delivery(&cancel, InRepo, budget).map(|x| x.0), Some(Delivery::Cancelled));
+}

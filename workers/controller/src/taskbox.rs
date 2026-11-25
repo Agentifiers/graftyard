@@ -34,11 +34,11 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use futures_util::future::{Either, select};
-use graftyard_git::controller::{Resume, SandboxId, Task, TaskEvent};
+use graftyard_git::controller::{Delivery, Resume, SandboxId, TASK_WALL, Task, TaskBudget, TaskEvent};
 use graftyard_git::outbound::{Allowed, Cred, OutReq, Route, Scheme, outbound};
 use graftyard_git::taskbox::{self as tb, Act, HEARTBEAT, Input, Pointer, Report, acked_pushes};
 use graftyard_identity::appauth::{app_key, sign_app_jwt};
-use graftyard_identity::{AppId, SessionId};
+use graftyard_identity::{AppId, SessionId, WorkspaceMode};
 use graftyard_types::{DbId, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -57,6 +57,71 @@ const INACTIVITY_MS: f64 = 6.0 * 3_600_000.0;
 const POINTER_READ_MS: u64 = 2_000;
 /// A cached token is reminted this long before it expires.
 const TOKEN_SLACK_MS: u64 = 300_000;
+/// A task's model budget until the controller's settings hold the org's [guess]; the wall is the design's 60 minutes.
+const BUDGET: TaskBudget = TaskBudget { task_tokens: 2_000_000, org_month_tokens: 200_000_000, wall: TASK_WALL };
+
+/// A signed `graftyard_task` delivery (`worker.rs`, after `intake` accepted it): `created` starts the task's box, and
+/// `cancelled` stops it. The box is the object named by the task's id, so a repeated `created` finds its box and
+/// changes nothing (409), and two deliveries never start two Sandboxes. Bindings: `GRAFTYARD_HOST`, the install's
+/// host; `HARNESS`, the harness's command as a JSON array; `ROUTE_OTHERS`, the route's model and registry arms as JSON
+/// (`graftyard_git::outbound::Allowed`), `[]` for a harness that calls no model. In-repo mode only (AM3-WP3's
+/// minimum): the host refuses a fork-mode create, so the workspace is the base.
+pub async fn deliver(env: &Env, payload: &Value) -> Result<Response> {
+    let Some((action, task)) = Task::of_delivery(payload, WorkspaceMode::InRepo, BUDGET) else {
+        return reply(422, json!({ "message": "not a Graftyard-run task delivery" }));
+    };
+    let stub = env.durable_object("TASKBOX")?.get_by_name(&task.id.text())?;
+    if action == Delivery::Cancelled {
+        return stub.fetch_with_str("https://taskbox/cancel").await;
+    }
+    let host = env.var("GRAFTYARD_HOST")?.to_string();
+    let command: Vec<String> = serde_json::from_str(&env.var("HARNESS")?.to_string()).map_err(err)?;
+    let others: Vec<Allowed> = match env.var("ROUTE_OTHERS") {
+        Ok(v) => serde_json::from_str(&v.to_string()).map_err(err)?,
+        Err(_) => Vec::new(),
+    };
+    let route = Route::of(&task, &host, others).ok_or_else(|| err("no route for the task"))?;
+    let repo = task.base.name.as_str().to_owned();
+    let agent = payload["installation"]["id"].as_i64().ok_or_else(|| err("the delivery names no installation"))?;
+    let workspace = workspace_installation(env, &host, &task).await?;
+    let start = Start {
+        task,
+        route,
+        command,
+        agent: Inst { installation: agent, repo: repo.clone() },
+        workspace: Inst { installation: workspace, repo },
+    };
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(serde_json::to_string(&start)?.into()));
+    stub.fetch_with_request(Request::new_with_init("https://taskbox/start", &init)?).await
+}
+
+/// `graftyard-workspace`'s installation on the task's push target, the base in-repo: `GET
+/// /repos/{owner}/{repo}/installation` under its App JWT.
+async fn workspace_installation(env: &Env, host: &str, task: &Task) -> Result<i64> {
+    let jwt = app_jwt(env, "WORKSPACE").await?;
+    let h = Headers::new();
+    h.set("authorization", &format!("Bearer {jwt}"))?;
+    h.set("accept", "application/vnd.github+json")?;
+    h.set("user-agent", "graft-controller")?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Get).with_headers(h);
+    let (o, n) = (task.base.owner.as_str(), task.base.name.as_str());
+    let url = format!("https://{host}/api/v3/repos/{o}/{n}/installation");
+    let mut r = Fetch::Request(Request::new_with_init(&url, &init)?).send().await?;
+    let v: Value = r.json().await.unwrap_or(Value::Null);
+    match (r.status_code(), v["id"].as_i64()) {
+        (200, Some(id)) => Ok(id),
+        (code, _) => Err(err(format!("graftyard-workspace installation on {o}/{n}: {code} {}", v["message"]))),
+    }
+}
+
+/// An App JWT of `app` (`AGENT` or `WORKSPACE`) from its id variable and its Secrets Store key.
+async fn app_jwt(env: &Env, app: &str) -> Result<String> {
+    let id: i64 = env.var(&format!("{app}_APP_ID"))?.to_string().parse().map_err(err)?;
+    let pem = env.secret_store(&format!("{app}_APP_KEY"))?.get().await?.ok_or_else(|| err("no App key"))?;
+    Ok(sign_app_jwt(&app_key(&pem).map_err(err)?, AppId(DbId(id)), Timestamp(now_ms())))
+}
 
 /// One App's installation for the task, and the repository its tokens name.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -365,9 +430,7 @@ impl TaskBox {
 
     /// One installation token of `app` (`AGENT` or `WORKSPACE`) for `inst.repo`, claimed for the task.
     async fn mint(&self, app: &str, inst: &Inst, task: &SessionId, route: &Route) -> Result<(String, u64)> {
-        let id: i64 = self.env.var(&format!("{app}_APP_ID"))?.to_string().parse().map_err(err)?;
-        let pem = self.env.secret_store(&format!("{app}_APP_KEY"))?.get().await?.ok_or_else(|| err("no App key"))?;
-        let jwt = sign_app_jwt(&app_key(&pem).map_err(err)?, AppId(DbId(id)), Timestamp(now_ms()));
+        let jwt = app_jwt(&self.env, app).await?;
         let host = host(route).ok_or_else(|| err("the route names no host"))?;
         let h = Headers::new();
         h.set("authorization", &format!("Bearer {jwt}"))?;
@@ -410,6 +473,14 @@ impl DurableObject for TaskBox {
                 self.act(&act, &s).await?;
                 self.state.storage().set_alarm(HEARTBEAT).await?;
                 reply(201, json!({ "state": s.b.task.state }))
+            }
+            (Method::Get, "/cancel") => {
+                let Some(mut s) = self.load().await? else { return reply(404, json!({ "message": "no box" })) };
+                let act = s.b.cancel();
+                self.save(&s).await?;
+                self.act(&act, &s).await?;
+                console_log!("graft-controller: task {} cancelled", s.b.task.id.text());
+                reply(200, json!({ "state": s.b.task.state }))
             }
             (Method::Get, "/status") => {
                 let running = self.container().map(|c| c.running()).unwrap_or(false);

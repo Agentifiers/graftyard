@@ -57,6 +57,12 @@ pub const REPO_FORMAT_AGENT: Format = Format { family: 0x20, version: 8 };
 /// push carries `validate`'s outputs as 32.8 does. Versions 10 and 11 are other packages'. An edge sends it only once
 /// `FormatsEnable` has enabled it; a command without a task and without a claim never takes it.
 pub const REPO_FORMAT_TASKS: Format = Format { family: 0x20, version: 12 };
+/// AM3-WP3's Graftyard-run create (`IssueOp::CreateRun`, `crate::task`): a human writer's `POST .../tasks` without
+/// `kind`, which a release that reads only up to 32.26 cannot decode. A superset of 32.12: its entry carries
+/// `TaskCreated` as 32.12 does, and its command reads the install's `Authz` for the `graftyard-agent` row. Version 27
+/// is the parked `raw-inline` marker's (`decisions/DECISIONS.md`), so this is 32.28. An edge sends it only once
+/// `FormatsEnable` has enabled it; every other task command keeps 32.12.
+pub const REPO_FORMAT_RUNS: Format = Format { family: 0x20, version: 28 };
 /// `rest:repos`' create and delete (branch `m3-repos`): `IssueOp::InitRepo` and `IssueOp::DeleteRepo`, and their
 /// events `Created` and `Deleted` (tags 33 and 34). Version 13, after AM1-WP3's 12. An edge sends it only once
 /// `FormatsEnable` has enabled it.

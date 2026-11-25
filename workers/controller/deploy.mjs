@@ -8,11 +8,14 @@
 // - No workers.dev route: only `graft-agents-front` reaches it, over its `fetch()` service binding.
 // - `--taskbox` adds the `TaskBox` Durable Object (DECISIONS "`controller-taskbox`"): the class, its one
 //   `durable_object`-policy container application, and from `<taskbox.json>` ({"agent_app_id", "workspace_app_id",
-//   "store", "image", "agents_front"}) the `sandbox` image (a registry image, or a Dockerfile path relative to the
+//   "store", "image", "host", "harness", "route_others", "agents_front"}) the `sandbox` image (a registry image, or a Dockerfile path relative to the
 //   repository root, which wrangler builds), the two App ids, the Secrets Store bindings
 //   `AGENT_APP_KEY`, `WORKSPACE_APP_KEY`, and `MODEL_KEY` in `store`, and `AGENTS_FRONT`, the `fetch()` binding to
 //   `graft-agents-front` with `props` `{"pointer": true}`. `agents_front` is optional: the two scripts bind each other,
-//   so the first deploy of an install omits it, and the one after `graft-agents-front` exists adds it.
+//   so the first deploy of an install omits it, and the one after `graft-agents-front` exists adds it. A
+//   `graftyard_task` delivery starts a box from `host` (`GRAFTYARD_HOST`, the install's host), `harness` (`HARNESS`,
+//   the Sandbox's command as an array), and the optional `route_others` (`ROUTE_OTHERS`, the route's model and
+//   registry arms, `[]` without).
 // `STATUS_TOKEN` (the `/_controller/status` secret) is set separately with `wrangler secret put STATUS_TOKEN`, its
 // value on stdin; no secret value passes through this script. `--bad` builds with the `test-bad` feature, LF-7's bad
 // N+1, for test installs only. `--upload-only` uploads a version without deploying it (`wrangler versions upload`), for
@@ -39,8 +42,9 @@ const gen = join(here, ".gen");
 mkdirSync(gen, { recursive: true });
 const tbPath = flag("--taskbox");
 const tb = tbPath ? JSON.parse(readFileSync(tbPath, "utf8")) : null;
-if (tb && (!/^\d+$/.test(String(tb.agent_app_id)) || !/^\d+$/.test(String(tb.workspace_app_id)) || !tb.store || !tb.image)) {
-  throw new Error(`${tbPath}: needs agent_app_id, workspace_app_id, store, and image`);
+if (tb && (!/^\d+$/.test(String(tb.agent_app_id)) || !/^\d+$/.test(String(tb.workspace_app_id)) || !tb.store || !tb.image
+  || !tb.host || !Array.isArray(tb.harness))) {
+  throw new Error(`${tbPath}: needs agent_app_id, workspace_app_id, store, image, host, and harness`);
 }
 const sandboxImage = tb && (/Dockerfile$/.test(tb.image) ? { dockerfile: resolve(here, "../..", tb.image) } : { image: tb.image });
 const cfg = {
@@ -56,7 +60,8 @@ const cfg = {
     ...(tb ? ["AGENT_APP_KEY", "WORKSPACE_APP_KEY", "MODEL_KEY"].map((n) => ({ binding: n, store_id: tb.store, secret_name: n })) : []),
   ],
   ...(tb ? {
-    vars: { AGENT_APP_ID: String(tb.agent_app_id), WORKSPACE_APP_ID: String(tb.workspace_app_id) },
+    vars: { AGENT_APP_ID: String(tb.agent_app_id), WORKSPACE_APP_ID: String(tb.workspace_app_id),
+      GRAFTYARD_HOST: tb.host, HARNESS: JSON.stringify(tb.harness), ROUTE_OTHERS: JSON.stringify(tb.route_others ?? []) },
     ...(tb.agents_front ? { services: [{ binding: "AGENTS_FRONT", service: tb.agents_front, props: { pointer: true } }] } : {}),
     durable_objects: { bindings: [{ name: "TASKBOX", class_name: "TaskBox" }] },
     containers: [{ class_name: "TaskBox", scheduling_policy: "durable_object",

@@ -10,8 +10,8 @@
 use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
 use graftyard_git::issues::IssueNumber;
 use graftyard_git::task::{
-    NewTask, SUMMARY_MAX, TaskActor, TaskApiState, TaskCore, TaskErr, TaskMeta, effective, task_core, task_ids,
-    task_meta,
+    NewRun, NewTask, PROMPT_MAX, SUMMARY_MAX, TaskActor, TaskApiState, TaskCore, TaskErr, TaskMeta, effective,
+    task_core, task_ids, task_meta,
 };
 use graftyard_identity::{
     Access as AppAccess, Actor, AppId, AuthzRead, Credential, Principal, RepoPermission, SessionId, UserId,
@@ -115,7 +115,23 @@ pub fn task_json(
     reader: Reader,
     single: bool,
 ) -> Value {
-    let state = effective(core, owner, r.at.id, at);
+    let mut v = task_json_in(r, effective(core, owner, r.at.id, at), id, core, meta, reader);
+    if single {
+        v["leases"] = crate::leases::task_leases(r, owner, at, id);
+    }
+    v
+}
+
+/// `task` in `state`, without `leases`: the stored state for the first-party delivery, which renders from the
+/// repository's tiers alone (`crate::webhooks::payload`).
+pub fn task_json_in(
+    r: &Repo<'_>,
+    state: TaskApiState,
+    id: &SessionId,
+    core: &TaskCore,
+    meta: Option<&TaskMeta>,
+    reader: Reader,
+) -> Value {
     let web = r.host.web();
     let mut v = json!({
         "id": id.text(),
@@ -135,9 +151,6 @@ pub fn task_json(
     });
     if reader.contents {
         v["prompt"] = meta.and_then(|m| m.prompt.as_deref()).map_or(Value::Null, |p| Value::String(p.into()));
-    }
-    if single {
-        v["leases"] = crate::leases::task_leases(r, owner, at, id);
     }
     v
 }
@@ -245,10 +258,11 @@ pub fn log(r: &Repo<'_>, id: &str, reader: Reader) -> Reply {
 
 // ---- writes ----
 
-/// `POST /tasks`. Only `kind: external` is served here: a Graftyard-run task (`issue_number` or `prompt` without
-/// `kind`) is AM3-WP3's, which also checks `agents_enabled`, so it is 422 with the message the reference gives while
-/// `agents_enabled` is off. `requester` is a login the edge resolves.
-pub fn parse_create(body: &Value, requester: Option<UserId>) -> Result<NewTask, Reply> {
+/// `POST /tasks`. `kind: external` is an `AgentApp`'s external task (`NewTask`). Without `kind`, `issue_number` or
+/// `prompt` (at most 64 KiB) is a Graftyard-run task (`IssueOp::CreateRun`, AM3-WP3), which `decide` refuses with 422
+/// while `agents_enabled` is off and 403 for any credential but a human writer's; `session` and `requester` are
+/// external only. `requester` is a login the edge resolves.
+pub fn parse_create(body: &Value, requester: Option<UserId>) -> Result<IssueOp<graftyard_git::blob::BlobRef>, Reply> {
     let str_of = |k: &'static str| -> Result<Option<&str>, Reply> {
         match body.get(k) {
             None | Some(Value::Null) => Ok(None),
@@ -256,17 +270,6 @@ pub fn parse_create(body: &Value, requester: Option<UserId>) -> Result<NewTask, 
             Some(_) => Err(invalid(k, "invalid")),
         }
     };
-    match str_of("kind")? {
-        Some("external") => {}
-        Some(_) => return Err(invalid("kind", "invalid")),
-        None => {
-            return Err(Reply::error(422, "Graftyard-run tasks are not enabled for this organization", DOC));
-        }
-    }
-    if body.get("prompt").is_some_and(|p| !p.is_null()) {
-        return Err(invalid("prompt", "invalid"));
-    }
-    let session = str_of("session")?.ok_or_else(|| invalid("session", "missing_field"))?;
     let summary = str_of("summary")?.unwrap_or("");
     if summary.len() > SUMMARY_MAX {
         return Err(invalid("summary", "invalid"));
@@ -277,10 +280,33 @@ pub fn parse_create(body: &Value, requester: Option<UserId>) -> Result<NewTask, 
             v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| invalid("issue_number", "invalid"))?,
         )),
     };
+    match str_of("kind")? {
+        Some("external") => {}
+        Some(_) => return Err(invalid("kind", "invalid")),
+        None => {
+            for k in ["session", "requester"] {
+                if body.get(k).is_some_and(|v| !v.is_null()) {
+                    return Err(invalid(k, "invalid"));
+                }
+            }
+            let prompt = str_of("prompt")?;
+            if prompt.is_some_and(|p| p.len() > PROMPT_MAX) {
+                return Err(invalid("prompt", "invalid"));
+            }
+            if issue.is_none() && prompt.is_none() {
+                return Err(invalid("prompt", "missing_field"));
+            }
+            return Ok(IssueOp::CreateRun(NewRun { issue, prompt: prompt.map(Into::into), summary: summary.into() }));
+        }
+    }
+    if body.get("prompt").is_some_and(|p| !p.is_null()) {
+        return Err(invalid("prompt", "invalid"));
+    }
+    let session = str_of("session")?.ok_or_else(|| invalid("session", "missing_field"))?;
     if str_of("requester")?.is_some() && requester.is_none() {
         return Err(invalid("requester", "invalid"));
     }
-    Ok(NewTask { session: session.into(), requester, issue, summary: summary.into() })
+    Ok(IssueOp::CreateTask(NewTask { session: session.into(), requester, issue, summary: summary.into() }))
 }
 
 /// `PATCH /tasks/{id}` with `{state?, pr_number?, summary?}`.
@@ -366,6 +392,22 @@ pub fn refused(e: &IssueErr) -> Reply {
             TaskErr::Invalid(f) => invalid(f, "invalid"),
             TaskErr::HostState => invalid("state", "invalid"),
             TaskErr::Final(s) => final_state(*s),
+            TaskErr::NotWriter => Reply::error(
+                403,
+                "Only a person who can push to the repository creates a Graftyard-run task, never an App's token",
+                DOC,
+            ),
+            TaskErr::AgentsOff => Reply::error(422, "Graftyard-run tasks are not enabled for this organization", DOC),
+            TaskErr::ForkMode => Reply::error(
+                422,
+                "Graftyard-run tasks run in-repo only on this install: set the organization's agents workspace to in_repo",
+                DOC,
+            ),
+            TaskErr::NoRunApps => Reply::error(
+                422,
+                "graftyard-agent and graftyard-workspace must both be installed on this repository",
+                DOC,
+            ),
         },
         _ => Reply::error(422, "Unprocessable Entity", DOC),
     }
@@ -387,11 +429,31 @@ mod tests {
 
     #[test]
     fn bodies_parse_as_the_reference_names_them() {
-        let n = parse_create(&json!({ "kind": "external", "session": "fix-1", "summary": "s" }), None).unwrap();
+        let IssueOp::CreateTask(n) =
+            parse_create(&json!({ "kind": "external", "session": "fix-1", "summary": "s" }), None).unwrap()
+        else {
+            panic!("external")
+        };
         assert_eq!((&*n.session, &*n.summary), ("fix-1", "s"));
         assert_eq!(parse_create(&json!({ "kind": "external" }), None).unwrap_err().status, 422);
-        assert_eq!(parse_create(&json!({ "issue_number": 3 }), None).unwrap_err().status, 422, "graftyard_run");
         assert_eq!(parse_create(&json!({ "kind": "x", "session": "a" }), None).unwrap_err().status, 422);
+        // Without `kind`: a Graftyard-run task on an issue, a prompt, or both; never a session or requester.
+        assert!(matches!(
+            parse_create(&json!({ "issue_number": 3 }), None),
+            Ok(IssueOp::CreateRun(NewRun { issue: Some(IssueNumber(3)), prompt: None, .. }))
+        ));
+        let p = parse_create(&json!({ "prompt": "fix it" }), None).unwrap();
+        assert!(matches!(p, IssueOp::CreateRun(NewRun { issue: None, prompt: Some(ref x), .. }) if &**x == "fix it"));
+        for bad in [
+            json!({}),
+            json!({ "summary": "s" }),
+            json!({ "prompt": "x", "session": "a" }),
+            json!({ "prompt": "x", "requester": "alice" }),
+            json!({ "prompt": "x".repeat(PROMPT_MAX + 1) }),
+        ] {
+            assert_eq!(parse_create(&bad, None).unwrap_err().status, 422, "{bad}");
+        }
+        assert!(parse_create(&json!({ "prompt": "x".repeat(PROMPT_MAX) }), None).is_ok());
         let id = SessionId::parse("3.fix", None).unwrap();
         assert!(matches!(
             parse_patch(id.clone(), &json!({ "state": "in_progress", "pr_number": 4 })),

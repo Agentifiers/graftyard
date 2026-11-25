@@ -374,6 +374,37 @@ pub enum Subject {
     Ping {
         hook: HookId,
     },
+    /// A Graftyard-run task's first-party `graftyard_task` delivery (`design/AGENT-LAYER.md`, "API reference"):
+    /// `created` or `cancelled`, by `actor`.
+    Task {
+        session: graftyard_identity::SessionId,
+        actor: Option<graftyard_types::AccountId>,
+    },
+}
+
+/// The first-party event a Graftyard-run task's create and cancel carry. It is not in `EVENTS`, so no hook and no App
+/// can subscribe to it: it goes only to the task's App, the install's `graftyard-agent` (`Webhook::target`).
+pub const TASK_EVENT: &str = "graftyard_task";
+
+fn task_webhook(
+    session: &graftyard_identity::SessionId,
+    app: graftyard_identity::AppId,
+    action: &'static str,
+    actor: Option<graftyard_types::AccountId>,
+) -> Webhook {
+    Webhook {
+        event: TASK_EVENT,
+        action: Some(action),
+        subject: Subject::Task { session: session.clone(), actor },
+        target: Some(HookId::app(app)),
+    }
+}
+
+fn user_of(a: &crate::task::TaskActor) -> Option<graftyard_types::AccountId> {
+    match a {
+        crate::task::TaskActor::User(u) => Some(u.0),
+        crate::task::TaskActor::App { .. } => None,
+    }
 }
 
 fn tag_or_branch(r: &RefName) -> bool {
@@ -462,6 +493,16 @@ pub fn webhooks(core: &dyn Read, repo: RepoId, e: &LogEntry<RepoEvent>) -> Vec<W
                 out.push(w("workflow_job", Some(u.action.name()), Subject::WorkflowJob(u.clone())))
             }
             RepoEvent::Queue(q) => queue_webhooks(q, &mut out),
+            RepoEvent::TaskCreated(t) if t.kind == crate::task::TaskKind::GraftyardRun => {
+                out.push(task_webhook(&t.session, t.app, "created", user_of(&t.creator)))
+            }
+            RepoEvent::TaskUpdated { session, state: Some(crate::task::TaskApiState::Cancelled), actor, .. } => {
+                if let Some(t) =
+                    crate::task::task_core(core, session).filter(|t| t.kind == crate::task::TaskKind::GraftyardRun)
+                {
+                    out.push(task_webhook(session, t.app, "cancelled", user_of(actor)));
+                }
+            }
             // A new hook's ping, to that hook only: SHARED's "queues a `ping` delivery when it reads a new `Hook` entry".
             RepoEvent::Hook { id, record: Some(r), created: true, .. } if r.active => out.push(Webhook {
                 event: "ping",

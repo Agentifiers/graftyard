@@ -223,6 +223,15 @@ pub fn payload(r: &Repo<'_>, w: &Webhook, hook: Option<(HookId, &HookRow)>, at: 
             let (id, row) = hook.filter(|(h, _)| h == id)?;
             ping(r, id, row)
         }
+        // `graftyard_task` (`design/AGENT-LAYER.md`, "API reference"): the task as the fold holds it, with its prompt,
+        // since only the install's `graftyard-agent`, which reads contents, receives it.
+        Subject::Task { session, actor } => {
+            let core = graftyard_git::task::task_core(r.core, session)?;
+            let meta = graftyard_git::task::task_meta(r.meta, session);
+            let reader = crate::tasks::Reader { metadata: true, contents: true };
+            let task = crate::tasks::task_json_in(r, core.state, session, &core, meta.as_ref(), reader);
+            envelope(r, *actor, with_action(obj(json!({ "task": task }))))
+        }
     })
 }
 

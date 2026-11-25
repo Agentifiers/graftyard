@@ -248,3 +248,16 @@ fn acked_pushes_are_the_hosts_ok_lines_for_the_tasks_refs_with_the_requests_ids(
     let stray = status(&["unpack ok", &format!("ok refs/heads/graftyard/{ID}/c")]);
     assert!(acked_pushes(&req, &stray, &refs).is_empty());
 }
+
+/// The first-party delivery's `cancelled` ends the task and stops its Sandbox; the old Sandbox's next report is
+/// refused as final, and a second cancel changes nothing.
+#[test]
+fn a_cancel_delivery_stops_the_box_and_refuses_its_sandbox() {
+    let mut b = started();
+    assert_eq!(b.cancel(), Act::Stop);
+    assert_eq!(b.task.state, TaskState::Cancelled);
+    assert_eq!(b.on(pushed(sb(1), ObjectId([7; 20])), 1), Err(Report::Refused(StepErr::Final)));
+    assert_eq!(b.cancel(), Act::Stop);
+    assert_eq!(b.task.state, TaskState::Cancelled);
+    assert_eq!(b.on(alarm(false, "v1"), HEARTBEAT.as_millis() as u64), Ok(Act::Keep), "a final box starts nothing");
+}

@@ -176,6 +176,13 @@ pub enum TaskEvent {
     Cancelled,
 }
 
+/// A `graftyard_task` delivery's `action`: a new task to start, or a cancel to stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Delivery {
+    Created,
+    Cancelled,
+}
+
 /// Where a running task's Sandbox starts its work: the task's last push, or the base when it has none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Resume {
@@ -223,6 +230,41 @@ impl Task {
         let branch = run_prefix(&id)?;
         let workspace = workspace(mode, &base).ok()?;
         Some(Task { id, issue, snapshot, requester, base, workspace, branch, budget, state: TaskState::Queued })
+    }
+
+    /// The task a first-party `graftyard_task` delivery names (`design/AGENT-LAYER.md`, "API reference"): its
+    /// `action`, and the queued `Task` for a `created` one, from the payload's `task` and `repository`. Only a
+    /// Graftyard-run task in `queued` with a requester is one; an in-repo task works in its base, and a fork-mode task
+    /// is AM3-WP3's rest, so `mode` comes from the org's settings and `None` for a fork without its workspace org.
+    pub fn of_delivery(
+        payload: &serde_json::Value,
+        mode: WorkspaceMode,
+        budget: TaskBudget,
+    ) -> Option<(Delivery, Task)> {
+        let t = &payload["task"];
+        if t["kind"] != "graftyard_run" {
+            return None;
+        }
+        let id = match SessionId::parse(t["id"].as_str()?, None)? {
+            s @ SessionId::Run(_) => s,
+            SessionId::External { .. } => return None,
+        };
+        let (owner, name) = payload["repository"]["full_name"].as_str()?.split_once('/')?;
+        let base = RepoRef { owner: Login::parse(owner).ok()?, name: RepoName::parse(name).ok()? };
+        let requester = UserId(graftyard_types::AccountId(graftyard_types::DbId(t["requester"]["id"].as_i64()?)));
+        let issue = t["issue_number"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(|n| IssueRef { repo: base.clone(), number: IssueNumber(n) });
+        let action = match payload["action"].as_str()? {
+            "created" if t["state"] == "queued" => Delivery::Created,
+            "cancelled" => Delivery::Cancelled,
+            _ => return None,
+        };
+        // The snapshot is the create's index, which the payload does not carry: the controller reads the issue as of
+        // its task's `snapshot` over REST (journey A3 step 4), so a prompt-only task has none.
+        let task = Task::new(id, issue, None, requester, base, mode, budget)?;
+        Some((action, task))
     }
 
     /// Where the task's current Sandbox starts: `None` unless the task is running.

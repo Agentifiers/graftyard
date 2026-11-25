@@ -779,6 +779,14 @@ pub fn plan(
         {
             out.extend(to.into_iter().map(|hook| row(hook, body.clone())));
         }
+        // A delivery aimed at an App's own hook (the first-party `graftyard_task`) goes to that App alone, and to no
+        // repository hook, since no repository hook has a negative id.
+        if let Some(t) = w.target.filter(|t| t.as_app().is_some()) {
+            for a in apps.iter().filter(|a| a.hook == t) {
+                out.extend(render(w, Some(a.installation)).map(|body| row(a.hook, body)));
+            }
+            continue;
+        }
         let Some(need) = crate::hooks::app_permission(w.event).filter(|_| w.target.is_none()) else { continue };
         for a in apps {
             let read = a.permissions.0.get(need).is_some_and(|x| *x >= graftyard_identity::Access::Read);

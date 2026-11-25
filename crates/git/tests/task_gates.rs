@@ -569,3 +569,148 @@ fn the_git_cache_s_detail_links_through_the_edge_s_path() {
     let del = graftyard_git::refs::RefUpdate { name: name(&branch), expect: Some(commit), new: None };
     assert_eq!(agent::detail_lines(&[del], true), "");
 }
+
+// ---- Graftyard-run create (AM3-WP3's minimum, LM-3's kill row) ----
+
+/// A create under its own request id, as the edge sends each `POST`: the session is minted from it.
+fn run_create(w: &mut World, who: Principal, issue_n: Option<u32>, prompt: Option<&str>) -> RepoOutcome {
+    let rid = w.rid();
+    let op = IssueOp::CreateRun(task::NewRun {
+        issue: issue_n.map(IssueNumber),
+        prompt: prompt.map(Into::into),
+        summary: "".into(),
+    });
+    let c = IssueCall::new(op, who, rid, serde_json::Value::Null);
+    // Across the member wire, as the edge sends it.
+    let c = serde_json::from_value::<RepoCmd>(serde_json::to_value(RepoCmd::Issue(Box::new(c))).unwrap()).unwrap();
+    w.commit(c)
+}
+
+fn agents(w: &mut World, enabled: bool, workspace: graftyard_identity::WorkspaceMode) {
+    w.ident.owner.apply(&AuthzEvent::OrgAgents { enabled, workspace });
+}
+
+/// `POST .../tasks` without `kind` creates a Graftyard-run task only for a human writer, only with `agents_enabled`,
+/// and only in-repo; the host mints its session and derives its prefix, and its App is `graftyard-agent`'s, installed
+/// on the repository. Every refusal writes nothing.
+#[test]
+fn a_human_writer_creates_a_run_task_only_with_agents_enabled_in_repo() {
+    use graftyard_identity::WorkspaceMode::{Fork, InRepo};
+    let mut w = run_world();
+    let before = task_entries(&w).len();
+    // Off by default: 422.
+    assert_eq!(task_err(&run_create(&mut w, user(WRITER), None, Some("fix it"))), Some(TaskErr::AgentsOff));
+    agents(&mut w, true, Fork);
+    assert_eq!(task_err(&run_create(&mut w, user(WRITER), None, Some("fix it"))), Some(TaskErr::ForkMode));
+    agents(&mut w, true, InRepo);
+    // Never an App's installation token (the controller's own included), an `AgentApp`'s user-to-server token, a
+    // task-claimed token, or a reader.
+    for who in [app(RUN), app(CLAUDE), claimed(WS, Some(&run_task())), user(VIA_APP), user(READER)] {
+        assert_eq!(task_err(&run_create(&mut w, who.clone(), None, Some("x"))), Some(TaskErr::NotWriter), "{who:?}");
+    }
+    // Neither an issue nor a prompt, or an issue that does not exist.
+    assert_eq!(task_err(&run_create(&mut w, user(WRITER), None, None)), Some(TaskErr::Invalid("prompt")));
+    assert_eq!(task_err(&run_create(&mut w, user(WRITER), Some(9), None)), Some(TaskErr::Invalid("issue_number")));
+    assert_eq!(task_entries(&w).len(), before, "no refusal wrote a task");
+    // The writer's create.
+    let o = run_create(&mut w, user(WRITER), None, Some("fix the flaky test"));
+    let IssueOut::Task(s) = task_out(&o) else { panic!("{o:?}") };
+    assert!(matches!(s, SessionId::Run(_)), "{s:?}");
+    let t = stored(&mut w, &s);
+    assert_eq!(
+        (t.kind, t.state, t.requester, t.app, t.installation),
+        (TaskKind::GraftyardRun, TaskApiState::Queued, Some(uid(WRITER)), RUN, claims(RUN).installation)
+    );
+    assert_eq!(t.prefix, task::run_prefix(&s));
+    let m = task::task_meta(&*w.fold().meta, &s).unwrap();
+    assert_eq!((m.prompt.as_deref(), m.creator), (Some("fix the flaky test"), TaskActor::User(uid(WRITER))));
+    // Its entry is 32.28, and a second create mints another session.
+    assert_eq!(task_entries(&w).last().unwrap().0, graftyard_git::repo::REPO_FORMAT_RUNS);
+    let IssueOut::Task(s2) = task_out(&run_create(&mut w, user(WRITER2), None, Some("again"))) else { panic!() };
+    assert_ne!(s, s2);
+    // The live task binds `graftyard-workspace`'s pushes to its prefix, which is what LM-3's kill row pushes under.
+    let br = format!("refs/heads/graftyard/{}/w1", s.text());
+    let o = w.commit(RepoCmd::Push(push(claimed(WS, Some(&s)), vec![up(&br, None, Some(oid(60)))], &["a"])));
+    assert_eq!(refs(&o), [RefOutcome::Ok]);
+    // Without the workspace App installed on the repository, nothing is created.
+    let id = claims(WS).installation;
+    w.ident.owner.apply(&AuthzEvent::Installation { id, row: None, not_before: w.now });
+    assert_eq!(task_err(&run_create(&mut w, user(WRITER), None, Some("x"))), Some(TaskErr::NoRunApps));
+}
+
+/// The session is the request id's bits as a version-8 UUID: the same request mints the same id, two requests two.
+#[test]
+fn a_run_session_is_minted_from_the_request() {
+    let a = task::run_session(RequestId(Ulid(0x0193_a1b2_c3d4_ffff_ffff_0c1d_2e3f_4a5b)));
+    assert_eq!(a, task::run_session(RequestId(Ulid(0x0193_a1b2_c3d4_ffff_ffff_0c1d_2e3f_4a5b))));
+    assert_ne!(a, task::run_session(RequestId(Ulid(0x0193_a1b2_c3d4_ffff_ffff_0c1d_2e3f_4a5c))));
+    let t = a.text();
+    assert_eq!((&t[14..15], &t[19..20]), ("8", "b"), "{t}");
+    assert_eq!(SessionId::parse(&t, None), Some(a));
+}
+
+/// The create's and the cancel's first-party `graftyard_task` delivery goes only to the task's App's own webhook,
+/// never to a repository hook or another App that subscribes to every event, and an external task's carries none.
+#[test]
+fn the_graftyard_task_delivery_reaches_only_graftyard_agent() {
+    use graftyard_git::hooks::{HookContentType, HookId, HookRecord, TASK_EVENT};
+    use graftyard_git::sequencer::{AppTarget, plan};
+    use graftyard_identity::WorkspaceMode::InRepo;
+    let mut w = run_world();
+    agents(&mut w, true, InRepo);
+    let all = |url: &str| HookRecord {
+        url: graftyard_identity::Url(url.into()),
+        events: smallvec![graftyard_identity::EventKind("*".into())],
+        content_type: HookContentType::Json,
+        active: true,
+        insecure_ssl: false,
+        secret: None,
+        retry: false,
+    };
+    let hook = HookId(DbId(70));
+    w.record_in(
+        graftyard_git::hooks::REPO_FORMAT_HOOKS,
+        vec![RepoEvent::Hook {
+            id: hook,
+            record: Some(all("https://repo.test/")),
+            actor: Some(AccountId(DbId(OWNER))),
+            created: true,
+        }],
+    );
+    let target = |a: AppId| AppTarget {
+        installation: claims(a).installation,
+        permissions: everything(),
+        hook: HookId::app(a),
+        record: all("https://app.test/"),
+    };
+    let apps = [target(RUN), target(CLAUDE), target(WS)];
+    let IssueOut::Task(s) = task_out(&run_create(&mut w, user(WRITER), None, Some("go"))) else { panic!() };
+    w.commit(issue(app(CLAUDE), create("ext", None))).unwrap();
+    w.commit(issue(user(WRITER), cancel(&s))).unwrap();
+    let l = w.repo.leader();
+    let log: Vec<_> = w.repo.members[l.0 as usize].log().to_vec();
+    let f = w.fold();
+    let mut got = Vec::new();
+    for e in &log {
+        let render = |h: &graftyard_git::hooks::Webhook, i: Option<InstallationId>| {
+            let graftyard_git::hooks::Subject::Task { session, .. } = &h.subject else { return Some(Vec::new()) };
+            Some(format!("{} {i:?}", session.text()).into_bytes())
+        };
+        for d in plan(&f.core as &dyn graftyard_fold::Read, REPO, 1, e, &apps, render) {
+            if &*d.event == TASK_EVENT {
+                got.push((d.hook, d.action.clone(), String::from_utf8(d.body).unwrap()));
+            }
+        }
+    }
+    // `run_world`'s seeded task is a Graftyard-run create too; the external task carries none.
+    let body = |t: &SessionId| format!("{} {:?}", t.text(), Some(claims(RUN).installation));
+    assert_eq!(
+        got,
+        [
+            (HookId::app(RUN), Some("created".into()), body(&run_task())),
+            (HookId::app(RUN), Some("created".into()), body(&s)),
+            (HookId::app(RUN), Some("cancelled".into()), body(&s)),
+        ],
+        "only graftyard-agent's hook, once per create and cancel"
+    );
+}
