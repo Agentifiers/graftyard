@@ -135,7 +135,12 @@ fn host(route: &Route) -> Option<&str> {
 
 fn late_log(b: &tb::TaskBox, r: &Report) {
     if let Report::Late { from } = r {
-        console_log!("graft-controller: task {} refused late traffic from {} ({} late)", b.task.id.text(), from.0, b.late);
+        console_log!(
+            "graft-controller: task {} refused late traffic from {} ({} late)",
+            b.task.id.text(),
+            from.0,
+            b.late
+        );
     }
 }
 
@@ -209,7 +214,8 @@ impl TaskBox {
     /// `graft-agents-front`'s `ControllerPointer`, `Unread` unless a caught-up view answered in time.
     async fn pointer(&self) -> Pointer {
         let read = async {
-            let mut r = self.env.service("AGENTS_FRONT")?.fetch("https://agents-front/_agents_front/pointer", None).await?;
+            let mut r =
+                self.env.service("AGENTS_FRONT")?.fetch("https://agents-front/_agents_front/pointer", None).await?;
             if r.status_code() != 200 {
                 return Err(err(r.status_code()));
             }
@@ -262,7 +268,8 @@ impl TaskBox {
         let method = req.method().to_string();
         let url = req.url()?.to_string();
         let body = req.bytes().await.unwrap_or_default();
-        let fwd = match outbound(OutReq { method: &method, url: &url, headers: &headers, body: &body }, &s.start.route) {
+        let fwd = match outbound(OutReq { method: &method, url: &url, headers: &headers, body: &body }, &s.start.route)
+        {
             Ok(f) => f,
             Err(r) => {
                 console_log!("graft-controller: task {} refused {}: {}", s.b.task.id.text(), r.rule, r.text);
@@ -336,7 +343,8 @@ impl TaskBox {
             Cred::Workspace(sc) => (sc, "WORKSPACE", &s.start.workspace),
         };
         let now = now_ms();
-        let cached = self.tokens.borrow().iter().find(|t| t.0 == cred && t.2 > now + TOKEN_SLACK_MS).map(|t| t.1.clone());
+        let cached =
+            self.tokens.borrow().iter().find(|t| t.0 == cred && t.2 > now + TOKEN_SLACK_MS).map(|t| t.1.clone());
         let token = match cached {
             Some(t) => t,
             None => {
@@ -349,10 +357,9 @@ impl TaskBox {
         };
         Ok(Some(match scheme {
             Scheme::Bearer => format!("Bearer {token}"),
-            Scheme::Basic => format!(
-                "Basic {}",
-                base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"))
-            ),
+            Scheme::Basic => {
+                format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}")))
+            }
         }))
     }
 
