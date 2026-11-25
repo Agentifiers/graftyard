@@ -1,0 +1,8 @@
+2026-11-25T01:44:38Z
+5f5d769d
+{"test_faults":true,"gate":"pending","cron":"* * * * *","step_dwell_ms":60000,"slots":{"MCP_CLIENT_SECRET":["graft-m4a-MCP_CLIENT_SECRET_A","graft-m4a-MCP_CLIENT_SECRET_B"],"MCP_APP_KEY":["graft-m4a-r45-MCP_APP_KEY_A","graft-m4a-r45-MCP_APP_KEY_B"],"INSIGHTS_APP_KEY":["graft-m4a-r45-INSIGHTS_APP_KEY_A","graft-m4a-r45-INSIGHTS_APP_KEY_B"]}}
+   Compiling thiserror v2.0.21
+   Compiling thiserror-impl v2.0.21
+Current Version ID: ee4b7dd2-f3b6-4d44-ac91-1b3a21df77d9
+{"script":"graft-m4a-ops","created_on":"2026-11-25T01:46:16.510785Z","versions":["ee4b7dd2 100"]}
+{"schedules":["* * * * *"]}

@@ -124,6 +124,11 @@ impl Urls {
     pub fn results(&self) -> String {
         format!("{}results/", self.services)
     }
+    /// `CacheServerUrl`, which the runner exports as `ACTIONS_CACHE_URL` (`research/actions-protocol.md#20`); the
+    /// toolkit appends `_apis/artifactcache/` (`crate::cache`).
+    pub fn cache(&self) -> String {
+        format!("{}cache/", self.services)
+    }
     pub fn token(&self) -> String {
         format!("{}oauth/token", self.services)
     }
@@ -386,6 +391,8 @@ pub struct JobMessage<'a> {
     pub github_token: &'a str,
     pub job_token: &'a str,
     pub locked_until: &'a str,
+    /// `CacheServerUrl` in `SystemVssConnection`'s data: only where a site day set `GRAFTYARD_ACTIONS_CACHE`.
+    pub cache: bool,
     /// The job is granted `id-token: write`, so the message names `GenerateIdTokenUrl` (`crate::oidc`).
     pub id_token: bool,
 }
@@ -408,6 +415,17 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
     for (k, v) in &m.secrets {
         vars.insert(k.clone(), json!({"value": v, "isSecret": true}));
     }
+    let mut data = serde_json::Map::new();
+    data.insert("FeedStreamUrl".into(), json!(urls.feed(m.relay_site, m.job)));
+    // `actions-cache`: without it `isFeatureAvailable()` is false and every save and restore is skipped.
+    if m.cache {
+        data.insert("CacheServerUrl".into(), json!(urls.cache()));
+    }
+    // The runner exports `ACTIONS_ID_TOKEN_REQUEST_URL` and `_TOKEN` only when the connection names this URL, so a job
+    // without the grant gets neither (`crate::oidc`).
+    if m.id_token {
+        data.insert("GenerateIdTokenUrl".into(), json!(urls.id_token()));
+    }
     let mut ctx = serde_json::Map::new();
     ctx.insert("github".into(), m.github.clone());
     if !m.matrix.is_null() {
@@ -419,7 +437,7 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
     ctx.insert("needs".into(), json!({"t": 2}));
     ctx.insert("inputs".into(), json!({"t": 2}));
     ctx.insert("vars".into(), ctx_dict(m.variables.iter().map(|(k, v)| (k.as_str(), Value::from(v.clone())))));
-    let mut out = json!({
+    json!({
         "messageType": "RunnerJobRequest",
         "plan": {"scopeIdentifier": job_guid(3, 0), "planType": "actions", "version": 1, "planId": job_guid(2, m.run_id)},
         "timeline": {"id": job_guid(1, m.job.0.0)},
@@ -431,20 +449,14 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
         "resources": {"endpoints": [{
             "name": "SystemVssConnection", "url": urls.run(),
             "authorization": {"scheme": "OAuth", "parameters": {"AccessToken": m.job_token}},
-            "data": {"FeedStreamUrl": urls.feed(m.relay_site, m.job)},
+            "data": data,
         }]},
         "contextData": Value::Object(ctx),
         "variables": Value::Object(vars),
         "steps": m.steps,
         "workspace": {},
         "mask": m.secrets.iter().map(|(_, v)| json!({"type": "regex", "value": v})).collect::<Vec<_>>(),
-    });
-    // The runner exports `ACTIONS_ID_TOKEN_REQUEST_URL` and `_TOKEN` only when the connection names this URL, so a job
-    // without the grant gets neither (`crate::oidc`).
-    if m.id_token {
-        out["resources"]["endpoints"][0]["data"]["GenerateIdTokenUrl"] = json!(urls.id_token());
-    }
-    out
+    })
 }
 
 /// What `acquire_message` needs beyond the fold: the repository's name, the token the job's `GITHUB_TOKEN` is, the
@@ -458,6 +470,8 @@ pub struct Acquired<'a> {
     pub locked_until: Timestamp,
     pub secrets: Vec<(String, String)>,
     pub variables: Vec<(String, String)>,
+    /// `JobMessage::cache`.
+    pub cache: bool,
     /// `JobMessage::id_token`.
     pub id_token: bool,
 }
@@ -507,6 +521,7 @@ pub fn acquire_message(
         github_token: a.github_token,
         job_token: a.job_token,
         locked_until: &graftyard_wire::time::iso(a.locked_until),
+        cache: a.cache,
         id_token: a.id_token,
     };
     job_message(urls, &m)
@@ -680,7 +695,7 @@ mod tests {
     /// it as an absolute path, so the endpoint is the install's root; main set none, and every `uses:` job failed
     /// "Launch client is not initialized" (`tests/m4/results/m4-wp3-launch.md`).
     #[test]
-    fn a_job_message_names_the_launch_endpoint_and_asks_for_its_errors() {
+    fn a_job_message_names_the_launch_and_cache_endpoints_and_asks_for_its_errors() {
         let urls = Urls::new("https://graft.example/");
         let m = JobMessage {
             relay_site: 0,
@@ -698,9 +713,18 @@ mod tests {
             github_token: "",
             job_token: "t",
             locked_until: "2026-11-18T00:00:00Z",
+            cache: false,
             id_token: false,
         };
         let v = job_message(&urls, &m);
+        let data = &v["resources"]["endpoints"][0]["data"];
+        assert_eq!(data["CacheServerUrl"], Value::Null, "no cache before the site day sets it");
+        let mut m = m;
+        m.cache = true;
+        let with = job_message(&urls, &m);
+        let data = &with["resources"]["endpoints"][0]["data"];
+        assert_eq!(data["CacheServerUrl"], json!("https://graft.example/_services/cache/"));
+        assert_eq!(data["FeedStreamUrl"], json!(urls.feed(0, JobId(DbId(9)))));
         assert_eq!(v["variables"]["system.github.launch_endpoint"]["value"], json!("https://graft.example/"));
         assert_eq!(v["variables"]["actions_display_helpful_actions_download_errors"]["value"], json!("true"));
         // The path the runner posts to names this message's plan and job, which `launch::job_of_path` takes.

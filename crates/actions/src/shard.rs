@@ -24,6 +24,7 @@ use graftyard_types::{AccountId, ChainId, DbId, IdBlock, Index, RepoId, RequestI
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
+use crate::cache::{CacheEntry, CacheId, CacheRows, CacheState};
 use crate::ids::{JobId, RunId, RunnerId, RunnerSessionId};
 use crate::job::{Conclusion, JobEvent, JobState, RunStatus, derive_run_status, transition};
 use crate::labels::LabelSet;
@@ -45,6 +46,11 @@ pub const ACTIONS_FORMAT_PULL_REQUEST: Format = Format { family: 0x15, version: 
 /// whose site day set `GRAFTYARD_JOB_TOKENS` sends either, after `FormatsEnable` enabled 0x15.5 and 0x12.14, and that
 /// day follows the one that shipped this reader to every member (`decisions/DECISIONS.md`, "`gh-token`").
 pub const ACTIONS_FORMAT_TOKENS: Format = Format { family: 0x15, version: 5 };
+/// `actions-cache`'s commands and events (`crate::cache`), and `CreateRunOn`, whose entry also records a `pull_request`
+/// run's base branch (`ActionsEvent::RunBase`). Only a site whose site day set `GRAFTYARD_ACTIONS_CACHE` sends any,
+/// after `FormatsEnable` enabled 0x15.6, and that day follows the one that shipped this reader to every member
+/// (`decisions/DECISIONS.md`, "`actions-cache`").
+pub const ACTIONS_FORMAT_CACHE: Format = Format { family: 0x15, version: 6 };
 
 #[cfg(test)]
 const JOB_LEASE_MS: u64 = crate::job::JOB_LEASE.as_millis() as u64;
@@ -179,6 +185,29 @@ pub enum ActionsEvent {
     TokenIssued {
         job: JobId,
     },
+    /// `actions-cache` (format 0x15.6): a save reserved entry `id`, which only its job uploads to and commits.
+    CacheReserved {
+        id: CacheId,
+        entry: CacheEntry,
+    },
+    /// The reservation's chunks tile its size: the entry restores from the entry's time on.
+    CacheCommitted {
+        id: CacheId,
+    },
+    /// A hit at least `CACHE_USED_EVERY_MS` after the entry's last recorded use.
+    CacheUsed {
+        id: CacheId,
+    },
+    /// Entries removed by LRU, the 7-day expiry, a stale reservation, or the shard's entry cap. The leader deletes
+    /// their chunks after the entry commits, and the daily sweep any it missed.
+    CacheEvicted {
+        ids: Vec<CacheId>,
+    },
+    /// A `pull_request` run's base branch, in its `RunCreated`'s entry, which its jobs read caches from.
+    RunBase {
+        run: RunId,
+        base_ref: Box<str>,
+    },
 }
 
 impl Record for ActionsEvent {
@@ -239,12 +268,19 @@ graftyard_identity::tail_serde!(ActionsFold {
 } more: ActionsMore);
 
 /// The fold's rows after M4-WP3: each job's declared token permissions (`ActionsEvent::JobTokens`), and the jobs whose
-/// runner was given a token (`ActionsEvent::TokenIssued`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// runner was given a token (`ActionsEvent::TokenIssued`). The cache rows (0x15.6) are a trailing part of their own,
+/// so a fold with none keeps 0x15.5's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActionsMore {
     pub tokens: BTreeMap<JobId, PermissionSet>,
     pub issued: std::collections::BTreeSet<JobId>,
+    pub more: CacheRows,
 }
+
+graftyard_identity::tail_serde!(ActionsMore {
+    tokens: BTreeMap<JobId, PermissionSet>,
+    issued: std::collections::BTreeSet<JobId>,
+} more: CacheRows);
 
 /// The group's leased id block and its next free position, as `graftyard_identity::IdCursor`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,6 +324,10 @@ trait Tables {
     /// scratch drops both.
     fn put_tokens(&mut self, _jobs: &[(JobId, PermissionSet)]) {}
     fn put_issued(&mut self, _job: JobId) {}
+    fn cache(&self, id: CacheId) -> Option<&CacheEntry>;
+    fn put_cache(&mut self, id: CacheId, e: Option<CacheEntry>);
+    /// A `pull_request` run's base branch, which `decide` never reads, so the scratch drops it.
+    fn put_base(&mut self, _run: RunId, _base: &str) {}
 }
 
 fn is_queued(s: &JobState) -> bool {
@@ -341,6 +381,25 @@ fn apply_event(t: &mut impl Tables, ev: &ActionsEvent, at: Timestamp) {
         ActionsEvent::OwnerCursor { through } => t.set_owner_cursor(*through),
         ActionsEvent::JobTokens { jobs } => t.put_tokens(jobs),
         ActionsEvent::TokenIssued { job } => t.put_issued(*job),
+        ActionsEvent::CacheReserved { id, entry } => t.put_cache(*id, Some(entry.clone())),
+        ActionsEvent::CacheCommitted { id } => {
+            if let Some(e) = t.cache(*id) {
+                let e = CacheEntry { state: CacheState::Committed, created: at, last_used: at, ..e.clone() };
+                t.put_cache(*id, Some(e));
+            }
+        }
+        ActionsEvent::CacheUsed { id } => {
+            if let Some(e) = t.cache(*id) {
+                let e = CacheEntry { last_used: at, ..e.clone() };
+                t.put_cache(*id, Some(e));
+            }
+        }
+        ActionsEvent::CacheEvicted { ids } => {
+            for id in ids {
+                t.put_cache(*id, None);
+            }
+        }
+        ActionsEvent::RunBase { run, base_ref } => t.put_base(*run, base_ref),
     }
 }
 
@@ -404,6 +463,24 @@ impl Tables for ActionsFold {
     fn put_issued(&mut self, job: JobId) {
         self.more.issued.insert(job);
     }
+    fn cache(&self, id: CacheId) -> Option<&CacheEntry> {
+        self.more.more.entries.get(&id)
+    }
+    fn put_cache(&mut self, id: CacheId, e: Option<CacheEntry>) {
+        let c = &mut self.more.more;
+        match e {
+            Some(e) => {
+                c.next = c.next.max(id.0);
+                c.entries.insert(id, e);
+            }
+            None => {
+                c.entries.remove(&id);
+            }
+        }
+    }
+    fn put_base(&mut self, run: RunId, base: &str) {
+        self.more.more.bases.insert(run, base.into());
+    }
 }
 
 impl ActionsFold {
@@ -430,6 +507,30 @@ impl ActionsFold {
         out.sort_by_key(|(id, _, since, _)| (*since, *id));
         out
     }
+    /// `actions-cache`: the entry a lookup by job `job` restores (`crate::cache::find` over the run's scopes), with
+    /// the run's own ref first, its base branch for a `pull_request` run, then `default_branch`. `Forbidden` for a job
+    /// not running.
+    pub fn cache_find(
+        &self,
+        job: JobId,
+        keys: &[&str],
+        version: &str,
+        default_branch: &str,
+    ) -> Result<Option<(CacheId, &CacheEntry)>, ActionsErr> {
+        let run = self.cache_run(job)?;
+        let base = self.more.more.bases.get(&run.id).map(|b| &**b);
+        let scopes = crate::cache::scopes(&run.head_ref, base, default_branch);
+        let mine = self.more.more.entries.iter().filter(|(_, e)| e.repo == run.repo).map(|(k, v)| (*k, v));
+        Ok(crate::cache::find(mine, keys, version, &scopes))
+    }
+    /// The run of a running job, which a cache call acts for.
+    pub fn cache_run(&self, job: JobId) -> Result<&WorkflowRun, ActionsErr> {
+        let j = self.job(job).ok_or(ActionsErr::NotFound)?;
+        if !matches!(j.state, JobState::InProgress { .. }) {
+            return Err(ActionsErr::Forbidden);
+        }
+        Ok(&self.run(j.run).ok_or(ActionsErr::NotFound)?.run)
+    }
     /// The earliest lease end or queue deadline, where the leader's alarm goes.
     pub fn next_deadline(&self) -> Option<Timestamp> {
         self.jobs.values().filter_map(|j| j.state.deadline()).min()
@@ -448,6 +549,8 @@ pub struct ActionsScratch<'a> {
     sessions: BTreeMap<RunnerId, Option<RunnerSessionId>>,
     ids: IdCursor,
     owner_cursor: Index,
+    cache: BTreeMap<CacheId, Option<CacheEntry>>,
+    cache_next: u64,
 }
 
 impl Tables for ActionsScratch<'_> {
@@ -479,6 +582,18 @@ impl Tables for ActionsScratch<'_> {
     fn set_owner_cursor(&mut self, through: Index) {
         self.owner_cursor = through;
     }
+    fn cache(&self, id: CacheId) -> Option<&CacheEntry> {
+        match self.cache.get(&id) {
+            Some(e) => e.as_ref(),
+            None => self.base.more.more.entries.get(&id),
+        }
+    }
+    fn put_cache(&mut self, id: CacheId, e: Option<CacheEntry>) {
+        if e.is_some() {
+            self.cache_next = self.cache_next.max(id.0);
+        }
+        self.cache.insert(id, e);
+    }
 }
 
 impl<'a> ActionsScratch<'a> {
@@ -493,7 +608,19 @@ impl<'a> ActionsScratch<'a> {
             sessions: BTreeMap::new(),
             ids: base.ids,
             owner_cursor: base.owner_cursor,
+            cache: BTreeMap::new(),
+            cache_next: base.more.more.next,
         }
+    }
+    pub fn cache_entry(&self, id: CacheId) -> Option<&CacheEntry> {
+        Tables::cache(self, id)
+    }
+    /// Every cache entry with its row, the overlay's over the fold's.
+    pub fn cache_entries(&self) -> impl Iterator<Item = (CacheId, &CacheEntry)> {
+        let over = self.cache.iter().filter_map(|(k, v)| v.as_ref().map(|v| (*k, v)));
+        let base =
+            self.base.more.more.entries.iter().filter(|(k, _)| !self.cache.contains_key(k)).map(|(k, v)| (*k, v));
+        over.chain(base)
     }
     pub fn at(&self) -> Timestamp {
         self.at
@@ -581,6 +708,17 @@ impl Scratch for ActionsScratch<'_> {
                 if !matches!(self.job(*job).map(|j| &j.state), Some(JobState::InProgress { .. })) =>
             {
                 Err("a token for a job no runner took".into())
+            }
+            ActionsEvent::CacheReserved { id, .. } if id.0 <= self.cache_next => {
+                Err(format!("cache id {} is not new", id.0).into())
+            }
+            ActionsEvent::CacheCommitted { id }
+                if !matches!(self.cache_entry(*id).map(|e| &e.state), Some(CacheState::Reserved { .. })) =>
+            {
+                Err(format!("cache {} is not reserved", id.0).into())
+            }
+            ActionsEvent::RunBase { run, .. } if self.run(*run).is_none() => {
+                Err("a base branch for a run the entry did not create".into())
             }
             _ => Ok(()),
         }
@@ -696,6 +834,36 @@ pub enum ActionsOp {
         job: JobId,
         version: u64,
     },
+    /// `actions-cache` (0x15.6): the job's `POST caches`. `default_branch` is the repository's, which the edge read and
+    /// the shard does not hold; `limit` the repository's cache bytes (`CACHE_REPO_MAX`, lower only on a test install).
+    CacheReserve {
+        job: JobId,
+        key: Box<str>,
+        version: Box<str>,
+        size: u64,
+        default_branch: Box<str>,
+    },
+    /// The job's `POST caches/{id} {size}`, with the chunks the edge listed under the entry's prefix, `(start, len)`.
+    CacheCommit {
+        job: JobId,
+        id: CacheId,
+        size: u64,
+        chunks: Vec<(u64, u64)>,
+        limit: u64,
+    },
+    /// A hit: moves the entry's last use, at most once per `CACHE_USED_EVERY_MS`.
+    CacheUse {
+        id: CacheId,
+    },
+    /// The leader's alarm: every entry past its 7-day expiry and every stale reservation.
+    CacheSweep,
+    /// `CreateRunWith` for a `pull_request` run, with its base branch (`ActionsEvent::RunBase`).
+    CreateRunOn {
+        run: WorkflowRun,
+        jobs: Vec<JobSpec>,
+        permissions: Vec<(u16, PermissionSet)>,
+        base_ref: Box<str>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -710,6 +878,7 @@ pub enum ActionsOut {
     Job(JobState),
     Runner(RunnerId),
     Done,
+    Cache(CacheId),
 }
 
 /// Wire tags as `ActionsEvent`.
@@ -731,6 +900,13 @@ pub enum ActionsErr {
     NeedIdBlock,
     #[error("a job's needs name a job that is not before it")]
     BadNeeds,
+    /// A reservation or entry already holds the key in this scope (409, which the toolkit reads as "another job may be
+    /// creating this cache").
+    #[error("a cache entry or reservation already holds this key")]
+    CacheExists,
+    /// A size past the limit, or chunks that do not make the reserved entry (400).
+    #[error("{0}")]
+    CacheRefused(Box<str>),
 }
 
 impl Record for ActionsCmd {
@@ -860,6 +1036,110 @@ impl ActionsCmd {
         }
         Ok((evs, ActionsOut::Run(id)))
     }
+
+    /// The job a cache command acts for, running now, and its run.
+    fn cache_job<'s>(&self, s: &'s ActionsScratch<'_>, job: JobId) -> Result<&'s WorkflowRun, ActionsErr> {
+        if !matches!(self.actor, ActionsActor::Job(me) if me == job) {
+            return Err(ActionsErr::Forbidden);
+        }
+        let j = s.job(job).ok_or(ActionsErr::NotFound)?;
+        if !matches!(j.state, JobState::InProgress { .. }) {
+            return Err(ActionsErr::Forbidden);
+        }
+        Ok(&s.run(j.run).ok_or(ActionsErr::NotFound)?.run)
+    }
+
+    fn cache_reserve(
+        &self,
+        s: &ActionsScratch<'_>,
+        job: JobId,
+        (key, version, size): (&str, &str, u64),
+        default_branch: &str,
+    ) -> Result<Decided, ActionsErr> {
+        use crate::cache::{CACHE_ENTRIES_MAX, CACHE_REPO_MAX, may_write};
+        let run = self.cache_job(s, job)?;
+        if !may_write(&run.event, &run.head_ref, default_branch) {
+            return Err(ActionsErr::Forbidden);
+        }
+        if size > CACHE_REPO_MAX {
+            return Err(ActionsErr::CacheRefused(
+                format!("Cache size of {size} B is over the repository's {CACHE_REPO_MAX} B limit").into(),
+            ));
+        }
+        let at = s.at();
+        let same = |e: &CacheEntry| {
+            e.repo == run.repo && *e.scope == *run.head_ref && &*e.key == key && &*e.version == version
+        };
+        if s.cache_entries().any(|(_, e)| same(e) && e.holds(at)) {
+            return Err(ActionsErr::CacheExists);
+        }
+        // A stale reservation of the same key gives it up; past the shard's cap, its least recently used entries go.
+        let mut gone: Vec<CacheId> = s.cache_entries().filter(|(_, e)| same(e)).map(|(id, _)| id).collect();
+        let live = s.cache_entries().count() - gone.len();
+        if live >= CACHE_ENTRIES_MAX {
+            let mut old: Vec<(CacheId, &CacheEntry)> = s
+                .cache_entries()
+                .filter(|(id, e)| !gone.contains(id) && !matches!(e.state, CacheState::Reserved { .. } if e.holds(at)))
+                .collect();
+            old.sort_by_key(|(id, e)| (e.last_used, e.created, *id));
+            gone.extend(old.into_iter().take(live + 1 - CACHE_ENTRIES_MAX).map(|(id, _)| id));
+        }
+        // From 1: the toolkit reads a `cacheId` of 0 as no reservation (`if (reserveCacheResponse?.result?.cacheId)`).
+        let id = CacheId(s.cache_next + 1);
+        let entry = CacheEntry {
+            repo: run.repo,
+            scope: run.head_ref.clone(),
+            key: key.into(),
+            version: version.into(),
+            size,
+            created: at,
+            last_used: at,
+            state: CacheState::Reserved { job },
+        };
+        let mut evs = SmallVec::new();
+        if !gone.is_empty() {
+            gone.sort();
+            evs.push(ActionsEvent::CacheEvicted { ids: gone });
+        }
+        evs.push(ActionsEvent::CacheReserved { id, entry });
+        Ok((evs, ActionsOut::Cache(id)))
+    }
+
+    fn cache_commit(
+        &self,
+        s: &ActionsScratch<'_>,
+        job: JobId,
+        id: CacheId,
+        size: u64,
+        (chunks, limit): (&[(u64, u64)], u64),
+    ) -> Result<Decided, ActionsErr> {
+        use crate::cache::{CACHE_REPO_MAX, lru, tiles};
+        self.cache_job(s, job)?;
+        let e = s.cache_entry(id).ok_or(ActionsErr::NotFound)?;
+        match e.state {
+            CacheState::Committed => return Ok((SmallVec::new(), ActionsOut::Cache(id))),
+            CacheState::Reserved { job: by } if by != job => return Err(ActionsErr::Forbidden),
+            CacheState::Reserved { .. } => {}
+        }
+        if size != e.size {
+            return Err(ActionsErr::CacheRefused(format!("size {size} is not the reserved {}", e.size).into()));
+        }
+        tiles(chunks, size)
+            .map_err(|t| ActionsErr::CacheRefused(format!("the chunks do not make it: {t:?}").into()))?;
+        let repo = e.repo;
+        let committed = CacheEntry { state: CacheState::Committed, ..e.clone() };
+        let rows: Vec<(CacheId, &CacheEntry)> = s
+            .cache_entries()
+            .filter(|(_, x)| x.repo == repo)
+            .map(|(k, x)| if k == id { (k, &committed) } else { (k, x) })
+            .collect();
+        let gone = lru(rows, id, limit.min(CACHE_REPO_MAX));
+        let mut evs = smallvec![ActionsEvent::CacheCommitted { id }];
+        if !gone.is_empty() {
+            evs.push(ActionsEvent::CacheEvicted { ids: gone });
+        }
+        Ok((evs, ActionsOut::Cache(id)))
+    }
 }
 
 impl Command for ActionsCmd {
@@ -874,6 +1154,11 @@ impl Command for ActionsCmd {
             ActionsOp::CreateRun { run, .. } if run.is_pull_request() => ACTIONS_FORMAT_PULL_REQUEST,
             ActionsOp::MatchOwner { .. } => ACTIONS_FORMAT_OWNER_MATCH,
             ActionsOp::CreateRunWith { .. } | ActionsOp::AcquireToken { .. } => ACTIONS_FORMAT_TOKENS,
+            ActionsOp::CacheReserve { .. }
+            | ActionsOp::CacheCommit { .. }
+            | ActionsOp::CacheUse { .. }
+            | ActionsOp::CacheSweep
+            | ActionsOp::CreateRunOn { .. } => ACTIONS_FORMAT_CACHE,
             _ => ACTIONS_FORMAT,
         }
     }
@@ -896,6 +1181,39 @@ impl Command for ActionsCmd {
             ActionsOp::CreateRunWith { run, jobs, permissions } => {
                 only(operator)?;
                 self.create_run(s, run, jobs, permissions)
+            }
+            ActionsOp::CreateRunOn { run, jobs, permissions, base_ref } => {
+                only(operator)?;
+                let (mut evs, out) = self.create_run(s, run, jobs, permissions)?;
+                if let ActionsOut::Run(id) = out {
+                    evs.push(ActionsEvent::RunBase { run: id, base_ref: base_ref.clone() });
+                }
+                Ok((evs, out))
+            }
+            ActionsOp::CacheReserve { job, key, version, size, default_branch } => {
+                self.cache_reserve(s, *job, (key, version, *size), default_branch)
+            }
+            ActionsOp::CacheCommit { job, id, size, chunks, limit } => {
+                self.cache_commit(s, *job, *id, *size, (chunks, *limit))
+            }
+            ActionsOp::CacheUse { id } => {
+                only(operator || matches!(self.actor, ActionsActor::Job(_)))?;
+                let Some(e) = s.cache_entry(*id).filter(|e| e.committed()) else { return none() };
+                if s.at().0.saturating_sub(e.last_used.0) < crate::cache::CACHE_USED_EVERY_MS {
+                    return none();
+                }
+                Ok((smallvec![ActionsEvent::CacheUsed { id: *id }], ActionsOut::Done))
+            }
+            ActionsOp::CacheSweep => {
+                only(operator)?;
+                let at = s.at();
+                let ids: Vec<CacheId> = s.cache_entries().filter(|(_, e)| e.due() <= at).map(|(id, _)| id).collect();
+                if ids.is_empty() {
+                    return none();
+                }
+                let mut ids = ids;
+                ids.sort();
+                Ok((smallvec![ActionsEvent::CacheEvicted { ids }], ActionsOut::Done))
             }
             ActionsOp::Job { job, version, event } => self.job_event(s, *job, *version, event),
             ActionsOp::AcquireToken { job, version } => {
@@ -1005,6 +1323,13 @@ impl Command for ActionsCmd {
         match events.first() {
             Some(ActionsEvent::RunCreated { run, .. }) => ActionsOut::Run(run.id),
             Some(ActionsEvent::Runner { id, record: Some(_) }) => ActionsOut::Runner(*id),
+            Some(ActionsEvent::CacheReserved { id, .. } | ActionsEvent::CacheCommitted { id }) => {
+                ActionsOut::Cache(*id)
+            }
+            Some(ActionsEvent::CacheEvicted { .. }) => match events.get(1) {
+                Some(ActionsEvent::CacheReserved { id, .. }) => ActionsOut::Cache(*id),
+                _ => ActionsOut::Done,
+            },
             _ => ActionsOut::Done,
         }
     }
@@ -1100,6 +1425,291 @@ mod tests {
         let new = postcard::to_allocvec(&f).unwrap();
         assert!(new.len() > old_bytes.len() && new.starts_with(&old_bytes));
         assert_eq!(postcard::from_bytes::<ActionsFold>(&new).unwrap(), f);
+    }
+
+    /// A fold with an issued token but no cache row writes 0x15.5's bytes, and reads them back with no cache rows; a
+    /// cache row adds a trailing part after them. So the site day that ships 0x15.6's reader changes no stored fold.
+    #[test]
+    fn a_fold_keeps_its_bytes_until_a_cache_row() {
+        let mut f = ActionsFold::default();
+        f.more.issued.insert(JobId(DbId(2)));
+        let old = postcard::to_allocvec(&f).unwrap();
+        #[derive(Serialize)]
+        struct Before<'a>(&'a BTreeMap<JobId, PermissionSet>, &'a std::collections::BTreeSet<JobId>);
+        let more = postcard::to_allocvec(&Before(&f.more.tokens, &f.more.issued)).unwrap();
+        assert!(old.ends_with(&more), "the 0x15.5 part is the two sets alone");
+        assert_eq!(postcard::from_bytes::<ActionsFold>(&old).unwrap(), f);
+        f.more.more.next = 4;
+        let new = postcard::to_allocvec(&f).unwrap();
+        assert!(new.starts_with(&old) && new.len() > old.len());
+        assert_eq!(postcard::from_bytes::<ActionsFold>(&new).unwrap(), f);
+    }
+
+    mod cache {
+        use super::*;
+        use crate::cache::{CACHE_ENTRIES_MAX, CACHE_REPO_MAX, CACHE_RESERVE_STALE_MS, CACHE_UNUSED_MS};
+
+        const MAIN: &str = "refs/heads/main";
+        const T0: u64 = 1_000_000;
+
+        /// A shard with one id block, and in-progress jobs 101 (run 100 on `main` by `push`), 103 (run 102 on
+        /// `refs/heads/f` by `push`), and 105 (run 104 on `main` by `pull_request_target`).
+        struct Shard {
+            f: ActionsFold,
+            at: u64,
+            n: u64,
+        }
+
+        fn run(id: i64, head_ref: &str, event: &str) -> WorkflowRun {
+            WorkflowRun {
+                id: RunId(DbId(id)),
+                repo: RepoId(DbId(7)),
+                workflow: "ci.yml".into(),
+                event: event.into(),
+                head_sha: [1; 20],
+                head_ref: head_ref.into(),
+                trigger: (ChainId::Repo(RepoId(DbId(7))), Index(id as u64)),
+                attempt: 1,
+                concurrency: None,
+                fork: false,
+            }
+        }
+
+        impl Shard {
+            fn new() -> Shard {
+                let l = LabelSet::parse(["linux"]).unwrap();
+                let mut sh = Shard { f: ActionsFold::default(), at: T0, n: 0 };
+                for (r, head_ref, event) in
+                    [(100, MAIN, "push"), (102, "refs/heads/f", "push"), (104, MAIN, "pull_request_target")]
+                {
+                    let j = r + 1;
+                    sh.apply(vec![ActionsEvent::RunCreated { run: run(r, head_ref, event), jobs: vec![job(j, &l)] }]);
+                    let rr = RunnerId(DbId(900 + r));
+                    let m = ActionsEvent::Job { job: JobId(DbId(j)), version: 0, event: JobEvent::Matched(rr) };
+                    let a = ActionsEvent::Job { job: JobId(DbId(j)), version: 1, event: JobEvent::Acquired };
+                    sh.apply(vec![m, a]);
+                }
+                sh
+            }
+            fn apply(&mut self, evs: Vec<ActionsEvent>) {
+                self.n += 1;
+                self.f.apply_entry(&entry(self.n, self.at, None, evs));
+            }
+            /// `decide` at the shard's time, and its events applied in one entry, as a leader does.
+            fn run(&mut self, actor: ActionsActor, op: ActionsOp) -> Result<ActionsOut, ActionsErr> {
+                let cmd = ActionsCmd { actor, op };
+                let (evs, out) = cmd.decide(&self.f.scratch_at(Timestamp(self.at), TierSet::CORE), &[])?;
+                if !evs.is_empty() {
+                    let mut sc = self.f.scratch_at(Timestamp(self.at), TierSet::CORE);
+                    for ev in &evs {
+                        sc.check(ev).expect("a follower verifies what decide wrote");
+                        sc.apply(ev);
+                    }
+                    self.apply(evs.into_vec());
+                }
+                Ok(out)
+            }
+            fn reserve(&mut self, job: i64, key: &str, size: u64) -> Result<CacheId, ActionsErr> {
+                let op = ActionsOp::CacheReserve {
+                    job: JobId(DbId(job)),
+                    key: key.into(),
+                    version: "v".into(),
+                    size,
+                    default_branch: MAIN.into(),
+                };
+                match self.run(ActionsActor::Job(JobId(DbId(job))), op)? {
+                    ActionsOut::Cache(id) => Ok(id),
+                    o => panic!("{o:?}"),
+                }
+            }
+            fn commit_with(
+                &mut self,
+                job: i64,
+                id: CacheId,
+                size: u64,
+                chunks: Vec<(u64, u64)>,
+                limit: u64,
+            ) -> Result<ActionsOut, ActionsErr> {
+                let op = ActionsOp::CacheCommit { job: JobId(DbId(job)), id, size, chunks, limit };
+                self.run(ActionsActor::Job(JobId(DbId(job))), op)
+            }
+            fn save(&mut self, job: i64, key: &str, size: u64, limit: u64) -> CacheId {
+                let id = self.reserve(job, key, size).unwrap();
+                self.commit_with(job, id, size, vec![(0, size)], limit).unwrap();
+                id
+            }
+            fn ids(&self) -> Vec<u64> {
+                self.f.more.more.entries.keys().map(|k| k.0).collect()
+            }
+            fn entry(&self, id: CacheId) -> &CacheEntry {
+                &self.f.more.more.entries[&id]
+            }
+        }
+
+        /// A second reserve of a key its scope holds answers `CacheExists` (the toolkit's 409); another scope or
+        /// version is another entry; a reservation an hour old gives its key up and leaves the fold.
+        #[test]
+        fn a_key_is_reserved_once_per_scope_until_its_reservation_is_stale() {
+            let mut sh = Shard::new();
+            let a = sh.reserve(101, "k", 10).unwrap();
+            assert_eq!(a, CacheId(1), "the toolkit takes a cacheId of 0 for none");
+            assert_eq!(sh.reserve(101, "k", 10), Err(ActionsErr::CacheExists));
+            sh.reserve(103, "k", 10).unwrap();
+            sh.at += CACHE_RESERVE_STALE_MS - 1;
+            assert_eq!(sh.reserve(101, "k", 10), Err(ActionsErr::CacheExists), "not stale yet");
+            sh.at += 1;
+            let b = sh.reserve(101, "k", 10).unwrap();
+            assert!(b > a && !sh.f.more.more.entries.contains_key(&a), "the stale reservation left with the new one");
+        }
+
+        /// Only the job that reserved an entry commits it, with the reserved size and chunks that tile it exactly.
+        #[test]
+        fn a_commit_binds_the_reserved_size_and_the_chunks() {
+            let mut sh = Shard::new();
+            let id = sh.reserve(101, "k", 40).unwrap();
+            let refused = |r: Result<ActionsOut, ActionsErr>| matches!(r, Err(ActionsErr::CacheRefused(_)));
+            assert!(refused(sh.commit_with(101, id, 41, vec![(0, 41)], CACHE_REPO_MAX)), "another size");
+            assert!(refused(sh.commit_with(101, id, 40, vec![(0, 32), (33, 7)], CACHE_REPO_MAX)), "a gap");
+            assert!(refused(sh.commit_with(101, id, 40, vec![(0, 32), (31, 9)], CACHE_REPO_MAX)), "an overlap");
+            assert_eq!(sh.commit_with(103, id, 40, vec![(0, 40)], CACHE_REPO_MAX), Err(ActionsErr::Forbidden));
+            assert!(!sh.entry(id).committed());
+            sh.at += 5;
+            assert_eq!(sh.commit_with(101, id, 40, vec![(32, 8), (0, 32)], CACHE_REPO_MAX), Ok(ActionsOut::Cache(id)));
+            assert!(sh.entry(id).committed() && sh.entry(id).created == Timestamp(T0 + 5));
+            assert_eq!(sh.commit_with(101, id, 40, vec![(0, 40)], CACHE_REPO_MAX), Ok(ActionsOut::Cache(id)), "again");
+        }
+
+        /// A `pull_request_target` run on the default branch reads its scope but never writes it; a job that ended
+        /// commits nothing.
+        #[test]
+        fn a_low_trust_run_never_writes_the_default_branch() {
+            let mut sh = Shard::new();
+            assert_eq!(sh.reserve(105, "k", 10), Err(ActionsErr::Forbidden));
+            let id = sh.reserve(101, "k", 10).unwrap();
+            let fin =
+                ActionsEvent::Job { job: JobId(DbId(101)), version: 2, event: JobEvent::Finished(Conclusion::Success) };
+            sh.apply(vec![fin]);
+            assert_eq!(sh.commit_with(101, id, 10, vec![(0, 10)], CACHE_REPO_MAX), Err(ActionsErr::Forbidden));
+        }
+
+        /// A commit past the repository's limit evicts its least recently used entries, not the oldest, and never
+        /// the one it commits.
+        #[test]
+        fn a_commit_past_the_limit_evicts_the_least_recently_used() {
+            let mut sh = Shard::new();
+            let a = sh.save(101, "a", 30, 100);
+            sh.at += 10;
+            sh.save(101, "b", 30, 100);
+            sh.at += crate::cache::CACHE_USED_EVERY_MS;
+            sh.run(ActionsActor::Operator, ActionsOp::CacheUse { id: a }).unwrap();
+            let c = sh.save(101, "c", 50, 100);
+            assert_eq!(sh.ids(), [a.0, c.0], "b, used least recently, went; a was used later");
+            let d = sh.save(103, "d", 200, 100);
+            assert_eq!(sh.ids(), [d.0], "an entry over the limit alone stays, the rest go");
+        }
+
+        /// A hit moves last use once an hour at most, so many isolates' hits write once.
+        #[test]
+        fn a_hit_moves_last_use_at_most_hourly() {
+            let mut sh = Shard::new();
+            let a = sh.save(101, "a", 1, CACHE_REPO_MAX);
+            let n = sh.n;
+            sh.at += crate::cache::CACHE_USED_EVERY_MS - 1;
+            sh.run(ActionsActor::Operator, ActionsOp::CacheUse { id: a }).unwrap();
+            assert_eq!(sh.n, n, "within the hour writes nothing");
+            sh.at += 1;
+            sh.run(ActionsActor::Operator, ActionsOp::CacheUse { id: a }).unwrap();
+            sh.run(ActionsActor::Operator, ActionsOp::CacheUse { id: a }).unwrap();
+            assert_eq!((sh.n, sh.entry(a).last_used), (n + 1, Timestamp(sh.at)));
+        }
+
+        /// The sweep removes entries unread for 7 days and stale reservations, and keeps the rest.
+        #[test]
+        fn the_sweep_removes_entries_unused_for_seven_days() {
+            let mut sh = Shard::new();
+            let a = sh.save(101, "a", 1, CACHE_REPO_MAX);
+            let b = sh.save(101, "b", 1, CACHE_REPO_MAX);
+            sh.at += CACHE_UNUSED_MS - crate::cache::CACHE_USED_EVERY_MS;
+            sh.run(ActionsActor::Operator, ActionsOp::CacheUse { id: b }).unwrap();
+            let r = sh.reserve(101, "r", 1).unwrap();
+            sh.at = T0 + CACHE_UNUSED_MS - 1;
+            sh.run(ActionsActor::Operator, ActionsOp::CacheSweep).unwrap();
+            assert_eq!(sh.ids(), [a.0, b.0, r.0]);
+            sh.at += 1;
+            sh.run(ActionsActor::Operator, ActionsOp::CacheSweep).unwrap();
+            assert_eq!(sh.ids(), [b.0], "a expired; the reservation was stale");
+            assert_eq!(sh.f.more.more.due(), Some(Timestamp(sh.entry(b).last_used.0 + CACHE_UNUSED_MS)));
+        }
+
+        /// Past the shard's entry cap a reserve evicts its least recently used entries first.
+        #[test]
+        fn the_entry_cap_evicts_rather_than_refuses() {
+            let mut sh = Shard::new();
+            for i in 0..CACHE_ENTRIES_MAX {
+                let e = CacheEntry {
+                    repo: RepoId(DbId(7)),
+                    scope: MAIN.into(),
+                    key: format!("k{i}").into(),
+                    version: "v".into(),
+                    size: 1,
+                    created: Timestamp(T0 + i as u64),
+                    last_used: Timestamp(T0 + i as u64),
+                    state: CacheState::Committed,
+                };
+                sh.f.more.more.entries.insert(CacheId(i as u64), e);
+            }
+            sh.f.more.more.next = CACHE_ENTRIES_MAX as u64 - 1;
+            sh.f.more.more.entries.get_mut(&CacheId(0)).unwrap().last_used = Timestamp(T0 + 10_000);
+            let id = sh.reserve(101, "new", 1).unwrap();
+            assert_eq!(sh.f.more.more.entries.len(), CACHE_ENTRIES_MAX);
+            assert!(
+                sh.f.more.more.entries.contains_key(&CacheId(0)) && !sh.f.more.more.entries.contains_key(&CacheId(1))
+            );
+            assert!(sh.f.more.more.entries.contains_key(&id));
+        }
+
+        /// `CreateRunOn` records the base branch beside the run; a follower refuses a base for another run.
+        #[test]
+        fn a_pull_request_run_records_its_base() {
+            let mut sh = Shard::new();
+            sh.f.ids.apply_block(IdBlock::new(DbId(500), 10).unwrap());
+            let l = LabelSet::parse(["linux"]).unwrap();
+            let op = ActionsOp::CreateRunOn {
+                run: run(0, "refs/pull/3/merge", "pull_request"),
+                jobs: vec![job(0, &l)],
+                permissions: Vec::new(),
+                base_ref: "refs/heads/rel".into(),
+            };
+            let ActionsOut::Run(r) = sh.run(ActionsActor::Operator, op).unwrap() else { panic!() };
+            assert_eq!(sh.f.more.more.bases.get(&r).map(|b| &**b), Some("refs/heads/rel"));
+            // The run's job reads `rel`'s entry over a newer one on `main`, then `main`'s once `rel` has none.
+            let pj = sh.f.run_jobs(r)[0].spec.id;
+            let rr = RunnerId(DbId(999));
+            let m = ActionsEvent::Job { job: pj, version: 0, event: JobEvent::Matched(rr) };
+            let a = ActionsEvent::Job { job: pj, version: 1, event: JobEvent::Acquired };
+            sh.apply(vec![m, a]);
+            let on_rel = CacheEntry {
+                repo: RepoId(DbId(7)),
+                scope: "refs/heads/rel".into(),
+                key: "npm-rel".into(),
+                version: "v".into(),
+                size: 1,
+                created: Timestamp(T0),
+                last_used: Timestamp(T0),
+                state: CacheState::Committed,
+            };
+            let on_main =
+                CacheEntry { scope: MAIN.into(), key: "npm-main".into(), created: Timestamp(T0 + 9), ..on_rel.clone() };
+            sh.f.more.more.entries.insert(CacheId(50), on_rel);
+            sh.f.more.more.entries.insert(CacheId(51), on_main);
+            let found = |f: &ActionsFold| f.cache_find(pj, &["npm-x", "npm-"], "v", MAIN).unwrap().map(|(id, _)| id);
+            assert_eq!(found(&sh.f), Some(CacheId(50)));
+            sh.f.more.more.entries.remove(&CacheId(50));
+            assert_eq!(found(&sh.f), Some(CacheId(51)));
+            assert_eq!(sh.f.cache_find(JobId(DbId(999_999)), &["npm-"], "v", MAIN).err(), Some(ActionsErr::NotFound));
+            let sc = sh.f.scratch_at(Timestamp(sh.at), TierSet::CORE);
+            assert!(sc.check(&ActionsEvent::RunBase { run: RunId(DbId(1)), base_ref: "x".into() }).is_err());
+        }
     }
 
     /// A recorded stall moves a live lease and a queued job's `since` by exactly its length, through the fold and

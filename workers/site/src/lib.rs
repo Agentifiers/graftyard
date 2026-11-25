@@ -11,6 +11,7 @@ use serde::Deserialize;
 use worker::*;
 
 mod actions;
+mod actions_cache;
 mod actions_trigger;
 mod activity;
 mod alarm_steps;

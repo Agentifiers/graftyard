@@ -1,0 +1,12 @@
+2026-11-25T02:21:30Z
+edge off: versions deploy e9197bf3-9dc1-4093-9df6-0d9dea213ab4@100%
+╰  SUCCESS  Deployed graft-m4a-edge version e9197bf3-9dc1-4093-9df6-0d9dea213ab4 at 100% (0.77 sec)
+edge: graft-m4a-edge serves e9197bf3 at 100% (rev rev), as tests/m5/results/raw/bf46r45/r2/edge-want.log deployed
+edgever exit 0
+now FORMATS_ENABLED: 32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.16,32.19,20.3,32.22,32.23,18.12,32.24,18.13,20.4,17.4
+same as before: no
+meta 200
+e9197bf3 FORMATS_ENABLED: 32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.16,32.19,20.3,32.22,32.23,18.12,32.24,18.13
+850b853a FORMATS_ENABLED: 32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.16,32.19,20.3,32.22,32.23,18.12,32.24,18.13,20.4,17.4
+e9197bf3 matches formats-before: yes
+mcp/grants 503 {"documentation_url":"https://docs.github.com/enterprise-server@3.22/graftyard/mcp","message":"MCP grants need record formats 20.4 and 17.4,

@@ -1,0 +1,6 @@
+Orb clock minus Cloudflare: -28.3 s at 02:04:30Z (orb time), -27.9 s at 02:11Z, -29 s at 02:26Z.
+Measured: the midpoint of the orb's `date +%s%3N` around a HEAD of https://api.cloudflare.com/client/v4/, against
+that answer's `Date` header (1 s resolution), three samples at 02:04Z with round trips of 124 to 135 ms.
+`timedatectl` read "System clock synchronized: no". The orb clock was not changed mid-row (the lead's ruling).
+Every `at` in load.jsonl, start.ms and aonly.ms is orb time. The results judge every phase on Cloudflare time:
+a row's start in Cloudflare time is `at - ms + 28300`, against the Release entries' own times (td/entries.log).

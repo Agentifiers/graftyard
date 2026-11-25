@@ -34,7 +34,7 @@ const faq = [
   ['Why not build it on Cloudflare Artifacts?', 'A new Artifacts repository is capped at 1 GB and lives in one place. The full answer has its own page.'],
   ['Can AI coding agents use Graftyard?', 'Yes, as GitHub Apps with ordinary tokens. An opt-in agent layer adds task leases and an activity feed.'],
   ['Is Graftyard open source?', 'Yes. The code, the design and every test result are on GitHub at Agentifiers/graftyard, under the MIT license.'],
-  ['When can I use Graftyard?', 'It is in build. Milestones 0 to 3, AM1 (agent scale) and AM2 (the MCP server) are closed. Milestone 4 (webhooks, search, Actions and the web app) and Milestone 5 (release control) are under way. The Status page lists every milestone.'],
+  ['When can I use Graftyard?', 'It is in build. Milestones 0 to 3, AM1 (agent scale), AM2 (the MCP server) and Milestone 5 (release control) are closed. Milestone 4 (webhooks, search, Actions and the web app) is under way. The Status page lists every milestone.'],
 ];
 // the build: the milestones under way, one line each, from the Status page's data
 const underWay = milestones.filter((m) => m.state === 'now');
@@ -293,7 +293,7 @@ html[data-theme="light"] .hero__sub, html[data-theme="light"] .hero__quote .q { 
       <div class="sec-head">
         <p class="eyebrow">Status</p>
         <h2 id="build-h">Where the build stands</h2>
-        <p>The code host for people is done, and git, gh, Terraform and Octokit work against it unchanged. AM1 closed on 24 November: 500 agents can push to one repository with commits under 800 ms, and 5,000 with people's commits still first. AM2, the MCP server, closed the same day. Two milestones are under way now.</p>
+        <p>The code host for people is done, and git, gh, Terraform and Octokit work against it unchanged. AM1 closed on 24 November: 500 agents can push to one repository with commits under 800 ms, and 5,000 with people's commits still first. AM2, the MCP server, closed the same day, and Milestone 5, release control, on 25 November. Milestone 4 is under way now.</p>
       </div>
       <MilestoneStrip />
       <ul class="ms-now">

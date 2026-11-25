@@ -1,12 +1,12 @@
-﻿2026-11-25T02:58:46.6224370Z Current runner version: '2.338.2'
-2026-11-25T02:58:46.6228988Z Runner name: 'graftyard-host-runner-2'
-2026-11-25T02:58:46.6230600Z Machine name: '172'
-2026-11-25T02:58:46.6233168Z Prepare workflow directory
-2026-11-25T02:58:46.6698342Z Prepare all required actions
-2026-11-25T02:58:46.6816155Z Complete job name: denied
-2026-11-25T02:58:46.7495800Z ##[group]Run test -z "$ACTIONS_ID_TOKEN_REQUEST_URL" && echo "no id-token grant, no URL"
-2026-11-25T02:58:46.7496082Z [36;1mtest -z "$ACTIONS_ID_TOKEN_REQUEST_URL" && echo "no id-token grant, no URL"[0m
-2026-11-25T02:58:46.7526232Z shell: /usr/sbin/bash -e {0}
-2026-11-25T02:58:46.7526768Z ##[endgroup]
-2026-11-25T02:58:46.7738211Z no id-token grant, no URL
-2026-11-25T02:58:46.7911449Z Cleaning up orphan processes
+﻿2026-11-25T03:25:58.4666189Z Current runner version: '2.338.2'
+2026-11-25T03:25:58.4671517Z Runner name: 'graftyard-host-runner-2'
+2026-11-25T03:25:58.4672093Z Machine name: '172'
+2026-11-25T03:25:58.4674756Z Prepare workflow directory
+2026-11-25T03:25:58.5152027Z Prepare all required actions
+2026-11-25T03:25:58.5268241Z Complete job name: denied
+2026-11-25T03:25:58.5996496Z ##[group]Run test -z "$ACTIONS_ID_TOKEN_REQUEST_URL" && echo "no id-token grant, no URL"
+2026-11-25T03:25:58.5996793Z [36;1mtest -z "$ACTIONS_ID_TOKEN_REQUEST_URL" && echo "no id-token grant, no URL"[0m
+2026-11-25T03:25:58.6026928Z shell: /usr/sbin/bash -e {0}
+2026-11-25T03:25:58.6027470Z ##[endgroup]
+2026-11-25T03:25:58.6235678Z no id-token grant, no URL
+2026-11-25T03:25:58.6413666Z Cleaning up orphan processes
