@@ -482,6 +482,10 @@ func handleRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleEvict(w http.ResponseWriter, r *http.Request) {
+	if lifeboat {
+		fail(w, 409, "a lifeboat evicts nothing")
+		return
+	}
 	net := r.URL.Query().Get("net")
 	if !netRe.MatchString(net) {
 		fail(w, 400, "bad net")
@@ -793,6 +797,10 @@ func handleInit(w http.ResponseWriter, r *http.Request) {
 	// As github.com advertises over v0 (research/wire-census.md#43), and partial clones' lazy fetches need them.
 	git(rp, []string{derivedEnv}, nil, "config", "uploadpack.allowTipSHA1InWant", "true")
 	git(rp, []string{derivedEnv}, nil, "config", "uploadpack.allowReachableSHA1InWant", "true")
+	if lifeboat {
+		git(rp, []string{derivedEnv}, nil, "config", "core.fsync", "committed")
+		git(rp, []string{derivedEnv}, nil, "config", "core.fsyncMethod", "fsync")
+	}
 	jsonOut(w, map[string]any{"created": true})
 }
 
@@ -3697,10 +3705,20 @@ func raiseOpenFileLimit() {
 	}
 }
 
+// The address the server listens on: the container's :8080, or GRAFT_LISTEN, which the lifeboat bundle's start.sh
+// sets to a loopback address (`decisions/DECISIONS.md`, "`lifeboat-clone`").
+var listen = envOr("GRAFT_LISTEN", ":8080")
+
+// lifeboat is GRAFT_LIFEBOAT=1: the server runs on a lifeboat host beside graft-blob, not in a shard's container
+// (`decisions/DECISIONS.md`, "`lifeboat-clone`"). Its disk is the host's own and is rebuilt only from the copy, so a
+// repository commits its objects and refs with fsync, an answered /ingest is durable, and /evict refuses: nothing on
+// the host would fill an evicted repository again before it is asked for.
+var lifeboat = os.Getenv("GRAFT_LIFEBOAT") == "1"
+
 func main() {
 	raiseOpenFileLimit()
 	go sampleCPU()
-	if err := http.ListenAndServe(":8080", mux()); err != nil {
+	if err := http.ListenAndServe(listen, mux()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
