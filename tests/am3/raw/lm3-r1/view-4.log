@@ -1,0 +1,6 @@
+2026-11-25T06:32:09Z
+3d5ada33
+{"script":"graft-agents-m4a-controller","created_on":"2026-11-25T06:30:29.572152Z","versions":["ceaad4a1 1","6abab3e9 99"]}
+{"script":"graft-agents-m4a-front","created_on":"2026-11-25T06:30:28.913679Z","versions":["3034b4c5 100"]}
+{"script":"graft-agents-m4a-ops","created_on":"2026-11-25T06:13:57.070058Z","versions":["2c256bf5 100"]}
+{"count":530,"current":{"intent":"ControllerRoll { release: ReleaseId([65, 109, 181, 126, 46, 234, 221, 3, 115, 107, 68, 209, 91, 237, 14, 89, 59, 19, 173, 67, 171, 134, 255, 159, 69, 6, 28, 154, 165, 234, 216, 116]) }","next":0,"since":1795588286933,"state":"Undoing"},"rolled":{"Controller":"fcd70122","Edge":"e23f69e9","Front":"b48fa157","Mcp":"4d6e33f1","Ops":"7def7980","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"},"entries":[{"at":1795588177798,"entry":"ControllerRoll { release: ReleaseId([65, 109, 181, 126, 46, 234, 221, 3, 115, 107, 68, 209, 91, 237, 14, 89, 59, 19, 173, 67, 171, 134, 255, 159, 69, 6, 28, 154, 165, 234, 216, 116]) } id 01M88PA58NMA31NDB9WF9BM30J","index":528,"kind":"Intent","sigs":["031923"]},{"at":1795588286933,"entry":"ControllerPointer","index":529,"kind":"ControllerPointer","sigs":["031923"]}]}

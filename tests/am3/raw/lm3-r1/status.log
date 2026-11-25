@@ -1,0 +1,6 @@
+2026-11-25T06:26:18Z
+3d5ada33
+{"agentsFront":"ead53e3b-6bc9-48b9-8c00-26bc0c6ba511","counts":{"firstMismatch":null,"flushFails":0,"flushes":0,"lastFlushError":null,"lastMismatch":null,"mismatches":0,"peakFlushCalls":0,"pinned":0,"requests":0,"thrown":0},"default":null,"now":1795587988542,"view":{"controller":null,"failing":false,"fails":0,"fetchedAgoMs":null,"index":0,"lastError":null,"oks":0,"paged":0}}
+{"script":"graft-agents-m4a-controller","created_on":"2026-11-25T06:25:32.52381Z","versions":["6abab3e9 100"]}
+{"script":"graft-agents-m4a-front","created_on":"2026-11-25T06:11:54.883093Z","versions":["ead53e3b 100"]}
+front ead53e3b-6bc9-48b9-8c00-26bc0c6ba511 CONTROLLER_DEFAULT: []

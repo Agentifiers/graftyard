@@ -1,0 +1,4 @@
+2026-11-25T06:41:25Z
+3d5ada33
+N+1 for the over-cap flush: ceaad4a1
+{"before":200,"sum":{"threw":0,"unversioned":{"answers":0,"fivexx":0},"versions":{"6abab3e9-337d-45e3-96ba-6201a62f274f":{"answers":3098,"fivexx":0},"ceaad4a1-7e30-4f66-8734-34278304328e":{"answers":16,"fivexx":16}}},"flushes":[{"name":"unknown version","post":422,"why":"version 00000000-0000-0000-0000-00000000005a is no graft-controller version of a release this install's Release group uploaded","after":200,"unchanged":true},{"name":"over FLUSH_CALLS_MAX","post":422,"why":"a flush counts at most 10000 calls, this one 10001","after":200,"unchanged":true}]}
