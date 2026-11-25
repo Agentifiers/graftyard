@@ -841,6 +841,21 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 let f = &c.m.group_fold().fold;
                 (f.run_actor(run.id).map(|(_, l)| l.to_owned()), f.run_number(run.id))
             });
+            let secrets: Vec<(String, String)> = serde_json::from_value(b["secrets"].clone()).unwrap_or_default();
+            let variables: Vec<(String, String)> = serde_json::from_value(b["variables"].clone()).unwrap_or_default();
+            // `reusable`: a planned run's job's `needs`, `inputs`, its call's secrets, and its `outputs:` token.
+            let github = runsvc::github_json(
+                &urls,
+                &run,
+                &row,
+                names,
+                names.split('/').next().unwrap_or(""),
+                actor.as_deref(),
+                run_number,
+            );
+            let reusable = h.core.borrow().as_ref().and_then(|c| {
+                graftyard_actions::reusable::contexts(&c.m.group_fold().fold, job, &github, &variables, &secrets)
+            });
             let a = runsvc::Acquired {
                 repository: names,
                 owner_login: names.split('/').next().unwrap_or(""),
@@ -853,14 +868,15 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                     .deadline()
                     .unwrap_or(Timestamp(now + graftyard_actions::JOB_LEASE.as_millis() as u64)),
                 // Opened by the edge through `graft-ops` for this job alone; never logged or stored here.
-                secrets: serde_json::from_value(b["secrets"].clone()).unwrap_or_default(),
-                variables: serde_json::from_value(b["variables"].clone()).unwrap_or_default(),
+                secrets,
+                variables,
                 cache: actions_cache(&h.env),
                 id_token: h.core.borrow().as_ref().is_some_and(|c| {
                     graftyard_actions::oidc::id_token_granted(c.m.group_fold().fold.more.tokens.get(&job), run.fork)
                 }),
                 actor: actor.as_deref(),
                 run_number,
+                reusable,
             };
             json!({ "status": 200, "body": runsvc::acquire_message(&urls, &run, &row, &a), "repo": run.repo })
         }
@@ -882,8 +898,16 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 return Ok(refused(400, "conclusion"));
             };
             let Some((row, _)) = fold_job(job) else { return Ok(refused(404, "no job")) };
+            // `reusable`: a planned run's job commits the outputs the runner evaluated with its `Finished` (0x15.9);
+            // no other run has a plan, so every other `complete` is the `Job` op it was.
+            let planned = h.core.borrow().as_ref().is_some_and(|c| c.m.group_fold().fold.run_plan(row.run).is_some());
             if row.state.completed().is_none() {
-                let op = ActionsOp::Job { job, version: row.version, event: JobEvent::Finished(c) };
+                let op = if planned {
+                    let outputs = runsvc::outputs(&b);
+                    ActionsOp::FinishWith { job, version: row.version, conclusion: c, outputs }
+                } else {
+                    ActionsOp::Job { job, version: row.version, event: JobEvent::Finished(c) }
+                };
                 match commit(h, fresh_rid(), ActionsActor::Job(job), op).await {
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => return Ok(refused(404, e)),

@@ -204,12 +204,18 @@ pub struct Facts<'a> {
     pub run_number: Option<u64>,
     /// The `sub` template the repository uses (`sub_template`, F122), else the legacy `sub`.
     pub sub_keys: Option<&'a [Box<str>]>,
+    /// A called job's call (`crate::reusable::job_frame`), whose file `job_workflow_ref` names as `owner/repo/path@ref`
+    /// and `job_workflow_sha` as its commit (F118); `None` for a job of the run's own workflow.
+    pub job_workflow: Option<&'a crate::reusable::CallFrame>,
 }
 
 /// The token's claims at `now_s` with id `jti`, for `audience` or, without one, the owner's URL, GHES's default
 /// ("the URL of the repository owner"). Every value GHES writes as a string is a string. The claims GHES has and this
-/// leaves empty or out are `decisions/OPEN-QUESTIONS.md` rows: `actor` and `actor_id`, `run_number`, `head_ref` and
-/// `base_ref` for a run with none recorded, `run_number`, and a reusable workflow's `job_workflow_ref`.
+/// leaves empty or out are `decisions/OPEN-QUESTIONS.md` rows: `actor` and `actor_id`, `run_number`, and `head_ref`
+/// and `base_ref` for a run with none recorded. A called job's `workflow` and `workflow_ref` stay the caller's, and
+/// `job_workflow_ref` names the called file [doc: GHES 3.22, "Using OpenID Connect with reusable workflows": "The
+/// `workflow`, `ref`, and other attributes describe the caller workflow, while `job_workflow_ref` refers to the called
+/// workflow"].
 pub fn claims(f: &Facts<'_>, audience: Option<&str>, now_s: u64, jti: &str) -> Value {
     let run = f.run;
     let owner = f.repository.split('/').next().unwrap_or("");
@@ -247,9 +253,8 @@ pub fn claims(f: &Facts<'_>, audience: Option<&str>, now_s: u64, jti: &str) -> V
         "workflow": &*run.workflow,
         "workflow_ref": workflow_ref,
         "workflow_sha": sha,
-        // An ordinary job's own workflow; a reusable workflow's is not built (`crate::workflow`).
-        "job_workflow_ref": workflow_ref,
-        "job_workflow_sha": sha,
+        "job_workflow_ref": f.job_workflow.map_or_else(|| workflow_ref.clone(), |c| c.workflow_ref(f.repository)),
+        "job_workflow_sha": f.job_workflow.map_or_else(|| sha.clone(), |c| c.sha.iter().map(|b| format!("{b:02x}")).collect()),
         "runner_environment": if f.hosted { "github-hosted" } else { "self-hosted" },
         "head_ref": f.head_ref.map_or("", |h| h.strip_prefix("refs/heads/").unwrap_or(h)),
         "base_ref": f.base_ref.map_or("", |b| b.strip_prefix("refs/heads/").unwrap_or(b)),
@@ -550,6 +555,7 @@ mod tests {
             actor: None,
             run_number: None,
             sub_keys: None,
+            job_workflow: None,
         };
         let sha = "ab".repeat(20);
         let c = claims(&f, None, 1_000, "j-1");
@@ -610,6 +616,7 @@ mod tests {
             actor: None,
             run_number: None,
             sub_keys: None,
+            job_workflow: None,
         };
         let c = claims(&f, None, 7, "x");
         assert_eq!(c["sub"], json!("repo:octo/hello:pull_request"));
@@ -646,6 +653,7 @@ mod tests {
             actor: Some((AccountId(DbId(9)), "monalisa")),
             run_number: Some(12),
             sub_keys: None,
+            job_workflow: None,
         };
         let sub = |keys: &[&str]| {
             let k: Vec<Box<str>> = keys.iter().map(|k| (*k).into()).collect();

@@ -62,10 +62,15 @@ pub const ACTIONS_FORMAT_HEAD_REF: Format = Format { family: 0x15, version: 7 };
 /// `FORMATS_ENABLED` holds 0x15.8 sends either, after the day that shipped this reader to every member
 /// (`decisions/DECISIONS.md`, "`actions-oidc`").
 pub const ACTIONS_FORMAT_CLAIMS: Format = Format { family: 0x15, version: 8 };
+/// `reusable`'s `CreateRunPlanned`, whose entry also records the run's `RunPlan` (`ActionsEvent::RunPlanned`), and
+/// `FinishWith`, whose entry also records a job's outputs (`ActionsEvent::JobOutputs`). Only a caller where
+/// `FormatsEnable` enabled 0x15.9 sends either, after the site day that shipped this reader to every member
+/// (`decisions/DECISIONS.md`, "`reusable`").
+pub const ACTIONS_FORMAT_REUSABLE: Format = Format { family: 0x15, version: 9 };
 /// Every Actions format this release reads, which a member's `reads()` is: a format a command can be sent as and a
 /// member does not list is refused `Unsupported` on every site, as 0x15.7 was on main 46ea4200
 /// (`every_command_format_is_read`).
-pub const ACTIONS_FORMATS: [Format; 8] = [
+pub const ACTIONS_FORMATS: [Format; 9] = [
     ACTIONS_FORMAT,
     ACTIONS_FORMAT_MERGE_GROUP,
     ACTIONS_FORMAT_OWNER_MATCH,
@@ -74,6 +79,7 @@ pub const ACTIONS_FORMATS: [Format; 8] = [
     ACTIONS_FORMAT_CACHE,
     ACTIONS_FORMAT_HEAD_REF,
     ACTIONS_FORMAT_CLAIMS,
+    ACTIONS_FORMAT_REUSABLE,
 ];
 
 #[cfg(test)]
@@ -255,6 +261,17 @@ pub enum ActionsEvent {
         repo: Option<RepoId>,
         sub: crate::oidc::RepoSub,
     },
+    /// `reusable` (0x15.9): what a run that calls reusable workflows or declares job outputs needs at `acquirejob`,
+    /// in its `RunCreated`'s entry (`crate::reusable::RunPlan`).
+    RunPlanned {
+        run: RunId,
+        plan: crate::reusable::RunPlan,
+    },
+    /// `reusable` (0x15.9): a planned run's job's outputs, in the entry of its `Finished`.
+    JobOutputs {
+        job: JobId,
+        outputs: Vec<(Box<str>, Box<str>)>,
+    },
 }
 
 impl Record for ActionsEvent {
@@ -383,6 +400,9 @@ trait Tables {
     /// The last number given to a run of `(repo, workflow)`, which `decide` reads to number the next.
     fn counter(&self, key: &(RepoId, Box<str>)) -> Option<u64>;
     fn put_number(&mut self, run: RunId, number: u64);
+    /// A run's plan and a job's outputs, which `decide` never reads, so the scratch drops both.
+    fn put_plan(&mut self, _run: RunId, _plan: &crate::reusable::RunPlan) {}
+    fn put_outputs(&mut self, _job: JobId, _outputs: &[(Box<str>, Box<str>)]) {}
 }
 
 fn is_queued(s: &JobState) -> bool {
@@ -459,6 +479,8 @@ fn apply_event(t: &mut impl Tables, ev: &ActionsEvent, at: Timestamp) {
         ActionsEvent::RunActor { run, actor, login } => t.put_actor(*run, *actor, login),
         ActionsEvent::RunNumber { run, number } => t.put_number(*run, *number),
         ActionsEvent::SubTemplateSet { repo, sub } => t.put_sub(*repo, sub),
+        ActionsEvent::RunPlanned { run, plan } => t.put_plan(*run, plan),
+        ActionsEvent::JobOutputs { job, outputs } => t.put_outputs(*job, outputs),
     }
 }
 
@@ -566,6 +588,12 @@ impl Tables for ActionsFold {
         let n = c.counters.entry(key).or_insert(0);
         *n = (*n).max(number);
     }
+    fn put_plan(&mut self, run: RunId, plan: &crate::reusable::RunPlan) {
+        self.more.more.more.more.more.plans.insert(run, plan.clone());
+    }
+    fn put_outputs(&mut self, job: JobId, outputs: &[(Box<str>, Box<str>)]) {
+        self.more.more.more.more.more.outputs.insert(job, outputs.to_vec());
+    }
 }
 
 impl ActionsFold {
@@ -642,6 +670,7 @@ impl ActionsFold {
             actor: self.run_actor(run.id).map(|(a, l)| (a, l.into())),
             number: self.run_number(run.id),
             sub: self.sub_template(run.repo, org).map(<[_]>::to_vec),
+            called: crate::reusable::job_frame(self, j).cloned(),
             row,
             run,
         })
@@ -653,6 +682,14 @@ impl ActionsFold {
     /// The repository's setting, the default (`use_default`) when none was put.
     pub fn repo_sub(&self, repo: RepoId) -> crate::oidc::RepoSub {
         self.more.more.more.more.repo_subs.get(&repo).cloned().unwrap_or_default()
+    }
+    /// A planned run's `RunPlan` (`ActionsEvent::RunPlanned`, 0x15.9).
+    pub fn run_plan(&self, r: RunId) -> Option<&crate::reusable::RunPlan> {
+        self.more.more.more.more.more.plans.get(&r)
+    }
+    /// A job's committed outputs (`ActionsEvent::JobOutputs`).
+    pub fn job_outputs(&self, j: JobId) -> Option<&[(Box<str>, Box<str>)]> {
+        self.more.more.more.more.more.outputs.get(&j).map(Vec::as_slice)
     }
     /// The run of a running job, which a cache call acts for.
     pub fn cache_run(&self, job: JobId) -> Result<&WorkflowRun, ActionsErr> {
@@ -680,6 +717,8 @@ pub struct ClaimFacts {
     pub actor: Option<(AccountId, Box<str>)>,
     pub number: Option<u64>,
     pub sub: Option<Vec<Box<str>>>,
+    /// A called job's frame (`crate::reusable::job_frame`, 0x15.9), whose file `job_workflow_ref` names (F118).
+    pub called: Option<crate::reusable::CallFrame>,
 }
 
 impl ClaimFacts {
@@ -710,6 +749,7 @@ impl ClaimFacts {
             actor: self.actor.as_ref().map(|(a, l)| (*a, &**l)),
             run_number: self.number,
             sub_keys: self.sub.as_deref(),
+            job_workflow: self.called.as_ref(),
         }
     }
 }
@@ -939,6 +979,13 @@ impl Scratch for ActionsScratch<'_> {
                 }
                 Some(_) => Ok(()),
             },
+            ActionsEvent::RunPlanned { run, plan } => match self.run(*run) {
+                None => Err("a plan for a run the entry did not create".into()),
+                Some(r) => crate::reusable::check_plan(plan, r.jobs.len()).map_err(Into::into),
+            },
+            ActionsEvent::JobOutputs { job, .. } if self.job(*job).and_then(|j| j.state.completed()).is_none() => {
+                Err("outputs for a job that did not finish".into())
+            }
             _ => Ok(()),
         }
     }
@@ -1112,6 +1159,30 @@ pub enum ActionsOp {
     SetSubTemplate {
         repo: Option<RepoId>,
         sub: crate::oidc::RepoSub,
+    },
+    /// `reusable` (0x15.9): `CreateRunWith` for a run whose workflow calls reusable workflows or whose jobs declare
+    /// `outputs:`, with its plan (`ActionsEvent::RunPlanned`).
+    CreateRunPlanned {
+        run: WorkflowRun,
+        jobs: Vec<JobSpec>,
+        permissions: Vec<(u16, PermissionSet)>,
+        plan: crate::reusable::RunPlan,
+        /// A `pull_request` run's base and head branches, as `CreateRunOn` and `CreateRunFrom` record them.
+        base_ref: Option<Box<str>>,
+        head_ref: Option<Box<str>>,
+        /// The account that started the run, as `CreateRunAs` takes it: the entry records it (`RunActor`) when known
+        /// and always the run's number (`RunNumber`), so a planned run's tokens carry `actor` and `run_number` and
+        /// the workflow's counter counts it.
+        actor: Option<(AccountId, Box<str>)>,
+    },
+    /// `reusable` (0x15.9): the job's `completejob` with the outputs the runner evaluated, as a `Job` op's
+    /// `Finished` and the outputs beside it (`ActionsEvent::JobOutputs`). Outputs past `reusable::OUTPUTS_MAX` in total
+    /// are not recorded, and an empty list records none.
+    FinishWith {
+        job: JobId,
+        version: u64,
+        conclusion: crate::job::Conclusion,
+        outputs: Vec<(Box<str>, Box<str>)>,
     },
 }
 
@@ -1411,6 +1482,7 @@ impl Command for ActionsCmd {
             | ActionsOp::CreateRunOn { .. } => ACTIONS_FORMAT_CACHE,
             ActionsOp::CreateRunFrom { .. } => ACTIONS_FORMAT_HEAD_REF,
             ActionsOp::CreateRunAs { .. } | ActionsOp::SetSubTemplate { .. } => ACTIONS_FORMAT_CLAIMS,
+            ActionsOp::CreateRunPlanned { .. } | ActionsOp::FinishWith { .. } => ACTIONS_FORMAT_REUSABLE,
             _ => ACTIONS_FORMAT,
         }
     }
@@ -1474,6 +1546,35 @@ impl Command for ActionsCmd {
                 only(admin)?;
                 crate::oidc::check_sub(sub).map_err(|e| ActionsErr::Illegal(e.into()))?;
                 Ok((smallvec![ActionsEvent::SubTemplateSet { repo: *repo, sub: sub.clone() }], ActionsOut::Done))
+            }
+            ActionsOp::CreateRunPlanned { run, jobs, permissions, plan, base_ref, head_ref, actor } => {
+                only(operator)?;
+                crate::reusable::check_plan(plan, jobs.len()).map_err(|e| ActionsErr::Illegal(e.into()))?;
+                let (mut evs, out) = self.create_run(s, run, jobs, permissions)?;
+                if let ActionsOut::Run(id) = out {
+                    // `CreateRunAs`'s rows: a `pull_request` run's base and head, the actor when known, the number.
+                    let pr = run.is_pull_request();
+                    if let Some(base_ref) = base_ref.clone().filter(|_| pr) {
+                        evs.push(ActionsEvent::RunBase { run: id, base_ref });
+                    }
+                    if let Some(head_ref) = head_ref.clone().filter(|_| pr) {
+                        evs.push(ActionsEvent::RunHead { run: id, head_ref });
+                    }
+                    if let Some((actor, login)) = actor.clone() {
+                        evs.push(ActionsEvent::RunActor { run: id, actor, login });
+                    }
+                    evs.push(ActionsEvent::RunNumber { run: id, number: s.next_number(run.repo, &run.workflow) });
+                    evs.push(ActionsEvent::RunPlanned { run: id, plan: plan.clone() });
+                }
+                Ok((evs, out))
+            }
+            ActionsOp::FinishWith { job, version, conclusion, outputs } => {
+                let (mut evs, out) = self.job_event(s, *job, *version, &JobEvent::Finished(*conclusion))?;
+                let size: usize = outputs.iter().map(|(k, v)| k.len() + v.len()).sum();
+                if !outputs.is_empty() && size <= crate::reusable::OUTPUTS_MAX {
+                    evs.push(ActionsEvent::JobOutputs { job: *job, outputs: outputs.clone() });
+                }
+                Ok((evs, out))
             }
             ActionsOp::CacheReserve { job, key, version, size, default_branch } => {
                 self.cache_reserve(s, *job, (key, version, *size), default_branch)
@@ -2024,6 +2125,7 @@ mod tests {
                 actor: None,
                 run_number: None,
                 sub_keys: None,
+                job_workflow: None,
             };
             assert_eq!(crate::oidc::claims(&facts, None, 1, "j")["base_ref"], serde_json::json!("rel"));
             // The run's job reads `rel`'s entry over a newer one on `main`, then `main`'s once `rel` has none.
@@ -2104,6 +2206,7 @@ mod tests {
                 actor: None,
                 run_number: None,
                 sub_keys: None,
+                job_workflow: None,
             };
             let c = crate::oidc::claims(&facts, None, 1, "j");
             assert_eq!((c["base_ref"].as_str(), c["head_ref"].as_str()), (Some("main"), Some("fix/a")));
@@ -2251,7 +2354,29 @@ mod tests {
                 base_ref: "b".into(),
                 head_ref: "h".into(),
             },
-            ActionsOp::CreateRunAs { run: r, jobs: j, permissions: p, base_ref: None, head_ref: None, actor: None },
+            ActionsOp::CreateRunAs {
+                run: r.clone(),
+                jobs: j.clone(),
+                permissions: p.clone(),
+                base_ref: None,
+                head_ref: None,
+                actor: None,
+            },
+            ActionsOp::CreateRunPlanned {
+                run: r,
+                jobs: j,
+                permissions: p,
+                plan: Default::default(),
+                base_ref: None,
+                head_ref: None,
+                actor: None,
+            },
+            ActionsOp::FinishWith {
+                job: JobId(DbId(1)),
+                version: 0,
+                conclusion: crate::job::Conclusion::Success,
+                outputs: Vec::new(),
+            },
             ActionsOp::SetSubTemplate { repo: None, sub: Default::default() },
             ActionsOp::CacheSweep,
             ActionsOp::ExpireLeases,

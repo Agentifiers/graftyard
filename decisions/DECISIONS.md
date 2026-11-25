@@ -11500,6 +11500,37 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **Flip.** Two conditions reverse this. If a relying party BF-70 needs refuses RS256 or the bare-key JWKS, add ECDSA or `x5c` first (F123). If the JWKS read on the edge costs a site call per isolate too often, keep the slots in the edge's own variables, which costs a new edge version per rotation.
 
+### `reusable`: a job-level `uses:` is flattened into the caller's run at creation, every called file pinned to its commit, with its plan and job outputs in format 0x15.9, 2026-11-25
+
+**Status.** Built at $0 on branch `bf72-reusable` for BF-72 (M4-WP3), rebased on main c1c0eb9e with BF-73's 0x15.8: `RunPlanned` and `JobOutputs` are `ActionsEvent` 17 and 18, `CreateRunPlanned` and `FinishWith` `ActionsOp` 22 and 23, and `PlanRows` trails 0x15.8's `ClaimRows`. Not yet hosted: it needs a site day that ships 0x15.9's reader to every member, then `FormatsEnable` of 0x15.9, which is what the edge's dispatch checks, and `GRAFTYARD_REUSABLE=1` on a later site day for `ActionsTrigger`.
+
+**Decision.**
+- **Flatten at creation** (`crates/actions/src/reusable.rs`). The host that creates the run reads every called file first, `./` at the calling file's commit and `owner/repo/...@ref` at a full SHA, else a tag, else a branch. It pins each to the commit it resolved, and `expand` turns each call into its file's jobs, one spec per leg of the call and of the job, named `caller / called`. The run is one `CreateRunPlanned` entry, the same commit point and `RUN_JOBS_MAX` as any run. GHES's limits are refused before anything commits: 4 levels, 20 distinct files, no loop, `workflow_call` in the called file's `on:`, declared and required inputs and secrets, and a nested job no wider than its caller.
+- **The plan rides the run** (0x15.9). `RunPlanned` holds what `acquirejob` needs and the specs do not: each job's key, call and `outputs:` token, and each call's caller, file, ref and commit, `with:`, `secrets:` or `inherit`, declared inputs, `on.workflow_call.outputs`, caller `needs` and matrix leg. `FinishWith` commits a job's `completejob` outputs as `JobOutputs` beside its `Finished`. Both are new variants at the ends of `ActionsEvent` and `ActionsOp`, kept in `PlanRows`, a trailing part of `HeadRows`, so a fold with no plan keeps 0x15.8's bytes and no stored `RunCreated` or `JobSpec` changes shape.
+- **Contexts at `acquirejob`** (`reusable::contexts`), pure over the fold: `needs` from the needed jobs' conclusions and outputs, a call's outputs from its file's `on.workflow_call.outputs` over the `jobs` it ran, `inputs` from the call's `with:` over its caller's contexts and typed as declared, and secrets through each level's `inherit` or mapping. The job message sends `jobOutputs`, so the runner evaluates the job's outputs itself.
+- **`job_workflow_ref`** is the called file's `owner/repo/path@ref` and `job_workflow_sha` its commit (`reusable::job_frame`, read through `ActionsFold::claim_facts` like every other claim fact). `workflow` and `workflow_ref` stay the caller's (F118).
+- **BF-73's rows ride the plan's command.** `CreateRunPlanned` carries the run's actor, as `CreateRunAs` does, and its entry commits `RunActor` when one is known and always `RunNumber`, beside `RunPlanned`. So a called job's token and `github.*` carry the caller run's `actor`, `actor_id` and `run_number`, and the workflow's counter counts planned runs. The other way, one entry with `CreateRunAs` and a separate plan op, would make one run two commands and let a run commit without its plan; one op keeps the run's rows in one `decide`. `runsvc::github_json`, which `with:` and outputs evaluate over, reads the same actor and number.
+- **Who reads another repository.** The edge's dispatch does: the name is resolved on the install and read anonymously, as the launch service reads an action (F90), and the file is read from that network's git cache. `ActionsTrigger` reads `./` calls only for now (F132).
+
+**Why.**
+- GitHub itself shows a called workflow's jobs as jobs of the caller's run, and one `RunCreated` keeps the run's commit point, run key, `needs` release and `RunOwner` unchanged. Every called job is an ordinary `JobSpec`, so the broker, leases, tokens and logs need nothing new.
+- Pinning at creation reads each file once, from a host that already reads the git cache, and makes the run immune to a tag moved later. `decide` stays pure, because it never reads a file.
+- A new event, not new `WorkflowRun` or `JobSpec` fields, because postcard has no optional trailing fields and a new field would make every stored `RunCreated` unreadable (the reason in "`actions-oidc`").
+- Evaluating `with:` and outputs at `acquirejob`, on the leader, uses the fold's committed outputs. That is the only place they all exist, and it needs no extra write before the job starts.
+
+**What it beat.**
+- **A child run per call**, which GHES does not show and which would need a cross-run `needs` release on the shard and a second run key per call.
+- **Expanding at `acquirejob`**, which would read files on the job's path and let a moved tag change a run already created.
+- **Evaluating `with:` at creation**: the caller's `needs` outputs do not exist yet then.
+- **New `JobSpec` fields** for the call: every stored `RunCreated` would stop decoding.
+
+**Evidence.**
+- `tests/m4/wp3/bf72/run.sh`, on the orb (2026-11-25): an unmodified runner 2.338.2 under `runsvc_host` ran `caller.yml`, whose job calls `octo/shared`'s `deploy.yml` at tag `v1`. That repository also had a branch `v1` holding a different file. All 9 checks passed: every job succeeded, `call / deploy` ran, typed inputs (`dry=true`, a boolean), the inherited secret's hash, the tag over the branch, the later job read `needs.call.outputs.url`, `job_workflow_ref` was `octo/shared/.github/workflows/deploy.yml@refs/tags/v1`, `workflow_ref` stayed the caller's, and the called job's token carried the run's `actor` and `run_number` 1 (`tests/m4/raw/wp3/bf72/run.log`).
+- `crates/actions/tests/reusable.rs` (7 tests on real members, one a planned run's actor and run number) and `runsvc`'s message test. Plant 256 catches 16 of 16 mutants of the expansion and contexts, among them a nested call handed its grandparent's secrets, a call's output read from its last job, a matrix call's legs read in matrix order instead of completion order, and a `number` input left a string. Plant 252 catches 10 of 10 of the shard, wire and token. The parser keeps `on.workflow_call.inputs` as written (`Workflow::call_inputs`), because the oracle's JSON drops a `number` input's `type`.
+- [doc] GHES 3.22, "Reuse workflows", "Reusing workflow configurations", and "Using OpenID Connect with reusable workflows".
+
+**Flip.** If a gate row needs a push-triggered call into another repository, `ActionsTrigger` grows that repository's name lookup and shard read (F132). If a tree's expanded jobs pass `RUN_JOBS_MAX` or `ENTRY_MAX` in a real workflow, calls become child runs with a cross-run `needs` release.
+
 #### `outbound-pure`: the outbound router decides in pure code and names the credential; the host attaches it (2026-11-25)
 
 **Status.** Built (AM3-WP2, step S1 of the lead's plan for LM-3's kill row, 2026-11-25); native only. The Workers host and the hosted reruns of L0-02 and L0-03 come with S2 to S4.

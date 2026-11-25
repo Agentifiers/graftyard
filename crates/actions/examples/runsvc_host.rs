@@ -13,6 +13,12 @@
 //! `GET /_services/run/idtoken`. With `OIDC_ROTATE_AFTER=n` it switches to slot B after the n-th mint, as a committed
 //! `Rotate` does, so a relying party sees tokens under both. Each mint is logged to `<out>/idtokens.jsonl`.
 //! `MIRROR_EXTRA=owner/repo=<git dir>,...` adds public repositories to the mirror, such as an action under test.
+//!
+//! Reusable workflows (`graftyard_actions::reusable`): a job-level `uses:` naming a mirror repository's
+//! `.github/workflows/` file is read from the mirror at its tag, branch, or SHA, and the run is created as
+//! `CreateRunPlanned`, as the edge's dispatch creates it. `HOST_SECRETS=NAME=value,...` are the repository's secrets
+//! every job of the run's own workflow is given; called jobs get what their call passes. A job's `completejob` outputs
+//! commit with its `Finished` (`FinishWith`), and `idtokens.jsonl` shows each token's `job_workflow_ref`.
 
 #[path = "../tests/common/mod.rs"]
 mod common;
@@ -26,8 +32,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use common::Group;
 use graftyard_actions::runsvc::{self, Grant, ServiceKey, Urls};
 use graftyard_actions::shard::{
-    ACTIONS_FORMAT, ActionsActor, ActionsCmd, ActionsErr, ActionsFold, ActionsOp, ActionsOut, RunnerRecord,
-    RunnerScope, WorkflowRun,
+    ActionsActor, ActionsCmd, ActionsErr, ActionsFold, ActionsOp, ActionsOut, RunnerRecord, RunnerScope, WorkflowRun,
 };
 use graftyard_actions::workflow;
 use graftyard_actions::{JobEvent, JobId, JobState, LabelSet, RunnerId, RunnerSessionId};
@@ -196,6 +201,36 @@ impl Mirror {
         graftyard_git::refs::ObjectId::parse_hex(String::from_utf8_lossy(&o.stdout).trim().as_bytes())
     }
 
+    /// A file at a commit, as the git cache's `/ui/blob` reads it.
+    fn file(dir: &std::path::Path, sha: [u8; 20], path: &str) -> Option<String> {
+        let hex: String = sha.iter().map(|b| format!("{b:02x}")).collect();
+        let o = std::process::Command::new("git")
+            .args(["show", &format!("{hex}:{path}")])
+            .current_dir(dir)
+            .output()
+            .ok()?;
+        o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+    }
+
+    /// A called workflow file (`reusable::Want`), read as the edge's dispatch reads it: a mirror repository anyone may
+    /// read, at its pinned commit or its version resolved tag before branch.
+    fn called(&self, w: graftyard_actions::reusable::Want) -> Result<graftyard_actions::reusable::Fetched, String> {
+        use graftyard_actions::reusable::{Fetched, Origin, Version, resolve_version};
+        let name = w.repo.clone().ok_or("this host serves no file of the run's own repository")?;
+        let (o, r) = name.split_once('/').ok_or("owner/repo")?;
+        let dir = self.readable(o, r).ok_or_else(|| format!("{name}: not found"))?;
+        let (r#ref, sha) = match &w.version {
+            Version::At { r#ref, sha } => (r#ref.clone(), *sha),
+            Version::Named(v) => {
+                let (r, sha) = resolve_version(v, |n| Mirror::ref_value(dir, n))
+                    .ok_or_else(|| format!("{name}@{v}: no such version"))?;
+                (r, sha.0)
+            }
+        };
+        let src = Mirror::file(dir, sha, &w.path).ok_or_else(|| format!("{name}/{}: not found", w.path))?;
+        Ok(Fetched { origin: Origin { repo: w.repo, path: w.path, r#ref, sha }, src })
+    }
+
     fn has_commit(dir: &std::path::Path, sha: graftyard_git::refs::ObjectId) -> bool {
         let t = std::process::Command::new("git").args(["cat-file", "-t", &sha.hex()]).current_dir(dir).output();
         t.is_ok_and(|o| o.stdout == b"commit\n")
@@ -339,7 +374,14 @@ fn handle(h: &Host, mut req: tiny_http::Request) {
         ("POST", "run/completejob") => match grant {
             Some(Grant::Job { job, .. }) => {
                 let c = jbody.get("conclusion").and_then(Value::as_str).and_then(runsvc::conclusion);
+                let outputs = runsvc::outputs(&jbody);
+                let planned = h.w.with(move |w| {
+                    let f = w.fold();
+                    f.job(job).is_some_and(|j| f.run_plan(j.run).is_some())
+                });
                 match c {
+                    // A planned run's job commits its outputs with its `Finished`, as the site's `complete` does.
+                    Some(c) if planned => finish_with(h, job, c, outputs),
                     Some(c) => job_event(h, job, JobEvent::Finished(c)),
                     None => (400, json!({"source": "actions-run-service", "statusCode": 400})),
                 }
@@ -673,6 +715,10 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
         n.0 / 1000 + runsvc::JOB_TOKEN_TTL_S,
         Some(orch),
     );
+    let secrets = host_secrets();
+    let github = runsvc::github_json(&h.urls, &run.run, &j, "owner/repo", "owner", actor.as_deref(), run_number);
+    let s2 = secrets.clone();
+    let reusable = h.w.with(move |w| graftyard_actions::reusable::contexts(w.fold(), job, &github, &[], &s2));
     let a = runsvc::Acquired {
         repository: "owner/repo",
         owner_login: "owner",
@@ -680,14 +726,32 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
         github_token: "ghs_test",
         job_token: &job_token,
         locked_until: Timestamp(n.0 + 600_000),
-        secrets: Vec::new(),
+        secrets,
         variables: Vec::new(),
         cache: false,
         id_token,
         actor: actor.as_deref(),
         run_number,
+        reusable,
     };
     (200, runsvc::acquire_message(&h.urls, &run.run, &j, &a))
+}
+
+fn finish_with(
+    h: &Host,
+    job: JobId,
+    conclusion: graftyard_actions::Conclusion,
+    outputs: Vec<(Box<str>, Box<str>)>,
+) -> (u16, Value) {
+    let r = h.w.with(move |w| {
+        let v = w.fold().job(job)?.version;
+        w.cmd(ActionsActor::Job(job), ActionsOp::FinishWith { job, version: v, conclusion, outputs })
+    });
+    match r {
+        Some(Ok(_)) => (200, json!({})),
+        Some(Err(ActionsErr::Illegal(_))) => (404, json!({"source": "actions-run-service", "statusCode": 404})),
+        _ => (503, json!({"source": "actions-run-service", "statusCode": 503})),
+    }
 }
 
 fn job_event(h: &Host, job: JobId, event: JobEvent) -> (u16, Value) {
@@ -751,6 +815,15 @@ fn live(h: &Host, req: tiny_http::Request, grant: Option<Grant>) {
     }
 }
 
+/// `HOST_SECRETS=NAME=value,...`: the run's repository's secrets.
+fn host_secrets() -> Vec<(String, String)> {
+    std::env::var("HOST_SECRETS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .collect()
+}
+
 /// A new ephemeral runner: a key pair, its record, and `<out>/jitconfig.txt` with the private half.
 fn register(w: &mut World, urls: &Urls, out: &str) -> RunnerId {
     let key = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
@@ -782,12 +855,7 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
     let urls = Urls::new(&format!("http://127.0.0.1:{port}"));
     let t = now();
-    let mut shard = Group::new(
-        CHAIN,
-        vec![ACTIONS_FORMAT, graftyard_actions::shard::ACTIONS_FORMAT_TOKENS],
-        ActionsFold::default(),
-        t,
-    );
+    let mut shard = Group::new(CHAIN, graftyard_actions::shard::ACTIONS_FORMATS.to_vec(), ActionsFold::default(), t);
     shard.id_block(t, IdBlock::whole(0, 9).unwrap());
     let mut w = World {
         shard,
@@ -805,7 +873,32 @@ fn main() {
     let src = std::fs::read_to_string(wf).unwrap();
     let parsed = workflow::parse(wf, &src);
     assert!(parsed.ok(), "{:?}", parsed.errors);
-    let (jobs, permissions) = graftyard_actions::specs::job_specs_declared(&parsed.workflow).unwrap();
+    let mirror = Mirror::build(&out);
+    let origin = graftyard_actions::reusable::Origin {
+        repo: None,
+        path: wf.clone(),
+        r#ref: "refs/heads/main".into(),
+        sha: [0x11; 20],
+    };
+    let planned = {
+        let f = graftyard_actions::reusable::plan_run(&parsed.workflow, &origin, true, |w| {
+            let r = mirror.called(w);
+            async move { r }
+        });
+        let mut f = std::pin::pin!(f);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match f.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(r) => r.unwrap_or_else(|e| panic!("the workflow cannot run: {e}")),
+            std::task::Poll::Pending => unreachable!("the mirror reads at once"),
+        }
+    };
+    let (jobs, permissions, plan) = match planned {
+        Some(e) => (e.jobs, e.declared, e.plan),
+        None => {
+            let (j, p) = graftyard_actions::specs::job_specs_declared(&parsed.workflow).unwrap();
+            (j, p, None)
+        }
+    };
     let run = WorkflowRun {
         id: graftyard_actions::RunId(DbId(0)),
         repo: REPO,
@@ -818,12 +911,15 @@ fn main() {
         concurrency: None,
         fork: false,
     };
-    // `gh-token`'s `CreateRunWith` when a job declared `permissions:`, as the site's trigger sends it.
-    let op = if permissions.is_empty() {
-        ActionsOp::CreateRun { run, jobs }
-    } else {
-        ActionsOp::CreateRunWith { run, jobs, permissions }
-    };
+    // `gh-token`'s `CreateRunWith` when a job declared `permissions:`, as the site's trigger sends it, and
+    // `CreateRunPlanned` for a run with a plan, as the edge's dispatch sends it. `HOST_ACTOR=login` names the run's
+    // actor as the edge does once 0x15.8 is enabled, which makes a plain run `CreateRunAs`.
+    let actor = std::env::var("HOST_ACTOR").ok().filter(|a| !a.is_empty());
+    let call = runsvc::with_plan(
+        runsvc::create_run_call(&run, &jobs, &permissions, true, None, None, actor.as_deref().map(|a| (OWNER, a))),
+        plan.as_ref(),
+    );
+    let (_, op) = runsvc::create_run_op(&call).unwrap();
     let created = w.cmd(ActionsActor::Operator, op);
     assert!(matches!(created, Some(Ok(ActionsOut::Run(_)))), "{created:?}");
     println!("runner {} registered; jit config in {out}/jitconfig.txt; listening on {}", rid.0.0, urls.server);
@@ -837,7 +933,7 @@ fn main() {
         out: out.clone(),
         log: log.clone(),
         t0: Instant::now(),
-        mirror: Mirror::build(&out),
+        mirror,
         oidc: (
             [0, 1].map(|_| rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap()),
             std::sync::atomic::AtomicUsize::new(0),
