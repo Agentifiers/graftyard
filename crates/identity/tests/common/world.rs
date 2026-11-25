@@ -79,6 +79,7 @@ impl World {
                     AUTHZ_FORMAT_V12,
                     AUTHZ_FORMAT_V13,
                     graftyard_identity::AUTHZ_FORMAT_V14,
+                    graftyard_identity::AUTHZ_FORMAT_V15,
                 ],
                 AuthzFold::new(owner),
             );

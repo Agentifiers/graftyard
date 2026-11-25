@@ -11617,6 +11617,6 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **What it beat.** A 422 from the launch service naming the fork (fails a step earlier, with another line). Signing pin maps with `Keys.vendor` (absent on self-hosted). A `Keys` generation adding a vendor key on graft-m4a (needs a customer signature for no gain).
 
-**Evidence.** `upload-artifact` v4.6.2 and `download-artifact` v4.3.0 `dist/` (mirrored on the orb), runner 2.338.2 source (`ExecutionContext.Complete`, `IssueExtensions`, `CompleteJobRequest`). BF-76's hosted row.
+**Evidence.** `upload-artifact` v4.6.2 and `download-artifact` v4.3.0 `dist/` (mirrored on the orb), runner 2.338.2 source (`ExecutionContext.Complete`, `IssueExtensions`, `CompleteJobRequest`). BF-76's hosted row. Head 1 (`bf76-policy`): `crates/identity/tests/agents.rs`, `actions_substitution_is_an_org_admins_and_keeps_older_folds_bytes` (field-by-field writes, withdrawal, a repeat writes nothing, a fold with no policy keeps its bytes, a user account refused); `crates/actions/src/pin_map.rs` tests (signature before approval, approval by digest, content checks, substitution for tags, approved and unapproved SHAs, v3 untouched); `crates/git/tests/wire_tags.golden` (`AuthzEvent` 20, `AuthzOp` 39); plant `tests/m0carried/plant254.py`, 9 of 9 caught.
 
 **Flip.** GHES failing an unapproved v4 pin before the step runs (a server-side check in a later GHES), or GitHub merging a vendor-neutral `isGhes()` escape (toolkit issue #2439), which retires the forks and the policy.

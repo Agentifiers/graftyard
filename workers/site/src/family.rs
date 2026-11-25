@@ -1872,7 +1872,8 @@ impl Family for Authz {
         // 0x12.11 F59's create with its settings, which the edge sends only once `FormatsEnable` enabled it, and the
         // consumer's abort; 0x12.12 M4-WP3's `SealKey` and org secret and variable ops, which the edge sends only once
         // `FormatsEnable` enabled it; 0x12.13 `PATCH /app/hook/config`'s `SetAppHook`, likewise; 0x12.14 the Actions
-        // App's installation, which `acquirejob` commits only once `FormatsEnable` enabled it (`gh-token`).
+        // App's installation, which `acquirejob` commits only once `FormatsEnable` enabled it (`gh-token`); 0x12.15
+        // BF-76's substitution policy, which the edge sends only once `FormatsEnable` enabled it (`pin-map`).
         vec![
             id::AUTHZ_FORMAT,
             id::AUTHZ_FORMAT_V2,
@@ -1882,6 +1883,7 @@ impl Family for Authz {
             id::AUTHZ_FORMAT_V12,
             id::AUTHZ_FORMAT_V13,
             id::AUTHZ_FORMAT_V14,
+            id::AUTHZ_FORMAT_V15,
         ]
     }
     /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`): a transfer's

@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
-use graftyard_types::{AccountId, ChainId, CredentialShard, Index, RepoId, Timestamp};
+use graftyard_types::{AccountId, ChainId, CredentialShard, Digest, Index, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
@@ -32,7 +32,7 @@ use crate::sealed::{ActionsName, SealKey, SecretRecord, SecretScope, VariableRec
 use crate::tokens::RepoScope;
 use crate::{
     AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AUTHZ_FORMAT_V11, AUTHZ_FORMAT_V12,
-    AUTHZ_FORMAT_V13, AUTHZ_FORMAT_V14,
+    AUTHZ_FORMAT_V13, AUTHZ_FORMAT_V14, AUTHZ_FORMAT_V15,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -180,6 +180,18 @@ pub enum AuthzEvent {
         name: ActionsName,
         row: Option<(SecretScope, VariableRecord)>,
     },
+    // ---- BF-76, format 15 ----
+    /// The org's Actions substitution policy, the whole record each time (`design/SHARED.md`, "Toolkit hostname
+    /// heuristics and SHA pins"; `decisions/DECISIONS.md`, "`pin-map`").
+    ActionsSubstitution(ActionsSubstitution),
+}
+
+/// BF-76's org policy: `tags` substitutes `actions/<name>@<tag>` by its `graftyard-actions` fork, and `pin_map` is the
+/// SHA-256 of the one pin map an org admin approved, whose pins substitute SHA pins. Off and none until set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionsSubstitution {
+    pub tags: bool,
+    pub pin_map: Option<Digest>,
 }
 
 /// An App's installation on this owner: its App, the repositories it reaches, and its permissions, which never
@@ -346,6 +358,10 @@ impl Record for AuthzEvent {
                 e.u8(20);
                 graftyard_fold::canon::write(e.0, &(name, row));
             }
+            AuthzEvent::ActionsSubstitution(p) => {
+                e.u8(21);
+                graftyard_fold::canon::write(e.0, p);
+            }
         }
     }
 }
@@ -465,11 +481,25 @@ impl<'de> serde::Deserialize<'de> for CursorRows {
 
 /// M4-WP3's rows on the owner's chain (`design/SHARED.md`, "Actions", Secrets and variables): the owner's `SealKey`s
 /// by `key_id`, and its org secrets and variables by name, each with the scope that says which repositories read it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActionsRows {
     pub seal_keys: BTreeMap<Box<str>, SealKey>,
     pub secrets: BTreeMap<ActionsName, (SecretScope, SecretRecord)>,
     pub variables: BTreeMap<ActionsName, (SecretScope, VariableRecord)>,
+    /// BF-76's rows (format 0x12.15), a trailing part so a fold that never set them keeps M4-WP3's bytes.
+    pub more: SubstitutionRows,
+}
+
+tail_serde!(ActionsRows {
+    seal_keys: BTreeMap<Box<str>, SealKey>,
+    secrets: BTreeMap<ActionsName, (SecretScope, SecretRecord)>,
+    variables: BTreeMap<ActionsName, (SecretScope, VariableRecord)>,
+} more: SubstitutionRows);
+
+/// The org's substitution policy (`AuthzEvent::ActionsSubstitution`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubstitutionRows {
+    pub substitution: ActionsSubstitution,
 }
 
 impl ActionsRows {
@@ -493,6 +523,7 @@ impl ActionsRows {
             AuthzEvent::OrgVariable { name, row: None } => {
                 self.variables.remove(name);
             }
+            AuthzEvent::ActionsSubstitution(p) => self.more.substitution = *p,
             _ => {}
         }
     }
@@ -868,7 +899,10 @@ where
         AuthzEvent::AgentApp { app, row: None } => t.agent_apps.del(app),
         AuthzEvent::OrgAgents { .. } | AuthzEvent::AuditCursor { .. } | AuthzEvent::RepoCreate { .. } => {}
         // `ActionsRows::write`'s.
-        AuthzEvent::SealKey { .. } | AuthzEvent::OrgSecret { .. } | AuthzEvent::OrgVariable { .. } => {}
+        AuthzEvent::SealKey { .. }
+        | AuthzEvent::OrgSecret { .. }
+        | AuthzEvent::OrgVariable { .. }
+        | AuthzEvent::ActionsSubstitution(_) => {}
         AuthzEvent::Team(TeamEvent::Created { team, .. }) => t.ids.apply_assigned(team.0),
         AuthzEvent::Invitation(InvitationEvent::Sent { id, .. }) => t.ids.apply_assigned(id.0),
         // `OrgRows::write`'s.
@@ -984,7 +1018,13 @@ impl Scratch for AuthzScratch<'_> {
         if touches_org(ev) {
             self.org.to_mut().write(ev);
         }
-        if matches!(ev, AuthzEvent::SealKey { .. } | AuthzEvent::OrgSecret { .. } | AuthzEvent::OrgVariable { .. }) {
+        if matches!(
+            ev,
+            AuthzEvent::SealKey { .. }
+                | AuthzEvent::OrgSecret { .. }
+                | AuthzEvent::OrgVariable { .. }
+                | AuthzEvent::ActionsSubstitution(_)
+        ) {
             self.actions.to_mut().write(ev);
         }
         if let AuthzEvent::OrgAgents { enabled, workspace } = ev {
@@ -1331,6 +1371,14 @@ pub enum AuthzOp {
         webhook: Option<crate::apps::Url>,
         secret: Option<Box<[u8]>>,
     },
+    // ---- BF-76, format 15 ----
+    /// `PUT /api/graftyard/v1/orgs/{org}/actions/substitution`: the org's policy, each field kept when `None`, read and
+    /// written in one decision. An org admin's.
+    SetActionsSubstitution {
+        tags: Option<bool>,
+        /// `Some(None)` withdraws the approval.
+        pin_map: Option<Option<Digest>>,
+    },
 }
 
 /// The largest `init` a `CreateRepoWith` carries [guess: a `RepoSettings` with a description and twenty topics is
@@ -1562,6 +1610,10 @@ impl Record for AuthzCmd {
             AuthzOp::SetAppHook { app, webhook, secret } => {
                 e.u8(38);
                 graftyard_fold::canon::write(e.0, &(app, webhook, secret));
+            }
+            AuthzOp::SetActionsSubstitution { tags, pin_map } => {
+                e.u8(39);
+                graftyard_fold::canon::write(e.0, &(tags, pin_map));
             }
         }
     }
@@ -2022,6 +2074,16 @@ impl AuthzCmd {
             | AuthzOp::DeleteOrgSecret { .. }
             | AuthzOp::PutOrgVariable { .. }
             | AuthzOp::DeleteOrgVariable { .. } => self.decide_actions(s),
+            AuthzOp::SetActionsSubstitution { tags, pin_map } => {
+                org_only(s)?;
+                let was = s.actions.more.substitution;
+                let now =
+                    ActionsSubstitution { tags: tags.unwrap_or(was.tags), pin_map: pin_map.unwrap_or(was.pin_map) };
+                if now == was {
+                    return Ok((SmallVec::new(), AuthzOut::Done));
+                }
+                Ok((smallvec![AuthzEvent::ActionsSubstitution(now)], AuthzOut::Done))
+            }
             AuthzOp::SetAppHook { app, webhook, secret } => {
                 let Some(have) = s.app(*app) else { return Err(AuthzErr::NoApp) };
                 let record = AppRecord { webhook: webhook.clone(), webhook_secret: secret.clone(), ..have.clone() };
@@ -2135,6 +2197,7 @@ impl Command for AuthzCmd {
             | AuthzOp::PutOrgVariable { .. }
             | AuthzOp::DeleteOrgVariable { .. } => AUTHZ_FORMAT_V12,
             AuthzOp::SetAppHook { .. } => AUTHZ_FORMAT_V13,
+            AuthzOp::SetActionsSubstitution { .. } => AUTHZ_FORMAT_V15,
             AuthzOp::Install { ref row, .. } if row.app == crate::stateless::ACTIONS_APP => AUTHZ_FORMAT_V14,
             AuthzOp::PutAgentApp(_) | AuthzOp::DeleteAgentApp { .. } | AuthzOp::SetOrgAgents { .. } => AUTHZ_FORMAT_V3,
             AuthzOp::PutApp { .. }
