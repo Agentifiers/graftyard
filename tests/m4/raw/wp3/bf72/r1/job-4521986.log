@@ -1,0 +1,33 @@
+2026-11-25T22:59:02.6681618Z Current runner version: '2.338.2'
+2026-11-25T22:59:02.6686963Z Runner name: 'bf72-2'
+2026-11-25T22:59:02.6687364Z Machine name: '172'
+2026-11-25T22:59:02.6689859Z Runner is running behind proxy server 'http://172.28.0.73:3128' for all HTTP requests.
+2026-11-25T22:59:02.6690008Z Runner is running behind proxy server 'http://172.28.0.73:3128' for all HTTPS requests.
+2026-11-25T22:59:02.6690062Z Prepare workflow directory
+2026-11-25T22:59:02.7052074Z Prepare all required actions
+2026-11-25T22:59:02.7332670Z Complete job name: call / deploy
+2026-11-25T22:59:03.7912374Z ##[group]Run echo "BF72 called target=prod-7 dry=true dry_is_bool=true"
+2026-11-25T22:59:03.7912969Z [36;1mecho "BF72 called target=prod-7 dry=true dry_is_bool=true"[0m
+2026-11-25T22:59:03.7913035Z [36;1mecho "BF72 called key_sha=$(printf %s "$KEY" | sha256sum | cut -c1-16)"[0m
+2026-11-25T22:59:03.7913107Z [36;1mecho "BF72 called version=v1"[0m
+2026-11-25T22:59:03.7913207Z [36;1mecho "url=https://prod-7.example/v1" >> "$GITHUB_OUTPUT"[0m
+2026-11-25T22:59:03.7945757Z shell: /usr/sbin/bash -e {0}
+2026-11-25T22:59:03.7946335Z env:
+2026-11-25T22:59:03.7946907Z   KEY: ***
+2026-11-25T22:59:03.7946968Z ##[endgroup]
+2026-11-25T22:59:03.8133503Z BF72 called target=prod-7 dry=true dry_is_bool=true
+2026-11-25T22:59:03.8134129Z BF72 called key_sha=db48f20ca25a9894
+2026-11-25T22:59:03.8134198Z BF72 called version=v1
+2026-11-25T22:59:03.8269317Z ##[group]Run test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+2026-11-25T22:59:03.8269490Z [36;1mtest -n "$ACTIONS_ID_TOKEN_REQUEST_URL"[0m
+2026-11-25T22:59:03.8269612Z [36;1mt=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=bf72" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')[0m
+2026-11-25T22:59:03.8269687Z [36;1mp=$(printf %s "$t" | cut -d. -f2 | tr '_-' '/+'); while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done[0m
+2026-11-25T22:59:03.8269902Z [36;1mprintf %s "$p" | base64 -d | python3 -c 'import json,sys; c=json.load(sys.stdin); print("BF72 job_workflow_ref=" + c["job_workflow_ref"]); print("BF72 workflow_ref=" + c["workflow_ref"]); print("BF72 actor=" + c.get("actor", "") + " run_number=" + c.get("run_number", ""))'[0m
+2026-11-25T22:59:03.8284996Z shell: /usr/sbin/bash -e {0}
+2026-11-25T22:59:03.8285198Z ##[endgroup]
+2026-11-25T22:59:06.0335998Z BF72 job_workflow_ref=m3org/bf72-shared/.github/workflows/deploy.yml@refs/tags/v1
+2026-11-25T22:59:06.0337208Z BF72 workflow_ref=m3org/bf72/.github/workflows/caller.yml@refs/heads/main
+2026-11-25T22:59:06.0337526Z BF72 actor=m3-admin run_number=1
+2026-11-25T22:59:06.0531083Z Evaluate and set job outputs
+2026-11-25T22:59:06.0541559Z Set output 'url'
+2026-11-25T22:59:06.0543904Z Cleaning up orphan processes

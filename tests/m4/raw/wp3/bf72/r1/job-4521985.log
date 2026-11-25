@@ -1,0 +1,15 @@
+2026-11-25T22:58:41.9141238Z Current runner version: '2.338.2'
+2026-11-25T22:58:41.9147123Z Runner name: 'bf72-1'
+2026-11-25T22:58:41.9147548Z Machine name: '172'
+2026-11-25T22:58:41.9150029Z Runner is running behind proxy server 'http://172.28.0.73:3128' for all HTTP requests.
+2026-11-25T22:58:41.9150103Z Runner is running behind proxy server 'http://172.28.0.73:3128' for all HTTPS requests.
+2026-11-25T22:58:41.9150158Z Prepare workflow directory
+2026-11-25T22:58:41.9497949Z Prepare all required actions
+2026-11-25T22:58:41.9598083Z Complete job name: build
+2026-11-25T22:58:43.0255081Z ##[group]Run echo "target=prod-7" >> "$GITHUB_OUTPUT"
+2026-11-25T22:58:43.0255325Z [36;1mecho "target=prod-7" >> "$GITHUB_OUTPUT"[0m
+2026-11-25T22:58:43.0282138Z shell: /usr/sbin/bash -e {0}
+2026-11-25T22:58:43.0282543Z ##[endgroup]
+2026-11-25T22:58:43.0621180Z Evaluate and set job outputs
+2026-11-25T22:58:43.0656726Z Set output 'target'
+2026-11-25T22:58:43.0658628Z Cleaning up orphan processes

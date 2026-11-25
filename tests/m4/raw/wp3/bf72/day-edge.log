@@ -1,0 +1,13 @@
+2026-11-25T22:51:58Z
+de678d112
+FORMATS_ENABLED adds: ,21.9
+carried: EDGE_CAP_BYTES,FORMATS_ENABLED,GRAFTYARD_ARTIFACTS,GRAFTYARD_CACHE_LIMIT,HOST,OPS_SCRIPT,PART_BYTES,PLAN,RUN_SERVICE_PUBLIC,SSH_OPTION
+before {"script":"graft-m4a-edge","created_on":"2026-11-25T22:09:58.554015Z","versions":["78130d2f 100"]}
+deploy exit 0
+Current Version ID: 7b3bf05d-d9a5-44ba-8269-ffd22507b6b9
+binding diff (plain text; only FORMATS_ENABLED may change):
+<   "FORMATS_ENABLED": "32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2
+>   "FORMATS_ENABLED": "32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2
+after {"script":"graft-m4a-edge","created_on":"2026-11-25T22:56:08.38779Z","versions":["7b3bf05d 100"]}
+edge: graft-m4a-edge serves 7b3bf05d at 100% (rev [INFO]: 🌀  Compiling to Wasm...), as ~/workspace/repo/.worktrees/bf72h/tests/m4/raw/wp3/bf72/edge-deploy.raw deployed
+edgever exit 0

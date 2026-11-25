@@ -1,0 +1,15 @@
+2026-11-25T22:59:23.5981295Z Current runner version: '2.338.2'
+2026-11-25T22:59:23.5987963Z Runner name: 'bf72-3'
+2026-11-25T22:59:23.5988420Z Machine name: '172'
+2026-11-25T22:59:23.5991018Z Runner is running behind proxy server 'http://172.28.0.73:3128' for all HTTP requests.
+2026-11-25T22:59:23.5991099Z Runner is running behind proxy server 'http://172.28.0.73:3128' for all HTTPS requests.
+2026-11-25T22:59:23.5991212Z Prepare workflow directory
+2026-11-25T22:59:23.6383711Z Prepare all required actions
+2026-11-25T22:59:23.6676370Z Complete job name: after
+2026-11-25T22:59:24.7261854Z ##[group]Run echo "BF72 after url=https://prod-7.example/v1 result=success"
+2026-11-25T22:59:24.7262304Z [36;1mecho "BF72 after url=https://prod-7.example/v1 result=success"[0m
+2026-11-25T22:59:24.7262396Z [36;1mtest "https://prod-7.example/v1" = "https://prod-7.example/v1"[0m
+2026-11-25T22:59:24.7295368Z shell: /usr/sbin/bash -e {0}
+2026-11-25T22:59:24.7295838Z ##[endgroup]
+2026-11-25T22:59:24.7486970Z BF72 after url=https://prod-7.example/v1 result=success
+2026-11-25T22:59:24.7676697Z Cleaning up orphan processes

@@ -1,0 +1,20 @@
+2026-11-25T22:56:58Z
+2026-11-25T22:58:11.811Z gh secret set DEPLOY_KEY -> 0 
+2026-11-25T22:58:30.506Z run 4521984
+2026-11-25T22:58:33.522Z runner 1 (id 4521988)
+2026-11-25T22:58:54.705Z runner 2 (id 4521989)
+2026-11-25T22:59:16.587Z runner 3 (id 4521990)
+2026-11-25T22:59:39.503Z PASS every job succeeded
+2026-11-25T22:59:39.504Z PASS the called job ran as 'call / deploy'
+2026-11-25T22:59:39.504Z PASS typed inputs
+2026-11-25T22:59:39.504Z PASS the inherited secret
+2026-11-25T22:59:39.504Z PASS the tag, not the branch
+2026-11-25T22:59:39.504Z PASS the later job read the output
+2026-11-25T22:59:39.504Z PASS job_workflow_ref names the called file
+2026-11-25T22:59:39.504Z PASS workflow_ref stays the caller's
+2026-11-25T22:59:39.504Z PASS the called job's token carries the caller run's actor and number
+2026-11-25T22:59:39.504Z BF-72 PASS: run 4521984
+2026-11-25T22:59:39.504Z sheds: python3 tests/fanout/tieroff503.py 2026-11-25T22:56:58.486Z 2026-11-25T22:59:39.503Z graft-m4a-edge
+2026-11-25T22:59:40.536Z DEPLOY_KEY delete 204
+driver exit 0
+2026-11-25T22:59:40Z

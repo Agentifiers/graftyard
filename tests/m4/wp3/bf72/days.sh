@@ -43,6 +43,7 @@ site)
       api "/workers/scripts/$n/schedules" -X PUT -H 'content-type: application/json' --data '[]' | jq -c --arg n $n '{($n): .result.schedules}'
       echo "after $(deployment $n) $(vars $n)"
     done
+    sed -i -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g" "$O/site-deploy.raw"
   } 2>&1 | log ;;
 edge)
   { [ -d /tmp/bf72web ] || { echo "no web build in /tmp/bf72web"; exit 1; }
@@ -67,6 +68,9 @@ edge)
     echo "binding diff (plain text; only FORMATS_ENABLED may change):"; diff "$O/edge-before.json" "$O/edge-after.json" | grep '^[<>]' | grep -v GRAFTYARD_SITES | cut -c1-80
     echo "after $(deployment graft-m4a-edge)"
     (cd "$TREE" && python3 tests/fanout/edgever.py "$O/edge-deploy.raw" graft-m4a-edge); echo "edgever exit $?"
+    # The raws are committed: the account, the subdomain and the home directory come out after edgever has read them.
+    for f in edge-deploy.raw edge-before.json edge-after.json; do
+      sed -i -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g" "$O/$f"; done
   } 2>&1 | log ;;
 check)
   { for n in $SITES graft-m4a-edge graft-m4a-ops; do echo "$(deployment $n) $(vars $n)"; done
