@@ -113,6 +113,25 @@ impl Cf {
         self.zone("DELETE", zone, &format!("/spectrum/apps/{id}"), None).map(|_| ())
     }
 
+    // ---- Rulesets (zone-scoped; `cli/src/oidc.rs`) ----
+
+    /// The zone's entrypoint ruleset for `phase`, or None when the zone has none yet (404).
+    pub fn phase_entrypoint(&self, zone: &str, phase: &str) -> Res<Option<Value>> {
+        match self.zone("GET", zone, &format!("/rulesets/phases/{phase}/entrypoint"), None) {
+            Ok(v) => Ok(Some(v["result"].clone())),
+            Err(e) if e.contains("HTTP 404") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn create_zone_ruleset(&self, zone: &str, body: &Value) -> Res<Value> {
+        Ok(self.zone("POST", zone, "/rulesets", Some(body))?["result"].clone())
+    }
+
+    pub fn put_zone_ruleset(&self, zone: &str, id: &str, body: &Value) -> Res<Value> {
+        Ok(self.zone("PUT", zone, &format!("/rulesets/{id}"), Some(body))?["result"].clone())
+    }
+
     /// A script's tag, the id a Spectrum Worker application names as its origin.
     pub fn script_tag(&self, script: &str) -> Res<String> {
         let v = self.call("GET", "/workers/scripts", &[], None)?;
