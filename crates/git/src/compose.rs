@@ -74,7 +74,7 @@ pub struct HeadObject {
 }
 
 /// One chain pack's object as a head names it: its R2 etag, its size, and its pack header's object count. A tuple on
-/// the wire, so a head of `foldEvery` packs stays under `HEAD_MAX`.
+/// the wire, so a head of 20 packs stays under `HEAD_MAX`; a chain past 20 packs (`fold-aside`) may not.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeadPack(pub String, pub u64, pub u32);
 
@@ -1132,7 +1132,7 @@ mod tests {
 
         // Records that do not name every pack are dropped, and so are records past HEAD_MAX.
         assert!(HeadObject::new(h.clone(), vec![rec("1"), rec("2")]).packs.is_empty());
-        // A chain holds at most `foldEvery` (20) packs. Twenty with realistic etags, sizes and counts fit; twenty with
+        // A chain held at most 20 packs before `fold-aside`. Twenty with realistic etags, sizes and counts fit; twenty with
         // u32-max sizes and counts do not, and fall back to the chain alone.
         let hex = |i: usize| format!("{i:040x}");
         let deep = ChainHead { base: hex(1), parts: (2..21).map(hex).collect(), tree: hex(0) };

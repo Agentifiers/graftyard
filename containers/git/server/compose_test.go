@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -110,7 +111,8 @@ func cloneInto(t *testing.T, b []byte, want, wantTree string) {
 
 func compose(t *testing.T, url, q string) map[string]any {
 	t.Helper()
-	r, err := http.Post(url+"/compose?net=7"+q, "", nil)
+	// Bounded, so a step that waits on a held fold (`fold-aside`) fails rather than hangs.
+	r, err := (&http.Client{Timeout: 60 * time.Second}).Post(url+"/compose?net=7"+q, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,14 +275,20 @@ func TestComposedMiss(t *testing.T) {
 	}
 	composeDiffMax = 20000
 
-	// The fold: at foldEvery moves the chain is one base again, and still composes.
-	for i := len(h["parts"].([]any)); i < foldEvery+1; i++ {
+	// The fold: past foldStart parts it builds beside the steps, and the step after it ends swaps it in, so the chain is
+	// a base and one part again, and still composes.
+	base0 := h["base"]
+	for i := len(h["parts"].([]any)); i < foldStart; i++ {
 		commit(t, wt, map[string]string{fmt.Sprintf("d%d/f%d.txt", i%4, i%40): fmt.Sprintf("move %d\n", i)})
 		pushTip(t, wt)
 		h = compose(t, s.URL, "")["head"].(map[string]any)
 	}
-	if parts := h["parts"].([]any); len(parts) >= foldEvery {
-		t.Fatalf("no fold: %d parts", len(parts))
+	waitFolds()
+	commit(t, wt, map[string]string{"after-fold.txt": "x\n"})
+	pushTip(t, wt)
+	h = compose(t, s.URL, "")["head"].(map[string]any)
+	if parts := h["parts"].([]any); h["base"] == base0 || len(parts) != 1 {
+		t.Fatalf("no fold: base %v, %d parts", h["base"], len(parts))
 	}
 	if n, _ := filepath.Glob(filepath.Join(composeObjects("7"), "pack", "pack-*.pack")); len(n) != 1+len(h["parts"].([]any)) {
 		t.Fatalf("chain files %v for head %v", n, h)
@@ -731,11 +739,15 @@ func TestComposedTailMatchesTheComposedAnswer(t *testing.T) {
 	}
 	cloneInto(t, b, head, tree(head))
 	// The fold: one base again, still the same answer.
-	for i := 0; i < foldEvery+1; i++ {
+	for i := 0; i < foldStart; i++ {
 		commit(t, wt, map[string]string{fmt.Sprintf("d%d/f%d.txt", i%4, i%40): fmt.Sprintf("fold %d\n", i)})
 		pushTip(t, wt)
 		compose(t, s.URL, "")
 	}
+	waitFolds()
+	commit(t, wt, map[string]string{"after-fold.txt": "x\n"})
+	pushTip(t, wt)
+	compose(t, s.URL, "")
 	if n, _ := filepath.Glob(filepath.Join(composeObjects("7"), "pack", "pack-base-*.pack")); len(n) != 1 {
 		t.Fatalf("bases after the fold: %v", n)
 	}
@@ -799,10 +811,167 @@ func TestWriteEdgeBedChain(t *testing.T) {
 	}
 	commit(t, wt, map[string]string{"past.txt": "past the chain\n"})
 	stage("parts", pushTip(t, wt))
-	for i := 0; i < foldEvery+1; i++ {
+	for i := 0; i < foldStart; i++ {
 		commit(t, wt, map[string]string{fmt.Sprintf("d%d/f%d.txt", i%4, i%40): fmt.Sprintf("fold %d\n", i)})
 		pushTip(t, wt)
 		compose(t, s.URL, "")
 	}
+	waitFolds()
+	commit(t, wt, map[string]string{"after-fold.txt": "x\n"})
+	pushTip(t, wt)
+	compose(t, s.URL, "")
 	stage("fold", run(t, wt, "", "rev-parse", "HEAD"))
+}
+
+// The chain's fold builds beside its steps (`fold-aside`, B0-34 mt25): while it runs, every tip move still gets its part
+// at once; the first step after it ends puts the chain on the fold's base T and one part from T, and drops the parts
+// after T, whose objects the old base held; a fold whose chain was replaced meanwhile is never swapped in; and a
+// step at partsMax parts builds the base itself. Each chain answers a depth-1 clone that index-pack --strict and fsck
+// take.
+func TestPartsKeepLandingWhileAFoldBuilds(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	defer func(a, b int) { foldStart, partsMax = a, b }(foldStart, partsMax)
+	foldStart, partsMax = 3, 40
+	release := make(chan struct{})
+	var once sync.Once
+	open := func() { once.Do(func() { close(release) }) }
+	foldHold = func() { <-release }
+	t.Cleanup(func() { open(); foldHold = func() {} })
+	wt := t.TempDir()
+	history(t, wt, 12, 20, 2)
+	b0 := pushTip(t, wt)
+	up := s.URL + "/upload-pack?net=7"
+	quick := &http.Client{Timeout: 20 * time.Second}
+	step := func() chainHead {
+		t.Helper()
+		r, err := quick.Post(s.URL+"/compose?net=7&start=1", "", nil)
+		if err != nil {
+			t.Fatalf("a step while the fold builds did not answer: %v", err)
+		}
+		defer r.Body.Close()
+		var o struct{ Head chainHead }
+		if b, _ := io.ReadAll(r.Body); r.StatusCode != 200 || json.Unmarshal(b, &o) != nil {
+			t.Fatalf("/compose: %d %s", r.StatusCode, b)
+		}
+		return o.Head
+	}
+	move := func(files map[string]string) (string, chainHead) {
+		commit(t, wt, files)
+		tip := pushTip(t, wt)
+		return tip, step()
+	}
+	composes := func(what, want string) {
+		t.Helper()
+		if r, b := uploadV2(t, up, fetchBody(want)); r.Header.Get("x-graft-compose") != "composed" {
+			t.Fatalf("%s: %q", what, r.Header.Get("x-graft-compose"))
+		} else {
+			cloneInto(t, b, want, run(t, wt, "", "rev-parse", want+"^{tree}"))
+		}
+	}
+	old := run(t, wt, "", "show", b0+":d0/f0.txt") + "\n"
+	if h := step(); h.Base != b0 {
+		t.Fatalf("the first base %v", h)
+	}
+	// Three parts, the first changing a file the base holds: the third step starts the fold at T.
+	move(map[string]string{"d0/f0.txt": "changed\n"})
+	move(map[string]string{"d1/f1.txt": "two\n"})
+	T, h := move(map[string]string{"d2/f2.txt": "three\n"})
+	if h.Base != b0 || len(h.Parts) != 3 {
+		t.Fatalf("at T: %v", h)
+	}
+	// The fold is held: parts keep landing on the old base. The second move puts back the base's version of
+	// d0/f0.txt, which its part leaves out because the old base holds it and base-T does not.
+	var mid string
+	for i, f := range []map[string]string{{"d3/f3.txt": "four\n"}, {"d0/f0.txt": old}, {"d4/f4.txt": "six\n"}} {
+		tip, h := move(f)
+		if h.Base != b0 || len(h.Parts) != 4+i || h.tip() != tip {
+			t.Fatalf("move %d while the fold builds: %v", i, h)
+		}
+		if i == 1 {
+			mid = tip
+		}
+	}
+	composes("the chain while the fold builds", run(t, wt, "", "rev-parse", "HEAD"))
+	// The fold ends; the next step swaps it in.
+	open()
+	waitFolds()
+	tip, h := move(map[string]string{"d5/f5.txt": "seven\n"})
+	if h.Base != T || len(h.Parts) != 1 || h.Parts[0] != tip {
+		t.Fatalf("after the fold: %v, want base %s and one part to %s", h, T, tip)
+	}
+	if n, _ := filepath.Glob(filepath.Join(composeObjects("7"), "pack", "pack-*.pack")); len(n) != 2 {
+		t.Fatalf("chain files after the swap: %v", n)
+	}
+	if _, err := os.Stat(foldDir("7")); !os.IsNotExist(err) {
+		t.Fatalf("the fold's directory outlived the swap: %v", err)
+	}
+	composes("the tip after the swap", tip)
+	composes("a want behind HEAD after the swap", mid)
+
+	// A fold whose chain a far tip replaced is not swapped in, and at partsMax a step builds the base itself.
+	partsMax = 5
+	release = make(chan struct{})
+	once = sync.Once{}
+	var far string
+	for i := 0; ; i++ {
+		tip, h = move(map[string]string{fmt.Sprintf("d6/g%d.txt", i): fmt.Sprintf("g %d\n", i)})
+		if len(h.Parts) == 0 {
+			far = tip
+			break
+		}
+		if i > partsMax {
+			t.Fatalf("no base at partsMax: %v", h)
+		}
+	}
+	if h.Base != far {
+		t.Fatalf("the base at partsMax %v", h)
+	}
+	open()
+	waitFolds()
+	tip, h = move(map[string]string{"d7/h.txt": "h\n"})
+	if h.Base != far || len(h.Parts) != 1 {
+		t.Fatalf("a fold of a replaced chain was swapped in: %v, want base %s", h, far)
+	}
+	composes("the tip after a dropped fold", tip)
+}
+
+// A restarted container (an empty fold table) deletes any fold its disk kept before its first step, whole or
+// half-written, and its first step on a chain of 19 parts is a part, not the base B0-34 mt25's home rebuilt first.
+func TestARestartedContainerStepsAPartFirstAndDropsAKeptFold(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	defer func(a int) { foldStart = a }(foldStart)
+	foldStart = 1000
+	wt := t.TempDir()
+	history(t, wt, 10, 20, 2)
+	pushTip(t, wt)
+	h := compose(t, s.URL, "&start=1")["head"].(map[string]any)
+	base := h["base"]
+	for i := 0; i < 19; i++ {
+		commit(t, wt, map[string]string{fmt.Sprintf("d%d/f%d.txt", i%4, i%10): fmt.Sprintf("move %d\n", i)})
+		pushTip(t, wt)
+		compose(t, s.URL, "")
+	}
+	// The restart: the process's folds are gone, and the disk kept a fold of the chain's tip, its base half-written.
+	waitFolds()
+	folds.Clear()
+	foldStart = 12
+	h = compose(t, s.URL, "")["head"].(map[string]any)
+	tip := h["parts"].([]any)[18].(string)
+	kept := filepath.Join(foldPack("7"), "pack-base-"+tip+".pack")
+	os.MkdirAll(foldPack("7"), 0o755)
+	os.WriteFile(kept, []byte("PACK half"), 0o644)
+	release := make(chan struct{})
+	foldHold = func() { <-release }
+	t.Cleanup(func() { close(release); foldHold = func() {} })
+	commit(t, wt, map[string]string{"restart.txt": "r\n"})
+	next := pushTip(t, wt)
+	h = compose(t, s.URL, "")["head"].(map[string]any)
+	if h["base"] != base || len(h["parts"].([]any)) != 20 || h["parts"].([]any)[19] != next {
+		t.Fatalf("the first step after a restart on 19 parts: %v, want a part on base %v", h, base)
+	}
+	if _, err := os.Stat(kept); !os.IsNotExist(err) {
+		t.Fatalf("the restarted container kept the earlier fold: %v", err)
+	}
 }

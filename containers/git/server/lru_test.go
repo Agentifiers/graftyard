@@ -25,7 +25,14 @@ func serve(t *testing.T) *httptest.Server {
 	t.Setenv("GRAFT_DISK_BYTES", "1000000")
 	s := httptest.NewServer(mux())
 	t.Cleanup(s.Close)
+	// A chain's fold builds in the background (`fold-aside`): it ends before this test's directories go.
+	t.Cleanup(func() { waitFolds(); folds.Clear() })
 	return s
+}
+
+// waitFolds waits for every chain fold running in the background to end.
+func waitFolds() {
+	folds.Range(func(_, v any) bool { <-v.(*foldRun).done; return true })
 }
 
 func call(t *testing.T, s *httptest.Server, method, path string) (int, map[string]any) {

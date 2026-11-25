@@ -509,6 +509,7 @@ func handleEvict(w http.ResponseWriter, r *http.Request) {
 	}
 	freed := dirBytes(rp) + dirBytes(composeDir(net))
 	os.RemoveAll(composeDir(net))
+	folds.Delete(net)
 	if err := os.RemoveAll(rp); err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -776,6 +777,7 @@ func handleInit(w http.ResponseWriter, r *http.Request) {
 		os.RemoveAll(composeDir(net))
 		m.mu.Unlock()
 		repacking.Unlock()
+		folds.Delete(net)
 	}
 	if _, err := os.Stat(rp); err == nil {
 		jsonOut(w, map[string]any{"created": false})
