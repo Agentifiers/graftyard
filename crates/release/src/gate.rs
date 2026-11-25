@@ -10,7 +10,8 @@
 //!   (`decisions/DECISIONS.md`, "`gate-relative`"); fewer than `STEP_MIN_ENTRIES`
 //!   applied by N+1 is `Starved`, which `next` dwells on up to twice `STEP_DWELL` and then pages. `judge_errors` is
 //!   `GATE_ERRORS` for the edge, front, and MCP rolls, on `graft-front`'s count of answers by version (`count`,
-//!   `errors_sites`, `judge_roll`; DECISIONS "`gate-errors`").
+//!   `errors_sites`, `judge_roll`; DECISIONS "`gate-errors`"), and for a `ControllerRoll`, on `graft-agents-front`'s
+//!   count (`count_answer`), which the edge stores only after `accept_flush`.
 //! - **Burn.** A target site's burn, from one observer, is its missed share of calls over the allowed share
 //!   (`ALLOWED_MISS`). `verdict` calls a site `burning` when both other voter sites' `DRAIN_WINDOW` reports are at
 //!   `DRAIN_BURN` or more, and `calm` when both `UNDRAIN_AFTER` reports are under `UNDRAIN_BURN`. A report with fewer
@@ -394,12 +395,15 @@ pub fn errors_sites(key: &str, voters: &[SiteId]) -> Vec<SiteId> {
 }
 
 /// The current roll's script judged on `GATE_ERRORS`, with its N+1 and N versions, while it runs forward: an
-/// `EdgeRoll`, `FrontRoll`, or `McpRoll`, the scripts `graft-front` sees answer. N is the release the roll keeps beside
-/// R, as `ops::steps` deploys it. `None` for every other intent: an `OpsRoll` or `ControllerRoll` gate stays pending,
-/// because no front sees their answers (R47).
+/// `EdgeRoll`, `FrontRoll`, or `McpRoll`, the scripts `graft-front` sees answer, or a `ControllerRoll`, whose answers
+/// `graft-agents-front` counts and sends to the install's `errors` objects (`accept_flush`). N is the release the roll
+/// keeps beside R, as `ops::steps` deploys it. `None` for every other intent: an `OpsRoll`'s gate stays pending,
+/// because no front sees its answers (R47; the edge's `MintWatch` swaps it back).
 pub fn roll_versions(fold: &ReleaseFold) -> Option<(Script, VersionId, Option<VersionId>)> {
     let c = fold.current.as_deref()?;
-    let (Intent::EdgeRoll { .. } | Intent::FrontRoll { .. } | Intent::McpRoll { .. }) = c.intent.intent else {
+    let (Intent::EdgeRoll { .. } | Intent::FrontRoll { .. } | Intent::McpRoll { .. } | Intent::ControllerRoll { .. }) =
+        c.intent.intent
+    else {
         return None;
     };
     pinned_versions(fold)
@@ -413,7 +417,8 @@ fn pinned_versions(fold: &ReleaseFold) -> Option<(Script, VersionId, Option<Vers
     let (Intent::EdgeRoll { release }
     | Intent::FrontRoll { release }
     | Intent::McpRoll { release }
-    | Intent::OpsRoll { release }) = i
+    | Intent::OpsRoll { release }
+    | Intent::ControllerRoll { release }) = i
     else {
         return None;
     };
@@ -473,20 +478,76 @@ fn past_chance(a: u64, e: u64, base: f64) -> bool {
 /// (`design/DESIGN.md`, "Commit and read paths", `graft-front` and `graft-ops`; DECISIONS "`mint-ratio`").
 pub const MINT_ERROR_RATIO_BP: u32 = 100;
 
-/// One mint the edge asked `graft-ops` for: the version that answered (`OPS_VERSION_HEADER`), and the answer's status,
-/// `None` when the binding threw. Only a 5xx or a throw is an error: a 4xx is the grant's fault, not the script's.
-pub fn count_mint(mints: &mut ScriptErrors, ran: Option<&str>, status: Option<u16>) {
+/// One call to a script that reports the version that ran it: a mint the edge asked `graft-ops` for
+/// (`OPS_VERSION_HEADER`), or a webhook `graft-agents-front` forwarded to `graft-controller`
+/// (`x-graftyard-controller-version`), and the answer's status, `None` when the binding threw. Only a 5xx or a throw
+/// is an error: a 4xx is the caller's fault, not the script's.
+pub fn count_answer(counts: &mut ScriptErrors, ran: Option<&str>, status: Option<u16>) {
     let fivexx = u64::from(status.is_none_or(|s| s >= 500));
     let a = match (status, ran) {
         (None, _) => {
-            mints.threw += 1;
+            counts.threw += 1;
             return;
         }
-        (Some(_), Some(v)) => mints.versions.entry(v.to_string()).or_default(),
-        (Some(_), None) => &mut mints.unversioned,
+        (Some(_), Some(v)) => counts.versions.entry(v.to_string()).or_default(),
+        (Some(_), None) => &mut counts.unversioned,
     };
     a.answers += 1;
     a.fivexx += fivexx;
+}
+
+/// The most calls one flush to `POST /api/graftyard/v1/release/errors` may count, answers and thrown calls together
+/// [guess]: `graft-agents-front` flushes every `FLUSH_MS` or at this count, whichever comes first, so a healthy
+/// isolate never sends more, and one front cannot add more than this to the `controller` counts in one request.
+pub const FLUSH_CALLS_MAX: u64 = 10_000;
+
+/// How often `graft-agents-front` sends what it counted, beside a request, as `graft-front` does (`FLUSH_MS`).
+pub const FLUSH_MS: u64 = 30_000;
+
+/// All the calls a count holds: answers by version, answers with no version, and thrown calls.
+pub fn calls(e: &ScriptErrors) -> u64 {
+    e.versions.values().map(|a| a.answers).sum::<u64>() + e.unversioned.answers + e.threw
+}
+
+/// Why the edge refuses a flush of `graft-controller`'s counts (`accept_flush`).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FlushRefused {
+    #[error("version {0} is no graft-controller version of a release this install's Release group uploaded")]
+    UnknownVersion(String),
+    #[error("a flush counts at most {FLUSH_CALLS_MAX} calls, this one {0}")]
+    TooMany(u64),
+    #[error("more 5xx than answers")]
+    Malformed,
+}
+
+/// Whether the edge stores a flush of `graft-agents-front`'s counts of `graft-controller` under the `controller` key
+/// (`errors_key(Script::Controller)`): every version it names is the `Controller` version of a release in `fold`'s
+/// uploads, no count holds more 5xx than answers, and it counts at most `FLUSH_CALLS_MAX` calls. A refused flush
+/// stores nothing, so a front cannot add answers to a version no release uploaded or flood the object in one request.
+/// `Ok(None)` for an empty flush; otherwise the body of the `errors` object's `PUT`, which only this builds.
+pub fn accept_flush(fold: &ReleaseFold, counts: &ScriptErrors) -> Result<Option<serde_json::Value>, FlushRefused> {
+    if counts.versions.values().chain([&counts.unversioned]).any(|a| a.fivexx > a.answers) {
+        return Err(FlushRefused::Malformed);
+    }
+    for v in counts.versions.keys() {
+        let known = v.parse::<VersionId>().ok().is_some_and(|v| {
+            fold.uploads.values().any(|u| u.versions.iter().any(|(s, x)| *s == Script::Controller && *x == v))
+        });
+        if !known {
+            return Err(FlushRefused::UnknownVersion(v.clone()));
+        }
+    }
+    let n = calls(counts);
+    if n > FLUSH_CALLS_MAX {
+        return Err(FlushRefused::TooMany(n));
+    }
+    Ok((!counts.is_empty()).then(|| serde_json::json!({ "key": errors_key(Script::Controller), "counts": counts })))
+}
+
+/// Whether `graft-agents-front` sends its counts: only while its verified view shows a `ControllerRoll` judged on
+/// `GATE_ERRORS` (`roll_versions`), so a front adds no install traffic between rolls.
+pub fn controller_judged(fold: &ReleaseFold) -> bool {
+    roll_versions(fold).is_some_and(|(s, _, _)| s == Script::Controller)
 }
 
 /// How long an edge isolate waits before it submits the same `OpsPointer` again while the group has not committed it.
@@ -501,7 +562,7 @@ pub struct MintWatch {
 }
 
 impl MintWatch {
-    /// Counts one mint (`count_mint`) under the current intent, starting over when it changed, and answers the
+    /// Counts one mint (`count_answer`) under the current intent, starting over when it changed, and answers the
     /// pre-signed `OpsPointer` to submit, if any: only while an `OpsRoll` runs forward, only on N+1's answers plus
     /// every thrown call, past chance over `MINT_ERROR_RATIO_BP`, and only an undo the group has not committed, at most
     /// once per `MINT_RESEND_MS`. N's errors, such as a Secrets Store failure every version shares, never swap back.
@@ -516,7 +577,7 @@ impl MintWatch {
         if self.intent != Some(c.intent.id) {
             *self = MintWatch { intent: Some(c.intent.id), ..MintWatch::default() };
         }
-        count_mint(&mut self.mints, ran, status);
+        count_answer(&mut self.mints, ran, status);
         // Only an `OpsRoll` carries an `OpsPointer`, and once one commits the intent is `Undoing`, which
         // `pinned_versions` does not read.
         let (_, n1, _) = pinned_versions(fold)?;

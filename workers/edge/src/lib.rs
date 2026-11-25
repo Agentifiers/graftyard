@@ -4568,6 +4568,9 @@ async fn serve(
     if path == release::ENTRIES_PATH {
         return release::entries(&c, &mut req).await;
     }
+    if path == release::ERRORS_PATH {
+        return release::errors(&c, &mut req).await;
+    }
     if path == precreate::TOKENS_PATH {
         return precreate::tokens(&c, &mut req).await;
     }

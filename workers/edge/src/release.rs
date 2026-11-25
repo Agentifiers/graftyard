@@ -36,6 +36,7 @@ use worker::*;
 use crate::Ctx;
 
 pub const ENTRIES_PATH: &str = "/api/graftyard/v1/release/entries";
+pub const ERRORS_PATH: &str = "/api/graftyard/v1/release/errors";
 
 fn answer(status: u16, v: Value) -> Result<Response> {
     Ok(Response::from_json(&v)?.with_status(status))
@@ -186,6 +187,79 @@ async fn read(c: &Ctx<'_>, req: &Request) -> Result<Response> {
         return Ok(r);
     }
     answer(503, json!({ "message": "no Release member answered" }))
+}
+
+/// `POST /api/graftyard/v1/release/errors` (AM3-WP1, LM-3; OPEN-QUESTIONS A52, R47): one flush of
+/// `graft-agents-front`'s counts of `graft-controller`'s answers, `{"counts": ScriptErrors}`, stored under the
+/// `controller` key in the install's `errors` objects as `graft-front` stores its own, so the agents `graft-ops` judges a
+/// `ControllerRoll` on `GATE_ERRORS`. Only an App JWT of the install's `graftyard-agent` sends one
+/// (`ident::graftyard_agent`), and only a flush `gate::accept_flush` takes against this isolate's `Release` view is
+/// stored: every version a `Controller` version the group uploaded, at most `FLUSH_CALLS_MAX` calls. Anything else is
+/// 401 or 422 and stores nothing. 204 once one site's object kept it, else 503. `GET ?since=<ms>` under the same JWT
+/// answers the `controller` counts since then, summed over every voter site that answered, with `sites` the number
+/// that did: what the agents `graft-ops`, in another account, judges the roll on. No Cloudflare API is called.
+pub async fn errors(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
+    use graftyard_release::Script;
+    use graftyard_release::gate::{self, ScriptErrors};
+    if req.method() != Method::Post && req.method() != Method::Get {
+        return answer(405, json!({ "message": "POST a flush of graft-controller's counts, or GET them" }));
+    }
+    if let Err(r) = crate::ident::graftyard_agent(c, req).await {
+        return crate::agents::respond(c, r);
+    }
+    let key = gate::errors_key(Script::Controller);
+    let voters: Vec<_> = c.sites.0.iter().filter(|s| !s.spare).map(|s| s.id).collect();
+    let deadline = std::time::Duration::from_millis(graftyard_release::view::VIEW_CALL_MS);
+    let b = c.bindings();
+    if req.method() == Method::Get {
+        let since = req.url()?.query_pairs().find(|(k, _)| k == "since").and_then(|(_, v)| v.parse::<u64>().ok());
+        let Some(since) = since else { return answer(422, json!({ "message": "GET needs ?since=<ms>" })) };
+        let (mut sum, mut sites) = (ScriptErrors::default(), 0);
+        for site in &voters {
+            let Ok(stub) = b.registry(*site, "errors") else { continue };
+            let path = format!("https://registry/errors?key={key}&since={since}");
+            let Some(Ok(mut r)) = graftyard_lookup::within(deadline, stub.fetch_with_str(&path)).await else {
+                continue;
+            };
+            if r.status_code() != 200 {
+                continue;
+            }
+            let Ok(e) = r.json::<ScriptErrors>().await else { continue };
+            sum.add(&e);
+            sites += 1;
+        }
+        if sites == 0 {
+            return answer(503, json!({ "message": "no errors object answered" }));
+        }
+        return answer(200, json!({ "counts": sum, "sites": sites, "of": voters.len() }));
+    }
+    let Some(anchor) = c.anchor else { return answer(503, json!({ "message": "this edge has no trust anchor" })) };
+    let counts: ScriptErrors =
+        match req.json::<Value>().await.ok().and_then(|v| serde_json::from_value(v["counts"].clone()).ok()) {
+            Some(c) => c,
+            None => return answer(422, json!({ "message": "the body is not {\"counts\": ...}" })),
+        };
+    view::ensure(&b, &anchor, Some(c.ctx)).await;
+    // A version the view does not hold may be one an upload committed since the last refresh: look again.
+    if let Err(gate::FlushRefused::UnknownVersion(_)) = view::with(|v| gate::accept_flush(&v.fold, &counts)) {
+        view::refresh_now(&b, &anchor).await;
+    }
+    let body = match view::with(|v| gate::accept_flush(&v.fold, &counts)) {
+        Ok(Some(put)) => put.to_string(),
+        Ok(None) => return Ok(Response::empty()?.with_status(204)),
+        Err(e) => return answer(422, json!({ "message": e.to_string() })),
+    };
+    for site in gate::errors_sites(key, &voters) {
+        let Ok(stub) = b.registry(site, "errors") else { continue };
+        let mut init = RequestInit::new();
+        init.with_method(Method::Put).with_body(Some(body.clone().into()));
+        let Ok(put) = Request::new_with_init("https://registry/errors", &init) else { continue };
+        if matches!(graftyard_lookup::within(deadline, stub.fetch_with_request(put)).await, Some(Ok(r)) if r.status_code() == 200)
+        {
+            return Ok(Response::empty()?.with_status(204));
+        }
+    }
+    answer(503, json!({ "message": "no errors object answered" }))
 }
 
 /// How long a `StaleMode` waits for the group's commit before it goes to the members' `pending` rows [guess].

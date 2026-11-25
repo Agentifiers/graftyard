@@ -153,3 +153,38 @@ fn each_state_sends_the_base_its_api_state_and_never_cancelled_or_timed_out() {
         assert_eq!(s.is_final(), s.api().is_none_or(TaskApiState::is_final), "{s:?}");
     }
 }
+
+/// LM-3's "a Sandbox killed mid-task resumes", the rule (`design/AGENT-LAYER.md`, Failure modes, controller instance: a
+/// lost Sandbox restarts from the last push): the lost Sandbox's report moves a running task onto the new Sandbox and
+/// keeps `last_push`, so the new one starts from that push, or from the base when the task never pushed. A report about
+/// a Sandbox the task no longer holds, a new Sandbox that is the lost one, and a task that is not running move nothing.
+#[test]
+fn a_lost_sandbox_restarts_the_task_from_its_last_push_or_the_base_under_a_new_sandbox() {
+    use graftyard_git::controller::Resume;
+    let (sb1, sb2, sb3) = (sandbox(), SandboxId("sb-2".into()), SandboxId("sb-3".into()));
+    let head = ObjectId([7; 20]);
+    // Never pushed: the new Sandbox starts from the base.
+    let mut t = task(WorkspaceMode::Fork);
+    assert_eq!(t.resume(), None, "a queued task has no Sandbox to restart");
+    assert_eq!(t.step(TaskEvent::Lost { lost: sb1.clone(), sandbox: sb2.clone() }), Err(StepErr::NotNow));
+    t.step(TaskEvent::Started { sandbox: sb1.clone() }).unwrap();
+    assert_eq!(t.resume(), Some(Resume::Base));
+    t.step(TaskEvent::Lost { lost: sb1.clone(), sandbox: sb2.clone() }).unwrap();
+    assert_eq!(t.state, TaskState::Running { sandbox: sb2.clone(), last_push: None });
+    assert_eq!(t.resume(), Some(Resume::Base));
+    // Pushed, then lost: the next Sandbox starts from that push, and its pushes go on from there.
+    t.step(TaskEvent::Pushed { head }).unwrap();
+    t.step(TaskEvent::Lost { lost: sb2.clone(), sandbox: sb3.clone() }).unwrap();
+    assert_eq!(t.state, TaskState::Running { sandbox: sb3.clone(), last_push: Some(head) });
+    assert_eq!(t.resume(), Some(Resume::Push(head)));
+    // A late report about sb2, which the task no longer holds, or a "new" Sandbox that is the lost one, is refused.
+    let before = t.clone();
+    assert_eq!(t.step(TaskEvent::Lost { lost: sb2.clone(), sandbox: SandboxId("sb-4".into()) }), Err(StepErr::NotNow));
+    assert_eq!(t.step(TaskEvent::Lost { lost: sb3.clone(), sandbox: sb3.clone() }), Err(StepErr::NotNow));
+    assert_eq!(t, before);
+    // The restart is no new task: the budget's wall still counts from the first start, and the base state stays.
+    assert_eq!(t.state.api(), Some(TaskApiState::InProgress));
+    t.step(TaskEvent::Drafted { pr: IssueNumber(9) }).unwrap();
+    assert_eq!(t.resume(), None, "a final task restarts nothing");
+    assert_eq!(t.step(TaskEvent::Lost { lost: sb3, sandbox: sb1 }), Err(StepErr::Final));
+}

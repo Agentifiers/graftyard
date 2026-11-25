@@ -5,7 +5,7 @@
 //! behind the view moving nothing.
 
 use base64::Engine as _;
-use graftyard_agents_front::{Page, Reader, next_after, plan};
+use graftyard_agents_front::{Page, Reader, Tally, next_after, plan};
 use graftyard_release::agents::{AgentsAnchor, ENTRIES_PER_PAGE, feed, parse_page};
 use graftyard_release::view::{Need, POINTER_TTL_MS, RETRY_MS};
 use graftyard_release::{
@@ -431,4 +431,49 @@ fn an_isolate_with_no_view_under_a_controller_roll_pins_the_default_until_a_view
     assert_eq!(plan(r.view(), Some(vid(4)), SCRIPT).0, Some(vid(3)));
     // With no roll's split deployed the variable is absent, and nothing pins.
     assert_eq!(plan(Reader::default().view(), None, SCRIPT), (None, None));
+}
+
+/// LM-3 (OPEN-QUESTIONS A52, R47): while the view shows a `ControllerRoll` judged on `GATE_ERRORS`, the front counts
+/// each answer by the version it reported and hands the counts to the host every `FLUSH_MS`, or at `FLUSH_CALLS_MAX`
+/// calls, so the edge takes each flush whole; with no roll it counts nothing and drops what it held.
+#[test]
+fn the_front_counts_the_controllers_answers_only_under_a_controller_roll_and_flushes_by_time_or_count() {
+    use graftyard_release::gate::{Answers, FLUSH_CALLS_MAX, FLUSH_MS, calls};
+    let a = agents_anchor();
+    let mut g = rolling();
+    let r = read(&g, 0);
+    let (n, n1) = (vid(3).to_string(), vid(4).to_string());
+    let mut t = Tally::default();
+    // The first answer flushes at once (no flush yet), then nothing until FLUSH_MS.
+    let first = t.record(r.view(), Some(&n1), Some(500), FLUSH_MS).expect("the first flush");
+    assert_eq!(first.of(vid(4)), Answers { answers: 1, fivexx: 1 });
+    assert!(t.record(r.view(), Some(&n), Some(202), FLUSH_MS + 1).is_none());
+    assert!(t.record(r.view(), None, None, FLUSH_MS + 2).is_none(), "a thrown call is counted, not flushed");
+    let due = t.record(r.view(), Some(&n1), Some(404), 2 * FLUSH_MS).expect("FLUSH_MS later");
+    assert_eq!(
+        (due.of(vid(3)), due.of(vid(4)), due.threw),
+        (Answers { answers: 1, fivexx: 0 }, Answers { answers: 1, fivexx: 0 }, 1)
+    );
+    // A burst flushes at FLUSH_CALLS_MAX calls, before FLUSH_MS, so the edge never refuses it as too many.
+    let mut burst = None;
+    for i in 0..FLUSH_CALLS_MAX {
+        burst = t.record(r.view(), Some(&n), Some(202), 2 * FLUSH_MS + 1 + i / 1_000);
+        if burst.is_some() {
+            break;
+        }
+    }
+    assert_eq!(burst.map(|b| calls(&b)), Some(FLUSH_CALLS_MAX));
+    // The pointer commits: the roll is undoing, nothing is judged, so nothing is counted or sent.
+    let held = g.log.len();
+    g.pin(2, 3);
+    let mut pinned = r.clone();
+    pinned.apply(&a, Ok(vec![g.get(held, 100)]), POINTER_TTL_MS, POINTER_TTL_MS);
+    assert_eq!(pinned.view().controller(), Some(vid(3)));
+    assert!(t.record(pinned.view(), Some(&n1), Some(500), 10 * FLUSH_MS).is_none());
+    assert!(
+        t.record(r.view(), Some(&n1), Some(500), 10 * FLUSH_MS + 1).map(|c| calls(&c)) == Some(1),
+        "dropped on no roll"
+    );
+    // A cold isolate with no view counts nothing.
+    assert!(Tally::default().record(Reader::default().view(), Some(&n1), Some(500), FLUSH_MS).is_none());
 }
