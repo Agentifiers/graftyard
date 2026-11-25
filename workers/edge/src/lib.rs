@@ -3884,7 +3884,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
     // `rate`, that share of calls) from A ms from now for F ms (default: until cleared); `?off=1` clears it. Written to every site's `Registry` object `faults`, which
     // each member isolate rereads at most once a second (`workers/site/src/faults.rs`, `SiteFault`).
     // actions-artifacts: stored gzip bytes leave the edge as stored (tests/edgeboot).
-    if path == "/_bed/gzip" {
+    if path == "/_bed/gzip" || path == "/_bed/artifacts" {
         return artifacts::bed(c, req).await;
     }
     if path == "/_bed/fault" {

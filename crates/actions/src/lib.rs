@@ -20,6 +20,7 @@ pub mod specs;
 pub mod token;
 pub mod trigger;
 pub mod workflow;
+pub mod zip;
 
 pub use ids::{ACTIONS_SHARDS, JobId, OWNER_SCOPE_SHARD, RunId, RunnerId, RunnerSessionId, actions_shard};
 pub use job::{

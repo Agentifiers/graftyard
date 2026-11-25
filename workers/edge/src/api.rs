@@ -2049,6 +2049,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     if let Some(r) = crate::actions::sub::repo_route(c, req, &rd, who.as_ref(), tail).await? {
         return Ok(r);
     }
+    if let Some(r) = crate::artifacts::repo_route(c, &rd, who.as_ref(), &method, tail, query, host).await? {
+        return Ok(r);
+    }
     if let Some(r) = crate::activity::repo_route(c, req, &rd, who.as_ref(), tail, query, host).await? {
         return Ok(r);
     }

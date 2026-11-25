@@ -21,14 +21,23 @@
 //! a repository delete drops its prefix with its cache (F125). Nothing here calls the Cloudflare API.
 
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
-use graftyard_actions::artifacts::{self as art, Chunk, Container, FileRecord, Refused};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use futures_util::stream::LocalBoxStream;
+use graftyard_actions::artifacts::{self as art, ArtifactRow, Chunk, Container, FileRecord, Refused};
 use graftyard_actions::runsvc::{Grant, Urls};
-use graftyard_actions::{JobId, RunId};
+use graftyard_actions::shard::WorkflowRun;
+use graftyard_actions::zip::Composer;
+use graftyard_actions::{JobId, RunId, actions_shard};
+use graftyard_identity::{Actor, Credential, Decision, Principal};
 use graftyard_types::{ChainId, DbId, RepoId};
+use graftyard_wire::Reply;
 use serde_json::{Value, json};
 use worker::*;
 
 use crate::Ctx;
+use crate::api::Read;
 
 const PIPELINES: &str = "run/_apis/pipelines/workflows/";
 const CONTAINERS: &str = "artifacts/";
@@ -60,13 +69,15 @@ fn refusal(r: Refused) -> Result<Response> {
     }
 }
 
-/// The job's run and the run's repository, from the shard's fold.
-async fn job_run(c: &Ctx<'_>, chain: ChainId, job: JobId) -> std::result::Result<(RunId, RepoId), String> {
+/// The job's run, from the shard's fold: its id is the job row's, and its repository the run's.
+async fn job_run(c: &Ctx<'_>, chain: ChainId, job: JobId) -> std::result::Result<WorkflowRun, String> {
     let row = crate::actions::job_row(c, chain, job).await.ok_or("no such job")?;
     let v = crate::actions::shard_read(c, chain, json!({ "run": row.run.0.0 })).await?;
-    let run: graftyard_actions::shard::WorkflowRun =
-        serde_json::from_value(v["run"]["run"].clone()).map_err(|e| e.to_string())?;
-    Ok((row.run, run.repo))
+    let run: WorkflowRun = serde_json::from_value(v["run"]["run"].clone()).map_err(|e| e.to_string())?;
+    if run.id != row.run {
+        return Err(format!("run {} answered for the job's run {}", run.id.0.0, row.run.0.0));
+    }
+    Ok(run)
 }
 
 async fn home_bucket(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<Bucket, String> {
@@ -101,13 +112,14 @@ pub async fn serve(c: &Ctx<'_>, req: Request, rest: &str, grant: Option<(ChainId
         return error(404, "Not Found");
     }
     let Some((chain, Grant::Job { job, .. })) = grant else { return error(401, "Unauthorized") };
-    let (run, repo) = match job_run(c, chain, job).await {
+    let wf = match job_run(c, chain, job).await {
         Ok(x) => x,
         Err(e) => {
             console_error!("artifacts {chain} job {}: {e}", job.0.0);
             return error(503, "the run did not read");
         }
     };
+    let (run, repo) = (wf.id, wf.repo);
     let urls = Urls::new(&format!("https://{}", c.cfg.host));
     if let Some(tail) = rest.strip_prefix(PIPELINES) {
         // `{run}/artifacts`: the run the client names must be its own.
@@ -118,7 +130,7 @@ pub async fn serve(c: &Ctx<'_>, req: Request, rest: &str, grant: Option<(ChainId
         if let Err(r) = art::authorize(&ct, chain, run, repo) {
             return refusal(r);
         }
-        return pipelines(c, req, &ct, &urls.services).await;
+        return pipelines(c, req, &ct, &wf, &urls.services).await;
     }
     let Some(ct) = rest.strip_prefix(CONTAINERS).and_then(Container::parse) else { return error(404, "Not Found") };
     if let Err(r) = art::authorize(&ct, chain, run, repo) {
@@ -138,7 +150,13 @@ pub async fn serve(c: &Ctx<'_>, req: Request, rest: &str, grant: Option<(ChainId
 }
 
 /// `POST` create, `PATCH ?artifactName=` finalize, `GET` list.
-async fn pipelines(c: &Ctx<'_>, mut req: Request, ct: &Container, services: &str) -> Result<Response> {
+async fn pipelines(
+    c: &Ctx<'_>,
+    mut req: Request,
+    ct: &Container,
+    run: &WorkflowRun,
+    services: &str,
+) -> Result<Response> {
     let Ok(bucket) = home_bucket(c, ct.chain).await else { return error(503, "the artifact store is unavailable") };
     match req.method() {
         Method::Post => {
@@ -146,6 +164,14 @@ async fn pipelines(c: &Ctx<'_>, mut req: Request, ct: &Container, services: &str
             let Some(name) = b["Name"].as_str() else { return error(400, "Name") };
             if let Err(r) = art::check_name(name) {
                 return refusal(r);
+            }
+            // The retention and creation time the finalize's row takes (F131). The first create of a name in a run
+            // keeps them: matrix legs that upload to one artifact each create it.
+            if bucket.head(ct.create_key(name)).await?.is_none() {
+                let rec = art::create_record(b["RetentionDays"].as_i64(), crate::now().0);
+                if bucket.put(ct.create_key(name), rec.to_string().into_bytes()).execute().await.is_err() {
+                    return error(503, "the artifact store is unavailable");
+                }
             }
             // An artifact uploaded to again in the same run keeps its files: v3's container is a file share.
             reply(201, &art::artifact_json(ct, services, name, -1))
@@ -160,6 +186,20 @@ async fn pipelines(c: &Ctx<'_>, mut req: Request, ct: &Container, services: &str
             let manifest = json!({ "name": name, "size": size }).to_string();
             if let Err(e) = bucket.put(ct.manifest_key(&name), manifest.into_bytes()).execute().await {
                 console_error!("artifacts {} manifest {name}: {e}", ct.prefix());
+                return error(503, "the artifact store is unavailable");
+            }
+            // The REST row (F131), after the manifest: a finalize the client retries writes both again, and the row
+            // names the same id, so REST never lists an artifact the job's own listing lacks.
+            let created = match bucket.get(ct.create_key(&name)).execute().await? {
+                Some(o) => match o.body() {
+                    Some(b) => serde_json::from_slice::<Value>(&b.bytes().await?).ok(),
+                    None => None,
+                },
+                None => None,
+            };
+            let row = art::finalized_row(ct, &name, size, created.as_ref(), run, crate::now().0);
+            if let Err(e) = put_row(&bucket, ct.chain, ct.repo, &row).await {
+                console_error!("artifacts {} row {name}: {e}", ct.prefix());
                 return error(503, "the artifact store is unavailable");
             }
             reply(200, &art::artifact_json(ct, services, &name, size))
@@ -354,6 +394,9 @@ pub fn stored(bucket: Bucket, keys: Vec<String>, len: u64, gzip: bool) -> Result
 pub async fn bed(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
     let bucket = c.env.bucket("BED_ARTIFACTS")?;
     const KEY: &str = "bed/gzip";
+    if req.url()?.path() == "/_bed/artifacts" {
+        return bed_rest(req, bucket).await;
+    }
     if req.method() == Method::Put {
         let gzip = req.headers().get("content-encoding")?.is_some_and(|v| v == "gzip");
         let bytes = req.bytes().await?;
@@ -365,4 +408,399 @@ pub async fn bed(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
     let Some(o) = bucket.head(KEY).await? else { return error(404, "Not Found") };
     let gzip = o.custom_metadata()?.get("gzip").is_some_and(|v| v == "true");
     stored(bucket, vec![KEY.to_owned()], o.size(), gzip)
+}
+
+// ---- REST: `/repos/{o}/{r}/actions/artifacts` (F131) ----
+//
+// The rows are R2 objects too, `actions/artifacts/<chain>/<repo>/a/<id>`, one per finalized artifact, its JSON in the
+// object's custom metadata so a repository's list is one paged R2 list (`decisions/DECISIONS.md`, "`actions-artifacts`").
+
+const DOC: &str = "rest/actions/artifacts";
+
+async fn put_row(bucket: &Bucket, chain: ChainId, repo: RepoId, row: &ArtifactRow) -> std::result::Result<(), String> {
+    let json = serde_json::to_string(row).map_err(|e| e.to_string())?;
+    let meta = std::collections::HashMap::from([("row".to_owned(), json.clone())]);
+    let key = art::index_key(chain, repo, row.id);
+    bucket.put(key, json.into_bytes()).custom_metadata(meta).execute().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Every row of the repository's artifacts, from one paged list with their custom metadata.
+async fn rows(bucket: &Bucket, chain: ChainId, repo: RepoId) -> std::result::Result<Vec<ArtifactRow>, String> {
+    let (mut out, mut cursor) = (Vec::new(), None);
+    loop {
+        let mut l = bucket.list().prefix(art::index_prefix(chain, repo)).include(vec![Include::CustomMetadata]);
+        if let Some(k) = cursor.take() {
+            l = l.cursor(k);
+        }
+        let page = l.execute().await.map_err(|e| e.to_string())?;
+        for o in page.objects() {
+            let meta = o.custom_metadata().map_err(|e| e.to_string())?;
+            if let Some(row) = meta.get("row").and_then(|r| serde_json::from_str::<ArtifactRow>(r).ok()) {
+                out.push(row);
+            }
+        }
+        match page.cursor().filter(|_| page.truncated()) {
+            Some(k) => cursor = Some(k),
+            None => return Ok(out),
+        }
+    }
+}
+
+async fn row(bucket: &Bucket, chain: ChainId, repo: RepoId, id: i64) -> Result<Option<ArtifactRow>> {
+    let Some(o) = bucket.get(art::index_key(chain, repo, id)).execute().await? else { return Ok(None) };
+    let Some(b) = o.body() else { return Ok(None) };
+    Ok(serde_json::from_slice(&b.bytes().await?).ok())
+}
+
+/// Whether `who` may read (`Access::Read`) or delete (`Access::Write`) the repository's artifacts, past the read gate
+/// the request already passed: an App token (a job's `GITHUB_TOKEN` among them) needs `actions` at that level, a
+/// fine-grained token the same, and a user needs write access to delete, as GHES documents [doc: GHES 3.22 REST,
+/// "Artifacts"]. `Some` is the refusal.
+fn refused(rd: &Read, c: &Ctx<'_>, who: Option<&Principal>, level: graftyard_identity::Access) -> Option<Reply> {
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    let folds: Vec<&dyn graftyard_identity::AuthzRead> =
+        rd.dir.authz.iter().map(|a| a as &dyn graftyard_identity::AuthzRead).collect();
+    let needs = [("actions", level)];
+    let deny = |d: Decision, who: &str| match d {
+        Decision::Allow => None,
+        Decision::Forbidden => Some(Reply::error(403, &format!("Resource not accessible by {who}"), DOC)),
+        Decision::Hidden => Some(Reply::not_found()),
+    };
+    if let Some(r) = deny(
+        graftyard_identity::token_allows(c.token_fields.borrow().as_ref(), &needs, &access),
+        "personal access token",
+    ) {
+        return Some(r);
+    }
+    let write = level >= graftyard_identity::Access::Write;
+    match who {
+        Some(Principal { actor: Actor::App { .. }, credential: Credential::Stateless(claims), .. }) => {
+            deny(graftyard_identity::authorize_app(claims, &needs, &folds, &access), "integration")
+        }
+        Some(p) if write => (graftyard_identity::permission(p, &folds, &access)
+            < Some(graftyard_identity::RepoPermission::Write))
+        .then(Reply::not_found),
+        None if write => Some(Reply::error(401, "Requires authentication", DOC)),
+        _ => None,
+    }
+}
+
+/// The REST artifact routes, or `None` for another tail or while artifacts are off.
+pub async fn repo_route(
+    c: &Ctx<'_>,
+    rd: &Read,
+    who: Option<&Principal>,
+    method: &Method,
+    tail: &[&str],
+    query: &str,
+    host: &graftyard_wire::Host,
+) -> Result<Option<Reply>> {
+    let id = |s: &str| s.parse::<i64>().ok().filter(|n| *n > 0);
+    let route = match (method, tail) {
+        (Method::Get, ["actions", "artifacts"]) => Rest::List(None),
+        (Method::Get, ["actions", "runs", run, "artifacts"]) => match id(run) {
+            Some(r) => Rest::List(Some(RunId(DbId(r)))),
+            None => return Ok(Some(Reply::not_found())),
+        },
+        (Method::Get, ["actions", "artifacts", a]) => Rest::Get(id(a)),
+        (Method::Get, ["actions", "artifacts", a, "zip"]) => Rest::Zip(id(a)),
+        (Method::Delete, ["actions", "artifacts", a]) => Rest::Delete(id(a)),
+        _ => return Ok(None),
+    };
+    if !served(c.env) {
+        return Ok(None);
+    }
+    let write = matches!(route, Rest::Delete(_));
+    let level = if write { graftyard_identity::Access::Write } else { graftyard_identity::Access::Read };
+    if let Some(r) = refused(rd, c, who, level) {
+        return Ok(Some(r));
+    }
+    let (repo, chain) = (rd.repo.id, ChainId::Actions(rd.repo.owner, actions_shard(rd.repo.id)));
+    let bucket = c.env.bucket(&format!("BUCKET_{}", rd.repo.record.home.0))?;
+    let api = host.api();
+    let full_name = format!("{}/{}", rd.at.owner, rd.at.name);
+    let x = art::RestCtx { api: &api, full_name: &full_name, repo };
+    let now = crate::now().0;
+    let store = |e: &str| crate::api::unavailable(&format!("the artifact store: {e}"));
+    let one = async |a: Option<i64>| -> Result<std::result::Result<ArtifactRow, Reply>> {
+        let Some(a) = a else { return Ok(Err(Reply::not_found())) };
+        Ok(row(&bucket, chain, repo, a).await?.ok_or_else(Reply::not_found))
+    };
+    Ok(Some(match route {
+        Rest::List(run) => {
+            let q: Vec<(String, String)> =
+                url::form_urlencoded::parse(query.as_bytes()).map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+            let name = q.iter().find(|(k, _)| k == "name").map(|(_, v)| v.as_str());
+            let page = graftyard_wire::Page::parse(query);
+            let all = match rows(&bucket, chain, repo).await {
+                Ok(r) => r,
+                Err(e) => return Ok(Some(store(&e))),
+            };
+            let (total, got, more) = art::page_rows(all, name, run, page);
+            let artifacts: Vec<Value> = got.iter().map(|a| art::rest_json(&x, a, now)).collect();
+            let path = match run {
+                Some(r) => format!("/actions/runs/{}/artifacts", r.0.0),
+                None => "/actions/artifacts".to_owned(),
+            };
+            let named: Vec<(&str, &str)> = name.map(|n| ("name", n)).into_iter().collect();
+            let last = total.div_ceil(page.per_page).max(1);
+            let reply = Reply::json(200, json!({ "total_count": total, "artifacts": artifacts }));
+            match graftyard_wire::link(&api, repo.0.0, &path, &named, page, more, Some(last)) {
+                Some(l) => reply.with("link", l),
+                None => reply,
+            }
+        }
+        Rest::Get(a) => match one(a).await? {
+            Ok(a) => Reply::json(200, art::rest_json(&x, &a, now)),
+            Err(r) => r,
+        },
+        // GHES answers 302 to a URL that works for one minute, and 410 once the artifact expired.
+        Rest::Zip(a) => match one(a).await? {
+            Ok(a) if a.expired(now) => Reply::error(410, "Artifact has expired", DOC),
+            Ok(a) => {
+                let mut b = [0u8; 16];
+                b[..10].copy_from_slice(&crate::rand10());
+                b[10..].copy_from_slice(&crate::rand10()[..6]);
+                let nonce = art::ticket_name(&b);
+                let ticket = json!({ "id": a.id, "exp": now / 1000 + art::ZIP_URL_LIFE_S }).to_string();
+                if let Err(e) = bucket.put(art::ticket_key(chain, repo, &nonce), ticket.into_bytes()).execute().await {
+                    return Ok(Some(store(&e.to_string())));
+                }
+                let services = Urls::new(&format!("https://{}", c.cfg.host)).services;
+                Reply::empty(302).with("location", art::zip_url(&services, chain, repo, a.id, &nonce))
+            }
+            Err(r) => r,
+        },
+        Rest::Delete(a) => match one(a).await? {
+            Ok(a) => match delete(&bucket, chain, repo, &a).await {
+                Ok(()) => Reply::empty(204),
+                Err(e) => store(&e),
+            },
+            Err(r) => r,
+        },
+    }))
+}
+
+enum Rest {
+    List(Option<RunId>),
+    Get(Option<i64>),
+    Zip(Option<i64>),
+    Delete(Option<i64>),
+}
+
+/// Every object of artifact `a` in its run (manifest, create record, records, upload pointers, chunks), then its row,
+/// so a delete that stops part way leaves a row that the next delete finishes, and never bytes no row names.
+async fn delete(bucket: &Bucket, chain: ChainId, repo: RepoId, a: &ArtifactRow) -> std::result::Result<(), String> {
+    let ct = Container { chain, repo, run: a.run };
+    let prefix = ct.prefix();
+    let keys: Vec<String> = listing(bucket, &prefix)
+        .await?
+        .into_iter()
+        .map(|(k, _)| k)
+        .filter(|k| k.strip_prefix(&prefix).and_then(art::of_artifact) == Some(a.name.as_str()))
+        .collect();
+    for c in keys.chunks(1000) {
+        bucket.delete_multiple(c.to_vec()).await.map_err(|e| e.to_string())?;
+    }
+    bucket.delete(art::index_key(chain, repo, a.id)).await.map_err(|e| e.to_string())
+}
+
+/// `/_services/artifact-zip/<owner>/<shard>/<repo>/<id>/<ticket>`: the artifact's files as one zip, streamed from
+/// their chunks (`graftyard_actions::zip::Composer`), for as long as the ticket the REST `zip` route wrote admits it.
+/// No bearer token: the ticket, 128 random bits in the URL, is the capability, as GHES's blob URL is.
+pub async fn zip(c: &Ctx<'_>, req: &Request, rest: &str) -> Result<Response> {
+    if !served(c.env) {
+        return error(404, "Not Found");
+    }
+    if req.method() != Method::Get {
+        return error(405, "Method Not Allowed");
+    }
+    let Some((chain, repo, id, nonce)) = art::parse_zip_path(rest) else { return error(404, "Not Found") };
+    let Ok(bucket) = home_bucket(c, chain).await else { return error(503, "the artifact store is unavailable") };
+    let ticket = match bucket.get(art::ticket_key(chain, repo, nonce)).execute().await? {
+        Some(o) => match o.body() {
+            Some(b) => serde_json::from_slice::<Value>(&b.bytes().await?).unwrap_or(Value::Null),
+            None => Value::Null,
+        },
+        None => Value::Null,
+    };
+    if !art::ticket_admits(&ticket, id, crate::now()) {
+        return error(403, "This URL has expired");
+    }
+    let Some(a) = row(&bucket, chain, repo, id).await? else { return error(404, "Not Found") };
+    if a.expired(crate::now().0) {
+        return error(410, "Artifact has expired");
+    }
+    let ct = Container { chain, repo, run: a.run };
+    let Ok(steps) = plan(&bucket, &ct, &a.name).await else { return error(503, "the artifact store is unavailable") };
+    let Some(steps) = steps else { return error(404, "Not Found") };
+    let h = Headers::new();
+    h.set("content-type", "application/zip")?;
+    h.set("content-disposition", &format!("attachment; filename=\"{}.zip\"", a.name.replace('"', "")))?;
+    Ok(Response::from_stream(compose(bucket, steps))?.with_headers(h))
+}
+
+/// One step of a zip: a file's header, one of its chunks, its end, or the zip's end.
+enum Step {
+    Begin { name: String, gzip: bool, length: u64, size: u64 },
+    Chunk(String),
+    End,
+    Finish,
+}
+
+/// The zip's steps, every file's chunks listed and checked to tile it before the first byte; `None` when the artifact
+/// is not finalized or a file's chunks do not tile it.
+async fn plan(bucket: &Bucket, ct: &Container, name: &str) -> std::result::Result<Option<Vec<Step>>, String> {
+    if bucket.head(ct.manifest_key(name)).await.map_err(|e| e.to_string())?.is_none() {
+        return Ok(None);
+    }
+    let base = ct.record_key("");
+    let mut paths: Vec<String> = listing(bucket, &ct.records(name))
+        .await?
+        .into_iter()
+        .filter_map(|(k, _)| k.strip_prefix(&base).map(str::to_owned))
+        .collect();
+    paths.sort();
+    let mut steps = Vec::new();
+    for path in paths {
+        let Some(inside) = art::zip_path(&path, name) else { continue };
+        let Some(r) = file_record(bucket, &ct.record_key(&path)).await.map_err(|e| e.to_string())? else { continue };
+        steps.push(Step::Begin { name: inside.to_owned(), gzip: r.gzip && r.size > 0, length: r.length, size: r.size });
+        if r.size > 0 {
+            let prefix = ct.chunk_prefix(r.job, r.upload, &path);
+            let mut parts: Vec<(u64, u64, String)> = listing(bucket, &prefix)
+                .await?
+                .into_iter()
+                .filter_map(|(k, n)| art::chunk_start(&prefix, &k).map(|s| (s, n, k)))
+                .collect();
+            parts.sort();
+            let tiled: Vec<(u64, u64)> = parts.iter().map(|(s, n, _)| (*s, *n)).collect();
+            if graftyard_actions::cache::tiles(&tiled, r.size).is_err() {
+                return Ok(None);
+            }
+            steps.extend(parts.into_iter().map(|(_, _, k)| Step::Chunk(k)));
+        }
+        steps.push(Step::End);
+    }
+    steps.push(Step::Finish);
+    Ok(Some(steps))
+}
+
+/// The steps as zip bytes: one chunk object open at a time, each passed through the composer as it arrives. A failure
+/// ends the body short, which an unzip refuses.
+fn compose(bucket: Bucket, steps: Vec<Step>) -> impl futures_util::Stream<Item = Result<Vec<u8>>> + 'static {
+    let z = Rc::new(RefCell::new(Some(Composer::new())));
+    let zerr = |e: graftyard_actions::zip::ZipError| Error::RustError(format!("zip: {e}"));
+    futures_util::stream::iter(steps)
+        .then(move |step| {
+            let (bucket, z) = (bucket.clone(), z.clone());
+            async move {
+                type Piece = LocalBoxStream<'static, Result<Vec<u8>>>;
+                let once = |b: Vec<u8>| -> Piece { stream::once(async { Ok(b) }).boxed_local() };
+                let finished = || Error::RustError("zip: finished".into());
+                let key = match step {
+                    Step::Chunk(key) => key,
+                    other => {
+                        let mut comp = z.borrow_mut();
+                        let cz = comp.as_mut().ok_or_else(finished)?;
+                        return Ok::<Piece, Error>(match other {
+                            Step::Begin { name, gzip, length, size } => {
+                                once(cz.begin(&name, gzip, length, size).map_err(zerr)?)
+                            }
+                            Step::End => once(cz.end().map_err(zerr)?),
+                            _ => once(comp.take().ok_or_else(finished)?.finish().map_err(zerr)?),
+                        });
+                    }
+                };
+                let gone = || Error::RustError("an artifact chunk is gone".into());
+                let o = bucket.get(key).execute().await?.ok_or_else(gone)?;
+                Ok(o.body()
+                    .ok_or_else(gone)?
+                    .stream()?
+                    .map(move |b| {
+                        let b = b?;
+                        let mut comp = z.borrow_mut();
+                        comp.as_mut().ok_or_else(finished)?.push(&b).map_err(zerr)
+                    })
+                    .boxed_local())
+            }
+        })
+        .try_flatten()
+}
+
+/// A test install's check of the REST half against a local bucket (tests/edgeboot), in a fixed container of the bed
+/// bucket `BED_ARTIFACTS`: `PUT ?path=` stores the body as one finalized file of its artifact (in 100,000 B chunks, its
+/// `content-encoding: gzip` kept, `x-file-length` its length) with the artifact's manifest and row; `GET` lists the
+/// rows, `GET ?zip=<id>` answers the artifact's zip, `GET ?keys=1` lists every object, and `DELETE ?id=` deletes one.
+#[cfg(feature = "test-faults")]
+pub async fn bed_rest(req: &mut Request, bucket: Bucket) -> Result<Response> {
+    use graftyard_types::AccountId;
+    let chain = ChainId::Actions(AccountId(DbId(7100001)), 11);
+    let ct = Container { chain, repo: RepoId(DbId(65_000)), run: RunId(DbId(41)) };
+    let run = WorkflowRun {
+        id: ct.run,
+        repo: ct.repo,
+        workflow: "ci.yml".into(),
+        event: "push".into(),
+        head_sha: [0xab; 20],
+        head_ref: "refs/heads/main".into(),
+        trigger: (ChainId::Repo(ct.repo), graftyard_types::Index(1)),
+        attempt: 1,
+        concurrency: None,
+        fork: false,
+    };
+    let url = req.url()?;
+    let q = |k: &str| -> Result<Option<String>> {
+        Ok(url.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned()))
+    };
+    match req.method() {
+        Method::Put => {
+            let Some(path) = q("path")? else { return error(400, "path") };
+            let Ok(name) = art::check_item_path(&path) else { return error(400, "path") };
+            let gzip = req.headers().get("content-encoding")?.is_some_and(|v| v == "gzip");
+            let length: u64 = req.headers().get("x-file-length")?.and_then(|v| v.parse().ok()).unwrap_or(0);
+            let bytes = req.bytes().await?;
+            let job = JobId(DbId(9));
+            for (i, c) in bytes.chunks(100_000).enumerate() {
+                bucket.put(ct.chunk_key(job, 1, &path, i as u64 * 100_000), c.to_vec()).execute().await?;
+            }
+            let r = FileRecord { job, upload: 1, size: bytes.len() as u64, length, gzip };
+            bucket.put(ct.record_key(&path), serde_json::to_vec(&r)?).execute().await?;
+            bucket.put(ct.manifest_key(name), b"{}".to_vec()).execute().await?;
+            let created = art::create_record(q("days")?.and_then(|d| d.parse().ok()), crate::now().0);
+            bucket.put(ct.create_key(name), created.to_string().into_bytes()).execute().await?;
+            let row = art::finalized_row(&ct, name, length as i64, Some(&created), &run, crate::now().0);
+            put_row(&bucket, chain, ct.repo, &row).await.map_err(Error::RustError)?;
+            reply(200, &json!({ "id": row.id }))
+        }
+        Method::Delete => {
+            let Some(id) = q("id")?.and_then(|v| v.parse().ok()) else { return error(400, "id") };
+            let Some(a) = row(&bucket, chain, ct.repo, id).await? else { return error(404, "Not Found") };
+            delete(&bucket, chain, ct.repo, &a).await.map_err(Error::RustError)?;
+            reply(204, &Value::Null)
+        }
+        _ if q("keys")?.is_some() => {
+            let keys: Vec<String> = listing(&bucket, art::ARTIFACTS_ROOT)
+                .await
+                .map_err(Error::RustError)?
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            reply(200, &json!(keys))
+        }
+        _ => match q("zip")?.and_then(|v| v.parse::<i64>().ok()) {
+            Some(id) => {
+                let Some(a) = row(&bucket, chain, ct.repo, id).await? else { return error(404, "Not Found") };
+                let Some(steps) = plan(&bucket, &ct, &a.name).await.map_err(Error::RustError)? else {
+                    return error(404, "Not Found");
+                };
+                Response::from_stream(compose(bucket, steps))
+            }
+            None => {
+                let all = rows(&bucket, chain, ct.repo).await.map_err(Error::RustError)?;
+                reply(200, &serde_json::to_value(all)?)
+            }
+        },
+    }
 }

@@ -1,0 +1,22 @@
+# BF-75's workflow (tests/m4/wp3/bf75): upload-artifact@v3.2.2 unchanged writes two artifacts, `keep` (a gzipped
+# text file, 8 MiB-plus of random bytes in two chunks, and an empty file) with the default retention, and `short` with
+# `retention-days: 1`. Each job prints its files' SHA-256 as `BF75 SUM <artifact> <sha> <path>` lines, which the
+# driver checks the REST zip and `gh run download` against. No step reads a secret.
+on: workflow_dispatch
+jobs:
+  up:
+    runs-on: [self-hosted]
+    steps:
+      - run: |
+          set -eu
+          mkdir -p keep/dir short
+          yes 'compressible text for the gzipped path' | head -c 3000000 > keep/dir/text.txt
+          head -c 9000000 /dev/urandom > keep/random.bin
+          : > keep/empty.txt
+          head -c 4000 /dev/urandom > short/s.bin
+          (cd keep && sha256sum dir/text.txt random.bin empty.txt | sed 's/^/BF75 SUM keep /')
+          (cd short && sha256sum s.bin | sed 's/^/BF75 SUM short /')
+      - uses: actions/upload-artifact@v3.2.2
+        with: { name: keep, path: keep }
+      - uses: actions/upload-artifact@v3.2.2
+        with: { name: short, path: short, retention-days: 1 }

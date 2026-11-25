@@ -127,6 +127,10 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
     if let Some(tail) = rest.strip_prefix("cache/") {
         return crate::cache::serve(c, req, tail, grant, &public).await;
     }
+    // A REST artifact zip (F131), whose ticket in the URL is the capability: no bearer token.
+    if let Some(tail) = rest.strip_prefix("artifact-zip/") {
+        return crate::artifacts::zip(c, &req, tail).await;
+    }
     // actions-artifacts (`crate::artifacts`), whose chunk uploads and downloads stream and are never read here.
     if crate::artifacts::claims(rest) {
         return crate::artifacts::serve(c, req, rest, grant).await;
