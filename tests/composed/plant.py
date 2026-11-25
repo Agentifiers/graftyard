@@ -74,7 +74,8 @@ MUTANTS = [
      '\trelease = sync.OnceFunc(l.RUnlock)\n\tdefer release()\n\tif spooled {\n\t\trelease = func() {}\n\t}\n'
      '\tdefer func() { release() }()\n', ('go', 'TestComposedMissesDoNotQueueBehindTheLock')),
     # Chain steps.
-    ('no fold', CG, '\tbase := !have || len(h.Parts)+1 >= foldEvery\n', '\tbase := !have\n', MISS),
+    ('no fold', CG, '\tif _, running := folds.Load(net); !running && len(next.Parts) >= foldStart {\n',
+     '\tif _, running := folds.Load(net); !running && false {\n', MISS),
     ('a part holds every new object, the base\'s too', CG,
      '\t\tobjs, err := missingFromChain(net, rp, parts, m.gitLow)\n',
      '\t\tobjs, err := parts, error(nil)\n', MISS),

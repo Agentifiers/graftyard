@@ -6,8 +6,10 @@ package main
 //
 //	POST /compose?net=N[&start=1][&tip=C]  the chain's next step, to C (default HEAD's commit): with no chain, a base
 //	                                 at C, only with start=1; else a part from the chain's tip to C, or, at the
-//	                                 foldEvery-th move or past composeDiffMax entries from the chain's tree, a new
-//	                                 base at C. {"head","built": [file names],"cpuMs"};
+//	                                 partsMax-th part or past composeDiffMax entries from the chain's tree, a new
+//	                                 base at C. A step that leaves foldStart parts or more starts the chain's fold
+//	                                 beside the steps, and the first step after it ends swaps it in (`fold-aside`).
+//	                                 {"head","built": [file names],"cpuMs"};
 //	                                 "head" null when there is no chain. Holds no network lock
 //	GET  /compose-head?net=N         the chain's head, {"base","parts","tree"} or null
 //	GET  /compose-file?net=N&name=F  one of the chain's files (base-<tip>.pack|.idx, part-<from>-<to>.pack|.idx)
@@ -46,8 +48,10 @@ import (
 	"time"
 )
 
-// foldEvery: a chain folds its base and parts into a new base at this many tip moves (DESIGN, "Git cache shards").
-const foldEvery = 20
+// foldStart: a step that leaves the chain at this many parts or more starts the chain's fold beside the steps [guess];
+// partsMax: a step that would take the chain to this many parts builds the new base itself, as every fold did at 20
+// parts before `fold-aside` [guess] (DESIGN, "Git cache shards"). Vars for the tests.
+var foldStart, partsMax = 12, 40
 
 // composeDiffMax: a wanted commit whose tree differs from the chain tip's in more entries than this is served by stock
 // upload-pack [guess]: it is far from the tip, so a composed pack would carry most of two trees. A var for the tests.
@@ -169,11 +173,16 @@ func newObjects(rp string, env []string, from, to string, g gitRun) ([]string, e
 
 // missingFromChain keeps the objects the chain's packs do not hold, once each.
 func missingFromChain(net, rp string, objs []string, g gitRun) ([]string, error) {
+	return missingIn(composeObjects(net), rp, objs, g)
+}
+
+// missingIn keeps the objects the packs of object directory `dir` do not hold, once each.
+func missingIn(dir, rp string, objs []string, g gitRun) ([]string, error) {
 	var in bytes.Buffer
 	for _, o := range objs {
 		in.WriteString(strings.SplitN(o, " ", 2)[0] + "\n")
 	}
-	env := []string{"GIT_OBJECT_DIRECTORY=" + composeObjects(net), "GIT_ALTERNATE_OBJECT_DIRECTORIES="}
+	env := []string{"GIT_OBJECT_DIRECTORY=" + dir, "GIT_ALTERNATE_OBJECT_DIRECTORIES="}
 	out, err := g(rp, env, &in, "cat-file", "--batch-check=%(objectname)")
 	if err != nil {
 		return nil, err
@@ -194,10 +203,10 @@ func missingFromChain(net, rp string, objs []string, g gitRun) ([]string, error)
 	return keep, nil
 }
 
-// packTo packs `objs` ("<oid> <path>" lines) into the chain's pack `name`, with no delta search: deltas the
-// repository already holds are reused where their base is in the same pack, everything else is whole.
-func packTo(net, rp string, env []string, objs []string, name string, m *cpuMeter) error {
-	dir := filepath.Join(composeObjects(net), "pack")
+// packTo packs `objs` ("<oid> <path>" lines) into pack `name` in pack directory `dir`, the chain's or its fold's,
+// with no delta search: deltas the repository already holds are reused where their base is in the same pack,
+// everything else is whole.
+func packTo(dir, rp string, env []string, objs []string, name string, m *cpuMeter) error {
 	os.MkdirAll(dir, 0o755)
 	out, err := m.gitLow(rp, env, strings.NewReader(strings.Join(objs, "\n")+"\n"), "pack-objects", "-q",
 		"--delta-base-offset", "--window=0", "--threads=1", filepath.Join(dir, "tmp-build"))
@@ -210,11 +219,100 @@ func packTo(net, rp string, env []string, objs []string, name string, m *cpuMete
 		if _, err := os.Stat(from); err != nil {
 			continue
 		}
-		if err := os.Rename(from, chainFile(net, name, ext)); err != nil {
+		if err := os.Rename(from, filepath.Join(dir, "pack-"+name+"."+ext)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// A chain's fold, built beside its steps (`fold-aside`): the base of `at`'s tip T, in the fold's own directory, since
+// `dropUnnamed` deletes every chain pack the head does not name. Only a step, under the network's `composeLock`, reads
+// or replaces a network's entry; the build only writes `err` before it closes `done`.
+type foldRun struct {
+	at   chainHead
+	done chan struct{}
+	err  error
+}
+
+var folds sync.Map // net -> *foldRun
+
+// foldHold runs in a fold's build once its base is built, before it ends. A hook for the tests.
+var foldHold = func() {}
+
+func foldDir(net string) string     { return filepath.Join(composeDir(net), "fold") }
+func foldObjects(net string) string { return filepath.Join(foldDir(net), "objects") }
+func foldPack(net string) string    { return filepath.Join(foldObjects(net), "pack") }
+
+// startFold builds the base of `at`'s tip at nice 19 in the background, from the chain's packs and the repository.
+func startFold(net, rp string, env []string, at chainHead) {
+	f := &foldRun{at: at, done: make(chan struct{})}
+	folds.Store(net, f)
+	dir := foldPack(net)
+	go func() {
+		defer close(f.done)
+		var m cpuMeter
+		objs, err := m.gitLow(rp, env, nil, "rev-list", "--objects", at.Tree)
+		if err == nil {
+			err = packTo(dir, rp, env, strings.Split(strings.TrimSpace(string(objs)), "\n"), "base-"+at.tip(), &m)
+		}
+		foldHold()
+		f.err = err
+	}()
+}
+
+// swapFold is the chain on the fold's base T plus one part from T to `tip`, both moved in from the fold's directory.
+// The part is T's diff to `tip` less what base-T holds: the old chain's parts after T left out objects the old base
+// held, which base-T may not.
+func swapFold(net, rp string, env []string, f *foldRun, tip, tree string, m *cpuMeter) (chainHead, []string, error) {
+	t := f.at.tip()
+	objs, err := newObjects(rp, env, f.at.Tree, tip, m.gitLow)
+	if err != nil {
+		return chainHead{}, nil, err
+	}
+	if len(objs) > composeDiffMax {
+		return chainHead{}, nil, fmt.Errorf("the tip is past the diff cap from the fold's")
+	}
+	if objs, err = missingIn(foldObjects(net), rp, objs, m.gitLow); err != nil {
+		return chainHead{}, nil, err
+	}
+	part := "part-" + t + "-" + tip
+	if err := packTo(foldPack(net), rp, env, objs, part, m); err != nil {
+		return chainHead{}, nil, err
+	}
+	var built []string
+	for _, name := range []string{"base-" + t, part} {
+		for _, ext := range []string{"pack", "idx", "rev"} {
+			from := filepath.Join(foldPack(net), "pack-"+name+"."+ext)
+			if err := os.Rename(from, chainFile(net, name, ext)); err != nil && (ext != "rev" || !os.IsNotExist(err)) {
+				return chainHead{}, nil, err
+			}
+		}
+		built = append(built, name+".pack", name+".idx")
+	}
+	return chainHead{Base: t, Parts: []string{tip}, Tree: tree}, built, nil
+}
+
+func isDone(c chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
+}
+
+// extends: chain `h` is `at` or `at` plus later parts, so `at`'s tip is still the tip the fold was built at.
+func (h chainHead) extends(at chainHead) bool {
+	if h.Base != at.Base || len(h.Parts) < len(at.Parts) {
+		return false
+	}
+	for i, p := range at.Parts {
+		if h.Parts[i] != p {
+			return false
+		}
+	}
+	return true
 }
 
 func handleCompose(w http.ResponseWriter, r *http.Request) {
@@ -262,8 +360,34 @@ func handleCompose(w http.ResponseWriter, r *http.Request) {
 	// HEAD, so the step builds a new base instead: on B0-34 m1b34 a base built on a one-file row push's tip (HEAD fell
 	// to the first ref after a rehydrate skipped main) took 88,000-entry parts at every move, and every miss after it
 	// went over the cap to stock (tests/am1/results/b034-attr.md, "Correction").
+	// A fold this process did not start was left by an earlier one (a kill, a restart), whole or not: it is deleted
+	// before the step and never swapped in.
+	var f *foldRun
+	if v, ok := folds.Load(net); ok {
+		f = v.(*foldRun)
+	} else {
+		os.RemoveAll(foldDir(net))
+	}
 	var parts []string
-	base := !have || len(h.Parts)+1 >= foldEvery
+	base := !have || len(h.Parts)+1 >= partsMax
+	// A fold that ended is used once or dropped: swapped in only while the chain still extends the chain it was
+	// built from (its tip T is the chain's base or one of its parts), and the step builds no base of its own.
+	if f != nil && isDone(f.done) {
+		folds.Delete(net)
+		if f.err == nil && !base && have && h.extends(f.at) && tip != f.at.tip() {
+			if next, built, err := swapFold(net, rp, env, f, tip, tree, &m); err == nil {
+				os.RemoveAll(foldDir(net))
+				if err := writeHead(net, next); err != nil {
+					fail(w, 500, "%v", err)
+					return
+				}
+				dropUnnamed(net, next)
+				jsonOut(w, map[string]any{"head": next, "built": built, "cpuMs": ms(m.d)})
+				return
+			}
+		}
+		os.RemoveAll(foldDir(net))
+	}
 	if !base {
 		objs, err := newObjects(rp, env, h.Tree, tip, m.gitLow)
 		if err != nil {
@@ -285,7 +409,7 @@ func handleCompose(w http.ResponseWriter, r *http.Request) {
 		}
 		lines := strings.Split(strings.TrimSpace(string(objs)), "\n")
 		next, name = chainHead{Base: tip, Parts: []string{}, Tree: tree}, "base-"+tip
-		err = packTo(net, rp, env, lines, name, &m)
+		err = packTo(filepath.Join(composeObjects(net), "pack"), rp, env, lines, name, &m)
 		if err != nil {
 			fail(w, 500, "%v", err)
 			return
@@ -294,7 +418,7 @@ func handleCompose(w http.ResponseWriter, r *http.Request) {
 		objs, err := missingFromChain(net, rp, parts, m.gitLow)
 		if err == nil {
 			name = "part-" + h.tip() + "-" + tip
-			err = packTo(net, rp, env, objs, name, &m)
+			err = packTo(filepath.Join(composeObjects(net), "pack"), rp, env, objs, name, &m)
 		}
 		if err != nil {
 			fail(w, 500, "%v", err)
@@ -307,6 +431,12 @@ func handleCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dropUnnamed(net, next)
+	// Past foldStart the chain's fold builds beside the steps, so parts keep landing while it runs: built as the step
+	// itself at its 20th move, the fold put no part for about 5 minutes on B0-34 mt25, before the kill and again after
+	// (`tests/am1/results/b034-mt25.md`, "Why parts stop during a fold").
+	if _, running := folds.Load(net); !running && len(next.Parts) >= foldStart {
+		startFold(net, rp, env, next)
+	}
 	jsonOut(w, map[string]any{"head": next, "built": []string{name + ".pack", name + ".idx"}, "cpuMs": ms(m.d)})
 }
 

@@ -9772,7 +9772,7 @@ kill fell on a due fold.
 - **A.** The builder's step (`compose::builder_step`) first asks whether its container holds a chain. If it holds none
   and a warm bucket's `head` names one, it installs that chain the way other shards do: stage the files the container
   lacks, then `/compose-head`. Its step is then a part from that chain's tip to HEAD, or a base only where the
-  container's own rule already builds one (`composeDiffMax`, `foldEvery`). A container that holds a chain is never
+  container's own rule already builds one (`composeDiffMax`, `partsMax`). A container that holds a chain is never
   installed over. With no bucket head, or a failed install, the step builds a base, as before. The builder stays the
   one writer of the buckets' chain, and its order is unchanged: every file before the head, and an old base's files
   deleted only after the head that replaces it (`colo-gate`).
@@ -9830,6 +9830,96 @@ misses over 5 s were, and 3 more were site b composing past the frozen chain [me
   misses over 5 s are more than mt20b's 1 and mt14's 9, with the extra ones on the last site of the order.
 - **A is not enough** if the home's post-restart `warming` window stays over 60 s with no base built. Then the install
   itself is slow under post-kill load: price an install at the container's start.
+
+**Since `fold-aside` (2026-11-25).** The step after an install is a part even on a chain of 19 parts: the fold is no
+longer a step below `partsMax` (40), so it builds beside the parts after that step. On B0-34 mt25 the install gave the
+restarted home a 19-part chain, and its first step built the fold from scratch before any part
+(`tests/am1/results/b034-mt25.md`).
+
+### `fold-aside`: a composed-miss chain's fold builds beside its parts, 2026-11-25
+
+**Status.** Ruled by the lead on 2026-11-25 from `tests/am1/results/b034-mt25.md`, "The plan" (G37), with three
+additions: a restarted container deletes a kept fold, the swap checks that the chain still extends the fold's, and the
+settling row reads `chain_head` against `chain_chk` and hits p99 past 20 packs. Built on branch `fold-aside` from main
+`9568234e`, not yet measured hosted. Container only (`containers/git/server/compose.go`), so it ships with a new shard
+image on a site day, with no edge day.
+
+**Decision.**
+- A step that leaves the chain at `foldStart` parts (12 [guess]) or more starts one fold for the network, unless one
+  runs. The fold builds the base of the chain's tip at that moment, T, at nice 19, as the inline fold did, and writes it
+  under `<data>/compose/<net>/fold/`, not the chain's pack directory, since `dropUnnamed` deletes every chain pack the
+  head does not name. It holds no `composeLock`, so steps go on putting parts on the old base meanwhile.
+- The first step after the fold ends swaps it in, but only when the chain still extends the chain the fold was built
+  from (its tip T is the chain's base or one of its parts), the tip has moved past T, and the step builds no base of its
+  own. The new chain is `base-T` and one part from T to the new tip: T's diff to the tip, less what `base-T` holds. The
+  old chain's parts after T are dropped, because they left out objects the old base held. A fold that ended any other
+  way is deleted unused.
+- A step that would take the chain to `partsMax` parts (40 [guess]) builds the base itself, as every fold did at 20
+  before. So the chain stays finite if folds keep failing.
+- A container with no fold in its process deletes `fold/` before its step. A fold that a kill left on a disk that kept
+  it, whole or half-written, is never swapped in.
+- The builder is still the only writer of `compose/<net>/`, and its order is unchanged (`ready_chain`): every file
+  before the head, and an old base's files deleted only after the head that replaces it. The swap's head is put as an
+  inline fold's was.
+
+**Why.** On B0-34 mt25 the fold was the chain's 20th step. `handleCompose` built the whole base under `composeLock`,
+and the shard (`Compose::start`, one step at a time) put nothing until it answered. The home's fold ran from about
+−122 s at client CPU 1.0, at about 12% of a vCPU, and the kill cut it. The restarted home installed the buckets'
+19-part chain, so its first step was the fold again, from scratch. The chain got no part from 23:21 (about −180 s) to
++116 to +176 s. Site b composed past the frozen tip from +133 to +193 s, and every clone in second fell to 46.2%
+[measured: R2 puts by object name, site 0's `/procs`; the mechanism is read from the code,
+`tests/am1/results/b034-mt25.md`, "Why parts stop during a fold"]. Built beside the parts, the fold moves no part
+behind it, and a restart steps a part first.
+
+**What it beat.**
+- **E**, a local chain stepped on the other chain site while the home cannot step (G37). It covers only the home's
+  rehydrate. mt25's freeze began about 180 s before the kill, while the home was up and folding. E stays recorded with
+  its flip.
+- **Raising `foldEvery`.** It makes the inline fold rarer but no shorter, and a chain that folds still freezes for the
+  whole build.
+- **A higher priority for the fold.** It takes CPU from the validates and catch-ups that nice 19 yields to, on the
+  busiest container of the group.
+- **Builder failover (C).** It adds a second writer of `compose/<net>/`, which the lead rejected.
+
+**Evidence.**
+- `containers/git/server/compose_test.go`, `TestPartsKeepLandingWhileAFoldBuilds`: with the fold held after its base
+  is built (`foldHold`), three moves each get their part within the client's 20 s and the chain composes. One of the
+  moves puts back a file the old base holds. Once the fold is released, the next step answers `base-T` and one part,
+  leaves two chain packs and no `fold/`, and both the tip and a want behind HEAD (that move) compose, and index-pack
+  --strict and fsck take them. A fold whose chain a far base at `partsMax` replaced meanwhile is not swapped in, and
+  the step at `partsMax` builds the base itself. On main the step at the 20th move waits for the base.
+- `containers/git/server/compose_test.go`, `TestARestartedContainerStepsAPartFirstAndDropsAKeptFold`: a container whose
+  fold table is empty, with a 19-part chain and a half-written `fold/` pack of its tip, steps a part, not a base, and
+  deletes the kept fold.
+- `TestComposedMiss`, `TestComposedTailMatchesTheComposedAnswer`, and the edgebed writer fold through the swap.
+- Plants (`tests/m0carried/plant164.py`), 7 of 7 caught. The plan numbered them 164 to 168, and they sit in one file:
+  - 164: the step waits for the fold it starts; and main's rule, the fold inline at 20;
+  - 165: the swap's part leaves out what the old chain holds, as if the parts after T were kept;
+  - 166: the fold builds in the chain's pack directory;
+  - 167: the swap uses a fold whose tip T left the chain;
+  - 168: no ceiling at `partsMax`;
+  - a restarted container keeps a fold its disk held.
+- `tests/composed/plant.py`'s "no fold" mutant now plants no fold start, and is caught.
+
+**What it costs** [inference]. Folds start at 12 parts, not 20, so there are about 1.5 times as many base builds and
+puts (about 258 MB to each warm bucket for the mono). Under load, a fold that takes over 120 s, as on mt25, lets the
+chain pass 20 packs. Its head then drops its pack records past `HEAD_MAX`, and the edge checks every pack, which
+`head-etags` was built to avoid: mt15's hits that checked 11 to 20 packs had `chain_open` p50 469 to 695 ms
+(`tests/am1/results/b034-tail.md`).
+
+**Settled by** one B0-34-shaped row on a site day (G37):
+- no gap of more than 60 s [guess] between part puts outside the home's own rehydrate;
+- every clone at least 90% in kill and second;
+- the moved-load site's composed misses at p99 under 5 s while held;
+- recorded beside them: `server-timing`'s `chain_head` against `chain_chk`, and hits p99, on hits whose chain had more
+  than 20 packs.
+
+**Flip.**
+- **Lower `partsMax`, or back the fold out to inline,** if hits past 20 packs cost more than `head-etags` saved: hits
+  p99 or `chain_open` on chains past 20 packs above mt24's and mt25's with outages removed (786 and 850 ms).
+- **Price a cheaper fold** if under load a fold never lands before `partsMax`, so every fold is inline again.
+- **E** if composes past a frozen chain remain with the fold aside: second or kill under 90%, or the moved-load site's
+  composed misses over 5 s at p99 while held.
 
 ### `log-page`: a stored-log walk sizes each page by its rows' lengths before it fetches them, 2026-11-24
 
