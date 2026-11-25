@@ -1,0 +1,15 @@
+# BF-77's seed (tests/m4/wp3/bf77): one job saves two actions/cache@v4 entries (mirrored as `actions-mirror/cache`)
+# and uploads one artifact with upload-artifact@v3.2.2, so the repository holds live cache rows on its owner's shard,
+# cache chunks, and artifact objects before the driver deletes it. No step reads a secret.
+on: workflow_dispatch
+jobs:
+  seed:
+    runs-on: [self-hosted]
+    steps:
+      - run: mkdir -p c1 c2 art && head -c 2000000 /dev/urandom > c1/x && head -c 3000000 /dev/urandom > c2/y && echo hi > art/a.txt
+      - uses: actions/cache@v4
+        with: { path: c1, key: "bf77-one-${{ github.run_id }}" }
+      - uses: actions/cache@v4
+        with: { path: c2, key: "bf77-two-${{ github.run_id }}" }
+      - uses: actions/upload-artifact@v3.2.2
+        with: { name: seeded, path: art }

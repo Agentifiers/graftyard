@@ -1,0 +1,31 @@
+2026-11-25T22:28:53.7441301Z Current runner version: '2.338.2'
+2026-11-25T22:28:53.7446562Z Runner name: 'bf77-2'
+2026-11-25T22:28:53.7446963Z Machine name: '172'
+2026-11-25T22:28:53.7450031Z Prepare workflow directory
+2026-11-25T22:28:53.7853992Z Prepare all required actions
+2026-11-25T22:28:53.7991657Z Complete job name: default
+2026-11-25T22:28:53.8922080Z ##[group]Run set -u
+2026-11-25T22:28:53.8922305Z [36;1mset -u[0m
+2026-11-25T22:28:53.8922369Z [36;1mapi() { curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "authorization: token $GITHUB_TOKEN" -H 'content-type: application/json' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$2" ${3:+--data "$3"}; }[0m
+2026-11-25T22:28:53.8922400Z [36;1mecho "BF77 $GITHUB_JOB read $(api GET '')"[0m
+2026-11-25T22:28:53.8922427Z [36;1mecho "BF77 $GITHUB_JOB issue $(api POST /issues '{"title":"bf77"}')"[0m
+2026-11-25T22:28:53.8922489Z [36;1mecho "BF77 $GITHUB_JOB status $(api POST /statuses/$GITHUB_SHA '{"state":"success","context":"bf77"}')"[0m
+2026-11-25T22:28:53.8922517Z [36;1mecho "BF77 $GITHUB_JOB artifacts $(api GET /actions/artifacts)"[0m
+2026-11-25T22:28:53.8922654Z [36;1mrm -rf p && git init -q p && cd p[0m
+2026-11-25T22:28:53.8922681Z [36;1mgit -c user.name=bf77 -c user.email=bf77@example.invalid commit -q --allow-empty -m bf77[0m
+2026-11-25T22:28:53.8922864Z [36;1mauth="authorization: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"[0m
+2026-11-25T22:28:53.8922898Z [36;1mif git -c http.extraHeader="$auth" push -q "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/bf77-$GITHUB_JOB" 2>/dev/null[0m
+2026-11-25T22:28:53.8922926Z [36;1mthen echo "BF77 $GITHUB_JOB push accepted"; else echo "BF77 $GITHUB_JOB push refused"; fi[0m
+2026-11-25T22:28:53.8951576Z shell: /usr/sbin/bash -e {0}
+2026-11-25T22:28:53.8951852Z ##[endgroup]
+2026-11-25T22:28:53.9147677Z ~/tmp/runner/_work/_temp/56577897-7e13-40df-b8f2-948ba5bfc0df.sh: line 2: GITHUB_TOKEN: unbound variable
+2026-11-25T22:28:53.9147787Z BF77 default read 
+2026-11-25T22:28:53.9149362Z ~/tmp/runner/_work/_temp/56577897-7e13-40df-b8f2-948ba5bfc0df.sh: line 2: GITHUB_TOKEN: unbound variable
+2026-11-25T22:28:53.9151971Z BF77 default issue 
+2026-11-25T22:28:53.9153431Z ~/tmp/runner/_work/_temp/56577897-7e13-40df-b8f2-948ba5bfc0df.sh: line 2: GITHUB_TOKEN: unbound variable
+2026-11-25T22:28:53.9157068Z BF77 default status 
+2026-11-25T22:28:53.9158598Z ~/tmp/runner/_work/_temp/56577897-7e13-40df-b8f2-948ba5bfc0df.sh: line 2: GITHUB_TOKEN: unbound variable
+2026-11-25T22:28:53.9161617Z BF77 default artifacts 
+2026-11-25T22:28:53.9245126Z ~/tmp/runner/_work/_temp/56577897-7e13-40df-b8f2-948ba5bfc0df.sh: line 9: GITHUB_TOKEN: unbound variable
+2026-11-25T22:28:55.0648975Z BF77 default push refused
+2026-11-25T22:28:55.0826665Z Cleaning up orphan processes

@@ -6,12 +6,14 @@
 #
 #   bash tests/m4/wp3/bf71/days.sh <worktree at main> site|edge|check
 #
+# ROW=bf75 (BF-75 and BF-77's edge day) writes its logs under tests/m4/raw/wp3/bf75 instead; the phases are the same.
+#
 # `site` needs `worker-build --release --features test-faults` in the worktree's workers/site first (log in
 # $HOME/bf71/site-build.log ending "build exit 0"); `edge` needs a web build in /tmp/bf71web.
 set -uo pipefail
 TREE=${1:?worktree}; PH=${2:?site|edge|check}
 REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
-O=$REPO/tests/m4/raw/wp3/bf71; mkdir -p "$O"
+O=$REPO/tests/m4/raw/wp3/${ROW:-bf71}; mkdir -p "$O"
 W=$HOME/.graft-m4a
 STORE=bfaa0c1573de4775b1b92a12fb89acb4
 IMG=registry.cloudflare.com/$CLOUDFLARE_ACCOUNT_ID/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
@@ -47,14 +49,21 @@ edge)
     echo "$before" | jq -S . >"$O/edge-before.json"
     fmt=$(echo "$before" | jq -r .FORMATS_ENABLED); rsp=$(echo "$before" | jq -r .RUN_SERVICE_PUBLIC)
     lim=$(echo "$before" | jq -r .GRAFTYARD_CACHE_LIMIT)
+    # Every other live plain-text var a later day added (an OIDC or agents flag), kept as it is; the ones the deploy
+    # writes itself (sites, anchor, host, ops, caps) are left to it.
+    KEEP=()
+    while IFS= read -r kv; do KEEP+=(--var "$kv"); done < <(echo "$before" | jq -r 'to_entries[]
+      | select(.key | test("^(FORMATS_ENABLED|RUN_SERVICE_PUBLIC|GRAFTYARD_CACHE_LIMIT|GRAFTYARD_ARTIFACTS|GRAFTYARD_SITES|GRAFTYARD_INSTALL|GRAFTYARD_CUSTOMER_KEY|GRAFTYARD_GENESIS.*|HOST|OPS_SCRIPT|PLAN|SSH_OPTION|SSH_HOST_KEYS|EDGE_CAP_BYTES|PART_BYTES)$") | not)
+      | "\(.key)=\(.value)"')
+    echo "kept as live: $(printf '%s ' "${KEEP[@]}" | grep -o -- '--var [A-Z_]*' | cut -c7- | tr '\n' ' ')"
     echo "before $(deployment graft-m4a-edge)"
     (cd "$TREE" && export PATH=$HOME/.cargo/bin:$PATH && unset CARGO_TARGET_DIR && CARGO_INCREMENTAL=0 \
       node tests/m1/integ/deploy-edge.mjs "$W/sites.json" graft-m4a-edge --test-faults --anchor "$W/install.toml" --ops graft-m4a-ops \
         --web /tmp/bf71web --var "FORMATS_ENABLED=$fmt" --var "RUN_SERVICE_PUBLIC=$rsp" --var "GRAFTYARD_CACHE_LIMIT=$lim" \
-        --var GRAFTYARD_ARTIFACTS=1 >"$O/edge-deploy.raw" 2>&1); echo "deploy exit $?"
+        "${KEEP[@]}" --var GRAFTYARD_ARTIFACTS=1 >"$O/edge-deploy.raw" 2>&1); echo "deploy exit $?"
     grep -E "Current Version|rror" "$O/edge-deploy.raw" | tail -4
     api "/workers/scripts/graft-m4a-edge/settings" | jq -c '[.result.bindings[] | select(.type == "plain_text") | {(.name): .text}] | add' | jq -S . >"$O/edge-after.json"
-    echo "binding diff (plain text; only GRAFTYARD_ARTIFACTS may change):"; diff "$O/edge-before.json" "$O/edge-after.json" | grep '^[<>]' | grep -v GRAFTYARD_SITES | cut -c1-80
+    echo "binding diff (plain text; only GRAFTYARD_ARTIFACTS may change, and only from absent to 1):"; diff "$O/edge-before.json" "$O/edge-after.json" | grep '^[<>]' | grep -v GRAFTYARD_SITES | cut -c1-80
     echo "after $(deployment graft-m4a-edge)"
     (cd "$TREE" && python3 tests/fanout/edgever.py "$O/edge-deploy.raw" graft-m4a-edge); echo "edgever exit $?"
   } 2>&1 | log ;;
