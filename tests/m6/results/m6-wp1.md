@@ -1,6 +1,6 @@
 # M6-WP1, region loss and re-protection
 
-This file records M6-WP1's work (`build/BUILD-PLAN.md`, M6-WP1; BF-50). Status: **the pure half is merged** (main 3bf43a16), and **the hosted glue is built** on branch `m6-wp1-glue`. BF-50 on graft-m6a is not started. The operator approved graft-m6a for after the pure half and the glue merge (3 sites plus a wnam spare from genesis, test-faults builds, $20 a UTC day and $40 in total).
+This file records M6-WP1's work (`build/BUILD-PLAN.md`, M6-WP1; BF-50). Status: **the pure half is merged** (main 3bf43a16), and **the hosted glue is built** on branch `m6-wp1-glue`. BF-50 on graft-m6a is not started. The operator approved graft-m6a for after the pure half and the glue merge (3 sites plus a wnam spare from genesis, test-faults builds, $20 a UTC day and $40 in total). The total rose to $70 on 2026-11-25 (`FRAME.md`, "Operator decision, 2026-11-25, graft-m6a's total spend rises to $70"); the $20 a UTC day and each row's stops are unchanged.
 
 ## The pure half (2026-11-24)
 
