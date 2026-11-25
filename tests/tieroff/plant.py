@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """tier-off-leader's planted bugs: each must fail `a_follower_serves_only_its_reads_under_the_caps_and_never_stale`
-(graftyard-site) or `a_whole_tier_read_every_member_declines_never_goes_to_the_leader` (graftyard-lookup). Restores
+(graftyard-site), `a_whole_tier_read_every_member_declines_never_goes_to_the_leader` or
+`a_leaderless_group_read_only_by_dumps_elects_and_never_serves_the_dump` (graftyard-lookup), or, for the edge's log
+line, `a_failed_read_is_503_with_retry_after` (graftyard-edge). Restores
 each file byte for byte. Run from the worktree root: `python3 tests/tieroff/plant.py`."""
 import subprocess
 
@@ -9,6 +11,11 @@ LK = "crates/lookup/src/lib.rs"
 SITE = ["cargo", "test", "-q", "-p", "graftyard-site", "--lib", "--", "a_follower_serves_only"]
 LOOK = ["cargo", "test", "-q", "-p", "graftyard-lookup", "--lib", "--", "whole_tier_read_every_member",
         "leaderless_group_read_only"]
+EDGE = ["cargo", "test", "-q", "-p", "graftyard-edge", "--lib", "--", "a_failed_read_is_503_with_retry_after"]
+AGAIN = "                if led && again && (io.now)() + PASS_MAX.as_millis() as u64 <= until {"
+EWHY = "                Err((elect_why(chain), OVERLOAD_RETRY_MS))"
+API = "workers/edge/src/api.rs"
+ELINE = "    [graftyard_lookup::TIER_OFF, graftyard_lookup::ELECT]"
 GATE = "    if index && (if leading { off_leader } else { !servable }) {"
 DECL = "            (false, true, _) => Spread::TierOff,"
 ELECT = "            (false, false, true) => Spread::Elect,"
@@ -30,7 +37,15 @@ M = [("main's gate: a leader serves every read-index read", MB, GATE, "    if in
      ("a leaderless decline counts as absent", LK, ELECT, "            (false, false, true) => Spread::Absent,", LOOK),
      ("Elect sends the dump itself the leader's way", LK, EBODY, "        Spread::Elect => Some(body.to_string()),", LOOK),
      ("ls-refs is not covered", LK, PRED, '    q.get("rows").is_some_and(Value::is_boolean)', LOOK),
-     ("a merge's rows are kept off the leader too", LK, PRED, '    q.get("rows").is_some() || q.get("lsRefs").is_some()', LOOK)]
+     ("a merge's rows are kept off the leader too", LK, PRED, '    q.get("rows").is_some() || q.get("lsRefs").is_some()', LOOK),
+     # F128 (`elect-again`): the second pass after the probe, and Elect's own reason and log line.
+     ("Elect sheds at once: no second pass after the probe finds a leader", LK, AGAIN,
+      "                if false && led && again && (io.now)() + PASS_MAX.as_millis() as u64 <= until {", LOOK),
+     ("the second pass is a loop: it runs again whenever the probe finds a leader", LK, AGAIN,
+      "                if led && (io.now)() + PASS_MAX.as_millis() as u64 <= until {", LOOK),
+     ("the second pass ignores LOOKUP_FOR", LK, AGAIN, "                if led && again {", LOOK),
+     ("Elect and TierOff share one reason again", LK, EWHY, "                Err((tier_off_why(chain), OVERLOAD_RETRY_MS))", LOOK),
+     ("the edge logs an Elect shed as tierOff", API, ELINE, "    [graftyard_lookup::TIER_OFF, graftyard_lookup::TIER_OFF]", EDGE)]
 for name, f, old, new, cmd in M:
     s = open(f).read()
     assert s.count(old) == 1, name

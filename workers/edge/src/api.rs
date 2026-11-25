@@ -707,7 +707,9 @@ async fn first_use(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<(), R
 /// members shed it (`graftyard_lookup::OVERLOADED`), which they answer within about one FOLLOWER_WAIT, else 5 s.
 /// A read that `tier-off-leader` shed (`graftyard_lookup::TIER_OFF`: every member declined a whole-tier dump, which
 /// the leader never serves) is also logged as `{"shed": "tierOff"}`, so a row counts the 503s this rule makes apart from
-/// the members' own sheds (`decisions/DECISIONS.md`, "`tier-off-leader`", the flip).
+/// the members' own sheds (`decisions/DECISIONS.md`, "`tier-off-leader`", the flip). One a leaderless group shed after
+/// its probe (`graftyard_lookup::ELECT`) is logged `{"shed": "elect"}`, apart from both: before F128 it was counted as
+/// `tierOff`.
 pub(crate) fn read_failed(why: &str, e: &str) -> Reply {
     #[cfg(target_arch = "wasm32")]
     if let Some(line) = tier_off_line(why, e) {
@@ -744,11 +746,14 @@ async fn shed_reply(c: &Ctx<'_>, who: Option<&Principal>, r: Reply) -> Reply {
     shed_for(r, true, class)
 }
 
-/// `read_failed`'s log line for a `tier-off-leader` shed, `None` for any other failed read.
+/// `read_failed`'s log line for a `tier-off-leader` or `Elect` shed, each by its own name, `None` for any other failed
+/// read. Each reason carries its name in parentheses (`graftyard_lookup::tier_off_why`, `elect_why`).
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn tier_off_line(why: &str, e: &str) -> Option<String> {
-    e.contains(graftyard_lookup::TIER_OFF)
-        .then(|| json!({ "shed": graftyard_lookup::TIER_OFF, "why": why }).to_string())
+    [graftyard_lookup::TIER_OFF, graftyard_lookup::ELECT]
+        .into_iter()
+        .find(|name| e.contains(&format!("({name})")))
+        .map(|name| json!({ "shed": name, "why": why }).to_string())
 }
 
 const TIER_FAILED: &str = "the repository's tier rows did not answer; retry";
@@ -2772,6 +2777,16 @@ mod tests {
         let line: serde_json::Value = serde_json::from_str(&super::tier_off_line("rows", &tier).unwrap()).unwrap();
         assert_eq!(line["shed"], "tierOff");
         assert_eq!(super::tier_off_line("rows", &shed), None, "a members' shed is not tierOff");
+        // F128: a leaderless group's shed is 503 with `Retry-After: 1` too, and logged as `elect`, never `tierOff`.
+        let elect = format!(
+            "repo:9: every member declined a read the leader never serves, and no member named a leader: {} ({})",
+            graftyard_lookup::OVERLOADED,
+            graftyard_lookup::ELECT
+        );
+        let r = super::read_failed("rows", &elect);
+        assert_eq!((r.status, r.header("retry-after")), (503, Some("1")));
+        let line: serde_json::Value = serde_json::from_str(&super::tier_off_line("rows", &elect).unwrap()).unwrap();
+        assert_eq!(line["shed"], "elect");
         let r = super::read_failed("rows", "repo:9: repo:9#1#f0: no answer");
         assert_eq!((r.status, r.header("retry-after")), (503, Some("5")));
     }

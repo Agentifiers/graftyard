@@ -1113,6 +1113,17 @@ fn tier_off_why(chain: ChainId) -> String {
     format!("{chain}: every member declined a read the leader never serves: {OVERLOADED} ({TIER_OFF})")
 }
 
+/// The reason an `Elect` read fails with, apart from TIER_OFF's: before F128 the two shared `tier_off_why`, so every
+/// `tierOff` count, `tier-off-leader`'s flip included, also counted the reads a leaderless group shed. It names
+/// OVERLOADED, so every caller still treats it as a shed read.
+pub const ELECT: &str = "elect";
+
+fn elect_why(chain: ChainId) -> String {
+    format!(
+        "{chain}: every member declined a read the leader never serves, and no member named a leader: {OVERLOADED} ({ELECT})"
+    )
+}
+
 /// What `read_spread` does with the answers it got, in order.
 #[derive(Debug, PartialEq, Eq)]
 enum Spread {
@@ -1304,7 +1315,7 @@ where
 }
 
 /// One pass of `read_spread`: `Err` with the wait when every member asked shed it. A read every member declines goes
-/// to the leader only with `to_leader`; without it, `Ok(Ok(None))`.
+/// to the leader only with `to_leader`; without it, `Ok(Ok(None))`. The member calls are `spread_pass`'s.
 #[allow(clippy::type_complexity)]
 async fn spread_once(
     b: &Bindings<'_>,
@@ -1314,111 +1325,219 @@ async fn spread_once(
     to_leader: bool,
     trace: Option<&RefCell<Vec<(u64, String)>>>,
 ) -> std::result::Result<std::result::Result<Option<(Value, Step, Target)>, String>, (String, u64)> {
-    let pass = now_ms();
-    let mut tries: Vec<String> = Vec::new();
-    let note = |tries: &[String], end: &str| {
-        if let Some(t) = trace {
-            t.borrow_mut().push((now_ms().saturating_sub(pass), format!("{chain} {} {end}", tries.join(" "))));
-        }
+    let io = PassIo {
+        now: &now_ms,
+        pick: (js_sys::Math::random() * 1024.0) as usize,
+        post: &async |t: &Target, bytes: &[u8]| {
+            post_by(b, t.site, &t.do_name, "/read", bytes, FOLLOWER_CALL, SentBy::Spread).await
+        },
+        leader: &async |bytes: &[u8]| call_opt(b, chain, record, "/read", bytes).await,
+        refresh: &async |t: &Target, v: &Value| refresh_config(b, chain, t, v).await,
+        report: &async |about: Target, term: u64| {
+            let colo = COLO.with(|c| c.get());
+            suspect(b, chain, &about, term, colo, false).await;
+        },
     };
-    let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
-    let voters = if known.voters.is_empty() {
-        record.bootstrap_members(chain).into_iter().map(|m| (m.site, m.do_name.to_string())).collect()
-    } else {
-        known.voters
-    };
-    let pick = (js_sys::Math::random() * 1024.0) as usize;
-    let now = now_ms();
-    let learners: Vec<(SiteId, String, Option<f64>)> = ANSWER_MS.with(|m| {
-        let m = m.borrow();
-        known.learners.into_iter().map(|(s, n)| (s, n.clone(), m.get(&(s, n)).and_then(|t| t.score(now)))).collect()
-    });
-    let n_learners = learners.len();
-    // A whole-tier dump or an `ls-refs` never goes on to the leader, unless the group has no other member to serve it
-    // (a `Solo` group: one voter, no learners), whose leader serves every read.
-    let alone = voters.len() <= 1 && n_learners == 0;
-    let leader_ok = alone || !body.get("q").is_some_and(leader_never_serves);
-    let mut indexed = body.clone();
-    indexed["index"] = json!(true);
-    let bytes = indexed.to_string();
-    let mut answers = Vec::new();
-    // The learners come first in the order, so the first `n_learners` asked are learners, and only they are timed.
-    for (i, t) in timed_spread_order(learners, voters, known.leader, pick).into_iter().enumerate() {
-        let start = now_ms();
-        let r = post_by(b, t.site, &t.do_name, "/read", bytes.as_bytes(), FOLLOWER_CALL, SentBy::Spread).await;
-        let seen = r.as_ref().map(|(s, v)| (*s, v));
-        if trace.is_some() {
-            tries.push(try_line(t.site, i < n_learners, now_ms().saturating_sub(start), seen));
-        }
-        if i < n_learners {
-            let sample = answer_sample(seen, now_ms().saturating_sub(start) as f64);
-            ANSWER_MS.with(|m| {
-                let mut m = m.borrow_mut();
-                let key = (t.site, t.do_name.clone());
-                let a = Timed::after(m.get(&key).copied(), sample, now_ms());
-                m.insert(key, a);
-            });
-        }
-        let usable = follower_answer_usable(seen);
-        if let Some((_, v)) = &r {
-            learn_config(chain, v);
-            // A leader that declined a whole-tier read names itself: this isolate leaves it out of its next pass.
-            if let Some(nl) = v.pointer("/error/notLeader").filter(|nl| !leader_ok && nl["leader"].is_u64()) {
-                learn_leader_from_follower(
-                    chain,
-                    &json!({ "meta": { "term": nl.get("term"), "leader": nl.get("leader") } }),
-                );
+    spread_pass(chain, record, body, to_leader, trace, &io).await
+}
+
+/// What one spread pass calls, so a native test drives a whole pass, its leader probe and its second pass included,
+/// with no bindings: the clock, the rotation pick, one member's read-index `/read`, a call the leader's way
+/// (`call_opt`), a learner refresh (`refresh_config`), and a `suspect` report about a forgotten leader.
+struct PassIo<'a, N, P, L, R, S> {
+    now: &'a N,
+    pick: usize,
+    post: &'a P,
+    leader: &'a L,
+    refresh: &'a R,
+    report: &'a S,
+}
+
+/// The longest one spread pass over the members takes: each of SPREAD_TRIES members gets FOLLOWER_CALL.
+const PASS_MAX: Duration = Duration::from_millis(SPREAD_TRIES as u64 * FOLLOWER_CALL.as_millis() as u64);
+
+/// `spread_once` over `io`. A pass whose verdict is `Elect` sends the probe the leader's way; when that call finds a
+/// leader, the pass asks the members once more (`elect-again`), and only when that second pass also finds no member
+/// to serve the read is it shed, with ELECT's reason. The second pass runs at most once, and only when a whole pass
+/// still ends inside LOOKUP_FOR from this pass's start: a restored follower learns the leader from the round the probe
+/// made, so it serves the dump, which the leader never does (`decisions/DECISIONS.md`, "`tier-off-leader`", F128).
+#[allow(clippy::type_complexity)]
+async fn spread_pass<N, P, L, R, S>(
+    chain: ChainId,
+    record: &PlacementRecord,
+    body: &Value,
+    to_leader: bool,
+    trace: Option<&RefCell<Vec<(u64, String)>>>,
+    io: &PassIo<'_, N, P, L, R, S>,
+) -> std::result::Result<std::result::Result<Option<(Value, Step, Target)>, String>, (String, u64)>
+where
+    N: Fn() -> u64,
+    P: AsyncFn(&Target, &[u8]) -> Option<(u16, Value)>,
+    L: AsyncFn(&[u8]) -> std::result::Result<Option<(Value, Step, Target)>, String>,
+    R: AsyncFn(&Target, &Value),
+    S: AsyncFn(Target, u64),
+{
+    let pass = (io.now)();
+    let until = pass + LOOKUP_FOR.as_millis() as u64;
+    let mut again = true;
+    loop {
+        let mut tries: Vec<String> = Vec::new();
+        let note = |tries: &[String], end: &str| {
+            if let Some(t) = trace {
+                t.borrow_mut().push(((io.now)().saturating_sub(pass), format!("{chain} {} {end}", tries.join(" "))));
             }
-        }
-        answers.push(r);
-        if usable {
-            let v = answers.pop().flatten().map(|(_, v)| v).unwrap_or_default();
-            learn_leader_from_follower(chain, &v);
-            refresh_config(b, chain, &t, &v).await;
-            note(&tries, "use");
-            return Ok(Ok(Some((v, Step::Cached, t))));
-        }
-    }
-    let seen: Vec<Option<(u16, &Value)>> = answers.iter().map(|r| r.as_ref().map(|(s, v)| (*s, v))).collect();
-    let verdict = spread_verdict(&seen, leader_ok);
-    let to_leader_body = leader_body(&verdict, body);
-    if trace.is_some() && !(to_leader && verdict == Spread::Leader) {
-        let end = match &verdict {
-            Spread::Shed(ms) => format!("shed:{ms}"),
-            v => format!("{v:?}").to_lowercase(),
         };
-        note(&tries, &end);
-    }
-    match verdict {
-        Spread::Use(_) => unreachable!("a usable answer returned above"),
-        Spread::Absent => Ok(Ok(None)),
-        Spread::TierOff => Err((tier_off_why(chain), OVERLOAD_RETRY_MS)),
-        Spread::Elect => {
-            // The lookup's answer is not the read's: the read is shed, and its retry finds a follower with a leader.
-            let probe = to_leader_body.unwrap_or_default();
-            let _ = call_opt(b, chain, record, "/read", probe.as_bytes()).await;
-            Err((tier_off_why(chain), OVERLOAD_RETRY_MS))
-        }
-        Spread::Shed(ms) => {
-            // A member that shed it because its read-index call to the leader went unanswered (F67 rule 12) names
-            // that leader: one `suspect` report about it, damped by SUSPECT_GAP, stands in for the leader walk a
-            // `notLeader` answer used to start, so a half-hung leader is still voted off (`b032-shed`).
-            if let Some((site, term)) = forgot_of(&seen)
-                && let Some(about) = known_voters(chain).into_iter().find(|v| v.site == site)
-            {
-                let colo = COLO.with(|c| c.get());
-                suspect(b, chain, &about, term, colo, false).await;
+        let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
+        let voters = if known.voters.is_empty() {
+            record.bootstrap_members(chain).into_iter().map(|m| (m.site, m.do_name.to_string())).collect()
+        } else {
+            known.voters
+        };
+        let now = (io.now)();
+        let learners: Vec<(SiteId, String, Option<f64>)> = ANSWER_MS.with(|m| {
+            let m = m.borrow();
+            known.learners.into_iter().map(|(s, n)| (s, n.clone(), m.get(&(s, n)).and_then(|t| t.score(now)))).collect()
+        });
+        let n_learners = learners.len();
+        // A whole-tier dump or an `ls-refs` never goes on to the leader, unless the group has no other member to serve
+        // it (a `Solo` group: one voter, no learners), whose leader serves every read.
+        let alone = voters.len() <= 1 && n_learners == 0;
+        let leader_ok = alone || !body.get("q").is_some_and(leader_never_serves);
+        let mut indexed = body.clone();
+        indexed["index"] = json!(true);
+        let bytes = indexed.to_string();
+        let mut answers = Vec::new();
+        let mut asked: Vec<(Target, u64)> = Vec::new();
+        // The learners come first in the order, so the first `n_learners` asked are learners, and only they are timed.
+        for (i, t) in timed_spread_order(learners, voters, known.leader, io.pick).into_iter().enumerate() {
+            let start = (io.now)();
+            let r = (io.post)(&t, bytes.as_bytes()).await;
+            let seen = r.as_ref().map(|(s, v)| (*s, v));
+            let took = (io.now)().saturating_sub(start);
+            if trace.is_some() {
+                tries.push(try_line(t.site, i < n_learners, took, seen));
             }
-            Err((format!("{chain}: every member asked shed the read: {OVERLOADED}"), ms))
+            if i < n_learners {
+                let sample = answer_sample(seen, took as f64);
+                ANSWER_MS.with(|m| {
+                    let mut m = m.borrow_mut();
+                    let key = (t.site, t.do_name.clone());
+                    let a = Timed::after(m.get(&key).copied(), sample, (io.now)());
+                    m.insert(key, a);
+                });
+            }
+            let usable = follower_answer_usable(seen);
+            if let Some((_, v)) = &r {
+                learn_config(chain, v);
+                // A leader that declined a whole-tier read names itself: this isolate leaves it out of its next pass.
+                if let Some(nl) = v.pointer("/error/notLeader").filter(|nl| !leader_ok && nl["leader"].is_u64()) {
+                    learn_leader_from_follower(
+                        chain,
+                        &json!({ "meta": { "term": nl.get("term"), "leader": nl.get("leader") } }),
+                    );
+                }
+            }
+            answers.push(r);
+            if usable {
+                let v = answers.pop().flatten().map(|(_, v)| v).unwrap_or_default();
+                learn_leader_from_follower(chain, &v);
+                (io.refresh)(&t, &v).await;
+                note(&tries, "use");
+                return Ok(Ok(Some((v, Step::Cached, t))));
+            }
+            asked.push((t, took));
         }
-        Spread::Leader if !to_leader => Ok(Ok(None)),
-        Spread::Leader => {
-            let at = now_ms();
-            let r = call_opt(b, chain, record, "/read", to_leader_body.unwrap_or_default().as_bytes()).await;
-            note(&tries, &format!("leader:{}", now_ms().saturating_sub(at)));
-            Ok(r)
+        let seen: Vec<Option<(u16, &Value)>> = answers.iter().map(|r| r.as_ref().map(|(s, v)| (*s, v))).collect();
+        let verdict = spread_verdict(&seen, leader_ok);
+        let to_leader_body = leader_body(&verdict, body);
+        if trace.is_some() && !(to_leader && verdict == Spread::Leader) {
+            let end = match &verdict {
+                Spread::Shed(ms) => format!("shed:{ms}"),
+                v => format!("{v:?}").to_lowercase(),
+            };
+            note(&tries, &end);
         }
+        if matches!(verdict, Spread::TierOff | Spread::Elect) {
+            spread_line(chain, &verdict, &asked, &seen, !again);
+        }
+        return match verdict {
+            Spread::Use(_) => unreachable!("a usable answer returned above"),
+            Spread::Absent => Ok(Ok(None)),
+            Spread::TierOff => Err((tier_off_why(chain), OVERLOAD_RETRY_MS)),
+            Spread::Elect => {
+                // The probe's answer is not the read's. Once it finds a leader, its round has reached a quorum, so a
+                // follower now names the leader and serves the read by read-index: one more pass, if it fits.
+                let probe = to_leader_body.unwrap_or_default();
+                let led = matches!((io.leader)(probe.as_bytes()).await, Ok(Some(_)));
+                if led && again && (io.now)() + PASS_MAX.as_millis() as u64 <= until {
+                    again = false;
+                    continue;
+                }
+                Err((elect_why(chain), OVERLOAD_RETRY_MS))
+            }
+            Spread::Shed(ms) => {
+                // A member that shed it because its read-index call to the leader went unanswered (F67 rule 12) names
+                // that leader: one `suspect` report about it, damped by SUSPECT_GAP, stands in for the leader walk a
+                // `notLeader` answer used to start, so a half-hung leader is still voted off (`b032-shed`).
+                if let Some((site, term)) = forgot_of(&seen)
+                    && let Some(about) = known_voters(chain).into_iter().find(|v| v.site == site)
+                {
+                    (io.report)(about, term).await;
+                }
+                Err((format!("{chain}: every member asked shed the read: {OVERLOADED}"), ms))
+            }
+            Spread::Leader if !to_leader => Ok(Ok(None)),
+            Spread::Leader => {
+                let at = (io.now)();
+                let r = (io.leader)(to_leader_body.unwrap_or_default().as_bytes()).await;
+                note(&tries, &format!("leader:{}", (io.now)().saturating_sub(at)));
+                Ok(r)
+            }
+        };
     }
+}
+
+/// One line per `TierOff` or `Elect` verdict, on every install: each member asked, its object, how long it took and
+/// what it answered (the term, leader and config index it named, and whether it said it was removed), with the config
+/// index this isolate held. F128's first window (07:34 to 07:39Z on graft-m4a) sent reads to a voter replaced at
+/// 07:30:09.8Z, and no line said which members a pass asked or what each answered. `second` marks `elect-again`'s pass.
+fn spread_line(
+    chain: ChainId,
+    verdict: &Spread,
+    asked: &[(Target, u64)],
+    seen: &[Option<(u16, &Value)>],
+    second: bool,
+) {
+    let members: Vec<Value> = asked
+        .iter()
+        .zip(seen)
+        .map(|((t, ms), r)| {
+            let nl = r.and_then(|(_, v)| v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader")));
+            json!({
+                "do": t.do_name, "ms": ms, "status": r.map(|(s, _)| s),
+                "term": nl.and_then(|n| n.get("term")).cloned(),
+                "leader": nl.and_then(|n| n.get("leader")).cloned(),
+                "configIndex": nl.and_then(|n| n.pointer("/config/index")).cloned(),
+                "removed": r.and_then(|(_, v)| v.pointer("/meta/removed")).cloned(),
+                "shed": r.is_some_and(|(_, v)| v.get("overloaded").is_some()),
+            })
+        })
+        .collect();
+    let held = KNOWN.with(|k| k.borrow().get(&chain).map(|e| e.config_index));
+    let what = if *verdict == Spread::Elect { ELECT } else { TIER_OFF };
+    let line =
+        json!({ "spread": what, "chain": chain.to_string(), "second": second, "held": held, "members": members })
+            .to_string();
+    #[cfg(target_arch = "wasm32")]
+    console_log!("{line}");
+    #[cfg(not(target_arch = "wasm32"))]
+    SPREAD_LINES.with(|l| l.borrow_mut().push(line));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// Off wasm (tests), `spread_line`'s lines.
+    static SPREAD_LINES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The leader a shed answer says its member forgot (`"forgot": {"site", "term"}`, a site's read-index read that failed
@@ -3720,6 +3839,9 @@ mod tests {
         // Its reason is a shed's, which every caller already answers 503 or retries, and it names TIER_OFF apart.
         let why = tier_off_why(ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(9))));
         assert!(why.contains(OVERLOADED) && why.contains(TIER_OFF), "{why}");
+        let elect = elect_why(ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(9))));
+        assert!(elect.contains(OVERLOADED) && elect.contains(&format!("({ELECT})")), "{elect}");
+        assert!(!elect.contains(TIER_OFF) && !why.contains(&format!("({ELECT})")), "the two counted apart");
         assert!(!format!("repo:9: every member asked shed the read: {OVERLOADED}").contains(TIER_OFF));
     }
 
@@ -3806,6 +3928,71 @@ mod tests {
         assert_eq!(t.site, SiteId(1), "the lookup found the new leader");
         assert!(campaigned.get().is_some(), "the lookup reported the leaderless group, which starts the election");
         assert!(bodies.borrow().iter().all(|b| b == ELECT_PROBE), "only the probe went the leader's way");
+
+        // F128: the same read through a whole spread pass. Restored followers know no leader until the probe's round
+        // reaches them; the pass then asks them again in the same request, and a follower serves the dump. On
+        // tier-off-elect as first built the pass shed it 503 and only the client's retry was served.
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(65_596)));
+        let m = |s: u8| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, 1);
+        let cfg = json!({ "index": 12, "config": { "normal": {
+            "voters": [m(0), m(1), m(2)], "learners": [], "home": 0, "generation": 1 } } });
+        learn(chain, &json!({ "config": cfg }));
+        // `heals`: the probe's round reaches the followers; `probe_ms`: how long the call the leader's way takes.
+        let (clock, led, heals, probe_ms) = (Cell::new(0u64), Cell::new(false), Cell::new(true), Cell::new(300u64));
+        let (reads, to_leader) = (RefCell::new(Vec::<(u8, Value)>::new()), RefCell::new(Vec::<String>::new()));
+        let io = PassIo {
+            now: &|| clock.get(),
+            pick: 0,
+            post: &async |t: &Target, bytes: &[u8]| {
+                clock.set(clock.get() + 40);
+                reads.borrow_mut().push((t.site.0, serde_json::from_slice(bytes).unwrap()));
+                let leader = if led.get() { json!(0) } else { Value::Null };
+                if led.get() && t.site != SiteId(0) {
+                    return Some((200, json!({ "value": "rows", "meta": { "term": 2, "leader": 0 } })));
+                }
+                Some((200, json!({ "error": { "notLeader": { "term": 2, "leader": leader, "config": cfg } } })))
+            },
+            leader: &async |bytes: &[u8]| {
+                clock.set(clock.get() + probe_ms.get());
+                to_leader.borrow_mut().push(String::from_utf8(bytes.to_vec()).unwrap());
+                led.set(heals.get());
+                Ok(Some((json!({ "value": "probe" }), Step::Cached, Target { site: SiteId(0), do_name: "f0".into() })))
+            },
+            refresh: &async |_: &Target, _: &Value| {},
+            report: &async |_: Target, _: u64| {},
+        };
+        let pass = || spread_pass(chain, &rec(1, None), &dump, true, None, &io).now_or_never().expect("no real wait");
+        let (v, _, t) = pass().expect("not shed").expect("no error").expect("a value");
+        assert_eq!((v["value"].as_str(), t.site), (Some("rows"), SiteId(1)), "a follower served the dump");
+        assert_eq!(*to_leader.borrow(), [ELECT_PROBE], "only the probe went the leader's way, once");
+        assert!(reads.borrow().iter().all(|(_, b)| b["index"] == json!(true)), "every dump was a read-index read");
+        let lines = SPREAD_LINES.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        assert_eq!(lines.len(), 1, "one Elect line, for the first pass: {lines:?}");
+        let line: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!((line["spread"].as_str(), line["second"].as_bool()), (Some(ELECT), Some(false)));
+        assert_eq!(line["members"].as_array().map(Vec::len), Some(3), "{line}");
+
+        // The second pass runs once: followers that still name no leader after it are shed, with ELECT's reason
+        // and not TIER_OFF's, and the probe went the leader's way once per pass.
+        led.set(false);
+        heals.set(false);
+        to_leader.borrow_mut().clear();
+        let why = pass().expect_err("shed").0;
+        assert!(why.contains(OVERLOADED) && why.contains(&format!("({ELECT})")) && !why.contains(TIER_OFF), "{why}");
+        assert_eq!(to_leader.borrow().len(), 2, "two passes, never a third");
+        let lines = SPREAD_LINES.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        let second: Vec<Option<bool>> =
+            lines.iter().map(|l| serde_json::from_str::<Value>(l).unwrap()["second"].as_bool()).collect();
+        assert_eq!(second, [Some(false), Some(true)]);
+
+        // No second pass when one more pass could end past LOOKUP_FOR from this read's start.
+        led.set(false);
+        heals.set(true);
+        to_leader.borrow_mut().clear();
+        probe_ms.set(LOOKUP_FOR.as_millis() as u64);
+        assert!(pass().is_err_and(|(w, _)| w.contains(ELECT)), "shed, not asked again past LOOKUP_FOR");
+        assert_eq!(to_leader.borrow().len(), 1);
+        SPREAD_LINES.with(|l| l.borrow_mut().clear());
     }
 
     /// `b032-shed` A: a member that forgot its leader sheds the read and names it. Every such answer is `Shed`, never a

@@ -2,7 +2,9 @@
 """tieroff503.py FROM_ISO TO_ISO [SCRIPT] -> `tier-off-leader`'s 503s on a row: the edge's `{"shed": "tierOff"}` log
 lines (`api::read_failed`), by the read that failed (`why`), against every 503 the edge answered in the window. The
 B0-33 half of the flip fires only if these are a large share of the row's 503s (`decisions/DECISIONS.md`,
-"`tier-off-leader`"). Workers Logs' exact `calculations` view; the token from the environment, as a header."""
+"`tier-off-leader`"). A leaderless group's shed after its probe, `{"shed": "elect"}`, is counted apart (`elect`): an
+edge built before F128 logged it as `tierOff`, so on such an edge `tierOff` holds both. Workers Logs' exact
+`calculations` view; the token from the environment, as a header."""
 import json, os, sys, urllib.request
 from datetime import datetime
 
@@ -23,17 +25,25 @@ def count(filters, group):
     return {str(x["groups"][0]["value"]): int(x["count"]) for x in agg}
 
 
-tier = count([{"key": "$metadata.message", "operation": "includes", "type": "string", "value": '"shed":"tierOff"'}],
-             "$metadata.message")
-by_why = {}
-for msg, n in tier.items():
-    try:
-        why = json.loads(msg).get("why", "?")
-    except ValueError:
-        why = "?"
-    by_why[why] = by_why.get(why, 0) + n
+def sheds(name):
+    lines = count([{"key": "$metadata.message", "operation": "includes", "type": "string", "value": f'"shed":"{name}"'}],
+                  "$metadata.message")
+    by_why = {}
+    for msg, n in lines.items():
+        try:
+            why = json.loads(msg).get("why", "?")
+        except ValueError:
+            why = "?"
+        by_why[why] = by_why.get(why, 0) + n
+    return by_why
+
+
+tier, elect = sheds("tierOff"), sheds("elect")
 fivexx = count([{"key": "$workers.event.response.status", "operation": "eq", "type": "number", "value": 503}],
                "$workers.event.response.status")
-n_tier, n_503 = sum(by_why.values()), sum(fivexx.values())
-print(json.dumps({"tierOff": n_tier, "edge503": n_503, "share": round(n_tier / n_503, 4) if n_503 else None,
-                  "byWhy": dict(sorted(by_why.items(), key=lambda kv: -kv[1]))}))
+n_tier, n_elect, n_503 = sum(tier.values()), sum(elect.values()), sum(fivexx.values())
+print(json.dumps({"tierOff": n_tier, "elect": n_elect, "edge503": n_503,
+                  "share": round(n_tier / n_503, 4) if n_503 else None,
+                  "electShare": round(n_elect / n_503, 4) if n_503 else None,
+                  "byWhy": dict(sorted(tier.items(), key=lambda kv: -kv[1])),
+                  "electByWhy": dict(sorted(elect.items(), key=lambda kv: -kv[1]))}))
