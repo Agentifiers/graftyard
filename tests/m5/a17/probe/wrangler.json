@@ -1,0 +1,10 @@
+{
+  "name": "graft-a17-probe",
+  "main": "index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "WATCH", "class_name": "Watch" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Watch"] }],
+  "secrets_store_secrets": [{ "binding": "PROBE", "store_id": "<runner store id>", "secret_name": "graft-a17-probe" }]
+}
