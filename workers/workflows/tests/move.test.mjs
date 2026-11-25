@@ -342,3 +342,32 @@ test("a coordinator finishes with its unmoved groups listed, and still errors on
   const again = { instanceId: "01JC0000000000000000000004", payload: { from: 0, to: 3, dead: true, home: null } };
   await assert.rejects(coordinate(env, again, new Step()), /repo:8 failed: expiry: boom/);
 });
+
+// m6aL's restore: every group the replace moved had been led from the spare, then idled; its voters' promises lapsed
+// and each answered notLeader naming no leader. A restore is not dead, and asked none of them to campaign.
+test("a restore group whose voters name no leader asks one to campaign, then steps", async () => {
+  const cfg = { normal: P([V(3, 2), V(1), V(2)], 3) };
+  const asked = [];
+  let led = false;
+  const env = { sites: SITES, EXPIRE: workflow([]) };
+  const none = { error: { notLeader: { term: 4, leader: null, config: { index: 28, config: cfg } } } };
+  env.MEMBER_0 = ns(async (name, url) => {
+    asked.push(`0${url.slice(url.lastIndexOf("/"))}`);
+    return new Response("member not joined", { status: 409 });
+  });
+  env.MEMBER_1 = ns(async (name, url) => {
+    asked.push(`1${url.slice(url.lastIndexOf("/"))}`);
+    if (url.endsWith("/campaign")) {
+      led = true;
+      return ok({ verdict: "started" });
+    }
+    return ok(led ? { step: "Done", ok: { step: "Done" }, config: [28, cfg] } : none);
+  });
+  env.MEMBER_2 = ns(async () => ok(none));
+  env.MEMBER_3 = ns(async () => ok(none));
+  const event = { instanceId: "g7", payload: { from: 3, to: 0, dead: false, home: 0, chain: "repo:7",
+    row: { site: 1, do_name: "repo:7#1#f1" } } };
+  const out = await group(env, event, new Step());
+  assert.ok(asked.includes("1/campaign"), `no campaign was asked: ${asked}`);
+  assert.ok(!("unmoved" in out), `the restore ended unmoved: ${JSON.stringify(out)}`);
+});
