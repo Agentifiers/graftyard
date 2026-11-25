@@ -4552,7 +4552,7 @@ async fn serve(
             .and_then(|v| v.trim().parse().ok()),
     };
     // The lifeboat is read-only: a write, the export and release endpoints, a mint, or a test route is 503.
-    if graftyard_lookup::lifeboat() && !lifeboat::serves(req.method().as_ref(), &path) {
+    if graftyard_lookup::lifeboat() && !lifeboat::serves(req.method().as_ref(), &path, url.query().unwrap_or("")) {
         return lifeboat::read_only(&c, &path);
     }
     // A site's SSH front reaches the key lookup and git, and nothing else (`ssh`).

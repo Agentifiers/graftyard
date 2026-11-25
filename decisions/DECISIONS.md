@@ -10582,6 +10582,15 @@ both. Evidence: `the_scrub_is_weekly_and_a_lost_key_names_its_copy` (`lifeboat/t
 `start_script_refuses_an_open_file_limit_under_the_floor_and_another_workerd` (CLI), lifeboatbed's check 7 against the
 real `graft-blob` (a pack rotted on disk is lost with its copy named, then cleared), and `tests/m0carried/plant232.py`.
 
+**Both legs of a push refused, 2026-11-25 (lead's ruling on R58).** `lifeboat::serves` passed every GET, so the
+push's advertisement, `GET info/refs?service=git-receive-pack`, reached `receive_pack_stream` [measured, lifeboatbed
+on main `271fedba`]: 401 anonymous, and with the lifeboat token 200 with the copy's refs as a receive-pack
+advertisement, so git went on to a POST the front then refused. The POST was already refused by `serves`. Now an
+`info/refs` whose query names `service=git-receive-pack` is refused too, and both legs answer 503 "the lifeboat is
+read-only" with no `Retry-After`, so git stops instead of retrying. Evidence: lifeboatbed check 2, both legs
+anonymous and with the token; `the_lifeboat_front_serves_reads_and_fetches_and_nothing_else` (edge);
+`tests/m0carried/plant235.py`, 3 of 3.
+
 **Flip.**
 - **A host-process puller** if a workerd version drops `localDisk` alarms, or the bundle's alarm misses a pass by
   more than `FEED_STALE_MS` under load.
