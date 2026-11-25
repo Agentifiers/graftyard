@@ -759,6 +759,9 @@ actions::shard::ActionsEvent 10 CacheUsed 0a01
 actions::shard::ActionsEvent 11 CacheEvicted 0b00
 actions::shard::ActionsEvent 12 RunBase 0c020161
 actions::shard::ActionsEvent 13 RunHead 0d020161
+actions::shard::ActionsEvent 14 RunActor 0e02020161
+actions::shard::ActionsEvent 15 RunNumber 0f0201
+actions::shard::ActionsEvent 16 SubTemplateSet 10000000
 actions::shard::ActionsOp 0 CreateRun 0002020161016101010101010101010101010101010101010101010161067265706f3a310101000000
 actions::shard::ActionsOp 1 Job 01020100
 actions::shard::ActionsOp 2 ExpireLeases 02
@@ -779,6 +782,8 @@ actions::shard::ActionsOp 16 CacheSweep 10
 actions::shard::ActionsOp 17 CreateRunOn 1102020161016101010101010101010101010101010101010101010161067265706f3a310101000000000161
 actions::shard::ActionsOp 18 CacheDropRepo 1202
 actions::shard::ActionsOp 19 CreateRunFrom 1302020161016101010101010101010101010101010101010101010161067265706f3a3101010000000001610161
+actions::shard::ActionsOp 20 CreateRunAs 1402020161016101010101010101010101010101010101010101010161067265706f3a31010100000000000000
+actions::shard::ActionsOp 21 SetSubTemplate 15000000
 actions::shard::ActionsActor 0 Operator 00
 actions::shard::ActionsActor 1 Admin 0102
 actions::shard::ActionsActor 2 Runner 0202

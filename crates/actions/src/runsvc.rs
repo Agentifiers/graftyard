@@ -475,6 +475,10 @@ pub struct Acquired<'a> {
     pub cache: bool,
     /// `JobMessage::id_token`.
     pub id_token: bool,
+    /// The run's actor's login (`ActionsEvent::RunActor`, F120), `github.actor`; the owner's login without one.
+    pub actor: Option<&'a str>,
+    /// The run's number (`ActionsEvent::RunNumber`, F119), `github.run_number`; 1 without one.
+    pub run_number: Option<u64>,
 }
 
 /// The `acquirejob` answer for `job` of `run`, as `job_message` renders it, with `github.*` from the run.
@@ -495,10 +499,10 @@ pub fn acquire_message(
         ("api_url", json!(format!("{}/api/v3", urls.server))),
         ("workflow", json!(&*run.workflow)),
         ("run_id", json!(run.id.0.0.to_string())),
-        ("run_number", json!("1")),
+        ("run_number", json!(a.run_number.unwrap_or(1).to_string())),
         ("run_attempt", json!(run.attempt.to_string())),
         ("job", json!(&*job.spec.name)),
-        ("actor", json!(a.owner_login)),
+        ("actor", json!(a.actor.unwrap_or(a.owner_login))),
     ]);
     let matrix: Vec<(String, Value)> =
         job.spec.matrix.iter().map(|(k, v)| (k.to_string(), serde_json::from_str(v).unwrap_or(Value::Null))).collect();
@@ -599,7 +603,8 @@ pub fn steps_json(steps: &[crate::workflow::Step]) -> Value {
 /// The `/runsvc` `create_run` call a trigger or the edge's dispatch sends: the jobs' declared permissions ride along
 /// only where job tokens are on (`tokens`) and a job declared some, a `pull_request` run's base branch only where
 /// `actions-cache` is (`base`), and a same-repository one's head branch only where `GRAFTYARD_OIDC_HEAD_REF` is and the
-/// base rides too (`head`). Every other run's call is the one it was before any of them.
+/// base rides too (`head`), and the account that started it with its login only where `GRAFTYARD_OIDC_CLAIMS` (or the
+/// edge's 0x15.8) is on (`actor`, F120). Every other run's call is the one it was before any of them.
 pub fn create_run_call(
     run: &crate::shard::WorkflowRun,
     jobs: &[crate::shard::JobSpec],
@@ -607,6 +612,7 @@ pub fn create_run_call(
     tokens: bool,
     base: Option<&str>,
     head: Option<&str>,
+    actor: Option<(graftyard_types::AccountId, &str)>,
 ) -> Value {
     let mut b = json!({ "op": "create_run", "run": run, "jobs": jobs });
     if tokens && !permissions.is_empty() {
@@ -618,18 +624,28 @@ pub fn create_run_call(
             b["head_ref"] = json!(head);
         }
     }
+    if let Some((id, login)) = actor {
+        b["actor"] = json!([id, login]);
+    }
     b
 }
 
-/// The command a shard leader commits for a `create_run_call`, with the run's key: `CreateRunFrom` for a `pull_request`
-/// run with a base and a head, `CreateRunOn` for one with a base alone, else `CreateRunWith` when the call carries permissions, else `CreateRun`.
+/// The command a shard leader commits for a `create_run_call`, with the run's key: `CreateRunAs` (0x15.8) for a call
+/// that names its actor, `CreateRunFrom` for a `pull_request` run with a base and a head, `CreateRunOn` for one with a
+/// base alone, else `CreateRunWith` when the call carries permissions, else `CreateRun`.
 pub fn create_run_op(b: &Value) -> Result<(crate::shard::RunKey, crate::shard::ActionsOp), String> {
     use crate::shard::ActionsOp;
     let run: crate::shard::WorkflowRun = serde_json::from_value(b["run"].clone()).map_err(|e| e.to_string())?;
     let jobs: Vec<crate::shard::JobSpec> = serde_json::from_value(b["jobs"].clone()).map_err(|e| e.to_string())?;
     let permissions: crate::specs::Declared = serde_json::from_value(b["permissions"].clone()).unwrap_or_default();
     let key = run.key();
-    let op = match (b["base_ref"].as_str(), b["head_ref"].as_str()) {
+    let actor: Option<(graftyard_types::AccountId, Box<str>)> = serde_json::from_value(b["actor"].clone()).ok();
+    let (base, head) = (b["base_ref"].as_str(), b["head_ref"].as_str());
+    if let Some(actor) = actor {
+        let (base_ref, head_ref) = (base.map(Into::into), head.map(Into::into));
+        return Ok((key, ActionsOp::CreateRunAs { run, jobs, permissions, base_ref, head_ref, actor: Some(actor) }));
+    }
+    let op = match (base, head) {
         (Some(base), Some(head)) if run.is_pull_request() => {
             ActionsOp::CreateRunFrom { run, jobs, permissions, base_ref: base.into(), head_ref: head.into() }
         }

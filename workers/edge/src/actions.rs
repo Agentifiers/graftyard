@@ -37,6 +37,7 @@ use crate::Ctx;
 use crate::api::{Read, read, unavailable};
 
 mod oidc;
+pub(crate) mod sub;
 
 pub const SERVICES: &str = "/_services/";
 pub const VIEWER: &str = "/_t/logrelay/repos/";
@@ -728,7 +729,17 @@ pub async fn admin_route(c: &Ctx<'_>, req: &mut Request, rd: &Read, who: &Princi
                 Err(e) => unavailable(&e),
             }
         }
-        (Method::Post, ["dispatch"]) => dispatch(c, rd, chain, &b).await?,
+        (Method::Post, ["dispatch"]) => {
+            let mut b = b;
+            // The admin who dispatched, named by its id and its login now; never the body's.
+            let a = admin.0;
+            if let Some(l) = crate::api::account_logins(c, &std::iter::once(a).collect(), 1).await.remove(&a.0.0) {
+                b["actor"] = json!([a.0.0, l]);
+            } else if let Some(o) = b.as_object_mut() {
+                o.remove("actor");
+            }
+            dispatch(c, rd, chain, &b).await?
+        }
         // Every run of the repository with its event and ref, newest first (BF-37 finds `merge_group` runs by ref).
         (Method::Get, ["runs"]) => match shard_read(c, chain, json!({ "repoRuns": rd.repo.id.0.0 })).await {
             Ok(v) => Reply::json(200, v),
@@ -768,10 +779,16 @@ async fn dispatch(c: &Ctx<'_>, rd: &Read, chain: ChainId, b: &Value) -> Result<R
     // A run marked as a fork pull request's, whose jobs read no secret (BF-59): no fork route exists yet, so the
     // admin's dispatch marks it [inference: the refusal is `acquirejob`'s, which reads only `run.fork`].
     let fork = b["fork"].as_bool().unwrap_or(false);
-    let (call, jobs) = match dispatch_call(rd.repo.id, Index(rd.index), path, &src, r, sha.0, fork, tokens) {
+    let (mut call, jobs) = match dispatch_call(rd.repo.id, Index(rd.index), path, &src, r, sha.0, fork, tokens) {
         Ok(x) => x,
         Err(reply) => return Ok(reply),
     };
+    // BF-73 (F120): the dispatching admin is the run's actor once 0x15.8 is enabled, which makes it `CreateRunAs`.
+    if c.cfg.enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_CLAIMS)
+        && let Some((id, login)) = b["actor"].as_array().and_then(|a| Some((a.first()?.as_i64()?, a.get(1)?.as_str()?)))
+    {
+        call["actor"] = json!([id, login]);
+    }
     Ok(match runsvc_call(c, chain, &call).await {
         Ok((s, v)) => Reply::json(s, json!({ "run": v["body"]["run"], "jobs": jobs, "shard": chain.to_string() })),
         Err(e) => unavailable(&e),
@@ -811,7 +828,7 @@ fn dispatch_call(
         concurrency: None,
         fork,
     };
-    Ok((runsvc::create_run_call(&run, &jobs, &permissions, tokens, None, None), jobs.len()))
+    Ok((runsvc::create_run_call(&run, &jobs, &permissions, tokens, None, None, None), jobs.len()))
 }
 
 /// `/api/graftyard/v1/repos/{o}/{r}/actions/...`, or `None` for any other path under `/api/graftyard/v1`.
@@ -1136,6 +1153,8 @@ mod tests {
                     cache: false,
                     // As the shard leader reads it (`workers/site/src/actions.rs`, `acquire`).
                     id_token: graftyard_actions::oidc::id_token_granted(f.more.tokens.get(&row.spec.id), run.fork),
+                    actor: None,
+                    run_number: None,
                 };
                 let m = runsvc::acquire_message(&urls, &run, row, &a);
                 let data = &m["resources"]["endpoints"][0]["data"];

@@ -110,10 +110,29 @@ graftyard_identity::tail_serde!(CacheRows {
 } more: HeadRows);
 
 /// Each same-repository `pull_request` run's head branch (`ActionsEvent::RunHead`, format 0x15.7), which its jobs' ID
-/// tokens carry as `head_ref`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// tokens carry as `head_ref`. The claim rows (0x15.8) are a trailing part of their own, so a fold with none keeps
+/// 0x15.7's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeadRows {
     pub heads: BTreeMap<RunId, Box<str>>,
+    pub more: ClaimRows,
+}
+
+graftyard_identity::tail_serde!(HeadRows {
+    heads: BTreeMap<RunId, Box<str>>,
+} more: ClaimRows);
+
+/// Format 0x15.8's rows (F119, F120, F122): each run's actor and number, each `(repository, workflow)`'s last run
+/// number, and the owner's and each repository's `sub` customization.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimRows {
+    pub actors: BTreeMap<RunId, (graftyard_types::AccountId, Box<str>)>,
+    pub numbers: BTreeMap<RunId, u64>,
+    pub counters: BTreeMap<(RepoId, Box<str>), u64>,
+    /// The organization's template (`PUT /orgs/{org}/actions/oidc/customization/sub`), on the owner's shard 0.
+    pub org_sub: Option<Vec<Box<str>>>,
+    /// Each repository's setting (`PUT /repos/{o}/{r}/actions/oidc/customization/sub`), on its own shard.
+    pub repo_subs: BTreeMap<RepoId, crate::oidc::RepoSub>,
 }
 
 impl CacheRows {

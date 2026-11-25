@@ -497,7 +497,7 @@ pub async fn replay_notices(
     codec::from_bytes(&crate::host::unhex(hex).ok_or("not hex")?).map_err(|e| e.to_string())
 }
 
-async fn login_of(env: &Env, a: AccountId) -> std::result::Result<String, String> {
+pub(crate) async fn login_of(env: &Env, a: AccountId) -> std::result::Result<String, String> {
     let chain = ChainId::Names(id::account_shard(a));
     let record = crate::release::system_record(env, chain).await?;
     let (v, _) =

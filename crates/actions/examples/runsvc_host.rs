@@ -549,28 +549,13 @@ fn oidc_get(h: &Host, url: &str, path: &str, grant: Option<Grant>) -> Option<(u1
         "/_services/run/idtoken" => {
             let Some(Grant::Job { job, attempt }) = grant else { return Some((401, Value::Null)) };
             let audience = form(url.split_once('?').map_or("", |(_, q)| q)).remove("audience");
-            let read = h.w.with(move |w| {
+            // One shard here holds the owner's template too, as shard 0 does on an install.
+            let cf = h.w.with(move |w| {
                 let f = w.fold();
-                let row = f.job(job).cloned()?;
-                let run = f.run(row.run)?.run.clone();
-                let base = f.run_base(run.id).map(str::to_owned);
-                let head = f.run_head(run.id).map(str::to_owned);
-                Some((row, run, f.more.tokens.get(&job).cloned(), base, head))
-            });
-            let (row, run, declared, base, head) = read?;
-            let f = oidc::Facts {
-                server: &h.urls.server,
-                repository: "owner/repo",
-                repository_id: REPO,
-                owner_id: OWNER,
-                visibility: graftyard_identity::Visibility::Private,
-                enterprise: None,
-                run: &run,
-                job: &row,
-                hosted: false,
-                base_ref: base.as_deref(),
-                head_ref: head.as_deref(),
-            };
+                f.claim_facts(job, f.org_sub())
+            })?;
+            let declared = cf.declared.clone();
+            let f = cf.facts(&h.urls.server, "owner/repo", OWNER, graftyard_identity::Visibility::Private, None, false);
             let slot = h.oidc.1.load(SeqCst);
             let n = h.mints.fetch_add(1, SeqCst) + 1;
             let jti = format!("{}-{n}", job.0.0);
@@ -673,7 +658,11 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
         matches!(r, Some(Ok(_))).then(|| (w.fold().run(j.run).cloned().expect("the job's run"), j))
     });
     let Some((run, j)) = got else { return refuse(409) };
-    let declared = h.w.with(move |w| w.fold().more.tokens.get(&job).cloned());
+    let rid = run.run.id;
+    let (declared, actor, run_number) = h.w.with(move |w| {
+        let f = w.fold();
+        (f.more.tokens.get(&job).cloned(), f.run_actor(rid).map(|(_, l)| l.to_owned()), f.run_number(rid))
+    });
     let id_token = graftyard_actions::oidc::id_token_granted(declared.as_ref(), run.run.fork);
     let n = now();
     let orch = runsvc::orch_id(run.run.id.0.0, job, run.run.attempt);
@@ -695,6 +684,8 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
         variables: Vec::new(),
         cache: false,
         id_token,
+        actor: actor.as_deref(),
+        run_number,
     };
     (200, runsvc::acquire_message(&h.urls, &run.run, &j, &a))
 }

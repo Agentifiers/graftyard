@@ -31,7 +31,7 @@ use graftyard_actions::shard::{
 };
 use graftyard_actions::{JobEvent, JobId, JobState, RunId, RunnerId, RunnerSessionId, shard as act};
 use graftyard_raft::{self as raft, Format, Role, codec};
-use graftyard_types::{ChainId, DbId, RequestId, Timestamp, Ulid};
+use graftyard_types::{AccountId, ChainId, DbId, RequestId, Timestamp, Ulid};
 use serde_json::{Value, json};
 use worker::SqlStorage;
 
@@ -65,14 +65,7 @@ impl Family for Actions {
     type C = ActionsCmd;
 
     fn reads() -> Vec<Format> {
-        vec![
-            act::ACTIONS_FORMAT,
-            act::ACTIONS_FORMAT_MERGE_GROUP,
-            act::ACTIONS_FORMAT_OWNER_MATCH,
-            act::ACTIONS_FORMAT_PULL_REQUEST,
-            act::ACTIONS_FORMAT_TOKENS,
-            act::ACTIONS_FORMAT_CACHE,
-        ]
+        act::ACTIONS_FORMATS.to_vec()
     }
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
         leading.then_some(CHECK_AFTER_MS)
@@ -138,6 +131,14 @@ impl Family for Actions {
         }
         if let Some(j) = id_of(q, "job") {
             return serde_json::to_value(f.job(JobId(j))).unwrap_or(Value::Null);
+        }
+        // F122: `{"subRepo": repo}`, the repository's `sub` setting, and `{"orgSub": true}`, the owner's template on
+        // shard 0. A member built before 0x15.8 answers the summary below, with neither field.
+        if let Some(r) = id_of(q, "subRepo") {
+            return json!({ "subRepo": f.repo_sub(graftyard_types::RepoId(r)) });
+        }
+        if q.get("orgSub").and_then(Value::as_bool) == Some(true) {
+            return json!({ "orgSub": f.org_sub() });
         }
         if let Some(r) = id_of(q, "run") {
             let jobs: Vec<Value> =
@@ -283,6 +284,13 @@ pub fn oidc_head_ref(env: &worker::Env) -> bool {
     env.var("GRAFTYARD_OIDC_HEAD_REF").is_ok_and(|v| v.to_string() == "1")
 }
 
+/// Whether a site day set `GRAFTYARD_OIDC_CLAIMS` (BF-73): only then does `ActionsTrigger` name a run's actor, which
+/// makes its call `CreateRunAs` (0x15.8). A site day sets it only once 0x15.8 was enabled, after the day that shipped
+/// its reader to every member.
+pub fn oidc_claims(env: &worker::Env) -> bool {
+    env.var("GRAFTYARD_OIDC_CLAIMS").is_ok_and(|v| v.to_string() == "1")
+}
+
 /// `ActionsTrigger`'s `create_run` call: the jobs' declared permissions ride along only where `job_tokens`, and only
 /// when a job declared some, so every other run's call is the one it was.
 pub fn create_run_body(
@@ -292,10 +300,13 @@ pub fn create_run_body(
     permissions: &graftyard_actions::specs::Declared,
     base: Option<&str>,
     head: Option<&str>,
+    actor: Option<(AccountId, &str)>,
 ) -> Value {
     // `actions-cache`: a `pull_request` run's base branch, which its jobs read caches from (`CreateRunOn`); F121: a
-    // same-repository one's head branch beside it (`CreateRunFrom`), already gated by `pr_head`.
-    runsvc::create_run_call(run, jobs, permissions, job_tokens(env), base.filter(|_| actions_cache(env)), head)
+    // same-repository one's head branch beside it (`CreateRunFrom`), already gated by `pr_head`; BF-73: the actor,
+    // already gated by `oidc_claims`.
+    let base = base.filter(|_| actions_cache(env));
+    runsvc::create_run_call(run, jobs, permissions, job_tokens(env), base, head, actor)
 }
 
 /// The most stored log bytes one `RunOwner` round reads: a round past it stops at the entry before, and the next alarm
@@ -627,6 +638,21 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 Err(e) => refused(503, e),
             }
         }
+        // F122: an admin's `sub` customization, which the edge checked: `{"repo"?, "sub", "admin"}`.
+        ("set_sub", None) => {
+            let (Ok(sub), Ok(admin)) =
+                (serde_json::from_value(b["sub"].clone()), serde_json::from_value::<AccountId>(b["admin"].clone()))
+            else {
+                return Ok(refused(400, "sub and admin"));
+            };
+            let repo = serde_json::from_value(b["repo"].clone()).ok();
+            match commit(h, fresh_rid(), ActionsActor::Admin(admin), ActionsOp::SetSubTemplate { repo, sub }).await {
+                Ok(Ok(_)) => json!({ "status": 201, "body": {} }),
+                Ok(Err(ActionsErr::Illegal(m))) => refused(422, m),
+                Ok(r) => refused(422, r),
+                Err(e) => refused(503, e),
+            }
+        }
         // M4-WP4: a hosted registration from the edge, which verified the `graftyard-hosted-runners` App's installation
         // token on this owner; `decide` checks the record and the owner's cap (`graftyard_actions::hosted::admit`).
         ("register_hosted", None) => {
@@ -810,6 +836,11 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 worker::console_error!("{chain} logrelay open {}: {e}", job.0.0);
             }
             let names = b["repository"].as_str().unwrap_or("");
+            // F119, F120: the run's recorded actor and number, `github.actor` and `github.run_number`.
+            let (actor, run_number) = h.core.borrow().as_ref().map_or((None, None), |c| {
+                let f = &c.m.group_fold().fold;
+                (f.run_actor(run.id).map(|(_, l)| l.to_owned()), f.run_number(run.id))
+            });
             let a = runsvc::Acquired {
                 repository: names,
                 owner_login: names.split('/').next().unwrap_or(""),
@@ -828,6 +859,8 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 id_token: h.core.borrow().as_ref().is_some_and(|c| {
                     graftyard_actions::oidc::id_token_granted(c.m.group_fold().fold.more.tokens.get(&job), run.fork)
                 }),
+                actor: actor.as_deref(),
+                run_number,
             };
             json!({ "status": 200, "body": runsvc::acquire_message(&urls, &run, &row, &a), "repo": run.repo })
         }

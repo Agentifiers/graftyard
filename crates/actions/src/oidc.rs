@@ -98,13 +98,81 @@ pub fn may_mint(
 /// pull request event, else `repo:O/R:ref:REF`, every `:` in a value written `%3A` [doc: as the module docs,
 /// "Example subject claims"].
 pub fn subject(repository: &str, environment: Option<&str>, event: &str, r#ref: &str) -> String {
+    format!("repo:{}:{}", repository.replace(':', "%3A"), context(environment, event, r#ref))
+}
+
+/// The legacy `sub`'s context part, which a template's `context` key also writes.
+pub fn context(environment: Option<&str>, event: &str, r#ref: &str) -> String {
     let esc = |s: &str| s.replace(':', "%3A");
-    let context = match environment {
+    match environment {
         Some(e) => format!("environment:{}", esc(e)),
         None if matches!(event, "pull_request" | "pull_request_target") => "pull_request".into(),
         None => format!("ref:{}", esc(r#ref)),
+    }
+}
+
+/// A repository's `sub` setting, as `GET /repos/{o}/{r}/actions/oidc/customization/sub` answers it: `use_default` true
+/// for the default `sub`; false with `keys` for its own template; false with none for the owner's template (GHES 3.22,
+/// "REST API endpoints for GitHub Actions OIDC"). The default, with no row, is `use_default` true.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RepoSub {
+    pub use_default: bool,
+    pub keys: Option<Vec<Box<str>>>,
+}
+
+impl Default for RepoSub {
+    fn default() -> RepoSub {
+        RepoSub { use_default: true, keys: None }
+    }
+}
+
+/// The most claim keys one template names [guess: GHES documents no limit; the claim set has 30 keys].
+pub const SUB_KEYS_MAX: usize = 32;
+
+/// Refuses a template GHES refuses: a key that is not alphanumerics and underscores, a key twice, or too many [doc:
+/// the same page, `include_claim_keys`: "Array of unique strings. Each claim key can only contain alphanumeric
+/// characters and underscores"].
+pub fn check_sub(s: &RepoSub) -> Result<(), &'static str> {
+    let Some(keys) = &s.keys else { return Ok(()) };
+    if keys.len() > SUB_KEYS_MAX {
+        return Err("too many claim keys");
+    }
+    for (i, k) in keys.iter().enumerate() {
+        if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err("a claim key can only contain alphanumeric characters and underscores");
+        }
+        if keys[..i].contains(k) {
+            return Err("claim keys must be unique");
+        }
+    }
+    Ok(())
+}
+
+/// The template a repository's tokens use: none while it uses the default; its own keys; or, with `use_default` false
+/// and no keys of its own, the owner's template, if any [doc: GHES 3.22, "OpenID Connect reference": the organization
+/// template applies only once "their repository has opted in ... by setting `use_default` to `false`"].
+pub fn sub_template<'a>(repo: Option<&'a RepoSub>, org: Option<&'a [Box<str>]>) -> Option<&'a [Box<str>]> {
+    let r = repo?;
+    if r.use_default {
+        return None;
+    }
+    r.keys.as_deref().or(org).filter(|k| !k.is_empty())
+}
+
+/// A customized `sub` from the token's claims `c`: `key:value` for each key in order, joined by `:`, with `repo` the
+/// repository's name and `context` the legacy context (`environment:E`, `pull_request`, or `ref:REF`), each `:` in a
+/// value written `%3A` [doc: the same page, "Customizing the subject claims": "The `sub` claim uses the shortened form
+/// `repo`"; the example `repo:ORG/REPO:environment:prod:job_workflow_ref:...`; "Any `:` within the context value will
+/// be replaced with `%3A`"]. A key the token lacks is written with an empty value [inference: GHES documents no
+/// error for it].
+pub fn custom_subject(keys: &[Box<str>], c: &Value, context: &str) -> String {
+    let esc = |s: &str| s.replace(':', "%3A");
+    let part = |k: &str| match k {
+        "repo" => format!("repo:{}", esc(c["repository"].as_str().unwrap_or(""))),
+        "context" => context.to_owned(),
+        k => format!("{k}:{}", esc(c[k].as_str().unwrap_or(""))),
     };
-    format!("repo:{}:{context}", esc(repository))
+    keys.iter().map(|k| part(k)).collect::<Vec<_>>().join(":")
 }
 
 /// What the token says about its job, read by the hosts: the run and job from the shard, the names, visibility and
@@ -130,12 +198,18 @@ pub struct Facts<'a> {
     /// A same-repository `pull_request` run's head branch (`ActionsEvent::RunHead`, `refs/heads/feature`), which
     /// `head_ref` carries the same way (F121).
     pub head_ref: Option<&'a str>,
+    /// The account that started the run and its login (`ActionsEvent::RunActor`, F120).
+    pub actor: Option<(AccountId, &'a str)>,
+    /// The run's number among its workflow's runs (`ActionsEvent::RunNumber`, F119).
+    pub run_number: Option<u64>,
+    /// The `sub` template the repository uses (`sub_template`, F122), else the legacy `sub`.
+    pub sub_keys: Option<&'a [Box<str>]>,
 }
 
 /// The token's claims at `now_s` with id `jti`, for `audience` or, without one, the owner's URL, GHES's default
 /// ("the URL of the repository owner"). Every value GHES writes as a string is a string. The claims GHES has and this
-/// leaves empty or out are `decisions/OPEN-QUESTIONS.md` rows: `actor` and `actor_id`, `head_ref` and `base_ref` for
-/// a run with none recorded, `run_number`, and a reusable workflow's `job_workflow_ref`.
+/// leaves empty or out are `decisions/OPEN-QUESTIONS.md` rows: `actor` and `actor_id`, `run_number`, `head_ref` and
+/// `base_ref` for a run with none recorded, `run_number`, and a reusable workflow's `job_workflow_ref`.
 pub fn claims(f: &Facts<'_>, audience: Option<&str>, now_s: u64, jti: &str) -> Value {
     let run = f.run;
     let owner = f.repository.split('/').next().unwrap_or("");
@@ -154,7 +228,7 @@ pub fn claims(f: &Facts<'_>, audience: Option<&str>, now_s: u64, jti: &str) -> V
     let mut c = json!({
         "iss": issuer(server),
         "aud": aud,
-        "sub": subject(f.repository, environment, &run.event, r#ref),
+        "sub": "",
         "jti": jti,
         "iat": now_s,
         "nbf": now_s.saturating_sub(ID_TOKEN_NBF_SKEW_S),
@@ -180,6 +254,13 @@ pub fn claims(f: &Facts<'_>, audience: Option<&str>, now_s: u64, jti: &str) -> V
         "head_ref": f.head_ref.map_or("", |h| h.strip_prefix("refs/heads/").unwrap_or(h)),
         "base_ref": f.base_ref.map_or("", |b| b.strip_prefix("refs/heads/").unwrap_or(b)),
     });
+    if let Some((id, login)) = f.actor {
+        c["actor"] = json!(login);
+        c["actor_id"] = json!(id.0.0.to_string());
+    }
+    if let Some(n) = f.run_number {
+        c["run_number"] = json!(n.to_string());
+    }
     if let Some(e) = environment {
         c["environment"] = json!(e);
     }
@@ -187,6 +268,11 @@ pub fn claims(f: &Facts<'_>, audience: Option<&str>, now_s: u64, jti: &str) -> V
         c["enterprise"] = json!(login);
         c["enterprise_id"] = json!(id.0.0.to_string());
     }
+    // Last, so a template reads every other claim (F122).
+    c["sub"] = json!(match f.sub_keys {
+        Some(keys) => custom_subject(keys, &c, &context(environment, &run.event, r#ref)),
+        None => subject(f.repository, environment, &run.event, r#ref),
+    });
     c
 }
 
@@ -298,7 +384,7 @@ pub fn discovery(issuer: &str) -> Value {
             "repository_id", "repository_owner", "repository_owner_id", "repository_visibility", "run_id",
             "run_attempt", "event_name", "workflow", "workflow_ref", "workflow_sha", "job_workflow_ref",
             "job_workflow_sha", "runner_environment", "environment", "enterprise", "enterprise_id", "head_ref",
-            "base_ref",
+            "base_ref", "actor", "actor_id", "run_number",
         ],
     })
 }
@@ -461,6 +547,9 @@ mod tests {
             hosted: true,
             base_ref: None,
             head_ref: None,
+            actor: None,
+            run_number: None,
+            sub_keys: None,
         };
         let sha = "ab".repeat(20);
         let c = claims(&f, None, 1_000, "j-1");
@@ -518,6 +607,9 @@ mod tests {
             hosted: false,
             base_ref: Some("refs/heads/rel"),
             head_ref: Some("refs/heads/fix/a"),
+            actor: None,
+            run_number: None,
+            sub_keys: None,
         };
         let c = claims(&f, None, 7, "x");
         assert_eq!(c["sub"], json!("repo:octo/hello:pull_request"));
@@ -531,6 +623,63 @@ mod tests {
         assert_eq!(c["sub"], json!("repo:octo/hello:environment:prod"));
         assert_eq!((c["base_ref"].as_str(), c["head_ref"].as_str()), (Some(""), Some("")));
         assert_eq!((c["environment"].as_str(), c["ref_type"].as_str()), (Some("prod"), Some("tag")));
+    }
+
+    /// F122: a customized `sub`, written out from GHES 3.22's documented examples ("Customizing the subject claims"),
+    /// rather than from the code: `repo` is the short form, `context` the legacy context, `:` in a value is `%3A`, and
+    /// order follows the template. A template replaces the whole `sub`.
+    #[test]
+    fn a_sub_template_writes_ghes_examples() {
+        let (r, j) = (run("push", "refs/heads/main", false), row(Some("production:eastus"), running()));
+        let f = Facts {
+            server: "https://graft.example",
+            repository: "octo-org/octo-repo",
+            repository_id: RepoId(DbId(74)),
+            owner_id: AccountId(DbId(65)),
+            visibility: Visibility::Private,
+            enterprise: None,
+            run: &r,
+            job: &j,
+            hosted: false,
+            base_ref: None,
+            head_ref: None,
+            actor: Some((AccountId(DbId(9)), "monalisa")),
+            run_number: Some(12),
+            sub_keys: None,
+        };
+        let sub = |keys: &[&str]| {
+            let k: Vec<Box<str>> = keys.iter().map(|k| (*k).into()).collect();
+            claims(&Facts { sub_keys: Some(&k), ..f }, None, 1, "j")["sub"].as_str().unwrap().to_owned()
+        };
+        assert_eq!(
+            sub(&["repository_owner", "repository_visibility"]),
+            "repository_owner:octo-org:repository_visibility:private"
+        );
+        assert_eq!(
+            sub(&["environment", "repository_owner"]),
+            "environment:production%3Aeastus:repository_owner:octo-org"
+        );
+        let wf = "octo-org/octo-repo/.github/workflows/deploy.yml@refs/heads/main";
+        assert_eq!(
+            sub(&["repo", "context", "job_workflow_ref"]),
+            format!(
+                "repo:octo-org/octo-repo:environment:production%3Aeastus:job_workflow_ref:{}",
+                wf.replace(':', "%3A")
+            )
+        );
+        assert_eq!(sub(&["repository_id"]), "repository_id:74");
+        assert_eq!(sub(&["actor", "run_number"]), "actor:monalisa:run_number:12");
+        let c = claims(&f, None, 1, "j");
+        assert_eq!(c["sub"], json!("repo:octo-org/octo-repo:environment:production%3Aeastus"), "no template: legacy");
+        assert_eq!(
+            (c["actor"].as_str(), c["actor_id"].as_str(), c["run_number"].as_str()),
+            (Some("monalisa"), Some("9"), Some("12"))
+        );
+        let ok = |keys: &[&str]| {
+            check_sub(&RepoSub { use_default: false, keys: Some(keys.iter().map(|k| (*k).into()).collect()) })
+        };
+        assert!(ok(&["repo", "context", "job_workflow_ref"]).is_ok());
+        assert!(ok(&["repo", "repo"]).is_err() && ok(&["job-workflow-ref"]).is_err() && ok(&[""]).is_err());
     }
 
     /// RFC 7638's own example key and thumbprint (section 3.1), so `kid` is the standard's and not ours.

@@ -77,7 +77,15 @@ pub async fn idtoken(c: &Ctx<'_>, req: &Request, chain: ChainId, g: Grant) -> Re
             return service_error(503);
         }
     };
-    let mut body = json!({ "op": "idtoken", "grant": g, "audience": audience });
+    // F122: the owner's `sub` template, from its shard 0, beside the repository's on this shard.
+    let org_sub = match super::sub::org_template(c, owner).await {
+        Ok(t) => t,
+        Err(e) => {
+            console_error!("idtoken {chain} job {}: org sub: {e}", job.0.0);
+            return service_error(503);
+        }
+    };
+    let mut body = json!({ "op": "idtoken", "grant": g, "audience": audience, "org_sub": org_sub });
     for (k, v) in facts {
         body[k] = v;
     }

@@ -302,6 +302,13 @@ fn pump(h: &Rc<Host<Repo>>) {
     }
 }
 
+/// BF-73 (F120): the event's actor and its login, only where `GRAFTYARD_OIDC_CLAIMS` is on; else none, and the run's
+/// call stays the one before 0x15.8. A login that does not answer fails the try, which is tried again.
+async fn run_actor(env: &Env, actor: Option<AccountId>) -> std::result::Result<Option<(AccountId, String)>, String> {
+    let Some(a) = actor.filter(|_| crate::actions::oidc_claims(env)) else { return Ok(None) };
+    Ok(Some((a, crate::activity::login_of(env, a).await?)))
+}
+
 /// Whether a site day set `GRAFTYARD_PR_TRIGGER`, after the day that shipped format 0x15.4's reader.
 fn pr_trigger(env: &Env) -> bool {
     env.var("GRAFTYARD_PR_TRIGGER").is_ok_and(|v| v.to_string() == "1")
@@ -323,7 +330,9 @@ async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
             let t0 = crate::now_ms();
             let make = |path: &str, src: &str| merge_group_run(f.repo, c.index, path, src, q);
             let mut times = Times::default();
-            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, None, None, &mut times).await {
+            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, None, None, None, &mut times)
+                .await
+            {
                 Ok(n) => {
                     let ms = crate::now_ms() - t0;
                     console_log!(
@@ -423,7 +432,10 @@ async fn pull_request_try(
             let make = |path: &str, src: &str| pull_request_run(repo, index, path, src, p.n, p.action, &v.base, merge);
             let base = v.base.display();
             let head = head.as_ref().map(|h| h.display());
-            runs_on(&h.env, site, b, repo, owner, record, merge, make, Some(&base), head.as_deref(), &mut times).await?
+            let actor = run_actor(&h.env, p.actor).await?;
+            let actor = actor.as_ref().map(|(a, l)| (*a, l.as_str()));
+            runs_on(&h.env, site, b, repo, owner, record, merge, make, Some(&base), head.as_deref(), actor, &mut times)
+                .await?
         }
         PrTarget::Pending | PrTarget::Conflict | PrTarget::None => 0,
     };
@@ -464,6 +476,7 @@ async fn runs_on(
     make: impl Fn(&str, &str) -> std::result::Result<Option<(WorkflowRun, Vec<JobSpec>, Declared)>, String>,
     base: Option<&str>,
     head: Option<&str>,
+    actor: Option<(AccountId, &str)>,
     times: &mut Times,
 ) -> std::result::Result<usize, String> {
     let commit = tip.hex();
@@ -508,7 +521,7 @@ async fn runs_on(
                 chain,
                 record,
                 "/runsvc",
-                &crate::actions::create_run_body(env, &run, &jobs, &permissions, base, head),
+                &crate::actions::create_run_body(env, &run, &jobs, &permissions, base, head, actor),
             )
             .await
         }
