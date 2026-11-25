@@ -42,6 +42,13 @@ if (step === "install") {
   const r = await api("PATCH", "/api/graftyard/v1/orgs/m3org/agents", admin, { agents_enabled: true, workspace: "in_repo" });
   log(`PATCH /orgs/m3org/agents: ${r.status} ${JSON.stringify(r.body)}`);
   if (r.status !== 200) process.exit(1);
+} else if (step === "uninstall") {
+  const r = await api("PATCH", "/api/graftyard/v1/orgs/m3org/agents", admin, { agents_enabled: false });
+  log(`PATCH /orgs/m3org/agents: ${r.status} ${JSON.stringify(r.body)}`);
+  for (const inst of [INST.agent, INST.workspace]) {
+    await must(`authz:${ORG}`, { cred: OP, op: { Uninstall: { id: inst } } }, "NotFound");
+    log(`installation ${inst} uninstalled from m3org`);
+  }
 } else if (step === "repo") {
   const [name] = args;
   const made = await api("POST", "/api/v3/orgs/m3org/repos", admin, { name, private: true, auto_init: true });

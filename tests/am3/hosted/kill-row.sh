@@ -102,6 +102,7 @@ row | smoke)
   } 2>&1 | log ;;
 teardown)
   { node tests/am3/hosted/kill.mjs delete "kill-$TAG"
+    node tests/am3/hosted/kill.mjs uninstall
     day teardown | tail -6
     for i in 1 2 3 4 5 6; do
       left=$(containers | jq -s '[.[] | select(.running > 0)]')
@@ -115,7 +116,7 @@ teardown)
     python3 tests/fanout/teardown.py --sweep 2>&1 | tail -2
     echo "agents apps after: $(rapi "$RB/containers/applications" | jq -c --arg p "$P-" '[.result[]? | select(.name | startswith($p)) | .name]')"
   } 2>&1 | log
-  grep -q "TEARDOWN FAILED\|SWEEP FAILED" "$L" && { echo "FAIL: containers left running" >&2; exit 2; } ;;
+  if grep -q "TEARDOWN FAILED\|SWEEP FAILED" "$L"; then echo "FAIL: containers left running" >&2; exit 2; fi ;;
 cost)
   { from=$(date -u -d @"$(cat "$O/cost.from")" +%FT%TZ)
     echo "graft-m4a from $from: $(PREFIX=graft-m4a python3 tests/fanout/acctcost.py "$from" | head -1 | jq -c '{prefix_usd}')"

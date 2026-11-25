@@ -1,0 +1,3 @@
+2026-11-25T23:34:09.549Z PATCH /orgs/m3org/agents: 200 {"agents_enabled":false,"code_mode":false,"workspace":"in_repo","workspace_org":"m3org-agents"}
+2026-11-25T23:34:09.917Z installation 7190003 uninstalled from m3org
+2026-11-25T23:34:10.245Z installation 7190004 uninstalled from m3org
