@@ -653,3 +653,57 @@ and the switch. Both passed in both directions (table above).
 
 **A17 is not answered further here.** Every rotation switched between two values bound at deploy, so no value changed
 under a running script. Its open half stays with the `HostedRunnersAppKey` in-place timing row.
+
+## A17: plan for the Secrets Store visibility row (2026-11-25, $0 so far)
+
+The question (`decisions/OPEN-QUESTIONS.md`, A17): how long after a Secrets Store write does a running isolate that
+read the old value see the new one, with no new script version? m3fs1 answered "yes, within seconds" for one reader
+(the edge's `/meta/ssh`, which caches 60 s), but not how long a running isolate takes.
+
+**Install: none.** The row is about Secrets Store and isolates, not about any install's code.
+- Everything runs in the runner account, named `graft-a17-`: one throwaway secret in the `graft-runners` store, and
+  the probe Worker `graft-a17-probe` (`tests/m5/a17/probe/`). The driver is `tests/m5/a17/row.sh`.
+- So the row needs neither graft-m4a (BF-69's) nor graft-m3f's site day. It also leaves `graft-runners` and
+  `HostedRunnersAppKey` untouched.
+- `graft-runners` re-reads `HOSTED_RUNNERS_APP_KEY` at every pass (`Live::load`, `workers/runners/src/worker.rs`), so its
+  in-place rotation depends on the same answer.
+
+**Probe.** It never returns or logs the value, only the first 16 hex digits of its SHA-256.
+- `GET /h`: the isolate's id (drawn once per isolate) and the hash of `PROBE.get()`.
+- Three watch objects, one per location hint (`enam`, `weur`, `apac`). Each reads `PROBE.get()` every second on its own
+  alarm, for an hour at most. Each records every change of hash, with the read's time and the isolate id. A change
+  under the same isolate id is a running isolate seeing the new value.
+- An orb sampler reads `/h` once a second, as a fourth reader on whatever isolate serves the orb.
+- Checked in local workerd (wrangler 4.153.0): a watch object read the new hash about 5 s after the local write,
+  under the same isolate id (`81300215`). That checks only the probe, not the platform.
+
+**Steps:**
+1. `deploy`: secret v0, the probe, and its bearer token.
+2. `watch start`, then `sample start`. Wait 2 minutes so each reader holds v0 under a stable isolate id.
+3. `put`, three times, 5 minutes apart: a new value PATCHed in place, the write's time taken from the answer's `Date`
+   header.
+4. After the last put, wait until every watch object has read it, or 30 minutes.
+5. `log` and `versions`, then `sample stop`, `watch stop`, and `teardown`: the probe and the secret deleted, files
+   shredded.
+
+The times are Cloudflare's: the orb's clock runs 28 s behind it (`raw/bf46r45/r1/clock.txt`), so each step logs the
+offset.
+
+**Measured, per write and per reader:** from the write's `Date` to the first read of the new hash, and whether the
+isolate id held across it. Also the script's version count before and after.
+
+**What answers A17:**
+- **Yes, in N seconds:** every reader sees each new value within the wait, under an unchanged isolate id, with no new
+  version.
+- **No:** a reader still reads the old value after 30 minutes under the same isolate. Then holders cannot rely on a
+  write reaching a running isolate. DESIGN's rotation runbook would need either a bound second slot, as R45 already
+  gives every `Rotate` secret, or a forced re-read.
+
+**Cost:** about 3 × 3,600 alarms and 1,800 orb requests to one Worker in the runner account. That is within the
+included Workers requests and Durable Object time: estimated under $0.05, with a stop of $1.
+
+**After it, if the lead wants it** (not part of A17):
+- The end-to-end `HostedRunnersAppKey` rotation on App 1835008, following ruling 4: the new key on the App's record
+  first, the store slot PATCHed, `graft-runners`' next pass confirming 201 on `access_tokens`, then the old key off.
+- That App is registered on graft-m4a, the edge `graft-runners` points at. So that row runs on graft-m4a after
+  BF-69: a `PutApp` and a store write, no site day, about $0.05.
