@@ -3,7 +3,7 @@
 
 Usage: python3 scripts/check_links.py
 
-The script reads every text file under the repository root except history/ and __pycache__. A citation is a token
+The script reads every text file git tracks or would track (not one it ignores) except history/ and __pycache__. A citation is a token
 that starts a word and either begins with one of the directories in ROOTS followed by a slash, or is one of the root
 files in ROOT_FILES. A token starts a word when the character before it is not a letter, digit, underscore, slash,
 dot, or hyphen. That rule skips paths inside other repositories, such as `deployments/scripts/platform-deploy/x.ts`,
@@ -51,24 +51,18 @@ def clean(token):
 	return token.rstrip(".:")
 
 
-def ignored():
-	"""Paths git ignores, such as build output, so a generated file never fails a check."""
-	out = subprocess.run(["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory"],
-		cwd=ROOT, capture_output=True, text=True).stdout
-	return tuple(line.rstrip("/") for line in out.splitlines() if line)
-
-
 def files():
-	skip = ignored()
-	for path in sorted(ROOT.rglob("*")):
-		rel = path.relative_to(ROOT)
-		if any(rel.as_posix() == p or rel.as_posix().startswith(p + "/") for p in skip):
+	"""Tracked files and untracked ones git does not ignore, so build output such as target-tools/ never fails a check
+	(`git ls-files --cached --others --exclude-standard`)."""
+	out = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+		cwd=ROOT, capture_output=True, text=True, check=True).stdout
+	for rel in sorted(set(p for p in out.split("\0") if p)):
+		path = ROOT / rel
+		if rel.startswith(SKIPPED_DIRS):
 			continue
-		if rel.as_posix().startswith(SKIPPED_DIRS):
-			continue
-		if path.is_file() and not SKIPPED & set(rel.parts) and rel.parts[0] not in SKIPPED_ROOTS:
+		if path.is_file() and not SKIPPED & set(Path(rel).parts) and Path(rel).parts[0] not in SKIPPED_ROOTS:
 			try:
-				yield rel.as_posix(), path.read_text()
+				yield rel, path.read_text()
 			except UnicodeDecodeError:
 				continue
 

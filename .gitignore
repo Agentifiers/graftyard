@@ -5,3 +5,4 @@ __pycache__/
 .wrangler/
 .env
 !.env.example
+/target-tools/
