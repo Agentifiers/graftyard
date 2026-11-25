@@ -283,10 +283,14 @@ fn handle(h: &Host, mut req: tiny_http::Request) {
         h.log(json!({"method": method, "path": path, "grant": grant, "status": r.0}));
         return respond(req, r.0, r.1);
     }
+    let rel = path.strip_prefix("/_services/").unwrap_or("");
+    // actions-artifacts: binary chunks and downloads, before any body is read as text (`artifacts`).
+    if rel.starts_with("run/_apis/pipelines/workflows/") || rel.starts_with("artifacts/") {
+        return artifacts(h, req, &method, &url, rel, grant);
+    }
     let mut body = String::new();
     let _ = req.as_reader().read_to_string(&mut body);
     let jbody: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
-    let rel = path.strip_prefix("/_services/").unwrap_or("");
     let mut rec = json!({"method": method, "path": path, "grant": grant});
     if !jbody.is_null() && !rel.starts_with("blob/") {
         rec["body"] = jbody.clone();
@@ -362,6 +366,171 @@ fn handle(h: &Host, mut req: tiny_http::Request) {
     if rel == "run/acquirejob" && status == 200 {
         std::fs::write(format!("{}/acquirejob.json", h.out), serde_json::to_string_pretty(&reply).unwrap()).unwrap();
     }
+    respond(req, status, reply);
+}
+
+/// actions-artifacts as the edge serves it (`workers/edge/src/artifacts.rs`), on disk under `<out>/r2/` with the
+/// same keys, the same isolation rule (`artifacts::authorize`, the run and repository from the fold), the same file
+/// record once one job's chunks tile the file, and the stored gzip bytes answered as stored.
+fn artifacts(h: &Host, mut req: tiny_http::Request, method: &str, url: &str, rel: &str, grant: Option<Grant>) {
+    use graftyard_actions::artifacts::{self as art, Chunk, Container, FileRecord};
+    fn header(req: &tiny_http::Request, k: &'static str) -> Option<String> {
+        req.headers().iter().find(|x| x.field.equiv(k)).map(|x| x.value.as_str().to_owned())
+    }
+    let query = |k: &str| form(url.split_once('?').map_or("", |(_, q)| q)).remove(k);
+    let r2 = |key: &str| std::path::PathBuf::from(format!("{}/r2/{key}", h.out));
+    let list = |prefix: &str| -> Vec<(String, u64)> {
+        let mut out = Vec::new();
+        let base = std::path::PathBuf::from(format!("{}/r2/", h.out));
+        let mut stack = vec![base.clone()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    let k = p.strip_prefix(&base).unwrap().to_string_lossy().into_owned();
+                    if k.starts_with(prefix) {
+                        out.push((k, e.metadata().unwrap().len()));
+                    }
+                }
+            }
+        }
+        out.sort();
+        out
+    };
+    let put = |key: &str, bytes: &[u8]| {
+        let p = r2(key);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    };
+    let mut rec = json!({"method": method, "path": rel, "itemPath": query("itemPath"), "grant": grant});
+    let Some(Grant::Job { job, .. }) = grant else { return respond(req, 401, Value::Null) };
+    let (run, repo) = h.w.with(move |w| {
+        let row = w.fold().job(job).cloned().expect("the job");
+        (row.run, w.fold().run(row.run).expect("its run").run.repo)
+    });
+    let services = h.urls.services.clone();
+    let (status, reply): (u16, Value) = if let Some(tail) = rel.strip_prefix("run/_apis/pipelines/workflows/") {
+        let named = tail.strip_suffix("/artifacts").and_then(|r| r.parse::<i64>().ok()).unwrap_or(-1);
+        let ct = Container { chain: CHAIN, repo, run: graftyard_actions::RunId(DbId(named)) };
+        let mut body = String::new();
+        let _ = req.as_reader().read_to_string(&mut body);
+        let b: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        match (art::authorize(&ct, CHAIN, run, repo), method) {
+            (Err(_), _) => (403, json!({"message": "forbidden"})),
+            (Ok(()), "POST") => {
+                let name = b["Name"].as_str().unwrap_or_default().to_owned();
+                (201, art::artifact_json(&ct, &services, &name, -1))
+            }
+            (Ok(()), "PATCH") => {
+                let name = query("artifactName").unwrap_or_default();
+                let size = b["Size"].as_i64().unwrap_or(0);
+                put(&ct.manifest_key(&name), json!({"name": name, "size": size}).to_string().as_bytes());
+                (200, art::artifact_json(&ct, &services, &name, size))
+            }
+            (Ok(()), _) => {
+                let p = ct.manifests();
+                let value: Vec<Value> = list(&p)
+                    .into_iter()
+                    .map(|(k, _)| {
+                        let m: Value = serde_json::from_slice(&std::fs::read(r2(&k)).unwrap()).unwrap();
+                        art::artifact_json(&ct, &services, &k[p.len()..], m["size"].as_i64().unwrap_or(0))
+                    })
+                    .collect();
+                (200, json!({"count": value.len(), "value": value}))
+            }
+        }
+    } else {
+        let ct = rel.strip_prefix("artifacts/").and_then(|p| Container::parse(p.split('?').next().unwrap()));
+        let Some(ct) = ct.filter(|c| art::authorize(c, CHAIN, run, repo).is_ok()) else {
+            h.log(json!({"method": method, "path": rel, "status": 403}));
+            return respond(req, 403, json!({"message": "forbidden"}));
+        };
+        let path = query("itemPath").unwrap_or_default().replace("%20", " ").replace("%2B", "+");
+        match method {
+            "PUT" => {
+                let gzip = header(&req, "Content-Encoding").is_some_and(|v| v == "gzip");
+                let range = header(&req, "Content-Range").and_then(|v| art::chunk(&v));
+                let mut bytes = Vec::new();
+                let _ = std::io::Read::read_to_end(req.as_reader(), &mut bytes);
+                let length = if gzip { header(&req, "x-tfs-filelength").and_then(|v| v.parse().ok()) } else { None };
+                rec["range"] = json!(format!("{range:?}"));
+                rec["gzip"] = json!(gzip);
+                match range {
+                    None => (400, json!({"message": "Content-Range"})),
+                    Some(Chunk::Empty) => {
+                        let r = FileRecord { job, upload: 0, size: 0, length: 0, gzip };
+                        put(&ct.record_key(&path), &serde_json::to_vec(&r).unwrap());
+                        (200, json!({}))
+                    }
+                    Some(Chunk::Bytes { start, end, total }) => {
+                        assert_eq!(bytes.len() as u64, end - start + 1, "the chunk's body is its range");
+                        let pointer =
+                            std::fs::read_to_string(r2(&ct.upload_key(job, &path))).ok().and_then(|v| v.parse().ok());
+                        match art::upload_for(start, pointer, rand::random::<u64>() >> 1) {
+                            None => (409, json!({"message": "no upload started"})),
+                            Some(upload) => {
+                                if start == 0 {
+                                    put(&ct.upload_key(job, &path), upload.to_string().as_bytes());
+                                }
+                                put(&ct.chunk_key(job, upload, &path, start), &bytes);
+                                if end + 1 == total {
+                                    let pre = ct.chunk_prefix(job, upload, &path);
+                                    let parts: Vec<(u64, u64)> = list(&pre)
+                                        .into_iter()
+                                        .filter_map(|(k, n)| art::chunk_start(&pre, &k).map(|s| (s, n)))
+                                        .collect();
+                                    let done =
+                                        art::file_done(job, upload, &parts, total, length.unwrap_or(total), gzip);
+                                    if let Ok(r) = done {
+                                        put(&ct.record_key(&path), &serde_json::to_vec(&r).unwrap());
+                                    }
+                                }
+                                (200, json!({}))
+                            }
+                        }
+                    }
+                }
+            }
+            _ if art::check_item_path(&path).is_ok() => {
+                let rk = ct.record_key(&path);
+                let Ok(r) = std::fs::read(r2(&rk)).map(|b| serde_json::from_slice::<FileRecord>(&b).unwrap()) else {
+                    return respond(req, 404, json!({"message": "not found"}));
+                };
+                let pre = ct.chunk_prefix(r.job, r.upload, &path);
+                let mut body = Vec::new();
+                for (k, _) in list(&pre).into_iter().filter(|(k, _)| art::chunk_start(&pre, k).is_some()) {
+                    body.extend(std::fs::read(r2(&k)).unwrap());
+                }
+                h.log(json!({"method": method, "path": rel, "itemPath": path, "status": 200, "bytes": body.len(), "gzip": r.gzip}));
+                let mut resp = tiny_http::Response::from_data(body);
+                if r.gzip {
+                    resp.add_header(tiny_http::Header::from_bytes("Content-Encoding", "gzip").unwrap());
+                }
+                let _ = req.respond(resp);
+                return;
+            }
+            _ => {
+                let name = path.clone();
+                if !r2(&ct.manifest_key(&name)).exists() {
+                    (404, json!({"message": "not found"}))
+                } else {
+                    let base = ct.record_key("");
+                    let value: Vec<Value> = list(&ct.records(&name))
+                        .into_iter()
+                        .map(|(k, _)| {
+                            let r: FileRecord = serde_json::from_slice(&std::fs::read(r2(&k)).unwrap()).unwrap();
+                            art::entry_json(&ct, &services, &k[base.len()..], &r)
+                        })
+                        .collect();
+                    (200, json!({"count": value.len(), "value": value}))
+                }
+            }
+        }
+    };
+    rec["status"] = json!(status);
+    h.log(rec);
     respond(req, status, reply);
 }
 
@@ -462,8 +631,9 @@ fn poll(h: &Host, runner: RunnerId) -> (u16, Value) {
                     return Some((200, runsvc::job_cancellation(w.messages, job)));
                 }
             }
-            // A runner takes one job at a time: none while the job it was handed is unfinished.
-            if w.handed.get(&runner).is_some_and(|j| w.fold().job(*j).is_some_and(|j| j.state.completed().is_none())) {
+            // Every runner here is ephemeral: it takes one job. The runner polls once more between `completejob`
+            // and deleting its session, and a job handed to it then would be stranded.
+            if w.handed.contains_key(&runner) {
                 return None;
             }
             let Some(rec) = w.fold().runners.get(&runner).cloned() else {

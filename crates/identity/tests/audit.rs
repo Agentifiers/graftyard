@@ -565,6 +565,10 @@ fn authz_batch(
                         repo.read.life = RepoLife::Deleted;
                         false
                     }
+                    RepoStep::DropActions => {
+                        repo.read.actions_held = false;
+                        false
+                    }
                 };
                 if !refused {
                     repo.steps.push(s);
@@ -614,6 +618,7 @@ fn audit_alone_finishes_a_transfer_whose_finisher_died_after_reserved() {
                 voters: pa.sites.to_vec(),
                 home: pa.home,
                 life: RepoLife::Created,
+                actions_held: false,
             },
             steps: Vec::new(),
             refuse_init: false,
@@ -677,7 +682,17 @@ fn audit_finishes_an_enterprise_change_on_every_repository() {
         .iter()
         .map(|r| {
             let life = RepoLife::Created;
-            (*r, RepoRead { owner: org, enterprise: Some(e1), voters: vec![SiteId(0)], home: SiteId(0), life })
+            (
+                *r,
+                RepoRead {
+                    owner: org,
+                    enterprise: Some(e1),
+                    voters: vec![SiteId(0)],
+                    home: SiteId(0),
+                    life,
+                    actions_held: false,
+                },
+            )
         })
         .collect();
     let g = w.authz(org);
@@ -786,7 +801,7 @@ fn commit_create(w: &mut World, owner: AccountId, admin: AccountId, name: &RepoN
 
 fn create_chain(owner: AccountId, life: RepoLife) -> RepoChain {
     RepoChain {
-        read: RepoRead { owner, enterprise: None, voters: Vec::new(), home: SiteId(0), life },
+        read: RepoRead { owner, enterprise: None, voters: Vec::new(), home: SiteId(0), life, actions_held: false },
         steps: Vec::new(),
         refuse_init: false,
         repo_owner_at_init: Vec::new(),
@@ -1070,6 +1085,7 @@ fn audit_tombstones_a_delete_killed_after_its_name() {
             &authz,
             Some(owner),
             Some(RepoLife::Created),
+            true,
             now,
         ),
         Ok(None),
@@ -1086,6 +1102,62 @@ fn audit_tombstones_a_delete_killed_after_its_name() {
     // `repo-gone`: a deleted name is no hold, so a cursor consumer may end the repository's work.
     assert!(!authz.holds(repo_id));
     assert_quiescent(&mut w, owner, repo_id, &mut repo);
+}
+
+/// F125: a delete whose tombstone is in (the edge's own, in band) still owes the repository's Actions caches and
+/// artifacts while the shard or bucket holds any, as the step after the tombstone; once dropped the delete owes nothing,
+/// so a second batch performs no step. An expired delete owes no drop either: the purge after `retain_until` removes
+/// everything under the owner's records [inference: as it removes the chain].
+#[test]
+fn a_delete_drops_the_repositorys_actions_data_once() {
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, None);
+    let name = RepoName::parse("delete-drops-cache").unwrap();
+    let repo_id = commit_create(&mut w, owner, admin, &name, r#"{"description":"has a cache"}"#);
+    set_repo_owner(&mut w, repo_id, owner);
+    let mut repo = create_chain(owner, RepoLife::Created);
+    repo.read.actions_held = true;
+    let retain_until = Timestamp(w.authz(owner).now.0 + 3_600_000);
+    let delete = AuthzOp::DeleteRepo { key: name.key(), retain_until };
+    w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: delete }).unwrap();
+
+    advance_all(&mut w, MINUTE + 1_000);
+    let report = authz_batch(&mut w, owner, &mut repo, false).unwrap().expect("the delete is due");
+    assert_eq!(repo.steps, vec![RepoStep::Delete { retain_until }, RepoStep::DropActions]);
+    assert_eq!(report.steps, 2);
+    assert!(!repo.read.actions_held);
+    assert_quiescent(&mut w, owner, repo_id, &mut repo);
+
+    // The edge tombstoned in band: the chain already holds `Deleted`, and only the drop is owed.
+    let authz: AuthzFold = w.authz(owner).fresh_leader();
+    let now = w.authz(owner).now;
+    let plan = |held| {
+        graftyard_identity::finish::delete(
+            owner,
+            repo_id,
+            retain_until,
+            &authz,
+            Some(owner),
+            Some(RepoLife::Deleted),
+            held,
+            now,
+        )
+    };
+    assert_eq!(plan(true), Ok(Some(Step::Repo(repo_id, RepoStep::DropActions))));
+    assert_eq!(plan(false), Ok(None));
+    // Another repository's held data is not this delete's: its own name is not `Deleted`.
+    let other = RepoId(graftyard_types::DbId(repo_id.0.0 + 1));
+    let not_deleted = graftyard_identity::finish::delete(
+        owner,
+        other,
+        retain_until,
+        &authz,
+        Some(owner),
+        Some(RepoLife::Deleted),
+        true,
+        now,
+    );
+    assert_eq!(not_deleted, Ok(None));
 }
 
 /// Neither an existing tombstone nor an expired deleted name is sent back to the repository chain.

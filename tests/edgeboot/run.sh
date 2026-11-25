@@ -23,6 +23,16 @@ json.dump({"name": "edgeboot", "main": f"{b}/out/index.js", "compatibility_date"
                     "PART_BYTES": "5242880", "HOST": "edgeboot.example", "GRAFTYARD_SITES": json.dumps(sites),
                     "GRAFTYARD_GENESIS": json.dumps(genesis), "LOGINS": "{}"}},
           open(f"{b}/wrangler.json", "w"))
+# actions-artifacts' gzip check (below): a local R2 bucket the edge's `/_bed/gzip` stores into, and a front that reaches
+# the edge over a service binding and passes its answer on as graft-front does (`workers/front/src/lib.rs`, `fetch`).
+w = json.load(open(f"{b}/wrangler.json"))
+w["r2_buckets"] = [{"binding": "BED_ARTIFACTS", "bucket_name": "edgeboot-artifacts"}]
+json.dump(w, open(f"{b}/wrangler.json", "w"))
+open(f"{b}/front.js", "w").write(
+    "export default { async fetch(req, env) { const r = await env.EDGE.fetch(req);"
+    " return new Response(r.body, { status: r.status, headers: r.headers }); } }\n")
+json.dump({"name": "edgeboot-front", "main": f"{b}/front.js", "compatibility_date": "2026-10-01",
+           "services": [{"binding": "EDGE", "service": "edgeboot"}]}, open(f"{b}/front.json", "w"))
 open(f"{b}/.dev.vars", "w").write("BED_TOKEN=edgeboot-bed\n")
 PY
 "$W" dev --port $P -c "$B/wrangler.json" >"$B/dev.log" 2>&1 & DEV=$!
@@ -65,6 +75,28 @@ for auth in "" "Bearer not.a.jwt"; do
     [ "$c" = 401 ] || { echo "  FAIL: want 401"; ok=0; }
   done
 done
+# actions-artifacts: a stored gzip body leaves the edge byte for byte with its Content-Length, through a front's
+# service binding, as a gzipped artifact file must reach `download-artifact`, which gunzips it once. With workerd's
+# default `encodeBody` the edge's answer was gzipped again: 307,964 B stored, 308,077 B chunked (`decisions/DECISIONS.md`,
+# "`actions-artifacts`"). Test builds only: the route is `/_bed/gzip`.
+if [ -z "${PRODUCT:-}" ]; then
+  FP=$((P + 1))
+  "$W" dev --port $FP -c "$B/front.json" -c "$B/wrangler.json" >"$B/front.log" 2>&1 & FRONT=$!
+  trap 'kill $DEV $FRONT 2>/dev/null; wait $DEV $FRONT 2>/dev/null; rm -rf "$B"' EXIT
+  for _ in $(seq 90); do grep -q "Ready on" "$B/front.log" && break; sleep 1; done
+  head -c 300000 /dev/urandom | base64 >"$B/plain" && gzip -c "$B/plain" >"$B/stored.gz"
+  want=$(stat -c %s "$B/stored.gz")
+  c=$(curl -s -m 30 -o /dev/null -w '%{http_code}' -X PUT -H 'x-bed-token: edgeboot-bed' -H 'content-encoding: gzip' \
+    --data-binary @"$B/stored.gz" "http://127.0.0.1:$FP/_bed/gzip")
+  c2=$(curl -s -m 30 -D "$B/gh" -o "$B/got.gz" -w '%{http_code}' -H 'x-bed-token: edgeboot-bed' \
+    -H 'accept-encoding: gzip' "http://127.0.0.1:$FP/_bed/gzip")
+  len=$(grep -i '^content-length:' "$B/gh" | tr -dc 0-9)
+  got=$(stat -c %s "$B/got.gz")
+  echo "gzip through the front: put $c, get $c2, stored $want B, answered $got B, content-length ${len:-none}"
+  { [ "$c" = 204 ] && [ "$c2" = 200 ] && cmp -s "$B/got.gz" "$B/stored.gz" && [ "$len" = "$want" ]; } \
+    || { echo "  FAIL: the stored gzip did not leave the edge as stored"; ok=0; }
+  n=$(grep -c 'out of bounds\|RuntimeError' "$B/front.log"); [ "$n" = 0 ] || ok=0
+fi
 sleep 1
 n=$(grep -c 'out of bounds\|RuntimeError' "$B/dev.log")
 echo "wasm traps: $n"; [ "$n" = 0 ] || ok=0

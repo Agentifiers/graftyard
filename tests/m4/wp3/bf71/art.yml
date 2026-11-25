@@ -1,0 +1,110 @@
+# BF-71's workflow (tests/m4/wp3/bf71): upload-artifact@v3.2.2 and download-artifact@v3.1.0 unchanged, legacy
+# pipelines artifacts. Upstream's `v3` tag is still the node16 9bc31d5c, so the row pins v3.1.0, the node24 a9bc5e6e.
+# `up` writes four kinds of file into artifact `a`; two `leg`s write different files into one name `m`; `re` uploads
+# `r/x.bin` twice in one job, the second replacing the first; `down` reads `a` by name and then every artifact, and
+# checks each file against the SHA-256 its writer printed into `sums`. `probe` writes a local node action into its
+# workspace (the runtime token reaches only actions, not `run:` steps) that starts an artifact it never finalizes and
+# then calls with the job's token on another run's, repository's and shard's container, and with no token; it prints
+# one `BF71 PROBE` line and fails on any answer but 403, 401, and the unfinalized artifact unlisted. No step reads a
+# secret.
+on: workflow_dispatch
+jobs:
+  up:
+    runs-on: [self-hosted]
+    steps:
+      - run: |
+          set -eu
+          mkdir -p a/dir/deep && cd a
+          head -c 40000 /dev/zero | tr '\0' 'x' > small.txt
+          yes 'compressible line of text for the on-disk gzip path' | head -c 31457280 > dir/big.txt
+          head -c 52428800 /dev/urandom > dir/deep/random.bin
+          : > empty.txt
+          sha256sum small.txt dir/big.txt dir/deep/random.bin empty.txt > ../sums-a.txt
+          cat ../sums-a.txt
+      - uses: actions/upload-artifact@v3.2.2
+        with: { name: a, path: a }
+      - uses: actions/upload-artifact@v3.2.2
+        with: { name: sums-a, path: sums-a.txt }
+  leg:
+    runs-on: [self-hosted]
+    strategy:
+      matrix:
+        n: [1, 2]
+    steps:
+      - run: |
+          mkdir -p m && head -c 100000 /dev/urandom > m/leg-${{ matrix.n }}.bin && sha256sum m/leg-${{ matrix.n }}.bin
+          cd m && sha256sum leg-${{ matrix.n }}.bin > ../sums-m-${{ matrix.n }}.txt
+      - uses: actions/upload-artifact@v3.2.2
+        with: { name: m, path: m }
+      - uses: actions/upload-artifact@v3.2.2
+        with: { name: 'sums-m-${{ matrix.n }}', path: 'sums-m-${{ matrix.n }}.txt' }
+  re:
+    runs-on: [self-hosted]
+    steps:
+      - run: mkdir -p r && head -c 9000000 /dev/urandom > r/x.bin
+      - uses: actions/upload-artifact@v3.2.2
+        with: { name: r, path: r }
+      - run: |
+          head -c 12000000 /dev/urandom > r/x.bin
+          cd r && sha256sum x.bin > ../sums-r.txt
+      - uses: actions/upload-artifact@v3.2.2
+        with: { name: r, path: r }
+      - uses: actions/upload-artifact@v3.2.2
+        with: { name: sums-r, path: sums-r.txt }
+  probe:
+    runs-on: [self-hosted]
+    steps:
+      - run: |
+          mkdir -p probe && cat > probe/action.yml <<'EOF'
+          name: bf71-probe
+          runs: { using: node24, main: index.js }
+          EOF
+          cat > probe/index.js <<'EOF'
+          const base = process.env.ACTIONS_RUNTIME_URL, tok = process.env.ACTIONS_RUNTIME_TOKEN, run = Number(process.env.GITHUB_RUN_ID);
+          const v = "api-version=6.0-preview";
+          const call = async (m, u, body, auth = true, h = {}) => {
+            const r = await fetch(u, { method: m, body, headers: { ...(auth ? { authorization: `Bearer ${tok}` } : {}), accept: `application/json;${v}`, "content-type": "application/json", ...h } });
+            const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
+            return { s: r.status, j };
+          };
+          const pipe = (r) => `${base}_apis/pipelines/workflows/${r}/artifacts?${v}`;
+          const out = {};
+          const made = await call("POST", pipe(run), JSON.stringify({ Type: "actions_storage", Name: "unfinal" }));
+          out.create = made.s;
+          const ct = made.j.fileContainerResourceUrl;
+          out.put = (await call("PUT", `${ct}?itemPath=unfinal/x.txt`, "hello", true, { "content-type": "application/octet-stream", "content-range": "bytes 0-4/5" })).s;
+          const list = await call("GET", pipe(run));
+          out.listed = (list.j?.value ?? []).map((a) => a.name);
+          const [o, s, rp, rn] = ct.split("/").slice(-4);
+          const swap = (i, x) => { const p = ct.split("/"); p[p.length - 4 + i] = String(x); return p.join("/"); };
+          out.otherRunPipe = (await call("GET", pipe(run + 1000))).s;
+          out.otherRun = (await call("GET", `${swap(3, Number(rn) + 1000)}?itemPath=a`)).s;
+          out.otherRepo = (await call("PUT", `${swap(2, Number(rp) + 1)}?itemPath=a/x`, "x", true, { "content-range": "bytes 0-0/1" })).s;
+          out.otherShard = (await call("GET", `${swap(1, Number(s) + 1)}?itemPath=a`)).s;
+          out.noToken = (await call("GET", pipe(run), undefined, false)).s;
+          console.log(`BF71 PROBE ${JSON.stringify(out)}`);
+          const ok = out.create === 201 && out.put === 200 && !out.listed.includes("unfinal") && out.otherRunPipe === 403
+            && out.otherRun === 403 && out.otherRepo === 403 && out.otherShard === 403 && out.noToken === 401;
+          if (!ok) { console.log("BF71 PROBE FAIL"); process.exit(1); }
+          console.log("BF71 PROBE OK");
+          EOF
+      - uses: ./probe
+  down:
+    runs-on: [self-hosted]
+    needs: [up, leg, re, probe]
+    steps:
+      - uses: actions/download-artifact@v3.1.0
+        with: { name: a, path: got-a }
+      - run: |
+          set -eu
+          cd got-a && ls -laR . && test -f empty.txt && test ! -s empty.txt
+      - uses: actions/download-artifact@v3.1.0
+        with: { path: all }
+      - run: |
+          set -eu
+          (cd got-a && sha256sum -c ../all/sums-a/sums-a.txt)
+          (cd all/a && sha256sum -c ../sums-a/sums-a.txt)
+          (cd all/m && sha256sum -c ../sums-m-1/sums-m-1.txt && sha256sum -c ../sums-m-2/sums-m-2.txt)
+          (cd all/r && sha256sum -c ../sums-r/sums-r.txt)
+          test ! -e all/unfinal
+          echo "BF71 ALL SUMS OK"

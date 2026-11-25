@@ -31,8 +31,9 @@ while kill -0 $host 2>/dev/null; do
     break
   fi
   wait $r || true
-  # The host writes a fresh JIT config for the next runner when jobs remain.
-  for _ in $(seq 1 10); do [ -s "$out/jitconfig.txt" ] || ! kill -0 $host 2>/dev/null && break; sleep 1; done
+  # The host writes a fresh JIT config for the next runner when a job is queued; a job held by `needs` queues only
+  # once the jobs it needs finish, so wait up to a minute.
+  for _ in $(seq 1 60); do [ -s "$out/jitconfig.txt" ] || ! kill -0 $host 2>/dev/null && break; sleep 1; done
 done
 wait $host || true
 cat "$out/host.out"

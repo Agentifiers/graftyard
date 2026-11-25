@@ -130,6 +130,12 @@ impl Family for Actions {
         }
     }
     fn read_json(f: &ActionsFold, q: &Value) -> Value {
+        // F125: `{"repoCaches": repo}`, how many cache entries the repository holds here, which the `Audit` finisher
+        // reads before and after its drop. A member built before it answers the summary below, with no such field.
+        if let Some(r) = id_of(q, "repoCaches") {
+            let n = f.more.more.entries.values().filter(|e| e.repo.0 == r).count();
+            return json!({ "repoCaches": n });
+        }
         if let Some(j) = id_of(q, "job") {
             return serde_json::to_value(f.job(JobId(j))).unwrap_or(Value::Null);
         }
@@ -877,6 +883,9 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 Err(e) => refused(503, e),
             }
         }
+        // F125: the `Audit` finisher's drop of a deleted repository's cache entries. No grant: only a site's finisher
+        // sends it, as only a site's trigger sends `create_run`.
+        ("cache_drop_repo", None) => crate::actions_cache::drop_route(h, chain, &b).await,
         // `actions-cache`: the job's cache calls, which the edge authenticated with the job token.
         (o, Some(Grant::Job { job, .. })) if o.starts_with("cache_") => {
             crate::actions_cache::route(h, o, job, &b, &key, &urls, chain, now).await

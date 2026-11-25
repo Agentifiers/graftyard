@@ -126,6 +126,10 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
     if let Some(tail) = rest.strip_prefix("cache/") {
         return crate::cache::serve(c, req, tail, grant, &public).await;
     }
+    // actions-artifacts (`crate::artifacts`), whose chunk uploads and downloads stream and are never read here.
+    if crate::artifacts::claims(rest) {
+        return crate::artifacts::serve(c, req, rest, grant).await;
+    }
     let text = req.text().await.unwrap_or_default();
     let b: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     match (method, rest, grant) {

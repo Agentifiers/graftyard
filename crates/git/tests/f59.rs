@@ -253,7 +253,14 @@ impl Harness {
 
     fn repo_read(&mut self, repo: RepoId) -> RepoRead {
         let Some(g) = &mut self.repo else {
-            return RepoRead { owner: OWNER, enterprise: None, voters: Vec::new(), home: A, life: RepoLife::NoGroup };
+            return RepoRead {
+                owner: OWNER,
+                enterprise: None,
+                voters: Vec::new(),
+                home: A,
+                life: RepoLife::NoGroup,
+                actions_held: false,
+            };
         };
         assert_eq!(g.chain, ChainId::Repo(repo));
         let fold: RepoFold = g.fresh_leader();
@@ -271,6 +278,8 @@ impl Harness {
             voters: SITES.to_vec(),
             home: A,
             life,
+            // This model holds no Actions shard, so a deleted repository owes no drop (F125).
+            actions_held: false,
         }
     }
 

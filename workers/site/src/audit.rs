@@ -321,8 +321,14 @@ async fn read_repo(env: &Env, repo: graftyard_types::RepoId) -> std::result::Res
     let b = graftyard_lookup::Bindings { env, sites: &site.sites };
     let q = json!({ "q": { "settings": true } }).to_string();
     let Some((v, _, t)) = graftyard_lookup::call_opt(&b, chain, &record, "/read", q.as_bytes()).await? else {
-        let r =
-            audit::RepoRead { owner, enterprise: None, voters: Vec::new(), home: record.home, life: RepoLife::NoGroup };
+        let r = audit::RepoRead {
+            owner,
+            enterprise: None,
+            voters: Vec::new(),
+            home: record.home,
+            life: RepoLife::NoGroup,
+            actions_held: false,
+        };
         return Ok(AuditRead::Repo(r));
     };
     let stub = b.member(t.site, &t.do_name).map_err(|e| e.to_string())?;
@@ -343,7 +349,13 @@ async fn read_repo(env: &Env, repo: graftyard_types::RepoId) -> std::result::Res
         (_, Some(true)) => RepoLife::Created,
         _ => RepoLife::Open,
     };
-    Ok(AuditRead::Repo(audit::RepoRead { owner: o, enterprise: e, voters, home, life }))
+    // F125: a deleted repository's Actions data is read only once its tombstone is in, and only on the owner's shard
+    // and home bucket that hold it.
+    let actions_held = match life {
+        RepoLife::Deleted => crate::actions_cache::repo_held(env, owner, &record, repo).await?,
+        _ => false,
+    };
+    Ok(AuditRead::Repo(audit::RepoRead { owner: o, enterprise: e, voters, home, life, actions_held }))
 }
 
 /// The chain, record, and owner of a repository: its owner's record from the `RepoOwner` row. During a transfer the
@@ -364,7 +376,7 @@ async fn repo_step(
     step: &graftyard_identity::finish::RepoStep,
 ) -> std::result::Result<bool, String> {
     use graftyard_identity::finish::RepoStep;
-    let (chain, record, _) = repo_target(env, repo).await?;
+    let (chain, record, owner) = repo_target(env, repo).await?;
     let site = crate::SiteEnv::read(env).map_err(|e| e.to_string())?;
     let b = graftyard_lookup::Bindings { env, sites: &site.sites };
     match step {
@@ -433,6 +445,7 @@ async fn repo_step(
             cmd.request = request;
             repo_commit(&b, chain, &record, graftyard_git::repo::RepoCmd::Lifecycle(cmd)).await
         }
+        RepoStep::DropActions => crate::actions_cache::drop_repo(env, &b, owner, &record, repo).await.map(|()| false),
         RepoStep::Delete { .. } => {
             let mut cmd = graftyard_git::lifecycle::of_step(step, RequestId(Ulid(0)))
                 .expect("a delete step maps to a lifecycle command")?;

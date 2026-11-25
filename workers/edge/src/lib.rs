@@ -51,6 +51,7 @@ mod actions;
 mod activity;
 mod agents;
 mod api;
+mod artifacts;
 #[cfg(feature = "test-faults")]
 mod bed_rows;
 mod cache;
@@ -3882,6 +3883,10 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
     // BM-1's site fault: `?site=N&after_ms=A&for_ms=F[&rate=R]` makes site N's member class fail every call (or, with
     // `rate`, that share of calls) from A ms from now for F ms (default: until cleared); `?off=1` clears it. Written to every site's `Registry` object `faults`, which
     // each member isolate rereads at most once a second (`workers/site/src/faults.rs`, `SiteFault`).
+    // actions-artifacts: stored gzip bytes leave the edge as stored (tests/edgeboot).
+    if path == "/_bed/gzip" {
+        return artifacts::bed(c, req).await;
+    }
     if path == "/_bed/fault" {
         let now_ms = now().0;
         let plan = if qp("off").is_some() {

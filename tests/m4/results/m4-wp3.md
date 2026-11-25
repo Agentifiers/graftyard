@@ -13,6 +13,7 @@ Branch `m4-actions`, from main 2b42214e. The shapes are in `tests/m4/results/m4-
 | BF-56 | Pass (both kills) | **Pass**, both kills (23:18Z to 23:24Z, site day 34): every required check concluded, matching its job, at most 10.4 s after the job's `Completed` |
 | BF-59 | `graft-ops` open, reseal, and rewrap (PyNaCl oracle); key rules (`crates/identity/tests/sealed.rs`) | **Pass** (19:07Z to 19:31Z): repository, environment, and org secrets read right before and after both rotations; a fork-PR job sees none; no plaintext in 1,296 committed entries, 34 run files, runner diagnostics, or Workers Logs |
 | BF-69 | `actions-cache` rules (`crates/actions/src/cache.rs`, plant231) | **Pass** (2026-11-25): every line of the row 04:27Z to 05:55Z, and the parallel-save line in its own row 07:07Z to 07:11Z (one dispatch, four jobs, both saves of each key reserving within 1 s, one committing per key), no job failed |
+| BF-71 | `actions-artifacts`: unit tests in `crates/actions/src/artifacts.rs`, plant246, the gzip edgeboot, and the local runner run below | Not run: waits for BF-70 r2 and its own edge day |
 
 A row passes only hosted, with an unmodified `actions/runner`. The in-memory halves below check the engine's rules on real members first.
 
@@ -245,3 +246,27 @@ Teardown: `actions-mirror/cache`, `actions-mirror/checkout` and `m3org/bf69p` de
 `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py`, 2026-11-14 14:10Z to 14:50Z (site days 28 and 29, the edge days, and the live run): $0.53, of which containers $0.51 (git shards started by the resets). The whole install 00:00Z to 14:50Z: $8.47, containers $7.66. 13:00Z to 23:30Z (BF-61's reruns, BF-4, BF-59, BF-56, site days 30 to 34, edge days 14 to 17): $12.17, containers $11.78.
 
 BF-55, 2026-11-15 06:35Z to 12:27Z (both teardowns, site days 36 to 41, edge day 19, runs 1 and 2): **$3.14**, containers $2.50. Of that, 06:35Z to 06:53Z, before the first teardown, was $0.55 (all containers), and run 2 (11:26Z to 12:27Z) was $0.75. With the $24.1 metered before 06:35Z, the hosted total for steps 1 and 2 is **about $27.2 of the $30 cap**. Every git shard was torn down at 12:26Z, so graft-m4a sits at $0/h for containers.
+
+## BF-71, `actions-artifacts`: the local run (2026-11-25)
+
+`tests/m4/wp3/run-host.sh <runner dir> tests/m4/wp3/bf71/art.yml <out>`, with upload-artifact v3.2.2 (c6a366c9) and download-artifact v3.1.0 (a9bc5e6e) mirrored unchanged, against `runsvc_host`'s on-disk mirror of the edge's routes (`crates/actions/examples/runsvc_host.rs`, `artifacts`). An unmodified runner 2.338.2 ran six jobs and each succeeded:
+
+- `up`: artifact `a`, holding a 40,000 B file (gzipped in memory), 30 MiB of text (gzipped on disk), 50 MiB of random bytes (sent plain in 7 chunks of 8 MiB), and an empty file.
+- `leg (1)` and `leg (2)`: one file each into artifact `m`.
+- `re`: `r/x.bin` uploaded at 9,000,000 B, then again at 12,000,000 B in the same job. Its record names the second upload (`size` 12,000,000); both uploads' chunks were on disk until the replaced one was deleted.
+- `probe`: `BF71 PROBE {"create":201,"put":200,"listed":["a","m","r","sums-a","sums-m-1","sums-m-2","sums-r"],"otherRunPipe":403,"otherRun":403,"otherRepo":403,"otherShard":403,"noToken":401}`. The artifact `unfinal`, uploaded but never finalized, does not list.
+- `down`: `download-artifact` by name, then all of them; every file `OK` against its writer's SHA-256, the empty file empty, no `unfinal`, then `BF71 ALL SUMS OK`.
+
+The local host is not the edge: it proves the client's protocol and the pure half (`graftyard_actions::artifacts`), not Workers' streaming or the gzip passthrough, which `tests/edgeboot/run.sh` checks locally and BF-71 checks hosted.
+
+**Driver fix found on the way.** `runsvc_host` handed a queued job to a runner that had finished its one job but not yet deleted its session (the runner polls once between `completejob` and the delete), and that job was stranded. Every runner the host registers is ephemeral, so it now hands each runner one job only.
+
+## BF-71 hosted: the plan
+
+On graft-m4a after BF-70 r2, $3 stop, on its own edge day from main at adfdaf4a or later (a57-errors-read, F128's elect-again, dispatch-perms F127, oidc-nbf F129, and this branch), with `GRAFTYARD_ARTIFACTS=1`:
+1. `node tests/m4/wp3/bf71/bf71.mjs lifecycle`: the `actions/artifacts/` rule (delete at 90 days) merged into each site bucket's rules and read back; recorded in `tests/am1/results/install-m4a.md`.
+2. F130's setup step from M4-WP4 (Browser Integrity Check off for `/_services/token/*`), with its before and after Python-urllib fetch.
+3. Mirror upload-artifact v3.2.2 and download-artifact v3.1.0 under `actions-mirror` (`tests/m4/wp3/bf69/mirror.mjs`, `MIRROR_ORG=actions-mirror`).
+4. `node tests/m4/wp3/bf71/bf71.mjs run <out> <runner dir> <runner dir>`, then `python3 tests/fanout/tieroff503.py <from> <to> graft-m4a-edge` for the elect and tierOff counts.
+5. Teardown: delete `m3org/bf71`, and once a site day ships F125, check its prefix is gone (`bf71.mjs prefix`).
+
