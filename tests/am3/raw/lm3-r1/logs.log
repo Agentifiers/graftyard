@@ -1,0 +1,8 @@
+2026-11-25T06:32:11Z
+3d5ada33
+{"at": 1795588229260, "msg": "graft-agents-ops graft-agents-m4a-front CONTROLLER_DEFAULT = Some(VersionId(6abab3e9-337d-45e3-96ba-6201a62f274f))"}
+{"at": 1795588232516, "msg": "graft-agents-ops Wait { until: None, why: \"gate pending\" }"}
+{"at": 1795588232516, "msg": "graft-agents-ops Deployed(Controller, [(VersionId(ceaad4a1-7e30-4f66-8734-34278304328e), 1), (VersionId(6abab3e9-337d-45e3-96ba-6201a62f274f), 99)])"}
+{"at": 1795588286840, "msg": "graft-agents-ops gate controller: N+1 Answers { answers: 16, fivexx: 16 } thrown 0 N Some(Answers { answers: 3097, fivexx: 0 }) (whole Some(Answers { answers: 3098, fivexx: 0 })) -> Breach(\"GATE_ERRORS: N+1 16 5xx of 16 answers (0 thrown), N 0 of 3097\")"}
+{"at": 1795588287983, "msg": "graft-agents-ops Wait { until: None, why: \"no deployment of Controller read\" }"}
+{"at": 1795588287983, "msg": "graft-agents-ops Committed(\"ControllerPointer\")"}

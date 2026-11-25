@@ -1,0 +1,9 @@
+2026-11-25T06:47:21Z
+3d5ada33
+{"count":532,"current":null,"drained":[],"rolled":{"Controller":"fcd70122","Edge":"e23f69e9","Front":"b48fa157","Mcp":"4d6e33f1","Ops":"7def7980","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"}}
+{"script":"graft-m4a-edge","created_on":"2026-11-25T04:50:15.165428Z","versions":["d3d76118 100"]}
+{"script":"graft-m4a-ops","created_on":"2026-11-25T02:25:07.522227Z","versions":["ac4cd9a5 100"]}
+{"ops_schedules":[]}
+runner scripts: ["graft-runners"]
+runner store secrets named graft-agents-m4a-: []
+runner buckets: []

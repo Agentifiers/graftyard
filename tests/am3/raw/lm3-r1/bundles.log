@@ -1,0 +1,9 @@
+2026-11-25T06:14:24Z
+3d5ada33
+formats: 27 lines, AM2-WP3's FMT_FROM
+c1 built plain
+{"release": "fcd701226385d232846d0b53017486aaa83ef2ce6ebf7d01ff13e73d2f51576d", "files": 4}
+c1 uploaded under graft-agents-m4a-releases/lm3r1-c1/
+c2 built --features test-bad
+{"release": "416db57e2eeadd03736b44d15bed0e593b13ad43ab86ff9f45061c9aa5ead874", "files": 4}
+c2 uploaded under graft-agents-m4a-releases/lm3r1-c2/

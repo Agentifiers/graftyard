@@ -1,0 +1,25 @@
+2026-11-25T06:45:18Z
+3d5ada33
+{"at": 1795588229260, "msg": "graft-agents-ops graft-agents-m4a-front CONTROLLER_DEFAULT = Some(VersionId(6abab3e9-337d-45e3-96ba-6201a62f274f))"}
+{"at": 1795588232516, "msg": "graft-agents-ops Wait { until: None, why: \"gate pending\" }"}
+{"at": 1795588232516, "msg": "graft-agents-ops Deployed(Controller, [(VersionId(ceaad4a1-7e30-4f66-8734-34278304328e), 1), (VersionId(6abab3e9-337d-45e3-96ba-6201a62f274f), 99)])"}
+{"at": 1795588286840, "msg": "graft-agents-ops gate controller: N+1 Answers { answers: 16, fivexx: 16 } thrown 0 N Some(Answers { answers: 3097, fivexx: 0 }) (whole Some(Answers { answers: 3098, fivexx: 0 })) -> Breach(\"GATE_ERRORS: N+1 16 5xx of 16 answers (0 thrown), N 0 of 3097\")"}
+{"at": 1795588287983, "msg": "graft-agents-ops Wait { until: None, why: \"no deployment of Controller read\" }"}
+{"at": 1795588287983, "msg": "graft-agents-ops Committed(\"ControllerPointer\")"}
+{"at": 1795588343665, "msg": "graft-agents-ops Wait { until: None, why: \"no deployment of Controller read\" }"}
+{"at": 1795588405975, "msg": "graft-agents-ops Wait { until: None, why: \"no deployment of Controller read\" }"}
+{"at": 1795588467908, "msg": "graft-agents-ops Wait { until: None, why: \"no deployment of Controller read\" }"}
+{"at": 1795588527234, "msg": "graft-agents-ops graft-agents-m4a-front CONTROLLER_DEFAULT = None"}
+{"at": 1795588529984, "msg": "graft-agents-ops Idle"}
+{"at": 1795588529984, "msg": "graft-agents-ops Committed(\"IntentDone\")"}
+{"at": 1795588529984, "msg": "graft-agents-ops Committed(\"IntentStep\")"}
+{"at": 1795588529984, "msg": "graft-agents-ops Deployed(Controller, [(VersionId(6abab3e9-337d-45e3-96ba-6201a62f274f), 100), (VersionId(ceaad4a1-7e30-4f66-8734-34278304328e), 0)])"}
+{"at": 1795588584941, "msg": "graft-agents-ops Idle"}
+{"at": 1795588644661, "msg": "graft-agents-ops Idle"}
+{"at": 1795588704367, "msg": "graft-agents-ops Idle"}
+{"at": 1795588766385, "msg": "graft-agents-ops Idle"}
+{"at": 1795588825754, "msg": "graft-agents-ops Idle"}
+{"at": 1795588885675, "msg": "graft-agents-ops Idle"}
+{"at": 1795588944679, "msg": "graft-agents-ops Idle"}
+{"at": 1795589005243, "msg": "graft-agents-ops Idle"}
+{"at": 1795589064380, "msg": "graft-agents-ops Idle"}
