@@ -224,7 +224,9 @@ async fn record(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<PlacementRec
 async fn log(c: &Ctx<'_>, chain: ChainId, from: Index, limit: u64) -> std::result::Result<StoredLog, Fail> {
     let record = Box::pin(record(c, chain)).await?;
     let to = from.0.saturating_add(limit - 1);
-    let Some((_, bytes)) = Box::pin(graftyard_lookup::log_rows(&c.bindings(), chain, &record, from.0, to)).await else {
+    let graftyard_lookup::LogRows::Page(_, bytes) =
+        Box::pin(graftyard_lookup::log_rows(&c.bindings(), chain, &record, from.0, to)).await
+    else {
         // A group retired for good answers as a chain with no group, 404, so a lifeboat stops asking for it; any
         // other miss is an outage (`decisions/DECISIONS.md`, "`export-retired`").
         if Box::pin(graftyard_lookup::retired_group(&c.bindings(), chain, &record)).await {

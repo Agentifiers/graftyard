@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 
 use graftyard_git::export::{self, FeedState};
 use graftyard_git::key::R2Key;
-use graftyard_lookup::Bindings;
+use graftyard_lookup::{Bindings, LogRows};
 use graftyard_types::{ChainId, Index, MemberRegistry, PlacementRecord, RegistryRow, SiteId};
 use serde_json::{Value, json};
 use worker::*;
@@ -41,6 +41,16 @@ pub(crate) const REPORTS_SCHEMA: &str =
 pub(crate) const REPORT_HELD: &str = "SELECT idx FROM export_report WHERE chain = ?";
 pub(crate) const REPORT_PUT: &str = "INSERT OR REPLACE INTO export_report (chain, idx, record) VALUES (?, ?, ?)";
 pub(crate) const REPORTS_ALL: &str = "SELECT chain, idx, record FROM export_report";
+// A retired chain's report, dropped by its purge or by a round that proved it retired (`decisions/DECISIONS.md`,
+// "`feed-retired`"): no leader of it reports again, so a kept row would be planned and unread every round for good.
+pub(crate) const REPORT_DROP: &str = "DELETE FROM export_report WHERE chain = ?";
+// When a purge first found the feed behind a chain (`/export_purge_wait`), so its wait is capped across the purge's
+// calls (`export::purge_wait`); dropped with the report.
+pub(crate) const PURGE_WAIT_SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS export_purge_wait (chain TEXT PRIMARY KEY, since INTEGER NOT NULL)";
+pub(crate) const PURGE_WAIT_START: &str = "INSERT OR IGNORE INTO export_purge_wait (chain, since) VALUES (?, ?)";
+pub(crate) const PURGE_WAIT_GET: &str = "SELECT since FROM export_purge_wait WHERE chain = ?";
+pub(crate) const PURGE_WAIT_DROP: &str = "DELETE FROM export_purge_wait WHERE chain = ?";
 pub(crate) const ROUND_SCHEMA: &str =
     "CREATE TABLE IF NOT EXISTS export_round (k INTEGER PRIMARY KEY CHECK (k = 0), last INTEGER NOT NULL)";
 pub(crate) const ROUND_LAST: &str = "SELECT last FROM export_round WHERE k = 0";
@@ -141,6 +151,21 @@ async fn claim(env: &Env) -> Result<Option<(Reports, u64)>> {
 /// The chains round `sweep` probes, each with the record it is read under: `Release` and `Ids` from the genesis
 /// (`release::system_record`), then the chains of the sweep's slot from that site's `MemberRegistry` shard, under
 /// their rows' records. A record or a registry read that fails is logged and skipped; the next sweep asks again.
+/// Drops `chain`'s report in the feed site's `export` object (`/export_report` DELETE), which a purge and a round that
+/// proved the chain retired both send.
+pub async fn drop_report(env: &Env, chain: ChainId) -> Result<()> {
+    let site = SiteEnv::read(env)?;
+    let stub = site.registry(env, feed_site(&site), OBJECT)?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Delete);
+    let url = format!("https://registry/export_report?chain={chain}");
+    let res = stub.fetch_with_request(Request::new_with_init(&url, &init)?).await?;
+    if res.status_code() != 200 {
+        return Err(Error::RustError(format!("registry answered {}", res.status_code())));
+    }
+    Ok(())
+}
+
 async fn probe_targets(env: &Env, site: &SiteEnv, sweep: u64) -> Vec<(ChainId, PlacementRecord)> {
     let mut out = Vec::new();
     for c in export::ROUND_PROBES {
@@ -207,7 +232,9 @@ async fn round(env: &Env, bucket: &Bucket, reports: Reports, sweep: u64) -> Resu
             async move { (*c, graftyard_lookup::log_rows(b, *c, record, at + 1, at).await) }
         });
         for (c, got) in futures_util::future::join_all(reads).await {
-            if let Some(p) = got.and_then(|(_, bytes)| export::decode_log_page(&bytes).ok()) {
+            if let LogRows::Page(_, bytes) = got
+                && let Ok(p) = export::decode_log_page(&bytes)
+            {
                 probes.push((c, p.commit));
             }
         }
@@ -224,6 +251,7 @@ async fn round(env: &Env, bucket: &Bucket, reports: Reports, sweep: u64) -> Resu
         return Ok(format!("idle {probed} recovered={recovered}"));
     };
     let mut fetched = BTreeMap::new();
+    let mut unjoined = Vec::new();
     for part in batch.chains.chunks(READS_AT_ONCE) {
         let reads = part.iter().filter_map(|(c, to)| {
             let record = records.get(c)?;
@@ -231,9 +259,26 @@ async fn round(env: &Env, bucket: &Bucket, reports: Reports, sweep: u64) -> Resu
             Some(async move { (*c, graftyard_lookup::log_rows(b, *c, record, from, to.0).await) })
         });
         for (c, got) in futures_util::future::join_all(reads).await {
-            let page = got.and_then(|(_, bytes)| export::decode_log_page(&bytes).ok());
-            if let Some(f) = page.and_then(|p| p.fetched()) {
-                fetched.insert(c, f);
+            match got {
+                LogRows::Page(_, bytes) => {
+                    if let Some(f) = export::decode_log_page(&bytes).ok().and_then(|p| p.fetched()) {
+                        fetched.insert(c, f);
+                    }
+                }
+                LogRows::Unjoined => unjoined.push(c),
+                LogRows::Missed => {}
+            }
+        }
+    }
+    // A planned chain every source answered not joined: its report is dropped only once the members prove the group
+    // retired (`export::forgets`), with its unexported tail logged. A live chain whose sources fail keeps its report.
+    for (c, to) in batch.chains.iter().filter(|(c, _)| unjoined.contains(c)) {
+        let Some(record) = records.get(c) else { continue };
+        let retired = Box::pin(graftyard_lookup::retired_group(b, *c, record)).await;
+        if export::forgets(export::Unread::Unjoined, retired) {
+            console_error!("{}", export::unexported_line(*c, Index(state.cursors.get(*c).0 + 1), *to));
+            if let Err(e) = drop_report(env, *c).await {
+                console_error!("export feed: the retired {c}'s report was not dropped, the next round asks again: {e}");
             }
         }
     }
@@ -266,8 +311,9 @@ mod tests {
     use rusqlite::{Connection, params};
 
     use super::{
-        HOLD_GET, HOLD_PUT, HOLD_SCHEMA, REPORT_HELD, REPORT_PUT, REPORTS_ALL, REPORTS_SCHEMA, ROUND_LAST, ROUND_PUT,
-        ROUND_SCHEMA, SWEEP_N, SWEEP_PUT, SWEEP_SCHEMA,
+        HOLD_GET, HOLD_PUT, HOLD_SCHEMA, PURGE_WAIT_DROP, PURGE_WAIT_GET, PURGE_WAIT_SCHEMA, PURGE_WAIT_START,
+        REPORT_DROP, REPORT_HELD, REPORT_PUT, REPORTS_ALL, REPORTS_SCHEMA, ROUND_LAST, ROUND_PUT, ROUND_SCHEMA,
+        SWEEP_N, SWEEP_PUT, SWEEP_SCHEMA,
     };
 
     /// Every statement the registry object runs for the feed prepares and round-trips in SQLite. No other native
@@ -279,6 +325,17 @@ mod tests {
         db.execute(ROUND_SCHEMA, []).unwrap();
         db.execute(REPORT_PUT, params!["repo:65609", 10, "{}"]).unwrap();
         db.execute(REPORT_PUT, params!["repo:65609", 12, "{\"r\":1}"]).unwrap();
+        db.execute(REPORT_PUT, params!["repo:65610", 3, "{}"]).unwrap();
+        db.execute(REPORT_DROP, ["repo:65610"]).unwrap();
+        let left: i64 =
+            db.query_row("SELECT COUNT(*) FROM export_report WHERE chain = 'repo:65610'", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "the dropped report is gone");
+        db.execute(PURGE_WAIT_SCHEMA, []).unwrap();
+        db.execute(PURGE_WAIT_START, params!["repo:65610", 5]).unwrap();
+        db.execute(PURGE_WAIT_START, params!["repo:65610", 9]).unwrap();
+        let since: i64 = db.query_row(PURGE_WAIT_GET, ["repo:65610"], |r| r.get(0)).unwrap();
+        assert_eq!(since, 5, "the first call's start stands");
+        db.execute(PURGE_WAIT_DROP, ["repo:65610"]).unwrap();
         let held: i64 = db.query_row(REPORT_HELD, ["repo:65609"], |r| r.get(0)).unwrap();
         assert_eq!(held, 12);
         let all: Vec<(String, i64, String)> = db
