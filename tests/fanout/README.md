@@ -104,6 +104,11 @@ kept serving, and 924 API reads, 510 ref reads and 71 agent pushes ended `fetch 
    (`arrivals.py`, to `tests/fanout/raw/arrivals-<tag>.jsonl`). `b029.sh` and `b033.sh` do both through `outages.sh`.
 2. A second is a harness outage only when the main edge got 0 invocations while the site scripts got some. Anything
    else, such as an edge that answers 503 or 0 from its own code, or an edge and sites both silent, is the product's.
+   The edge's invocations are counted in the second they started (Workers Logs' end timestamp less `wallTimeMs`),
+   because Workers Logs stamps an invocation at its end: on every B0-34 row from mt10 to mt26 the edge's first 178 to
+   471 invocations started in the load's first second and none ended in it, on cold isolates after a site day (wall p50
+   3.4 to 5.5 s), so counting by end marked that second as an outage (`decisions/OPEN-QUESTIONS.md`, G43). Windows in
+   results before 2026-11-25 were counted by end.
 3. Every line is reported twice, as measured and with the outage windows removed, and the windows are listed
    (`outagecut.py` on a1's `a1-samples-<row>-<run>.jsonl.gz`, which drops a sample that started in a window or up to
    3 s before one).
