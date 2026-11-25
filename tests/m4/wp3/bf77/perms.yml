@@ -1,0 +1,56 @@
+# BF-77's token half (tests/m4/wp3/bf77): each job calls the API with its own GITHUB_TOKEN and prints one
+# `BF77 <job> <probe> <status>` line per call, which the driver checks against what the job's permissions grant.
+# `default` declares nothing (GHES's restricted default: contents and packages read); `ro` declares `contents: read`;
+# `rw` declares `contents: write`, `issues: write` and `statuses: write`, the control that the token writes what it
+# may. Probes: read the repository, open an issue, set a commit status, list artifacts (`actions: read`, which no job
+# here grants), and push a branch over HTTPS with the token. The step is repeated, not a YAML anchor, so the file
+# parses wherever GHES 3.22's does.
+on: workflow_dispatch
+jobs:
+  default:
+    runs-on: [self-hosted]
+    steps:
+      - run: |
+          set -u
+          api() { curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "authorization: token $GITHUB_TOKEN" -H 'content-type: application/json' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$2" ${3:+--data "$3"}; }
+          echo "BF77 $GITHUB_JOB read $(api GET '')"
+          echo "BF77 $GITHUB_JOB issue $(api POST /issues '{"title":"bf77"}')"
+          echo "BF77 $GITHUB_JOB status $(api POST /statuses/$GITHUB_SHA '{"state":"success","context":"bf77"}')"
+          echo "BF77 $GITHUB_JOB artifacts $(api GET /actions/artifacts)"
+          rm -rf p && git init -q p && cd p
+          git -c user.name=bf77 -c user.email=bf77@example.invalid commit -q --allow-empty -m bf77
+          auth="authorization: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          if git -c http.extraHeader="$auth" push -q "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/bf77-$GITHUB_JOB" 2>/dev/null
+          then echo "BF77 $GITHUB_JOB push accepted"; else echo "BF77 $GITHUB_JOB push refused"; fi
+  ro:
+    runs-on: [self-hosted]
+    permissions: { contents: read }
+    steps:
+      - run: |
+          set -u
+          api() { curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "authorization: token $GITHUB_TOKEN" -H 'content-type: application/json' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$2" ${3:+--data "$3"}; }
+          echo "BF77 $GITHUB_JOB read $(api GET '')"
+          echo "BF77 $GITHUB_JOB issue $(api POST /issues '{"title":"bf77"}')"
+          echo "BF77 $GITHUB_JOB status $(api POST /statuses/$GITHUB_SHA '{"state":"success","context":"bf77"}')"
+          echo "BF77 $GITHUB_JOB artifacts $(api GET /actions/artifacts)"
+          rm -rf p && git init -q p && cd p
+          git -c user.name=bf77 -c user.email=bf77@example.invalid commit -q --allow-empty -m bf77
+          auth="authorization: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          if git -c http.extraHeader="$auth" push -q "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/bf77-$GITHUB_JOB" 2>/dev/null
+          then echo "BF77 $GITHUB_JOB push accepted"; else echo "BF77 $GITHUB_JOB push refused"; fi
+  rw:
+    runs-on: [self-hosted]
+    permissions: { contents: write, issues: write, statuses: write }
+    steps:
+      - run: |
+          set -u
+          api() { curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "authorization: token $GITHUB_TOKEN" -H 'content-type: application/json' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$2" ${3:+--data "$3"}; }
+          echo "BF77 $GITHUB_JOB read $(api GET '')"
+          echo "BF77 $GITHUB_JOB issue $(api POST /issues '{"title":"bf77"}')"
+          echo "BF77 $GITHUB_JOB status $(api POST /statuses/$GITHUB_SHA '{"state":"success","context":"bf77"}')"
+          echo "BF77 $GITHUB_JOB artifacts $(api GET /actions/artifacts)"
+          rm -rf p && git init -q p && cd p
+          git -c user.name=bf77 -c user.email=bf77@example.invalid commit -q --allow-empty -m bf77
+          auth="authorization: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          if git -c http.extraHeader="$auth" push -q "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/bf77-$GITHUB_JOB" 2>/dev/null
+          then echo "BF77 $GITHUB_JOB push accepted"; else echo "BF77 $GITHUB_JOB push refused"; fi
