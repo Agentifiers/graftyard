@@ -15,12 +15,16 @@
 // 3. starts one group instance per chain, in batches of 100, under ids derived from the intent and the chain, so a
 //    coordinator step that ran twice starts nothing twice;
 // 4. fills the rest of the spare's bucket;
-// 5. waits until every group instance is complete, and errors if any errored, which `graft-ops` pages on.
+// 5. waits until every group instance is complete, and errors if any errored, which `graft-ops` pages on. A group that
+//    ends unmoved (below) is complete: the coordinator finishes with it listed in its output's `unmoved`, so the
+//    `ReplaceMember` reaches `IntentDone` and `RestorePlacement` can bring the lost site back (`move-unmoved`).
 //
 // A group instance asks the chain's leader `/move` with `{"replace": {lost, spare}, started, dead}` until it answers
 // `Done` (`graftyard_identity::group_move::replace_plan`): a chain whose committed config holds no voter on `from` is
 // Done at once. A `notLeader` answer names the leader to ask next; a member that does not answer is passed over for
-// the next voter its last config names.
+// the next voter its last config names. A group that no leader answered in ASKS_MAX asks (no live joined voter quorum
+// without `from`) ends unmoved: it writes one `PAGE graft-workflows` line naming the chain and why, and returns
+// `{chain, unmoved}`. One a leader did answer, and every other failure, still errors.
 //
 // The expiry instance is `deleteAll()` after 35 days (`workers/site/src/replace.rs`): it sleeps `DELETE_AFTER` from the
 // move, then asks the removed member `/expire`, naming the member that replaced it, once a day until it wipes.
@@ -139,23 +143,27 @@ export async function coordinate(env, event, step) {
   // Groups finish in any order, and a complete one stays complete: each step looks on from the first one not yet
   // seen complete, at most POLL_MAX of them.
   let next = 0;
+  const unmoved = [];
   for (let k = 0; next < chains.length; k++) {
     const r = await step.do(`poll ${k}`, STEP_RETRY, async () => {
       let i = next;
+      const left = [];
       for (let n = 0; i < chains.length && n < POLL_MAX; n++, i++) {
         const s = await (await env.GROUP.get(groupId(intent, chains[i].chain))).status();
         if (s.status === "errored" || s.status === "terminated") {
-          return { next: i, errored: [chains[i].chain, s.error?.message ?? s.status] };
+          return { next: i, unmoved: left, errored: [chains[i].chain, s.error?.message ?? s.status] };
         }
         if (s.status !== "complete") break;
+        if (s.output?.unmoved) left.push({ chain: chains[i].chain, why: s.output.unmoved });
       }
-      return { next: i };
+      return { next: i, unmoved: left };
     });
     if (r.errored) throw new Error(`group ${r.errored[0]} failed: ${r.errored[1]}`);
+    unmoved.push(...r.unmoved);
     next = r.next;
     if (next < chains.length) await step.sleep(`wait ${k}`, POLL_EVERY);
   }
-  return { groups: chains.length };
+  return { groups: chains.length, unmoved };
 }
 
 // A config as the site writes it: `[index, cfg]` (`/move`'s `config`), `{index, config}` (a `notLeader`'s), or bare.
@@ -205,6 +213,8 @@ export async function group(env, event, step) {
   let removed = null;
   // The member last asked to campaign, until an ask names a leader.
   let campaigned = null;
+  // Whether any answer came from a leader (a step planned, held or taken).
+  let led = false;
   for (let k = 0; k < ASKS_MAX; k++) {
     const r = await step.do(`ask ${k}`, STEP_RETRY, async () => {
       try {
@@ -274,6 +284,7 @@ export async function group(env, event, step) {
       await step.sleep(`after ${k}`, ASK_EVERY);
       continue;
     }
+    if (r.step) led = true;
     if (v.stepped) started = true;
     // Held with no step planned (no answer, or a member that knows no leader): ask the next voter the config names,
     // past any on a lost `from`. A held step came from the leader, which is asked again.
@@ -283,7 +294,16 @@ export async function group(env, event, step) {
     }
     await step.sleep(`after ${k}`, ASK_EVERY);
   }
-  throw new Error(`${p.chain}: not done after ${ASKS_MAX} asks`);
+  if (led) throw new Error(`${p.chain}: not done after ${ASKS_MAX} asks`);
+  // No leader in ASKS_MAX asks: the live voters cannot elect without `from` (one holds an older log, or too few joined),
+  // so the group stays where it is until a restore brings `from` back. Paged once, from a step, so a replay does not
+  // page again.
+  const unmoved = `no leader after ${ASKS_MAX} asks: no live joined voter quorum without site ${p.from}`;
+  await step.do("unmoved", STEP_RETRY, async () => {
+    console.error(`PAGE graft-workflows: ${p.chain} unmoved: ${unmoved}`);
+    return true;
+  });
+  return { chain: p.chain, asks: ASKS_MAX, unmoved };
 }
 
 // An expiry instance's run (`MoveExpire`): `{member, by, since}` from its group instance.

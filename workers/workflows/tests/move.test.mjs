@@ -3,7 +3,7 @@
 // replayed run skips the steps it finished.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { candidates, coordinate, expire, group, handle } from "../move.mjs";
+import { ASKS_MAX, candidates, coordinate, expire, group, handle } from "../move.mjs";
 
 const SITES = [
   { id: 0, region: "enam", spare: false },
@@ -118,7 +118,7 @@ test("a coordinator replayed after its start step started nothing twice", async 
   // A replay whose start step's result was lost runs createBatch again: every id answers 10405.
   first.done.delete("start 0");
   env.GROUP.get = async (id) => ({ status: async () => ({ status: "complete", id }) });
-  assert.deepEqual(await coordinate(env, event, first), { groups: 2 });
+  assert.deepEqual(await coordinate(env, event, first), { groups: 2, unmoved: [] });
   assert.equal(log.filter((l) => l.startsWith("createBatch")).length, 2);
   assert.equal(env.GROUP.status.size, 2);
   assert.ok(!log.some((l) => l.startsWith("refill")), "a restore refills nothing");
@@ -293,4 +293,52 @@ test("a group whose asked voter campaigns and never leads asks the next live vot
     assert.ok(asked.includes("repo:7#1#f2/campaign"), `site 2 never campaigned: ${asked}`);
     assert.ok(asked.length < 12, `${asked.length} asks: ${asked}`);
   }
+});
+
+// m6aL: tokens:953's only live joined voter was on C, so no group could elect without A. After ASKS_MAX asks with no
+// leader it ends unmoved and pages once; the coordinator completes with it listed, so the ReplaceMember can end and a
+// restore bring A back. A group a leader answered still errors.
+test("a group no leader answers in ASKS_MAX asks ends unmoved and pages; one a leader answered still errors", async () => {
+  const cfg = { normal: P([V(0), V(1), V(2)], 0) };
+  const env = { sites: SITES, EXPIRE: workflow([]) };
+  env.MEMBER_0 = ns(async () => assert.fail("the lost member was asked"));
+  env.MEMBER_1 = ns(async () => new Response("member not joined", { status: 409 }));
+  env.MEMBER_2 = ns(async (name, url) =>
+    ok(url.endsWith("/campaign") ? { verdict: "started" } : { error: { notLeader: { term: 2, leader: null, config: { index: 1, config: cfg } } } }));
+  const pages = [];
+  const error = console.error;
+  console.error = (line) => pages.push(line);
+  try {
+    const event = { instanceId: "g5", payload: { from: 0, to: 3, dead: true, chain: "tokens:953", row: { site: 1, do_name: "repo:7#1#f1" },
+      rows: [{ site: 1, do_name: "repo:7#1#f1" }, { site: 2, do_name: "repo:7#1#f2" }] } };
+    const step = new Step();
+    const out = await group(env, event, step);
+    assert.equal(out.chain, "tokens:953");
+    assert.match(out.unmoved, /no leader after 720 asks: no live joined voter quorum without site 0/);
+    // A replay of the finished run pages nothing more.
+    await group(env, event, step);
+    assert.deepEqual(pages, ["PAGE graft-workflows: tokens:953 unmoved: " + out.unmoved]);
+  } finally {
+    console.error = error;
+  }
+  // A leader that keeps holding its step is not unmoved.
+  env.MEMBER_1 = ns(async () => ok({ step: "Joint", error: "catching up", config: [1, cfg] }));
+  const held = { instanceId: "g6", payload: { from: 0, to: 3, dead: true, chain: "repo:7", row: { site: 1, do_name: "repo:7#1#f1" } } };
+  await assert.rejects(group(env, held, new Step()), new RegExp(`repo:7: not done after ${ASKS_MAX} asks`));
+});
+
+test("a coordinator finishes with its unmoved groups listed, and still errors on an errored one", async () => {
+  const env = coordinatorEnv([]);
+  const why = "no leader after 720 asks: no live joined voter quorum without site 0";
+  env.GROUP.get = async (id) => ({
+    status: async () => (id.endsWith("repo_8") ? { status: "complete", output: { chain: "repo:8", asks: 720, unmoved: why } }
+      : { status: "complete", output: { chain: "repo:7", asks: 3, removed: "repo:7#2#f0" } }),
+  });
+  const event = { instanceId: "01JC0000000000000000000003", payload: { from: 0, to: 3, dead: true, home: null } };
+  assert.deepEqual(await coordinate(env, event, new Step()), { groups: 2, unmoved: [{ chain: "repo:8", why }] });
+  env.GROUP.get = async (id) => ({
+    status: async () => (id.endsWith("repo_8") ? { status: "errored", error: { message: "expiry: boom" } } : { status: "complete" }),
+  });
+  const again = { instanceId: "01JC0000000000000000000004", payload: { from: 0, to: 3, dead: true, home: null } };
+  await assert.rejects(coordinate(env, again, new Step()), /repo:8 failed: expiry: boom/);
 });
