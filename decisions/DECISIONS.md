@@ -11238,7 +11238,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **Flip.**
 - A front that cannot reach the install for long stretches, so the 1% step starves: then the counts need a buffer in the agents account.
-- `FLUSH_CALLS_MAX` refusing real flushes from a busy isolate: raise it from the measured peak.
+- `FLUSH_CALLS_MAX` (10,000 [guess], accepted by the lead on 2026-11-25 until a row measures a peak): a hosted flush peak above half the cap (`peakFlushCalls` on `/_agents_front/status`, one flush per isolate per 30 s), or any flush refused for the cap in normal traffic. Then raise it from the measured peak.
 
 #### `agents-equivocation`: the agents view compares an answer at a held index with the entry it applied there (2026-11-25)
 
