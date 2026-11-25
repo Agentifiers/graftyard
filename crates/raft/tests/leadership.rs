@@ -2423,3 +2423,33 @@ fn a_loaded_leader_whose_storage_trips_still_moves() {
     assert!(matches!(sd.first(), Some((_, StepDownWhy::Confirm { slow: 6, .. }, Some(t))) if *t != A), "{sd:?}");
     assert_ne!(c.leader(), Some(A));
 }
+
+/// F128 (graft-m4a, repo:65596): every member of an idle group restored from storage is a follower that knows no
+/// leader, so its read-index reads name none, and nothing changes until a request arrives: campaigns and appends are
+/// request-driven. The edge's `Elect` probe reports the group with `suspect`; the member that led resumes its
+/// `led_term` without a new term, and once its round is delivered every follower names it, so a read-index read the
+/// edge sends again in the same request is queued for the leader, not refused (`decisions/DECISIONS.md`,
+/// "`tier-off-leader`", the F128 amendment).
+#[test]
+fn an_idle_group_restored_whole_resumes_its_leader_on_one_report() {
+    let mut c = Cluster::new(128);
+    c.elect(A);
+    c.sync(A);
+    let term = c.m(A).term();
+    for s in SITES {
+        c.crash(s);
+    }
+    c.advance(180_000);
+    for s in [B, C, A] {
+        c.restart(s);
+    }
+    c.run(300_000, 100, |_| true);
+    assert_eq!(c.leader(), None, "an idle restored group elects nothing on its own");
+    assert!(SITES.iter().all(|s| c.m(*s).not_leader().leader.is_none()));
+    assert!(c.on(B, |m, now| m.read_index(now)).is_err_and(|nl| nl.leader.is_none()), "B names no leader");
+    assert_eq!(c.on(A, |m, now| m.suspect(now, Colo(1), B, term)), Verdict::Resumed);
+    c.deliver_all();
+    assert_eq!((c.leader(), c.m(A).term()), (Some(A), term), "A resumed its own term");
+    assert!(SITES.iter().all(|s| c.m(*s).not_leader().leader == Some(A)), "every member names A");
+    assert!(c.on(B, |m, now| m.read_index(now)).is_ok(), "B queues a read-index read for A");
+}
