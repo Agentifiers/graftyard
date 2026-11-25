@@ -185,13 +185,15 @@ export function configMembers(x) {
 
 // One `/move` ask: the member answers `{"step", "ok"|"error", "config"}`; a follower answers `{"error":
 // {"notLeader": {"leader"}}}`. Returns `{done}`, `{leader}` to ask next, `{campaign}`, `{held}`, or `{stepped}`.
-// `lost` is the site a dead replace leaves: a follower still naming a leader there (its promise lapsed, but nothing
-// asked it to campaign) or naming none is asked to campaign, since no other caller may reach an idle group.
+// A follower naming no leader is asked to campaign, since campaigns are request-driven and no other caller may reach
+// an idle group: after a replace its groups were led from the spare and went idle, and a restore, which is not dead,
+// asked none (m6aL's restore: 0 of 3,118 groups stepped in 8 minutes). `lost` is the site a dead replace leaves: a
+// follower still naming a leader there (its promise lapsed, but nothing asked it to campaign) is asked too.
 export function judge(answer, members, lost = null) {
   const e = answer.error;
   if (e && typeof e === "object" && e.notLeader) {
     const l = e.notLeader.leader;
-    if (lost !== null && (l === null || l === undefined || l === lost)) return { campaign: true };
+    if (l === null || l === undefined || (lost !== null && l === lost)) return { campaign: true };
     const next = members.find((m) => m.site === l);
     return next ? { leader: next } : { held: "no leader yet" };
   }
