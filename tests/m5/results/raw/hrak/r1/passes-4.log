@@ -1,0 +1,27 @@
+2026-11-25T07:50:36Z
+494238bf
+{"at": 1795592144977, "msg": "graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592432908, "msg": "POST https://graft-runners.<runner-sub>.workers.dev/"}
+{"at": 1795592432908, "msg": "graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592435898, "msg": "graft-runners: launched 3 s after arm, image registry.cloudflare.com/<runner-account>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea"}
+{"at": 1795592441119, "msg": "graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592442667, "msg": "POST https://graft-runners.<runner-sub>.workers.dev/"}
+{"at": 1795592442667, "msg": "graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592466677, "msg": "POST https://graft-runners.<runner-sub>.workers.dev/"}
+{"at": 1795592466677, "msg": "graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592679491, "msg": "POST https://graft-runners.<runner-sub>.workers.dev/"}
+{"at": 1795592679491, "msg": "graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592682428, "msg": "graft-runners: launched 3 s after arm, image registry.cloudflare.com/<runner-account>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea"}
+{"at": 1795592688788, "msg": "POST https://graft-runners.<runner-sub>.workers.dev/"}
+{"at": 1795592688788, "msg": "graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592711592, "msg": "POST https://graft-runners.<runner-sub>.workers.dev/"}
+{"at": 1795592711592, "msg": "graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592740729, "msg": "graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592920057, "msg": "POST https://graft-runners.<runner-sub>.workers.dev/"}
+{"at": 1795592920057, "msg": "graft-runners pass: started 1 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592923101, "msg": "graft-runners: launched 3 s after arm, image registry.cloudflare.com/<runner-account>/graft-runners-runner@sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea"}
+{"at": 1795592928597, "msg": "POST https://graft-runners.<runner-sub>.workers.dev/"}
+{"at": 1795592928597, "msg": "graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+{"at": 1795592953554, "msg": "POST https://graft-runners.<runner-sub>.workers.dev/"}
+{"at": 1795592953554, "msg": "graft-runners pass: started 0 destroyed 0 kept_busy 0 full 0 vcpu_stopped 0"}
+since the put (07:31:48Z): 12 passes, 0 error lines
