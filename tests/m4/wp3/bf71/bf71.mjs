@@ -13,7 +13,10 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EDGE, Git, api, log, row, sleep, tokens } from "../../../am1/hosted/lib.mjs";
 
-const [what, out, ...rest] = process.argv.slice(2);
+import { resolve } from "node:path";
+const [what, outArg, ...rest] = process.argv.slice(2);
+// Absolute: each runner's shell runs in its own directory and appends its output here.
+const out = outArg && resolve(outArg);
 const CF = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}`;
 const H = { authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`, "content-type": "application/json" };
 const BUCKETS = ["a", "b", "c"].map((s) => `graft-m4a-site-${s}-packs`);

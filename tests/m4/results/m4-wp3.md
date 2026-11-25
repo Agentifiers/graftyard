@@ -13,7 +13,7 @@ Branch `m4-actions`, from main 2b42214e. The shapes are in `tests/m4/results/m4-
 | BF-56 | Pass (both kills) | **Pass**, both kills (23:18Z to 23:24Z, site day 34): every required check concluded, matching its job, at most 10.4 s after the job's `Completed` |
 | BF-59 | `graft-ops` open, reseal, and rewrap (PyNaCl oracle); key rules (`crates/identity/tests/sealed.rs`) | **Pass** (19:07Z to 19:31Z): repository, environment, and org secrets read right before and after both rotations; a fork-PR job sees none; no plaintext in 1,296 committed entries, 34 run files, runner diagnostics, or Workers Logs |
 | BF-69 | `actions-cache` rules (`crates/actions/src/cache.rs`, plant231) | **Pass** (2026-11-25): every line of the row 04:27Z to 05:55Z, and the parallel-save line in its own row 07:07Z to 07:11Z (one dispatch, four jobs, both saves of each key reserving within 1 s, one committing per key), no job failed |
-| BF-71 | `actions-artifacts`: unit tests in `crates/actions/src/artifacts.rs`, plant246, the gzip edgeboot, and the local runner run below | Not run: waits for BF-70 r2 and its own edge day |
+| BF-71 | `actions-artifacts`: unit tests in `crates/actions/src/artifacts.rs`, plant246, the gzip edgeboot, and the local runner run below | **Pass** (2026-11-25 12:52:48Z to 12:55:33Z, edge day `3c453149`): every line; 0 elect and 0 tierOff sheds; F125's drop seen hosted. Below |
 
 A row passes only hosted, with an unmodified `actions/runner`. The in-memory halves below check the engine's rules on real members first.
 
@@ -269,4 +269,34 @@ On graft-m4a after BF-70 r2, $3 stop, on its own edge day from main at adfdaf4a 
 3. Mirror upload-artifact v3.2.2 and download-artifact v3.1.0 under `actions-mirror` (`tests/m4/wp3/bf69/mirror.mjs`, `MIRROR_ORG=actions-mirror`).
 4. `node tests/m4/wp3/bf71/bf71.mjs run <out> <runner dir> <runner dir>`, then `python3 tests/fanout/tieroff503.py <from> <to> graft-m4a-edge` for the elect and tierOff counts.
 5. Teardown: delete `m3org/bf71`, and once a site day ships F125, check its prefix is gone (`bf71.mjs prefix`).
+
+## BF-71 hosted: the result (2026-11-25)
+
+**PASS on every line.** Run 1120326 on `m3org/bf71` (repo 65604, shard `actions:7100001.8`), 12:52:48Z to 12:55:32.945Z (the done line), unmodified runner 2.338.2 on two runner directories, upload-artifact v3.2.2 (c6a366c9) and download-artifact v3.1.0 (a9bc5e6e) mirrored unchanged as `actions-mirror/*` (repos 4128770 and 4128771; m4a holds `actions/*` Deleted since BF-69, so the driver rewrites `uses:` to the mirror). Driver `tests/m4/wp3/bf71/bf71.mjs`, days `tests/m4/wp3/bf71/days.sh`, raws in `tests/m4/raw/wp3/bf71/`.
+
+**What the days carried.** Both built from main `c40141d8` (a detached worktree, test-faults).
+- Site day, 12:41Z (sites a `1d6a9c52`, b `2a294df5`, c `ed3481e0`): BF-70 r2's flags unchanged (`GRAFTYARD_JOB_TOKENS=1`, `GRAFTYARD_ACTIONS_CACHE=1`, `--oidc`, PR_TRIGGER, APP_HOOKS, ACTIVITY, AUDIT, the run key, the audit stream). It ships F125's member half and `oidc-base-ref`. Crons reset to `[]`; reretire 35 of 35 not joined with the retired row.
+- Edge day, 12:46Z (edge `3c453149` at 100%, `edgever` exit 0): a57-errors-read (`cfa269df`), F128's elect-again (`338e1501`), dispatch-perms F127 (`e4167de2`), oidc-nbf F129 (`adfdaf4a`), oidc-base-ref, and actions-artifacts (`9f415115`), each an ancestor of the build. The plain-text binding diff is `GRAFTYARD_ARTIFACTS=1` alone; `FORMATS_ENABLED` (29 formats, 21.5, 21.6 and 18.14 among them), `RUN_SERVICE_PUBLIC` and `GRAFTYARD_CACHE_LIMIT` kept from `330560d3`.
+- Lifecycle, 12:33Z: `graftyard-actions-artifacts-90d` (prefix `actions/artifacts/`, delete at 7,776,000 s) merged beside each bucket's `Default Multipart Abort Rule` and read back on all three (`lifecycle.log`).
+
+| Line | Measured |
+| --- | --- |
+| Every job succeeds | 6 of 6 `Success`: `up`, `leg (1)`, `leg (2)`, `re`, `probe`, `down` |
+| SHA-256 identical, gzipped ones included | `down` printed `OK` for every file, by name and in the all-artifacts download (`small.txt`, `dir/big.txt`, `dir/deep/random.bin`, `empty.txt` twice each; `leg-1.bin`, `leg-2.bin`, `x.bin`), then `BF71 ALL SUMS OK`. The records show what crossed the edge gzipped: `small.txt` 73 B for 40,000 (`gzip: true`), `dir/big.txt` 91,625 B for 31,457,280 (`gzip: true`), `random.bin` 52,428,800 B plain in 7 chunks. So Workers served the stored gzip as stored, hosted: the DECISIONS `actions-artifacts` [inference] on hosted behaviour is now [measured] |
+| The empty file arrives empty | `test -f empty.txt && test ! -s empty.txt` passed; its record is `size` 0, upload 0 |
+| Both legs list under one name | `m` holds `leg-1.bin` (job 1120328) and `leg-2.bin` (job 1120329) |
+| A re-upload replaces whole, never a mix | `r/x.bin` was uploaded at 9,000,000 B then 12,000,000 B in job 1120330. Its record names the second upload (`size` 12,000,000), the chunks under `f/1120330/` are that upload's two (8,388,608 + 3,611,392 B) and nothing of the first, which was deleted, and `x.bin` matched the second upload's SHA-256. No 503 |
+| The unfinalized artifact never lists | `probe` uploaded `unfinal/x.txt` (PUT 200, its record written) without the finalize: the run's list held `a, m, r, sums-a, sums-m-1, sums-m-2` and no `unfinal`, R2 holds no `m/unfinal`, and `down`'s all-artifacts download made no `all/unfinal` |
+| Cross-run, cross-repository, cross-shard 403; no token 401 | `BF71 PROBE {"create":201,"put":200,…,"otherRunPipe":403,"otherRun":403,"otherRepo":403,"otherShard":403,"noToken":401}`; the edge logged 4 answers 403 and 3 answered 401 in the window |
+| Stop | $0.25 (m4a's UTC day $3.06 before, $3.31 after teardown), against $3 |
+
+**Sheds (F128's hosted read).** `tieroff503.py 12:52:48Z 12:56:30Z graft-m4a-edge`: `{"tierOff": 0, "elect": 0, "edge503": 0}`, and the same over 12:40Z to 12:57Z, which takes in the repository's create at 12:50Z. `m3org/bf71` was new at 12:50Z and its first calls (create, push, dispatch, run reads) answered without a 503, so there is no spread line to record. The edge's answers 12:49Z to 12:57Z: 200 ×299, 201 ×98, 403 ×4, 401 ×3, 202 ×1, 422 ×1, no 5xx.
+
+**F125 hosted.** `DELETE /repos/m3org/bf71` at 12:57:48Z answered 204, then the repository read 404. Its prefix `actions/artifacts/actions:7100001.8/65604/` held 48 objects at 12:57:54Z and at 12:58:35Z, and 0 at 12:59:04Z (the `Audit` finisher's `DropActions`, within one alarm and a retry of the delete). Buckets b and c held none throughout. The cache half (`CacheDropRepo`) had no entries to drop on this repository, so only the artifacts half was seen hosted.
+
+**F130 on m4a.** `graftyard oidc check --edge https://graft-m4a-edge.<sub>.workers.dev` (12:37:00Z, exit 1): "GET …/_services/token/.well-known/jwks as Python-urllib/3.12: HTTP 403: the host is on workers.dev, whose Browser Integrity Check cannot be turned off (https://developers.cloudflare.com/workers/configuration/routing/workers-dev/), so a relying party on Python's default agent is refused 1010 before the edge runs; serve the edge on a custom host in the install's zone" (`oidc-check.log`). No zone rule applied, as ruled.
+
+**A harness miss on the way.** The first start (12:49:58Z, run 1120309) gave the runners a relative output path, so each runner's shell, which runs in its own directory, failed its redirect and exited before taking a job. The driver now resolves the path; run 1120309 was cancelled (202, every job `Completed`) before the second start, and no job of it ran.
+
+**Teardown.** `m3org/bf71` deleted (above); `teardown.py --sweep` tore down 3 shard containers (`git#1#net:65604`, and the two mirrors' `git#0#net:4128770` and `4128771`) and then reported no shard container running. No runner process is left. The mirrors stay as BF-69's did. m4a is left with sites `1d6a9c52` / `2a294df5` / `ed3481e0`, edge `3c453149`, ops `ac4cd9a5`, every cron `[]`.
 

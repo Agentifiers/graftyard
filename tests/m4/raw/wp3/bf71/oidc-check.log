@@ -1,0 +1,2 @@
+graftyard: GET https://graft-m4a-edge.<sub>.workers.dev/_services/token/.well-known/jwks as Python-urllib/3.12: HTTP 403: the host is on workers.dev, whose Browser Integrity Check cannot be turned off (https://developers.cloudflare.com/workers/configuration/routing/workers-dev/), so a relying party on Python's default agent is refused 1010 before the edge runs; serve the edge on a custom host in the install's zone
+exit 1

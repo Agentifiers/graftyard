@@ -1,0 +1,110 @@
+2026-11-25T12:54:35.7738922Z Current runner version: '2.338.2'
+2026-11-25T12:54:35.7745212Z Runner name: 'bf71-6'
+2026-11-25T12:54:35.7745720Z Machine name: '172'
+2026-11-25T12:54:35.7748486Z Prepare workflow directory
+2026-11-25T12:54:35.8234491Z Prepare all required actions
+2026-11-25T12:54:35.8294238Z Getting action download info
+2026-11-25T12:54:38.8451275Z Download action repository 'actions-mirror/download-artifact@v3.1.0' (SHA:a9bc5e6ef2cb54c177f32aa5726adaa15e7e2d59)
+2026-11-25T12:54:44.0037616Z Complete job name: down
+2026-11-25T12:54:44.0979330Z ##[group]Run actions-mirror/download-artifact@v3.1.0
+2026-11-25T12:54:44.0980179Z with:
+2026-11-25T12:54:44.0980291Z   name: a
+2026-11-25T12:54:44.0980660Z   path: got-a
+2026-11-25T12:54:44.0981116Z ##[endgroup]
+2026-11-25T12:54:44.2083679Z Starting download for a
+2026-11-25T12:54:47.4583705Z Directory structure has been set up for the artifact
+2026-11-25T12:54:47.4674092Z Total number of files that will be downloaded: 3
+2026-11-25T12:54:48.4575917Z Total file count: 3 ---- Processed file #0 (0.0%)
+2026-11-25T12:54:49.4590325Z Total file count: 3 ---- Processed file #1 (33.3%)
+2026-11-25T12:54:50.4571589Z Total file count: 3 ---- Processed file #2 (66.6%)
+2026-11-25T12:54:51.4576397Z Total file count: 3 ---- Processed file #2 (66.6%)
+2026-11-25T12:54:52.4572050Z Total file count: 3 ---- Processed file #2 (66.6%)
+2026-11-25T12:54:53.4577011Z Total file count: 3 ---- Processed file #2 (66.6%)
+2026-11-25T12:54:54.0737182Z Artifact a was downloaded to ~/tmp/runner2/_work/bf71/bf71/got-a
+2026-11-25T12:54:54.0758263Z Artifact download has finished successfully
+2026-11-25T12:54:54.1091171Z ##[group]Run set -eu
+2026-11-25T12:54:54.1091531Z [36;1mset -eu[0m
+2026-11-25T12:54:54.1091660Z [36;1mcd got-a && ls -laR . && test -f empty.txt && test ! -s empty.txt[0m
+2026-11-25T12:54:54.1128930Z shell: /usr/sbin/bash -e {0}
+2026-11-25T12:54:54.1129384Z ##[endgroup]
+2026-11-25T12:54:54.1280842Z .:
+2026-11-25T12:54:54.1281920Z total 52
+2026-11-25T12:54:54.1282624Z drwxr-xr-x 3 user user  4096 Nov 25 12:54 .
+2026-11-25T12:54:54.1282932Z drwxr-xr-x 3 user user  4096 Nov 25 12:54 ..
+2026-11-25T12:54:54.1283336Z drwxr-xr-x 3 user user  4096 Nov 25 12:54 dir
+2026-11-25T12:54:54.1283639Z -rw-r--r-- 1 user user     0 Nov 25 12:54 empty.txt
+2026-11-25T12:54:54.1284072Z -rw-r--r-- 1 user user 40000 Nov 25 12:54 small.txt
+2026-11-25T12:54:54.1285520Z 
+2026-11-25T12:54:54.1285872Z ./dir:
+2026-11-25T12:54:54.1286132Z total 30732
+2026-11-25T12:54:54.1286352Z drwxr-xr-x 3 user user     4096 Nov 25 12:54 .
+2026-11-25T12:54:54.1286763Z drwxr-xr-x 3 user user     4096 Nov 25 12:54 ..
+2026-11-25T12:54:54.1287818Z -rw-r--r-- 1 user user 31457280 Nov 25 12:54 big.txt
+2026-11-25T12:54:54.1288436Z drwxr-xr-x 2 user user     4096 Nov 25 12:54 deep
+2026-11-25T12:54:54.1288658Z 
+2026-11-25T12:54:54.1288904Z ./dir/deep:
+2026-11-25T12:54:54.1289324Z total 51208
+2026-11-25T12:54:54.1289738Z drwxr-xr-x 2 user user     4096 Nov 25 12:54 .
+2026-11-25T12:54:54.1289950Z drwxr-xr-x 3 user user     4096 Nov 25 12:54 ..
+2026-11-25T12:54:54.1313846Z -rw-r--r-- 1 user user 52428800 Nov 25 12:54 random.bin
+2026-11-25T12:54:54.1395121Z ##[group]Run actions-mirror/download-artifact@v3.1.0
+2026-11-25T12:54:54.1395543Z with:
+2026-11-25T12:54:54.1395624Z   path: all
+2026-11-25T12:54:54.1395659Z ##[endgroup]
+2026-11-25T12:54:54.2224899Z No artifact name specified, downloading all artifacts
+2026-11-25T12:54:54.2225221Z Creating an extra directory for each artifact that is being downloaded
+2026-11-25T12:54:55.6553083Z starting download of artifact a : 1/7
+2026-11-25T12:54:56.6894146Z Total number of files that will be downloaded: 3
+2026-11-25T12:54:57.6897027Z Total file count: 3 ---- Processed file #0 (0.0%)
+2026-11-25T12:54:58.6909532Z Total file count: 3 ---- Processed file #1 (33.3%)
+2026-11-25T12:54:59.6900088Z Total file count: 3 ---- Processed file #2 (66.6%)
+2026-11-25T12:55:00.4600729Z starting download of artifact m : 2/7
+2026-11-25T12:55:01.5109900Z Total number of files that will be downloaded: 2
+2026-11-25T12:55:02.5117205Z Total file count: 2 ---- Processed file #0 (0.0%)
+2026-11-25T12:55:03.5683088Z starting download of artifact r : 3/7
+2026-11-25T12:55:03.5683801Z Total number of files that will be downloaded: 1
+2026-11-25T12:55:04.5687669Z Total file count: 1 ---- Processed file #0 (0.0%)
+2026-11-25T12:55:05.3024537Z starting download of artifact sums-a : 4/7
+2026-11-25T12:55:06.3507510Z Total number of files that will be downloaded: 1
+2026-11-25T12:55:07.3518210Z Total file count: 1 ---- Processed file #0 (0.0%)
+2026-11-25T12:55:07.4583223Z starting download of artifact sums-m-1 : 5/7
+2026-11-25T12:55:08.3235732Z Total number of files that will be downloaded: 1
+2026-11-25T12:55:09.3231048Z Total file count: 1 ---- Processed file #0 (0.0%)
+2026-11-25T12:55:09.3235179Z starting download of artifact sums-m-2 : 6/7
+2026-11-25T12:55:10.1823783Z Total number of files that will be downloaded: 1
+2026-11-25T12:55:11.1830057Z Total file count: 1 ---- Processed file #0 (0.0%)
+2026-11-25T12:55:11.2239757Z starting download of artifact sums-r : 7/7
+2026-11-25T12:55:12.2040773Z Total number of files that will be downloaded: 1
+2026-11-25T12:55:13.2061041Z Total file count: 1 ---- Processed file #0 (0.0%)
+2026-11-25T12:55:13.6628872Z There were 7 artifacts downloaded
+2026-11-25T12:55:13.6629514Z Artifact a was downloaded to ~/tmp/runner2/_work/bf71/bf71/all/a
+2026-11-25T12:55:13.6629889Z Artifact m was downloaded to ~/tmp/runner2/_work/bf71/bf71/all/m
+2026-11-25T12:55:13.6630135Z Artifact r was downloaded to ~/tmp/runner2/_work/bf71/bf71/all/r
+2026-11-25T12:55:13.6630369Z Artifact sums-a was downloaded to ~/tmp/runner2/_work/bf71/bf71/all/sums-a
+2026-11-25T12:55:13.6630547Z Artifact sums-m-1 was downloaded to ~/tmp/runner2/_work/bf71/bf71/all/sums-m-1
+2026-11-25T12:55:13.6630776Z Artifact sums-m-2 was downloaded to ~/tmp/runner2/_work/bf71/bf71/all/sums-m-2
+2026-11-25T12:55:13.6631140Z Artifact sums-r was downloaded to ~/tmp/runner2/_work/bf71/bf71/all/sums-r
+2026-11-25T12:55:13.6642797Z Artifact download has finished successfully
+2026-11-25T12:55:13.6823642Z ##[group]Run set -eu
+2026-11-25T12:55:13.6823783Z [36;1mset -eu[0m
+2026-11-25T12:55:13.6823846Z [36;1m(cd got-a && sha256sum -c ../all/sums-a/sums-a.txt)[0m
+2026-11-25T12:55:13.6823873Z [36;1m(cd all/a && sha256sum -c ../sums-a/sums-a.txt)[0m
+2026-11-25T12:55:13.6823891Z [36;1m(cd all/m && sha256sum -c ../sums-m-1/sums-m-1.txt && sha256sum -c ../sums-m-2/sums-m-2.txt)[0m
+2026-11-25T12:55:13.6823948Z [36;1m(cd all/r && sha256sum -c ../sums-r/sums-r.txt)[0m
+2026-11-25T12:55:13.6823966Z [36;1mtest ! -e all/unfinal[0m
+2026-11-25T12:55:13.6823985Z [36;1mecho "BF71 ALL SUMS OK"[0m
+2026-11-25T12:55:13.6839737Z shell: /usr/sbin/bash -e {0}
+2026-11-25T12:55:13.6839789Z ##[endgroup]
+2026-11-25T12:55:13.6908832Z small.txt: OK
+2026-11-25T12:55:13.7797901Z dir/big.txt: OK
+2026-11-25T12:55:13.9435432Z dir/deep/random.bin: OK
+2026-11-25T12:55:13.9436297Z empty.txt: OK
+2026-11-25T12:55:13.9468786Z small.txt: OK
+2026-11-25T12:55:14.0347505Z dir/big.txt: OK
+2026-11-25T12:55:14.1814818Z dir/deep/random.bin: OK
+2026-11-25T12:55:14.1814952Z empty.txt: OK
+2026-11-25T12:55:14.1857530Z leg-1.bin: OK
+2026-11-25T12:55:14.1891737Z leg-2.bin: OK
+2026-11-25T12:55:14.2250088Z x.bin: OK
+2026-11-25T12:55:14.2254806Z BF71 ALL SUMS OK
+2026-11-25T12:55:14.2372355Z Cleaning up orphan processes
