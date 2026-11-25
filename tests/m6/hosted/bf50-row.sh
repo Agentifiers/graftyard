@@ -5,6 +5,7 @@
 # Phases, in order:
 #   create    test-register chains: 24 Tri homed on A (0), 8 homed on B (1), and 4 Tri on B, C and the spare, the
 #             controls that hold no voter on A
+#   seed      the R66 probe's real repository, owner and PAT, all homed on A (`bf50-probe.mjs seed`)
 #   load      LOAD_S seconds of puts at LOAD_RATE on the register chains, then stop (load.json: the last acked value
 #             per chain)
 #   before    after the load stops and before the fault: every registry row on sites 0-3 (64 shards each), each
@@ -18,6 +19,8 @@
 #   lift      the site fault off, so A recovers; graft-ops undrains it after OPS_RECOVER_MS
 #   restore2  once A is undrained: RestorePlacement{0}, customer-signed
 #   home      once the restore is done: every config, the judge's home check, the reads of every acked write
+#   probe     once `home` has committed: `gh api` and `git ls-remote` on the seeded repository, idle since `seed`, each
+#             timed from the client, cold and then again (OPEN-QUESTIONS R66; `bf50-probe.mjs probe`)
 #   teardown  stop every shard the moves warmed, refused while a config names the spare (R67)
 #   spend     the install's spend since the row's start, against the $10 row stop
 set -uo pipefail
@@ -30,6 +33,9 @@ log() { echo "{\"at\":\"$(date -u +%FT%TZ)\",\"phase\":\"$PHASE\",$1}" | tee -a 
 chains_a() { for i in $(seq 1 24); do printf '"repo:%d",' $((6000 + i)); done; }
 chains_b() { for i in $(seq 1 8); do printf '"repo:%d",' $((6100 + i)); done; }
 chains_s() { for i in $(seq 1 4); do printf '"repo:%d",' $((6210 + i)); done; }
+# The register chains alone, as a jq test: the R66 probe's repository is a `repo:` chain too, and a register put or
+# `home`'s campaigning read on it would wake it before `probe`.
+REGS='test("^repo:6[0-9]{3}$")'
 # Every register chain as {chain, site, do_name} on a live voter (B's member: never the faulted A).
 regs() {
   jq -c '[.[] | select(.chain | startswith("repo:")) | select(.site == 1) | {chain, site, do_name}] | unique_by(.chain)' "$R/rows-before.json"
@@ -81,11 +87,13 @@ case $PHASE in
     # The controls: Tri on B, C and the spare, so no voter on A. A Solo group needs an evaluation genesis, which m6a's is not.
     log "\"controls\":$(bench /create "{\"chains\":[$(chains_s | sed 's/,$//')],\"home\":1,\"sites\":[1,2,3]}" | jq -c '[.[] | select(.warm and .role == "leader")] | length')"
     date -u +%FT%TZ >"$R/start" ;;
+  seed|probe)
+    BENCH=$BENCH EDGE=$EDGE node "$ROOT/tests/m6/hosted/bf50-probe.mjs" "$PHASE" "$R" | tail -n 1 ;;
   load)
     # The register chains' leaders, from their members on B.
     snapshot load "[1]" rows
     body=$(jq -c --argjson s "${LOAD_S:-120}" --argjson r "${LOAD_RATE:-4}" \
-      '{chains: [.[] | select(.chain | startswith("repo:"))], seconds: $s, rate: $r, key: "bf50"}' "$R/chains-load.json")
+      "{chains: [.[] | select(.chain | $REGS)], seconds: \$s, rate: \$r, key: \"bf50\"}" "$R/chains-load.json")
     bench /load "$body" >"$R/load.json"
     log "\"load\":$(jq -c '{ok, bad, chains: (.last | length), errs}' "$R/load.json")" ;;
   before)
@@ -149,7 +157,7 @@ case $PHASE in
     snapshot home "[0,1,2,3]"
     # Configs read while groups idle come back empty or stale (m6aL: 60 unread, 72 short); reread after the reads
     # below wake each home, and judge on the reread.
-    body=$(jq -c '{chains: [.[] | select(.chain | startswith("repo:"))], key: "bf50"}' "$R/chains-home.json")
+    body=$(jq -c "{chains: [.[] | select(.chain | $REGS)], key: \"bf50\"}" "$R/chains-home.json")
     bench /read "$body" >"$R/read-home.json"
     snapshot home "[0,1,2,3]"
     versions | scrub >"$R/versions-home.jsonl"

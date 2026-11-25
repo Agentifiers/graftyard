@@ -21,6 +21,8 @@
 //   POST /view {sites}                             the `Release` group's pages from each named site's member, at the
 //                                                 generation its config names: `[{site, pages}]` for `relview`
 //   POST /member {site, do_name, path, body}       one raw call to a member
+//   POST /op {at: {site, do_name}, cmd}            one operator command through the chain's leader (the R66 probe's
+//                                                 seed only): `{done, by}`
 //   GET  /health?since=MS[&site=N]                 each voter site's `site_health` sums since MS
 
 interface Env {
@@ -239,6 +241,35 @@ export default {
         }
         case "/member": {
           return json(await call(env, "MEMBER", body.site, body.do_name, body.path, body.body, body.ms ?? 10_000));
+        }
+        case "/op": {
+          // One operator command (a `cred` naming no account) on a chain that exists, through its leader: the stand-in
+          // for the operator route R14 lacks, used only to seed the R66 probe's owner (`bf50-probe.mjs`). `at` names
+          // any row member; one request id is re-sent until an outcome, and the config's home is asked to campaign
+          // while no member names a leader.
+          const c = await config(env, body.at);
+          if ("error" in c) return json(c);
+          const vs = voters(c.cfg);
+          const home = vs.find((v: any) => v.site === (c.cfg?.normal ?? c.cfg?.degraded?.placement)?.home) ?? vs[0];
+          let target: M = vs.find((v: any) => v.site === c.leader) ?? home;
+          let ask = c.leader === null;
+          const id = rid();
+          let last: unknown = null;
+          for (let t = 0; t < 8; t++) {
+            if (ask) await call(env, "MEMBER", target.site, target.do_name, "/campaign", {});
+            let r = await call(env, "MEMBER", target.site, target.do_name, "/commit", { rid: id, cmd: body.cmd }, 15_000);
+            if (r.status === 200 && r.v?.admitted) {
+              r = await call(env, "MEMBER", target.site, target.do_name, "/outcome", { ticket: r.v.admitted, wait_ms: 10_000 }, 12_000);
+            }
+            const nl = r.v?.error?.notLeader ?? r.v?.done?.notLeader;
+            if (r.status === 200 && r.v?.done && !nl) return json({ done: r.v.done, by: target.do_name });
+            last = r.v;
+            const named = typeof nl?.leader === "number" ? vs.find((v: any) => v.site === nl.leader) : undefined;
+            target = named ?? home;
+            ask = !named;
+            await sleep(500);
+          }
+          return json({ error: "no outcome", last });
         }
         case "/view": {
           // The group's voters from any member that answers `/status` with a config, then each named site's pages.
