@@ -17,7 +17,7 @@ The first `job before` attempt (`job-before-norunner/`) started no runner, becau
 
 `runsvc::job_message` names `GenerateIdTokenUrl` only when the job's declared permissions grant `id-token: write` (`oidc::id_token_granted`). It reads them from the fold's `JobTokens` row, which only `CreateRunWith` writes. On graft-m4a no run gets that row:
 - **The dispatch route.** `workers/edge/src/actions.rs` `dispatch`, which this row and BF-59 use, sends `create_run` without `permissions`. It calls `job_specs`, not `job_specs_declared`. So a dispatched run is always `CreateRun`.
-- **The push trigger.** `create_run_body` adds `permissions` only where a site day set `GRAFTYARD_JOB_TOKENS=1` (`gh-token`, format 0x15.5). graft-m4a's sites set only `GRAFTYARD_ACTIONS_CACHE`, `GRAFTYARD_HOST` and the earlier flags, and its edge's `FORMATS_ENABLED` has 21.6 but not 21.5 (the edge's settings, read 08:02Z). Slice B has stayed off on graft-m4a since site day 54 (`tests/am1/results/install-m4a.md`).
+- **The trigger.** `ActionsTrigger` starts runs only for `merge_group` and `pull_request` (the install has no push trigger), and `create_run_body` adds `permissions` only where a site day set `GRAFTYARD_JOB_TOKENS=1` (`gh-token`, format 0x15.5). graft-m4a's sites set only `GRAFTYARD_ACTIONS_CACHE`, `GRAFTYARD_HOST` and the earlier flags, and its edge's `FORMATS_ENABLED` has 21.6 but not 21.5 (the edge's settings, read 08:02Z). Slice B has stayed off on graft-m4a since site day 54 (`tests/am1/results/install-m4a.md`).
 
 `runsvc_host` builds `CreateRunWith` from `job_specs_declared` itself, so the local oracle never ran either path [measured: `tests/m4/wp3/oidc/run.sh`, `HOSTED=1`, passed 10 of 10]. This is `decisions/OPEN-QUESTIONS.md`, F127.
 
@@ -30,5 +30,5 @@ MinIO removed. `m3org/bf70-cac` deleted (204; an anonymous read answered 404 at 
 ## To run BF-70
 
 Both ways need slice B on: a site day with `GRAFTYARD_JOB_TOKENS=1`, and the edge's `FORMATS_ENABLED` plus 21.5 and 18.14 (0x12.14), since the edge mints job tokens only once both are enabled (`decisions/DECISIONS.md`, `gh-token`, "Order"). Then r2 from `job before`, in one of these ways:
-1. **Push-triggered (no code change).** The driver pushes `hosted.yml` with `on: push`, and the site's trigger sends the permissions through `create_run_body`.
-2. **Dispatch.** The edge's `dispatch` sends `job_specs_declared`'s permissions to the site, which commits `CreateRunWith` from them. That is a code change in `workers/edge/src/actions.rs`, gated like `create_run_body`, so it needs an edge day too.
+1. **`pull_request`-triggered (no code change; the lead's ruling for r2).** The driver opens a same-repository pull request on `m3org/bf70` whose head adds `hosted.yml` with `on: pull_request`, and the site's trigger sends the permissions through `create_run_body` (`CreateRunOn`).
+2. **Dispatch.** The edge's `dispatch` sends `job_specs_declared`'s permissions to the site, which commits `CreateRunWith` from them: built on branch `dispatch-perms` at $0 (F127), for the next edge day after it merges; it does not block r2.
