@@ -16,6 +16,8 @@
 //!   install answers 404 sends one probe to its repository chain: a chain the edge answers 404 is gone, and its
 //!   network's owed packs are dropped. On a live chain the pack stays owed, and one unserved for
 //!   `UNSERVED_ALARM_MS` alarms (`unserved_alarm`).
+//! - **Rolls.** A pack a committed roll consumed is owed no more once the roll's produced pack is held
+//!   (`rolled_off`), so a copy enrolled after the install deleted it neither alarms nor waits on it.
 //! - **Halt.** A chain whose copy halted is moved by no source again (`Puller::halt`), and the pass names it.
 //! - **Gone.** A chain the edge answers 404 has no group, retired or purged for good (`Puller::gone`): it is asked no
 //!   more, and the pass names it. Any other status is asked again next pass.
@@ -89,6 +91,12 @@ pub struct State {
     pub scrub_tried: u64,
     #[serde(default)]
     pub scrub_lost: Vec<Lost>,
+    /// Each committed roll the copy took, by its produced pack: the packs it consumed (`rolled_off`).
+    #[serde(default)]
+    pub rolls: BTreeMap<PackId, Vec<PackId>>,
+    /// The git copy (`crate::git`).
+    #[serde(default)]
+    pub git: crate::git::GitCopy,
 }
 
 /// What an import answered: the last index the copy holds, and the halt if the copy stopped.
@@ -139,6 +147,8 @@ pub struct Report {
     pub edge_chains: Vec<ChainId>,
     pub packs: usize,
     pub owed: usize,
+    /// Owed packs a held roll consumed, owed no more (`rolled_off`).
+    pub rolled_off: usize,
     pub halted: Vec<ChainId>,
     /// Chains the edge answered 404 this pass: no group, asked no more.
     pub gone: Vec<ChainId>,
@@ -178,11 +188,52 @@ pub fn owed_by(chain: ChainId, rows: &[Vec<u8>]) -> Vec<Owed> {
     out
 }
 
+/// The rolls `rows` of `chain` commit: each produced pack with the packs it consumed.
+pub fn rolls_in(chain: ChainId, rows: &[Vec<u8>]) -> Vec<(PackId, Vec<PackId>)> {
+    if network_of(chain).is_none() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for row in rows {
+        let Ok(e) = codec::from_bytes::<LogEntry<RepoEvent>>(row) else { continue };
+        let EntryBody::Events(evs) = &e.body else { continue };
+        for ev in evs {
+            if let RepoEvent::Compacted(c) = ev
+                && let Some(id) = c.produced.stored_id()
+            {
+                out.push((id, c.consumed.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// The guard for rolls (`decisions/DECISIONS.md`, "`lifeboat-clone`"): once a roll's produced pack is held (owed no
+/// more), the packs it consumed are owed no more either. The install deletes a consumed pack `CONSUMED_KEEP` after
+/// its roll, so a copy enrolled later would owe it for good, alarm on a live chain, and hold its git copy back; the
+/// git copy loads the produced pack in their place (`crate::git::roll_markers`). Answers the packs dropped.
+pub fn rolled_off(st: &mut State) -> usize {
+    let held: Vec<PackId> = st.rolls.keys().filter(|p| !st.owed.iter().any(|o| o.id == **p)).copied().collect();
+    let mut dropped = 0;
+    for p in held {
+        let consumed: BTreeSet<PackId> = st.rolls.remove(&p).unwrap_or_default().into_iter().collect();
+        let before = st.owed.len();
+        st.owed.retain(|o| !consumed.contains(&o.id));
+        dropped += before - st.owed.len();
+        for id in &consumed {
+            st.unserved.remove(id);
+        }
+    }
+    dropped
+}
+
 /// Imports one chain's rows and moves the cursor by what the copy then holds.
 async fn take<H: Host>(h: &H, st: &mut State, r: &mut Report, rows: Rows) -> Result<(), String> {
     let got = h.import(rows.chain, &rows.rows).await?;
     let applied = (got.held.0 + 1).saturating_sub(rows.first.0) as usize;
-    st.owed.extend(owed_by(rows.chain, &rows.rows[..applied.min(rows.rows.len())]));
+    let rows_in = &rows.rows[..applied.min(rows.rows.len())];
+    st.owed.extend(owed_by(rows.chain, rows_in));
+    st.rolls.extend(rolls_in(rows.chain, rows_in));
     st.puller.applied(rows.chain, got.held);
     let top = Index(rows.first.0 + rows.rows.len() as u64 - 1);
     if got.halt.is_some() {
@@ -357,6 +408,7 @@ pub async fn pass<H: Host>(h: &H, st: &mut State) -> Result<Report, String> {
             Ok(Copied::Status(_) | Copied::Corrupt) | Err(_) => {}
         }
     }
+    r.rolled_off = rolled_off(st);
     r.owed = st.owed.len();
     r.unserved = st.unserved.len();
     r.unserved_alarm = unserved_alarm(st, h.now());

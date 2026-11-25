@@ -24,13 +24,21 @@
 #   6. a planted undecodable row halts its chain, logged as an error, and the other chains stay current;
 #   7. the scrub: the puller's first pass ran one; a pack rotted on disk is reported lost with the repository copy to
 #      pull it from again, logged as an error, and a scrub after it is whole again clears it;
+#   8. clones and fetches (`decisions/DECISIONS.md`, "`lifeboat-clone`"): a second repository with real git history
+#      (`gitseed.mjs`: thin pushes, inline and stored), two promotions and a roll of both, the roll's consumed packs
+#      deleted from every bucket before the lifeboat ever pulled them. With the edge blocked, an enrolled `git clone`
+#      from the lifeboat matches the install's refs and passes `git fsck`; a push with the feed stopped reaches the clone
+#      by `git fetch`; `graft-git` killed with -9 and its directory deleted, a clone answers 503 with `Retry-After` and
+#      never a short pack, then matches once the copy is rebuilt from graft-blob alone; the git lag is published;
+#      graft-git runs the bundle's pinned git and listens on loopback only;
 #   and the state directory records the pinned workerd version, and workerd logs no wasm trap on either side.
-# Needs worker-build, tests/m0's wrangler and workerd, gh, openssl, python3 with cryptography, and `sudo -n` to add
-# two loopback names to /etc/hosts (removed on exit). PREBUILT=<dir> takes site/ and edge/ (test-faults) and
-# lifeboat/ builds from <dir>. KEEP=1 leaves both sides up. Run from the repository root.
+# Needs worker-build, tests/m0's wrangler and workerd, gh, git, go, docker (for the static lifeboat git), openssl,
+# python3 with cryptography, and `sudo -n` to add two loopback names to /etc/hosts (removed on exit). PREBUILT=<dir>
+# takes site/ and edge/ (test-faults) and lifeboat/ builds from <dir>; LBGIT=<dir> a lifeboat-git build (usr/local
+# and shard-server) instead of building it. KEEP=1 leaves both sides up. Run from the repository root.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/../.." && pwd)
-P=${P:-8797}; LP=${LP:-8444}; BP=${BP:-8790}; AP=${AP:-8791}
+P=${P:-8797}; LP=${LP:-8444}; BP=${BP:-8790}; AP=${AP:-8791}; GP=${GP:-8792}
 W=${WRANGLER:-$root/tests/m0/node_modules/.bin/wrangler}; WD=$root/tests/m0/node_modules/.bin/workerd
 [ -x "$W" ] && [ -x "$WD" ] || { echo "no wrangler or workerd under tests/m0 (npm ci in tests/m0)"; exit 1; }
 MAIN=git.lbbed.test; BOAT=lifeboat.lbbed.test
@@ -44,6 +52,14 @@ else
   build site --features test-faults; build edge --features test-faults; build lifeboat
 fi
 ln -sfn "$B/builds/site" "$B/out"   # driver.mjs imports ./out/index.js
+# The lifeboat's git: containers/git's `lifeboat-git` stage, the static git and shard server the bundle ships.
+if [ -n "${LBGIT:-}" ]; then cp -r "$LBGIT" "$B/graft-git"
+else
+  (cd "$root/containers/git" && sudo -n docker build -q --target lifeboat-git -t graft-lifeboat-git:bed . >"$B/build-git.log" 2>&1) \
+    || { tail -20 "$B/build-git.log"; exit 1; }
+  cid=$(sudo -n docker create graft-lifeboat-git:bed /shard-server) && sudo -n docker cp "$cid:/" "$B/graft-git" \
+    && sudo -n docker rm "$cid" >/dev/null && sudo -n chown -R "$(id -u):$(id -g)" "$B/graft-git" || exit 1
+fi
 cd "$root" || exit 1
 cargo build -q -p graftyard -p graftyard-lifeboat --bin graftyard --bin graft-blob || exit 1
 CLI=$root/target/debug/graftyard
@@ -146,7 +162,7 @@ WDP=""; BLOBP=""
 cleanup() {
   s=$?
   [ -n "${KEEP:-}" ] && { echo "KEEP: install pid $DEV, workerd $WDP, graft-blob $BLOBP in $B"; return; }
-  kill -- -$DEV 2>/dev/null; [ -n "$WDP" ] && kill $WDP 2>/dev/null; [ -n "$BLOBP" ] && kill $BLOBP 2>/dev/null
+  kill -- -$DEV 2>/dev/null; [ -n "$WDP" ] && kill -- -$WDP $WDP 2>/dev/null; [ -n "$BLOBP" ] && kill $BLOBP 2>/dev/null
   wait 2>/dev/null
   sudo -n sed -i '/# lifeboatbed$/d' /etc/hosts
   rm -rf "$B"; exit $s
@@ -201,11 +217,12 @@ openssl x509 -req -in "$K/tls.csr" -CA "$K/ca.pem" -CAkey "$K/ca.key" -CAcreates
 "$root/target/debug/graft-blob" --root "$B/blob" --listen 127.0.0.1:$BP >"$B/blob.log" 2>&1 & BLOBP=$!
 "$CLI" lifeboat bundle --dir "$B/boat" --builds "$B/builds" --release "$REL" --listen 127.0.0.1:$LP \
   --tls-key "$K/tls.key" --tls-chain "$K/tls.pem" --blob http://127.0.0.1:$BP --admin 127.0.0.1:$AP \
-  --state "$B/boat/state" --workerd "$WD" --out "$B/boat/config.capnp" || exit 1
+  --state "$B/boat/state" --workerd "$WD" --out "$B/boat/config.capnp" \
+  --git "$B/graft-git" --git-data "$B/git" --git-listen 127.0.0.1:$GP --blob-root "$B/blob" || exit 1
 [ "$(cat "$B/boat/state/WORKERD_VERSION")" = "$("$WD" --version)" ] || { echo "FAIL: the state records no pinned workerd"; exit 1; }
 # Through the start script the bundle wrote, as an operator starts it: it raises the open-file limit or refuses.
 [ -x "$B/boat/start.sh" ] || { echo "FAIL: lifeboat bundle wrote no start.sh"; exit 1; }
-{ WORKERD=$WD "$B/boat/start.sh" >"$B/workerd.log" 2>&1 & WDP=$!; }
+{ WORKERD=$WD setsid "$B/boat/start.sh" >"$B/workerd.log" 2>&1 & WDP=$!; }
 for _ in $(seq 60); do curl -s -m 2 -o /dev/null http://127.0.0.1:$AP/status && break; sleep 0.5; done
 L=https://$BOAT:$LP
 lb() { curl -s -m 60 --cacert "$K/ca.pem" "$@"; }
@@ -393,6 +410,105 @@ cp "$B/good.pack" "$B/blob/$P1"
 v=$(admin /scrub -X POST)
 python3 -c 'import json,sys; v=json.loads(sys.argv[1]); sys.exit(0 if v["scrub_lost"] == [] and v["scrub"]["ok"] >= 3 else 1)' "$v" \
   && pass "whole again, the next scrub clears it" || fail "scrub after repair: $v"
+
+echo "== 8. clones and fetches from graft-git"
+export GIT_TERMINAL_PROMPT=0 GIT_SSL_CAINFO=$K/ca.pem
+creds=$K/git-creds; printf 'https://%s:%s@%s:%s\n' "$LOGIN" "$LBT" "$BOAT" "$LP" >"$creds"; chmod 600 "$creds"
+gl() { git -c credential.helper="store --file=$creds" -c protocol.version=2 "$@"; }
+# A second repository, created under the same owner as the seed made the first, with real history.
+GREPO=g
+node -e '
+const [front, bed, out, name] = process.argv.slice(1);
+const OP = { account: null, key: null };
+const be64 = (n) => { const b = Buffer.alloc(8); b.writeBigInt64BE(BigInt(n)); return b; };
+const shard = (body) => require("node:crypto").createHash("sha256").update("graftyard/names/repo/").update(body).digest().readUInt32BE(0) % 1024;
+const s = JSON.parse(require("node:fs").readFileSync(`${out}/seed.json`));
+const commit = async (chain, op) => {
+  const r = await fetch(`${front}/_bed/identity`, { method: "POST", headers: { "x-bed-token": bed },
+    body: JSON.stringify({ chain, create: chain.startsWith("names:"), cmd: { cred: OP, op } }) });
+  const v = await r.json(); if (!v.outcome?.ok) throw new Error(JSON.stringify(v)); return v.outcome;
+};
+(async () => {
+  const made = await commit(`authz:${s.owner}`, { CreateRepo: { name } });
+  const repo = made.ok.out.Repo.repo;
+  await commit(`names:${shard(be64(repo))}`, { RepoOwner: { repo, owner: s.owner } });
+  require("node:fs").mkdirSync(`${out}/g`, { recursive: true });
+  require("node:fs").writeFileSync(`${out}/g/seed.json`, JSON.stringify({ ...s, repo: name, id: repo }));
+  require("node:fs").copyFileSync(`${out}/pat`, `${out}/g/pat`);
+  console.log(repo);
+})().catch((e) => { console.error(e); process.exit(1); });
+' "$F" lbbed-bed "$K" $GREPO >"$B/grepo" || fail "creating the git repository"
+GRID=$(cat "$B/grepo"); G=$K/g
+gs() { node "$here/gitseed.mjs" "$@" | sed 's/^/  /'; }
+gs push "$F" lbbed-bed "$G" refs/heads/main 3 && gs push "$F" lbbed-bed "$G" refs/heads/main 2 stored \
+  && gs push "$F" lbbed-bed "$G" refs/heads/dev 2 && gs push "$F" lbbed-bed "$G" refs/heads/main 4 stored \
+  && gs push "$F" lbbed-bed "$G" refs/heads/dev 1 && gs push "$F" lbbed-bed "$G" refs/heads/main 2 \
+  || fail "the git pushes"
+CONSUMED=$(node "$here/gitseed.mjs" roll "$F" lbbed-bed "$G") || fail "the roll"
+for id in $CONSUMED; do u -H 'x-bed-token: lbbed-bed' -X POST "$F/_bed/drop_pack?repo=$GRID&id=$id" >/dev/null; done
+echo "  repo:$GRID rolled; consumed packs deleted from every bucket: $CONSUMED"
+gs push "$F" lbbed-bed "$G" refs/heads/main 2 || fail "the push after the roll"
+want_refs() { u -H 'x-bed-token: lbbed-bed' "$F/_bed/refs?repo=$GRID" | python3 -c 'import json,sys; [print(o, n) for n, o in sorted(json.load(sys.stdin))]'; }
+GRC=$(commit_of "repo:$GRID")
+gitstat() { admin "/git?net=$GRID"; }
+if until_status "s['held'].get('repo:$GRID', 0) >= $GRC and s['owed'] == 0" 240 \
+  && for _ in $(seq 60); do gitstat | grep -q '"ready"' && break; admin /pass -X POST >/dev/null; sleep 2; done && gitstat | grep -q '"ready"'; then
+  pass "repo:$GRID's git copy is ready at its leader's commit $GRC, nothing owed: $(gitstat)"
+else fail "the git copy did not become ready: $(gitstat) $(status)"; fi
+python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("unserved", 0) == 0 else 1)' <<<"$(status)" \
+  && pass "the roll's deleted packs are owed no more and nothing is unserved" || fail "unserved packs: $(status)"
+held_consumed=$(for id in $CONSUMED; do [ -e "$B/blob/pack/$GRID/$id" ] && echo "$id"; done)
+[ -z "$held_consumed" ] && pass "graft-blob never held the roll's consumed packs" || fail "graft-blob holds consumed $held_consumed"
+u "$F/_edge?block=1" >/dev/null
+matches() { # $1: a clone; matches the install's refs, one per line, and fsck passes
+  diff <(want_refs) <(git -C "$1" for-each-ref --format='%(objectname) %(refname)' refs/remotes/origin | sed 's#refs/remotes/origin/#refs/heads/#' | grep -v ' refs/heads/HEAD$' | sort -k2) >"$B/refs.diff" \
+    && git -C "$1" fsck --no-progress --strict 2>"$B/fsck.log"; }
+rm -rf "$B/c1"; h=$(gl clone -q "$L/$LOGIN/$GREPO.git" "$B/c1" 2>&1)
+if [ $? = 0 ] && matches "$B/c1"; then pass "an enrolled git clone from the lifeboat, edge blocked, matches the install's refs and passes fsck"
+else fail "clone: $h $(cat "$B/refs.diff" "$B/fsck.log" 2>/dev/null | head -5)"; fi
+lag=$(curl -s -D - -o /dev/null --cacert "$K/ca.pem" -u "$LOGIN:$LBT" -H 'git-protocol: version=2' -H 'user-agent: git/2.56' \
+  "$L/$LOGIN/$GREPO.git/info/refs?service=git-upload-pack" | tr -d '\r' | grep -i '^x-graftyard-lifeboat-lag:')
+[ -n "$lag" ] && pass "git answers publish the lag ($lag)" || fail "no lag header on a git answer"
+# A push with the feed stopped: the copy takes it from the edge, then the git copy, then a fetch.
+u "$F/_edge?block=0" >/dev/null; u "$F/_feed?stop=1" >/dev/null
+gs push "$F" lbbed-bed "$G" refs/heads/dev 2 stored || fail "the push with the feed stopped"
+GRC=$(commit_of "repo:$GRID")
+until_status "s['held'].get('repo:$GRID', 0) >= $GRC and s['owed'] == 0" 180 >/dev/null
+for _ in $(seq 60); do gitstat | python3 -c "import json,sys; v=json.load(sys.stdin); sys.exit(0 if v.get('state') == 'ready' and v['at'] >= $GRC else 1)" && break; admin /pass -X POST >/dev/null; sleep 2; done
+u "$F/_edge?block=1" >/dev/null
+h=$(gl -C "$B/c1" fetch -q origin 2>&1)
+if [ $? = 0 ] && matches "$B/c1"; then pass "git fetch moves the clone to the push made with the feed stopped"
+else fail "fetch: $h $(cat "$B/refs.diff" 2>/dev/null | head -5)"; fi
+# graft-git killed mid-life and its directory gone: a rebuild from the copy and graft-blob alone, the install blocked.
+GITP=$(pgrep -x shard-server | head -1)
+kill -9 "$GITP" 2>/dev/null
+rm -rf "$B/git/$GRID.git" "$B/git/disk-id"
+sleep 1
+# start.sh stops workerd when graft-git exits; the host's supervisor starts both again, as here.
+wait "$WDP" 2>/dev/null
+{ WORKERD=$WD setsid "$B/boat/start.sh" >>"$B/workerd.log" 2>&1 & WDP=$!; }
+for _ in $(seq 60); do curl -s -m 2 -o /dev/null http://127.0.0.1:$AP/status && break; sleep 0.5; done
+seen503=0; short=0
+for _ in $(seq 90); do
+  rm -rf "$B/c2"
+  code=$(curl -s -o "$B/adv" -w '%{http_code}' -D "$B/adv.h" --cacert "$K/ca.pem" -u "$LOGIN:$LBT" -H 'user-agent: git/2.56' \
+    "$L/$LOGIN/$GREPO.git/info/refs?service=git-upload-pack")
+  if [ "$code" = 503 ]; then
+    grep -qi '^retry-after:' "$B/adv.h" && seen503=$((seen503 + 1)) || short=1
+  elif [ "$code" = 200 ]; then
+    gl clone -q "$L/$LOGIN/$GREPO.git" "$B/c2" 2>"$B/c2.log" && break
+    grep -q "503" "$B/c2.log" || short=1
+  fi
+  admin /pass -X POST >/dev/null; sleep 2
+done
+if [ $seen503 -gt 0 ] && [ $short = 0 ] && matches "$B/c2"; then
+  pass "after kill -9 and a lost git directory: $seen503 answers of 503 with Retry-After while it rebuilt, none short, then a clone that matches"
+else fail "rebuild: 503s $seen503, short $short, $(cat "$B/c2.log" "$B/refs.diff" 2>/dev/null | head -5)"; fi
+u "$F/_edge?block=0" >/dev/null; u "$F/_feed?stop=0" >/dev/null
+ss -ltnp 2>/dev/null | grep -q "127.0.0.1:$GP .*shard-server" && ! ss -ltnp 2>/dev/null | grep -E "(\*|0\.0\.0\.0|\[::\]):$GP " -q \
+  && pass "graft-git listens on loopback only" || fail "graft-git's socket: $(ss -ltnp | grep ":$GP ")"
+[ "$(cat "$B/git/GIT_VERSION")" = "$("$B/graft-git/usr/local/bin/git" --version)" ] && pass "the git directory records the bundle's pinned git" \
+  || fail "no pinned git in the git directory"
 
 n=$(cat "$B/dev.log" "$B/workerd.log" | grep -c 'out of bounds\|RuntimeError'); echo "wasm traps: $n"; [ "$n" = 0 ] || ok=0
 grep -E "lifeboat_pass" "$B/workerd.log" | tail -2 | cut -c1-400 | sed 's/^/log: /'

@@ -268,6 +268,8 @@ enum LifeboatCmd {
         workerd: String,
         #[arg(long)]
         out: PathBuf,
+        #[command(flatten)]
+        git: Box<BundleGit>,
     },
     /// Drops a dead or retired lifeboat with a `LifeboatRemove` the customer key signs.
     Remove {
@@ -278,6 +280,24 @@ enum LifeboatCmd {
         #[arg(long)]
         edge: Option<String>,
     },
+}
+
+/// `lifeboat bundle`'s git flags: with `--git`, the bundle serves clones and fetches from graft-git.
+#[derive(clap::Args)]
+struct BundleGit {
+    /// The release's lifeboat-git build (usr/local and shard-server): the bundle then serves clones and fetches
+    /// from graft-git, which start.sh runs beside workerd.
+    #[arg(long, requires_all = ["git_data", "blob_root"])]
+    git: Option<PathBuf>,
+    /// graft-git's repositories, fresh for each git version.
+    #[arg(long)]
+    git_data: Option<PathBuf>,
+    /// graft-git's address: loopback only.
+    #[arg(long, default_value = "127.0.0.1:8792")]
+    git_listen: String,
+    /// graft-blob's --root, whose packs the git directory's free-disk floor counts.
+    #[arg(long)]
+    blob_root: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -710,7 +730,20 @@ fn run(cli: Cli) -> Res<()> {
         }
         Cmd::Lifeboat {
             cmd:
-                LifeboatCmd::Bundle { dir, builds, release, listen, tls_key, tls_chain, blob, admin, state, workerd, out },
+                LifeboatCmd::Bundle {
+                    dir,
+                    builds,
+                    release,
+                    listen,
+                    tls_key,
+                    tls_chain,
+                    blob,
+                    admin,
+                    state,
+                    workerd,
+                    out,
+                    git,
+                },
         } => lifeboat::bundle(lifeboat::BundleArgs {
             dir: &dir,
             builds: &builds,
@@ -722,6 +755,9 @@ fn run(cli: Cli) -> Res<()> {
             state: &state,
             workerd: &workerd,
             out: &out,
+            git: git.git.as_deref().zip(git.git_data.as_deref()).zip(git.blob_root.as_deref()).map(
+                |((build, data), blob_root)| lifeboat::GitArgs { build, data, listen: &git.git_listen, blob_root },
+            ),
         }),
         Cmd::Lifeboat { cmd: LifeboatCmd::Remove { host, key, edge } } => {
             lifeboat::remove(config, &host, &key, edge.as_deref())
