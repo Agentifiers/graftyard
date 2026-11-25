@@ -401,3 +401,74 @@ fn bm5_a_bad_graft_ops_at_1pct_is_swapped_back_by_an_edge_isolates_mint_errors()
         assert!(w.record(&o.g.f, Some(&v2), Some(500), 2_000 + k).is_none(), "{k}");
     }
 }
+
+/// OPEN-QUESTIONS A57 (LM-3 r2): the edge sums the sites that answered, and the agents `graft-ops`' controller gate
+/// logs a line on every outcome: a missed read is `Pending` and names the read, never a silent wait; both reads judge
+/// as `judge_roll` does.
+#[test]
+fn a57_the_errors_read_sums_the_sites_that_answered_and_a_missed_gate_read_logs_its_pending() {
+    let (n1, n) = (VersionId([0x21; 16]), VersionId([0x20; 16]));
+    let site = |bad: u64, good: u64| {
+        let mut e = ScriptErrors::default();
+        e.versions.insert(n1.to_string(), Answers { answers: bad, fivexx: bad });
+        e.versions.insert(n.to_string(), Answers { answers: good, fivexx: 0 });
+        e
+    };
+    // Two of three sites answer: their sum, and the count of sites that did; none answering is None.
+    let (sum, sites) = gate::sum_sites([Some(site(3, 400)), None, Some(site(5, 600))]).expect("two answered");
+    assert_eq!(
+        (sum.of(n1), sum.of(n), sites),
+        (Answers { answers: 8, fivexx: 8 }, Answers { answers: 1000, fivexx: 0 }, 2)
+    );
+    assert_eq!(gate::sum_sites([None, None, None]), None);
+    // The sites are asked at once: every read starts before any ends. Asked in turn, one would be in flight at a time.
+    let (in_flight, peak) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+    let read = |k: u64| {
+        let (in_flight, peak) = (&in_flight, &peak);
+        async move {
+            in_flight.set(in_flight.get() + 1);
+            peak.set(peak.get().max(in_flight.get()));
+            Yield(false).await;
+            in_flight.set(in_flight.get() - 1);
+            (k != 1).then(|| site(k, 100))
+        }
+    };
+    let got = futures_executor::block_on(gate::read_sites(&[0u64, 1, 2], read));
+    assert_eq!(
+        (peak.get(), got.map(|(s, n)| (s.of(n1).answers, n))),
+        (3, Some((2, 2))),
+        "three reads at once, two answered"
+    );
+    // A missed read waits and says which.
+    for (w, a) in [
+        (Err("since=1: no answer within 5000 ms".to_string()), Ok(sum.clone())),
+        (Ok(sum.clone()), Err("since=0: 503".into())),
+    ] {
+        let missed = w.as_ref().err().or(a.as_ref().err()).cloned().unwrap();
+        let (g, line) = gate::controller_gate(w, a, n1, Some(n));
+        assert_eq!(g, Gate::Pending);
+        assert!(line.contains("pending") && line.contains(&missed), "{line}");
+    }
+    // Both reads: the judgement and its numbers.
+    let (g, line) = gate::controller_gate(Ok(sum.clone()), Ok(sum.clone()), n1, Some(n));
+    assert!(matches!(g, Gate::Breach(_)), "{g:?}");
+    assert!(line.contains("Breach") && line.contains("answers: 8"), "{line}");
+    // LM-3 r2's slowest read from the agents account took 1,550 ms: the cron's deadline covers it.
+    let slowest_r2_read_ms = [790u64, 1_220, 970, 1_140, 1_550].into_iter().max().unwrap();
+    assert!(gate::GATE_READ_MS > slowest_r2_read_ms, "the cron's read is not held to a request's deadline");
+}
+
+/// A future that is pending once, so a sequential reader would finish each read before it starts the next.
+struct Yield(bool);
+
+impl std::future::Future for Yield {
+    type Output = ();
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        if self.0 {
+            return std::task::Poll::Ready(());
+        }
+        self.0 = true;
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    }
+}

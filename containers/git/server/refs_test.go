@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -160,5 +162,30 @@ func TestRefsHeadIsTheDefaultBranch(t *testing.T) {
 	refsCall(t, s.URL, "PUT", "&start=1&done=1", a+" refs/heads/dev\n"+b+" refs/heads/main\n")
 	if h := head(); h != "refs/heads/main" {
 		t.Fatalf("HEAD %s after a PUT naming none", h)
+	}
+}
+
+// GRAFT_LIFEBOAT=1 (`lifeboat-clone`): a repository commits with fsync, so an answered /ingest survives the host's
+// crash, and /evict refuses, since nothing on a lifeboat host would fill the repository again before it is asked for.
+func TestLifeboatRepositoriesFsyncAndAreNeverEvicted(t *testing.T) {
+	s := serve(t)
+	lifeboat = true
+	t.Cleanup(func() { lifeboat = false })
+	call(t, s, "POST", "/init?net=7")
+	for k, want := range map[string]string{"core.fsync": "committed", "core.fsyncMethod": "fsync"} {
+		if got := run(t, repo("7"), "", "config", k); got != want {
+			t.Fatalf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if code, _ := call(t, s, "POST", "/evict?net=7"); code != 409 {
+		t.Fatalf("/evict answered %d", code)
+	}
+	if _, err := os.Stat(repo("7")); err != nil {
+		t.Fatalf("the repository went: %v", err)
+	}
+	lifeboat = false
+	call(t, s, "POST", "/init?net=8")
+	if out, _ := exec.Command("git", "-C", repo("8"), "config", "core.fsync").Output(); len(out) != 0 {
+		t.Fatalf("a shard's repository fsyncs: %q", out)
 	}
 }

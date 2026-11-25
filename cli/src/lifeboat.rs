@@ -212,6 +212,46 @@ pub struct BundleArgs<'a> {
     /// The release's pinned workerd binary, which `start.sh` runs.
     pub workerd: &'a str,
     pub out: &'a Path,
+    /// The git copy, when the bundle runs one (`decisions/DECISIONS.md`, "`lifeboat-clone`").
+    pub git: Option<GitArgs<'a>>,
+}
+
+/// `graft-git`: the release's `lifeboat-git` build (`usr/local` and `shard-server`, from `containers/git/Dockerfile`),
+/// the directory its repositories live in, fresh for each git version, its loopback address, and graft-blob's root,
+/// whose packs the free-disk floor counts.
+pub struct GitArgs<'a> {
+    pub build: &'a Path,
+    pub data: &'a Path,
+    pub listen: &'a str,
+    pub blob_root: &'a Path,
+}
+
+/// The state directory's record of the git version whose repositories `--git-data` holds.
+pub const GIT_VERSION_FILE: &str = "GIT_VERSION";
+/// The free disk the git copy starts with, at least: this many times the repository bytes it rebuilds from, the
+/// packs graft-blob holds and the copies' state [guess: one for the repositories, one for a repack's new pack beside
+/// the old, one for growth] (`decisions/OPEN-QUESTIONS.md`, R64).
+pub const GIT_DISK_TIMES: u64 = 3;
+
+/// A loopback address, the only kind `graft-git` listens on: it answers anyone who reaches it, as a shard's container
+/// answers its object.
+fn loopback(listen: &str) -> bool {
+    listen.starts_with("127.") || listen.starts_with("[::1]:") || listen.starts_with("localhost:")
+}
+
+/// `git --version` of the build's git, run from the build.
+fn git_version(build: &Path) -> Res<String> {
+    let bin = build.join("usr/local/bin/git");
+    let o = std::process::Command::new(&bin)
+        .arg("--version")
+        .env("GIT_EXEC_PATH", build.join("usr/local/libexec/git-core"))
+        .output()
+        .map_err(|e| format!("{} --version: {e} (--git names the release's lifeboat-git build)", bin.display()))?;
+    let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    if !o.status.success() || v.is_empty() {
+        return Err(format!("{} --version answered nothing", bin.display()));
+    }
+    Ok(v)
 }
 
 /// Cap'n Proto text for a string.
@@ -258,12 +298,29 @@ pub fn bundle(a: BundleArgs) -> Res<()> {
     fs::create_dir_all(a.state).map_err(|e| format!("{}: {e}", a.state.display()))?;
     let version = workerd_version(a.workerd)?;
     pin_state(a.state, &version)?;
+    let git = match &a.git {
+        Some(g) => {
+            if !loopback(g.listen) {
+                return Err(format!("--git-listen {}: graft-git listens on a loopback address only", g.listen));
+            }
+            if !g.build.join("shard-server").exists() {
+                return Err(format!("{}: no shard-server (the lifeboat-git build)", g.build.display()));
+            }
+            let v = git_version(g.build)?;
+            fs::create_dir_all(g.data).map_err(|e| format!("{}: {e}", g.data.display()))?;
+            pin(g.data, GIT_VERSION_FILE, &v, "repositories", "--git-data", "rebuilds from the copy")?;
+            Some(v)
+        }
+        None => None,
+    };
+
     let base = a.out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let embed = |p: &Path| relative(base, p).map(|r| format!("embed {}", capnp(&r)));
     let text = |name: &str, v: &str| format!("    (name = {}, text = {}),\n", capnp(name), capnp(v));
     let anchor =
         text("GRAFTYARD_INSTALL", &s(&cfg, "install")?) + &text("GRAFTYARD_CUSTOMER_KEY", &s(&cfg, "customer_key")?);
     let sites = text("GRAFTYARD_SITES", &cfg["sites"].to_string());
+    let git_url = a.git.as_ref().map(|g| text("GIT_URL", &format!("http://{}", g.listen))).unwrap_or_default();
     let modules = |b: &str| -> Res<String> {
         let d = a.builds.join(b);
         Ok(format!(
@@ -319,7 +376,7 @@ const front :Workerd.Worker = (
     (name = "SSH_OPTION", text = "off"),
     (name = "MEMBER", durableObjectNamespace = (serviceName = "member", className = "Member")),
     (name = "PULLER", durableObjectNamespace = (serviceName = "puller", className = "Puller")),
-  ],
+{git_url}  ],
 );
 const puller :Workerd.Worker = (
 {lifeboat_modules}{compat}  bindings = [
@@ -328,7 +385,7 @@ const puller :Workerd.Worker = (
     (name = "LIFEBOAT_KEY", text = {seed}),
     (name = "BLOB_URL", text = {blob}),
     (name = "LIFEBOAT_RELEASE", text = {release}),
-{anchor}    (name = "MEMBER", durableObjectNamespace = (serviceName = "member", className = "Member")),
+{anchor}{git_url}    (name = "MEMBER", durableObjectNamespace = (serviceName = "member", className = "Member")),
     (name = "PULLER", durableObjectNamespace = "Puller"),
   ],
   durableObjectNamespaces = [ (className = "Puller", uniqueKey = {puller_key}) ],
@@ -364,7 +421,19 @@ const puller :Workerd.Worker = (
         .truncate(true)
         .mode(0o700)
         .open(&start)
-        .and_then(|mut f| f.write_all(start_script(&name, &state, floor, a.workerd, &version).as_bytes()))
+        .and_then(|mut f| {
+            let g = match (&a.git, &git) {
+                (Some(g), Some(v)) => Some(GitStart {
+                    build: canonical(g.build)?,
+                    data: canonical(g.data)?,
+                    listen: g.listen.to_string(),
+                    blob_root: canonical(g.blob_root)?,
+                    version: v.clone(),
+                }),
+                _ => None,
+            };
+            f.write_all(start_script(&name, &state, floor, a.workerd, &version, g.as_ref()).as_bytes())
+        })
         .map_err(|e| format!("{}: {e}", start.display()))?;
     println!(
         "wrote {} (0600) and {}: start the bundle with it, which raises the open-file limit to at least {floor} and \
@@ -395,16 +464,34 @@ fn workerd_version(workerd: &str) -> Res<String> {
 /// Records `version` in `state`, or refuses a state another workerd version wrote: its copies are rebuilt on a fresh
 /// directory, never opened by another version. A state from before the record (no file) is taken as this version's.
 pub fn pin_state(state: &Path, version: &str) -> Res<()> {
-    let p = state.join(WORKERD_VERSION_FILE);
+    pin(state, WORKERD_VERSION_FILE, version, "copies", "--state", "rebuilds from the feed")
+}
+
+/// Records `version` in `dir`'s `file`, or refuses a directory another version wrote, naming both.
+fn pin(dir: &Path, file: &str, version: &str, what: &str, flag: &str, then: &str) -> Res<()> {
+    let p = dir.join(file);
     match fs::read_to_string(&p) {
         Ok(had) if had.trim() == version => Ok(()),
         Ok(had) => Err(format!(
-            "{} holds copies of {}, not {version}: give the new version a fresh --state, which rebuilds from the feed",
-            state.display(),
+            "{} holds {what} of {}, not {version}: give the new version a fresh {flag}, which {then}",
+            dir.display(),
             had.trim()
         )),
         Err(_) => fs::write(&p, format!("{version}\n")).map_err(|e| format!("{}: {e}", p.display())),
     }
+}
+
+fn canonical(p: &Path) -> std::io::Result<String> {
+    Ok(fs::canonicalize(p)?.display().to_string())
+}
+
+/// What `start.sh` needs to start `graft-git` (`GitArgs`, with absolute paths).
+pub struct GitStart {
+    pub build: String,
+    pub data: String,
+    pub listen: String,
+    pub blob_root: String,
+    pub version: String,
 }
 
 /// The fewest open files the bundle starts with: 4 for each chain the install's `export-state` names, at least
@@ -452,7 +539,11 @@ fn sh(s: &str) -> String {
 /// `version`, and a state directory another version wrote; raises the open-file limit to the hard limit, refuses to
 /// start below `floor` or below 4 for each copy `state` holds, whichever is higher (a copy grows past the chains named
 /// at bundle time); and runs workerd on the config.
-fn start_script(config: &str, state: &str, floor: u64, workerd: &str, version: &str) -> String {
+fn start_script(config: &str, state: &str, floor: u64, workerd: &str, version: &str, git: Option<&GitStart>) -> String {
+    let tail = match git {
+        None => format!("exec \"$wd\" serve {} --experimental\n", sh(config)),
+        Some(g) => git_start(config, state, g),
+    };
     format!(
         r#"#!/bin/bash
 # Written by `graftyard lifeboat bundle`: starts the bundle on its pinned workerd with an open-file limit its copies
@@ -481,10 +572,8 @@ if [ "$have" != unlimited ] && [ "$have" -lt "$floor" ]; then
   echo "lifeboat: the open-file limit is $have (hard $hard), under the bundle's floor of $floor: raise the hard limit (ulimit -Hn, LimitNOFILE= for systemd) and start again" >&2
   exit 1
 fi
-exec "$wd" serve {config} --experimental
-"#,
+{tail}"#,
         per = OPEN_FILES_PER_CHAIN,
-        config = sh(config),
         state = sh(state),
         workerd = sh(workerd),
         version = sh(version),
@@ -492,11 +581,58 @@ exec "$wd" serve {config} --experimental
     )
 }
 
+/// `start.sh`'s git half: refuses a git other than the pinned one and a `--git-data` another version wrote, naming
+/// both, and free disk under `GIT_DISK_TIMES` the repository bytes; then runs `graft-git` on its loopback address
+/// beside workerd, and stops the other when either exits, so the host's supervisor restarts both.
+fn git_start(config: &str, state: &str, g: &GitStart) -> String {
+    format!(
+        r#"gb={build}
+gd={data}
+export GIT_EXEC_PATH="$gb/usr/local/libexec/git-core"
+gpin={version}
+ghave=$("$gb/usr/local/bin/git" --version 2>/dev/null)
+if [ "$ghave" != "$gpin" ]; then
+  echo "lifeboat: the bundle's git is ${{ghave:-missing}}, not its pinned $gpin: bundle the release's lifeboat-git" >&2
+  exit 1
+fi
+gheld=$(cat "$gd/{file}" 2>/dev/null)
+if [ "$gheld" != "$gpin" ]; then
+  echo "lifeboat: the git directory holds repositories of ${{gheld:-an unknown git}}, not $gpin: bundle the new version on a fresh --git-data, which rebuilds from the copy" >&2
+  exit 1
+fi
+repo=$(du -sbc {blob}/pack {state} 2>/dev/null | tail -1 | cut -f1)
+used=$(du -sb "$gd" | cut -f1)
+free=$(df -B1 --output=avail "$gd" | tail -1 | tr -d ' ')
+if [ $((free + used)) -lt $((repo * {times})) ]; then
+  echo "lifeboat: the git directory has $((free + used)) bytes free or in use, under {times} x the $repo repository bytes it rebuilds from: give --git-data a larger disk" >&2
+  exit 1
+fi
+GRAFT_LISTEN={listen} GRAFT_LIFEBOAT=1 GRAFT_DATA="$gd" PATH="$gb/usr/local/bin:$PATH" "$gb/shard-server" &
+gp=$!
+"$wd" serve {config} --experimental &
+wp=$!
+trap 'kill $gp $wp 2>/dev/null' EXIT INT TERM
+wait -n $gp $wp
+"#,
+        build = sh(&g.build),
+        data = sh(&g.data),
+        version = sh(&g.version),
+        file = GIT_VERSION_FILE,
+        blob = sh(&g.blob_root),
+        state = sh(state),
+        times = GIT_DISK_TIMES,
+        listen = sh(&g.listen),
+        config = sh(config),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::process::Command;
 
-    use super::{OPEN_FILES_MIN, WORKERD_VERSION_FILE, open_files_floor, pin_state, start_script};
+    use super::{
+        GIT_VERSION_FILE, GitStart, OPEN_FILES_MIN, WORKERD_VERSION_FILE, open_files_floor, pin_state, start_script,
+    };
 
     const PIN: &str = "workerd 2026-10-23";
 
@@ -514,8 +650,11 @@ mod tests {
         let copies = |n: usize| (0..n).for_each(|i| std::fs::write(state.join(format!("x/{i}.sqlite")), b"").unwrap());
         copies(5);
         let wd = d.join("wd").display().to_string();
-        std::fs::write(d.join("start.sh"), start_script("config.capnp", &state.display().to_string(), 2_000, &wd, PIN))
-            .unwrap();
+        std::fs::write(
+            d.join("start.sh"),
+            start_script("config.capnp", &state.display().to_string(), 2_000, &wd, PIN, None),
+        )
+        .unwrap();
         // A stand-in workerd of version `$V`: prints the soft limit it was started with and its arguments.
         std::fs::write(
             d.join("wd"),
@@ -559,6 +698,81 @@ mod tests {
         assert!(err.contains("copies of workerd 2026-09-01, not workerd 2026-10-23"), "{err}");
         let e = pin_state(&state, PIN).unwrap_err();
         assert!(e.contains("copies of workerd 2026-09-01, not workerd 2026-10-23"), "{e}");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// With a git build, the start script runs only the pinned git on a git directory that version wrote, and only
+    /// with 3 times the repository bytes free there, naming both versions or the bytes when it refuses; then it
+    /// starts `graft-git` on its address beside workerd.
+    #[test]
+    fn start_script_refuses_another_git_and_a_disk_under_the_floor() {
+        let d = std::env::temp_dir().join(format!("lbgit-{}", std::process::id()));
+        let (state, data, blob, gb) = (d.join("state"), d.join("git"), d.join("blob"), d.join("build"));
+        for p in [&state, &data, &blob.join("pack"), &gb.join("usr/local/bin")] {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        pin_state(&state, PIN).unwrap();
+        std::fs::write(data.join(GIT_VERSION_FILE), "git version 2.56.0\n").unwrap();
+        let exe = |p: std::path::PathBuf, body: &str| {
+            std::fs::write(&p, format!("#!/bin/bash\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        };
+        exe(gb.join("usr/local/bin/git"), "echo \"git version ${G:-2.56.0}\"");
+        exe(gb.join("shard-server"), "echo \"graft-git $GRAFT_LISTEN $GRAFT_LIFEBOAT\"");
+        exe(d.join("wd"), "[ \"$1\" = --version ] && { echo 'workerd 2026-10-23'; exit 0; }; sleep 1; echo workerd");
+        let g = GitStart {
+            build: gb.display().to_string(),
+            data: data.display().to_string(),
+            listen: "127.0.0.1:8792".into(),
+            blob_root: blob.display().to_string(),
+            version: "git version 2.56.0".into(),
+        };
+        let wd = d.join("wd").display().to_string();
+        std::fs::write(
+            d.join("start.sh"),
+            start_script("c.capnp", &state.display().to_string(), 2_000, &wd, PIN, Some(&g)),
+        )
+        .unwrap();
+        let run = |g: &str| {
+            let o = Command::new("bash")
+                .arg("-c")
+                .arg("ulimit -Sn 1024 && ulimit -Hn 4096 && bash ./start.sh")
+                .env("G", g)
+                .env_remove("WORKERD")
+                .current_dir(&d)
+                .output()
+                .unwrap();
+            (
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).into_owned(),
+                String::from_utf8_lossy(&o.stderr).into_owned(),
+            )
+        };
+        let (ok, out, err) = run("2.56.0");
+        assert!(ok, "{err}");
+        assert!(out.contains("graft-git 127.0.0.1:8792 1"), "{out}");
+        let (ok, out, err) = run("2.57.0");
+        assert!(!ok && out.is_empty(), "{out}");
+        assert!(err.contains("git version 2.57.0, not its pinned git version 2.56.0"), "{err}");
+        std::fs::write(data.join(GIT_VERSION_FILE), "git version 2.55.0\n").unwrap();
+        let (ok, out, err) = run("2.56.0");
+        assert!(!ok && out.is_empty(), "{out}");
+        assert!(err.contains("repositories of git version 2.55.0, not git version 2.56.0"), "{err}");
+        std::fs::write(data.join(GIT_VERSION_FILE), "git version 2.56.0\n").unwrap();
+        // Repository bytes past a third of the disk's free space: a sparse file is counted by `du -b` at its size.
+        let free: u64 =
+            String::from_utf8(Command::new("df").args(["-B1", "--output=avail"]).arg(&data).output().unwrap().stdout)
+                .unwrap()
+                .lines()
+                .last()
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+        std::fs::File::create(blob.join("pack/big")).unwrap().set_len(free / 3 + (1 << 20)).unwrap();
+        let (ok, out, err) = run("2.56.0");
+        assert!(!ok && out.is_empty(), "{out}");
+        assert!(err.contains("under 3 x the") && err.contains("give --git-data a larger disk"), "{err}");
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

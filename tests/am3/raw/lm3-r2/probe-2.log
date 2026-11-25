@@ -1,0 +1,4 @@
+2026-11-25T08:40:52Z
+09494b06
+N+1 for the over-cap flush: e737db38
+{"before":200,"sum":{"threw":0,"unversioned":{"answers":0,"fivexx":0},"versions":{"5bc20f05-76e3-4027-a28e-1be07137683c":{"answers":18958,"fivexx":0},"e737db38-b195-45f6-9740-3b754da11c05":{"answers":173,"fivexx":173}}},"flushes":[{"name":"unknown version","post":422,"why":"version 00000000-0000-0000-0000-00000000005a is no graft-controller version of a release this install's Release group uploaded","after":200,"unchanged":true},{"name":"over FLUSH_CALLS_MAX","post":422,"why":"a flush counts at most 10000 calls, this one 10001","after":200,"unchanged":true}]}

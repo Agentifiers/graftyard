@@ -132,6 +132,74 @@ pub async fn status(env: &Env) -> Option<graftyard_lifeboat::status::LifeboatSta
     Some(graftyard_lifeboat::status::LifeboatStatus::at(graftyard_types::ReleaseId(decoder.0), at, crate::now().0))
 }
 
+/// A git read on the lifeboat (`decisions/DECISIONS.md`, "`lifeboat-clone`"): `upload-pack`, `ls-refs` included, or
+/// with `advertise` the v0 advertisement, answered by `graft-git` on `GIT_URL` once the puller says the network serves
+/// (`GET /git?net=`). Refs and pack both come from `graft-git`, whose refs move only after their packs are in, so an
+/// answer is older than the copy at worst and never names an object it cannot send. Not ready: 503 with
+/// `Retry-After` and why; a halted copy: 503 with none; `graft-git` down or full: 503 with a short `Retry-After`.
+/// The lag header is the git copy's (`stamp` keeps the larger).
+pub async fn git(
+    c: &Ctx<'_>,
+    net: graftyard_types::NetworkId,
+    proto: &str,
+    body: Option<Vec<u8>>,
+    content_type: &str,
+) -> Result<Response> {
+    let busy = |why: &str, retry: Option<u32>| -> Result<Response> {
+        let r = crate::text(c.rid, 503, &format!("lifeboat: {why}\n"))?;
+        if let Some(s) = retry {
+            r.headers().set("retry-after", &s.to_string())?;
+        }
+        Ok(r)
+    };
+    let stub = c.env.durable_object("PULLER")?.get_by_name(graftyard_lifeboat::PULLER_OBJECT)?;
+    let ready = match stub.fetch_with_str(&format!("https://puller/git?net={}", net.0.0)).await {
+        Ok(mut r) if r.status_code() == 200 => r.json::<graftyard_lifeboat::git::Ready>().await.ok(),
+        _ => None,
+    };
+    let lag_ms = match ready {
+        Some(graftyard_lifeboat::git::Ready::Ready { lag_ms, .. }) => lag_ms,
+        Some(graftyard_lifeboat::git::Ready::NotReady { why, retry_s }) => return busy(&why, Some(retry_s)),
+        Some(graftyard_lifeboat::git::Ready::Halted) => return busy("this repository's copy halted", None),
+        None => return busy("the puller does not answer", Some(graftyard_lifeboat::git::DOWN_RETRY_S)),
+    };
+    let base = c.env.var("GIT_URL")?.to_string();
+    let path = if body.is_some() { "upload-pack" } else { "info-refs" };
+    let h = Headers::new();
+    h.set("git-protocol", proto)?;
+    let mut init = RequestInit::new();
+    init.with_method(if body.is_some() { Method::Post } else { Method::Get }).with_headers(h);
+    if let Some(b) = &body {
+        init.with_body(Some(js_sys::Uint8Array::from(b.as_slice()).into()));
+    }
+    let url = format!("{}/{path}?net={}", base.trim_end_matches('/'), net.0.0);
+    let mut r = match Fetch::Request(Request::new_with_init(&url, &init)?).send().await {
+        Ok(r) => r,
+        Err(_) => return busy("graft-git does not answer", Some(graftyard_lifeboat::git::DOWN_RETRY_S)),
+    };
+    match r.status_code() {
+        200 => {}
+        // Between the puller's answer and this call a rebuild began: no repository, for now.
+        404 => {
+            return busy(
+                "the git copy is rebuilding this repository",
+                Some(graftyard_lifeboat::git::NOT_READY_RETRY_S),
+            );
+        }
+        429 => return busy("graft-git is serving its most fetches at once", Some(2)),
+        s => {
+            let why = r.text().await.unwrap_or_default();
+            return busy(
+                &format!("graft-git answered {s}: {}", why.trim()),
+                Some(graftyard_lifeboat::git::DOWN_RETRY_S),
+            );
+        }
+    }
+    let out = crate::git_headers(c.rid, content_type)?;
+    out.set(graftyard_lifeboat::status::LAG_HEADER, &lag_ms.div_ceil(1000).to_string())?;
+    Ok(Response::from_body(r.body().clone())?.with_headers(out))
+}
+
 /// `res` with the lag header, and for `/api/v3/meta` the status beside GitHub's own fields. A copy whose puller does
 /// not answer reads as never current (`LifeboatStatus::at` from 0), so no reader takes it for fresh.
 pub async fn stamp(env: &Env, res: Response, path: &str) -> Result<Response> {
@@ -139,7 +207,10 @@ pub async fn stamp(env: &Env, res: Response, path: &str) -> Result<Response> {
         graftyard_lifeboat::status::LifeboatStatus::at(graftyard_types::ReleaseId([0; 32]), 0, crate::now().0)
     });
     let headers = res.headers().clone();
-    headers.set(graftyard_lifeboat::status::LAG_HEADER, &st.header())?;
+    // A git answer carries its git copy's lag (`git`), which the copy's own may not exceed.
+    let had = headers.get(graftyard_lifeboat::status::LAG_HEADER)?.and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let lag = st.header().parse::<u64>().unwrap_or(0).max(had);
+    headers.set(graftyard_lifeboat::status::LAG_HEADER, &lag.to_string())?;
     let status = res.status_code();
     if path == "/api/v3/meta" && status == 200 {
         let mut res = res;

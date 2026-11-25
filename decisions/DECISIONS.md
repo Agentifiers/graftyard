@@ -10756,6 +10756,37 @@ At 16 the bed agrees with BF-53 (a 4.5-minute cycle). At 64 a cycle takes about 
 - A hosted stale window whose worst lag passes 270 s, 90% of the alarm (lead's ruling, 2026-11-25): build "probe moved chains". The local bed's 298 s at `AT_ONCE` 64 is 2 s under the alarm, which is not margin.
 - A measured probe cost over $1 an hour: probe only chains whose commit moved, from a cheaper source than one read per chain.
 
+### `lifeboat-clone`: a lifeboat serves clones and fetches from `graft-git`, a static shard server and git beside workerd, fed by `catch_up` from the copy, 2026-11-25
+
+**Status.** Built at $0 on branch `lifeboat-clone`, ruled by the lead on 2026-11-25 (R58's design, rulings 1 to 6, after `lifeboat-receive` closed receive-pack). Not hosted: a clone and a fetch ride BM-6's lifeboat row as extra lines; BM-6's gate still reads `gh pr list` only.
+
+**Finding.** The bundle's front is the edge's own build, whose upload-pack runs in a git cache shard's container, and the bundle ran no container: a lifeboat answered `gh pr list` and no clone (`decisions/OPEN-QUESTIONS.md`, R58). Journey 3 promises clones and fetches during a Cloudflare-wide outage.
+
+**Decision.**
+- **Packaging.** `containers/git`'s stage `lifeboat-git`: git 2.56.0 built static (musl) from the same checked tarball the shard image uses, and the shard server built static. The bundle's `--git` names the build; `start.sh` pins git's version as it pins workerd's, refuses another git or a `--git-data` another version wrote, naming both, and runs `graft-git` (`GRAFT_LIFEBOAT=1`, `GRAFT_LISTEN` on loopback only) beside workerd, stopping both when either exits so the host's supervisor restarts them.
+- **One catch-up path.** The puller feeds `graft-git` with `graftyard_git::catchup::catch_up` and three lifeboat traits: the copy's member as the `ChainLog` (`/entries?local=1`, refs and ranges from its fold), `graft-blob` as the pack store, and the puller's storage for the cursor and rehydrate state. Up to 4 pieces a pass [guess], round the networks on a turn, after the pass's pulls; a network whose packs are still owed, or whose copy halted or is gone, waits.
+- **Readiness.** The front serves a network's upload-pack and ls-refs from `graft-git` only when its cursor describes the disk `graft-git` runs on, no rehydrate is saved, and the repository was checked on this run of `graft-git` (`/health`'s `boot`). Otherwise 503 with `Retry-After` (30 s; 5 s while `graft-git` does not answer), and a halted copy 503 with none. A partial pack is never served: a rehydrate drops the cursor before its `/init` empties the repository.
+- **ls-refs from `graft-git`, in lifeboat mode only**, so refs and pack always agree; refs move only after their packs are in. The edge's normal path does not change.
+- **The whole log.** A lifeboat member never truncates (no error logged: BF-53 logged 22), because a rebuild replays every entry's own packs. `start.sh` refuses under 3 times the repository bytes free on the git directory [guess] (R68).
+- **Rolls.** The fold's rolls load at their produced pack, from `graft-blob`, in place of the packs they consumed, so a pack the install's sweeper deleted is never needed. The puller drops a roll's consumed packs from `owed` and `unserved` once its produced pack is held. The guard's limit is R69.
+
+**What it beat.**
+- **P1, the shard image under `localDocker`.** It adds an OCI runtime as a host requirement for a recovery tool, on an engine workerd calls development-only.
+- **A smaller lifeboat-only ingest loop.** Two catch-up paths would drift; `catch_up` already handles rehydrate, rolls, restarts, and idempotent ingest by index.
+- **The sweeper waiting for every registered lifeboat.** A lifeboat offline would block the install's cleanup indefinitely, and the install must not depend on a customer's host.
+- **ls-refs from the copy's fold.** The fold can name a tip whose pack `graft-git` has not ingested, and a clone would then fail on a missing object.
+
+**Evidence.** [measured, local]
+- `tests/lifeboatbed/run.sh`, check 8, PASS on this branch (32 lines, 0 wasm traps): a second repository with real history (`gitseed.mjs`: seven thin pushes, inline and stored, on two branches), two promotions and a roll of both at 32.25, the roll's two consumed packs deleted from every bucket before the lifeboat pulled them. The git copy was ready at the leader's commit with nothing owed or unserved, and graft-blob never held a consumed pack. With the edge blocked, an enrolled `git clone` matched the install's refs and passed `git fsck --strict`; a push made with the feed stopped reached the clone by `git fetch`; with `graft-git` killed by -9 and its repository directory deleted, clones answered 503 with `Retry-After`, none short, then a clone from the rebuild matched. The lag header rode git answers, `graft-git` listened on loopback only, and the git directory recorded the bundle's pinned git.
+- The bed's first run found that a failed `/connected` after a restart (a 404 for the lost directory) kept the stale cursor, so the network answered 503 for good; a check that errs now drops the cursor like one that answers not connected.
+- `lifeboat/tests/git.rs`: a rolled network rebuilds without its consumed packs, and a control with no rolls fails on the consumed pack; a new disk rebuilds and the same disk goes on from its cursor; the readiness rules; `due`. `lifeboat/tests/pass.rs`: `a_held_rolls_consumed_packs_are_owed_no_more`.
+- `tests/m0carried/plant238.py`: 7 of 7 native mutants caught (readiness, `due`, `rolled_off`); the restart check caught by lifeboatbed (90 answers of 503 and no rebuild). `cli/src/lifeboat.rs`'s `start_script_refuses_another_git_and_a_disk_under_the_floor` runs `start.sh` with a stand-in git and shard server: it refuses another git and another version's git directory, naming both, and a disk under the floor, and fails with `GIT_DISK_TIMES` at 0.
+
+**Flip.**
+- A hosted lifeboat row where a clone or fetch fails while `gh pr list` passes: the git copy's catch-up or readiness is wrong, not the feed.
+- A host where a static git or shard server will not run (an architecture or kernel the build does not cover): ship per-architecture builds, or reconsider P1.
+- R68's measurement putting the disk floor's need past 3 times: raise `GIT_DISK_TIMES`.
+
 ### `user-demote`: the edge sends every authenticated user write with its actor, and the leader counts demotions, 2026-11-24
 
 **Status.** Built and tested at $0. The lead ruled it on 2026-11-24, from B0-33 h1A. It is not deployed; it ships
@@ -11231,6 +11262,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - `workers/agents-front/tests/front.rs`: `a56_a_cold_reader_stopped_between_an_old_pointer_and_the_roll_that_cleared_it_pins_the_default`, `a56_a_reader_stopped_mid_history_under_a_running_roll_pins_the_default_and_a_whole_read_pins_the_pointer`; both fail without `caught_up`. `tests/m0carried/plant237.py`: 3 mutants, all caught.
 - `workers/agents-front/tests/front.rs`: `an_isolate_with_no_view_under_a_controller_roll_pins_the_default_until_a_view_lands`; `crates/release/src/tests/group/agents.rs`: `the_front_default_is_n_only_while_a_split_is_deployed_and_keeps_the_fronts_other_bindings`.
 - `tests/m0carried/plant227.py`: 5 mutants, all caught.
+- Hosted, LM-3 r2 [measured, graft-m4a, 2026-11-25, `tests/am3/results/lm3.md`, "Run r2"]: 0 webhooks carried a pin other than c1's and 0 pin-mismatch alarms (r1: 631). Two of 15,923 webhooks after the pointer reached c2 unpinned, at 1.13 s and 2.40 s, from isolates whose view was under `POINTER_TTL` old; the first c1 pin came 0.38 s after the commit, the last unpinned webhook at 3.96 s. The lead ruled (2026-11-25) that the fail line counts a webhook that reaches N+1 from an isolate that already pinned N, or more than `POINTER_TTL` after the pin, and not the propagation the pass line allows; the LM-3 and LF-7 fail cells in `design/AGENT-LAYER.md` and `build/BUILD-PLAN.md` now say so.
 - The settings call [measured, the runner account, 2026-11-24, throwaway scripts]: `PATCH /workers/scripts/{name}/settings` with `bindings` deploys a new version at 100%, keeps a `secret_text` binding sent as read, and is refused with error 10214 while a newer uploaded version is not deployed. The settings read answers the newest version's bindings, so `graft-ops` reads the deployed version's.
 
 **Flip.**
@@ -11244,7 +11276,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 **Decision.**
 - `graft-agents-front` counts each answer it forwards by the `x-graftyard-controller-version` it reports, a thrown call as one of N+1's 5xx, but only while its verified view shows a `ControllerRoll` (`Tally`, `gate::controller_judged`, `gate::count_answer`). It flushes every `FLUSH_MS` (30 s) or at `FLUSH_CALLS_MAX` (10,000 calls [guess]), beside a request, to the install's `POST /api/graftyard/v1/release/errors` under the `graftyard-agent` App JWT.
 - The edge checks the JWT (`ident::graftyard_agent`), then `gate::accept_flush` against its `Release` view, refreshed once before an unknown version is refused: every version must be a `graft-controller` version an upload committed, no count may hold more 5xx than answers, and the flush may hold at most `FLUSH_CALLS_MAX` calls. A refused flush stores nothing. An accepted one goes to the existing `errors` objects under key `controller`, at the script's home site as `graft-front`'s counts do.
-- The agents `graft-ops` reads `GET release/errors?since=` summed over the sites, for the step's window and from the intent's start, and judges with `judge_roll`. A `ControllerRoll`'s 100% step holds `STEP_DWELL` like an `McpRoll`'s. A breach commits the pre-signed `ControllerPointer` with no Cloudflare API call. No site answering is `Pending`.
+- The agents `graft-ops` reads `GET release/errors?since=` summed over the sites, for the step's window and from the intent's start, and judges with `judge_roll`. A `ControllerRoll`'s 100% step holds `STEP_DWELL` like an `McpRoll`'s. A breach commits the pre-signed `ControllerPointer` with no Cloudflare API call. No site answering is `Pending`. **The reads (2026-11-25, OPEN-QUESTIONS A57, the lead's ruling):** the edge asks the voter sites' `errors` objects at once, each within `VIEW_CALL_MS` (`gate::read_sites`), so a read takes one site's call; the agents gate waits `GATE_READ_MS` (5 s [guess]) for each, since its cron is not a request path; and every gate run logs one line, a missed read as `pending` with the read named (`gate::controller_gate`). LM-3 r2 took 6 min 32 s from roll to breach while the edge asked the sites in turn and reads of 0.79 to 1.55 s missed a 1 s deadline unlogged.
 
 **Why.**
 - The edge is the install's own gate store, already spread over every site with its failure rows; the counts reuse it and add no store or failure domain.
@@ -11255,6 +11287,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - (b) A Durable Object in the agents account: a new store, with a Failure modes row for each class, beside `errors` objects that already exist.
 
 **Evidence.**
+- `crates/release/src/tests/group/errors.rs`: `a57_the_errors_read_sums_the_sites_that_answered_and_a_missed_gate_read_logs_its_pending`; `tests/m0carried/plant239.py`: 5 mutants, all caught.
 - `crates/release/src/tests/group/run.rs`: `lm3_a_bad_controller_at_1pct_breaches_on_the_fronts_counts_and_commits_its_pointer_with_the_api_down`; `workers/agents-front/tests/front.rs`: `the_front_counts_the_controllers_answers_only_under_a_controller_roll_and_flushes_by_time_or_count`; `tests/edgeboot/run.sh`: the route answers 401 to no JWT and a bad one.
 - `tests/m0carried/plant233.py`: 8 mutants, all caught.
 

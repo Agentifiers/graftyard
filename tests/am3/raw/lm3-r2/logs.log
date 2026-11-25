@@ -1,0 +1,7 @@
+2026-11-25T08:35:08Z
+09494b06
+{"at": 1795595572253, "msg": "graft-agents-ops graft-agents-m4a-front CONTROLLER_DEFAULT = Some(VersionId(5bc20f05-76e3-4027-a28e-1be07137683c))"}
+{"at": 1795595576096, "msg": "graft-agents-ops Wait { until: None, why: \"gate pending\" }"}
+{"at": 1795595576096, "msg": "graft-agents-ops Deployed(Controller, [(VersionId(e737db38-b195-45f6-9740-3b754da11c05), 1), (VersionId(5bc20f05-76e3-4027-a28e-1be07137683c), 99)])"}
+{"at": 1795595624944, "msg": "graft-agents-ops Wait { until: None, why: \"no deployment of Controller read\" }"}
+{"at": 1795595686281, "msg": "graft-agents-ops Wait { until: None, why: \"no deployment of Controller read\" }"}

@@ -3406,10 +3406,11 @@ async fn upload_front(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Upl
     // The clone cache: a v2 fetch with no haves, read from R2 by its `CloneKey`, else upload-pack on the shard, which
     // fills the cache.
     // BF-18 clones from a chosen shard (`x-graft-shard`) bypass the clone cache, so the shard serves every one.
+    // The lifeboat has no clone cache: it binds no bucket, and `graft-git` answers every fetch (`lifeboat::git`).
     #[cfg(feature = "test-faults")]
-    let cache_ok = c.shard.is_none();
+    let cache_ok = c.shard.is_none() && !graftyard_lookup::lifeboat();
     #[cfg(not(feature = "test-faults"))]
-    let cache_ok = true;
+    let cache_ok = !graftyard_lookup::lifeboat();
     let v2 = if wants_v2(Some(&proto)) { parse_v2(&body).ok() } else { None };
     let mut answer = None;
     let key = match v2.as_ref() {
@@ -3490,6 +3491,11 @@ async fn clone_hit(c: &Ctx<'_>, repo: &Repo, k: &CloneKey) -> Result<Option<Hit>
 
 async fn upload_pack(c: &Ctx<'_>, repo: &Repo, front: UploadFront) -> Result<Response> {
     let UploadFront { proto, body, v2, key, answer } = front;
+    // On the lifeboat, `ls-refs` too comes from `graft-git`, so the refs it names are always ones it can send
+    // (`lifeboat::git`); the edge's normal path is unchanged.
+    if graftyard_lookup::lifeboat() {
+        return lifeboat::git(c, NetworkId(repo.id.0), &proto, Some(body), &Service::UploadPack.result_type()).await;
+    }
     let is_ls = v2.as_ref().is_some_and(|v| v.command == "ls-refs");
     #[cfg(feature = "test-faults")]
     let edge_ls = c.ls_refs_edge;
@@ -3589,6 +3595,10 @@ async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service, si
         Service::UploadPack if wants_v2(proto.as_deref()) => {
             Ok(Response::from_bytes(upload_pack_v2_advertisement(AGENT))?
                 .with_headers(git_headers(c.rid, &service.advertisement_type())?))
+        }
+        Service::UploadPack if graftyard_lookup::lifeboat() => {
+            lifeboat::git(c, NetworkId(repo.id.0), proto.as_deref().unwrap_or(""), None, &service.advertisement_type())
+                .await
         }
         Service::UploadPack => {
             // v0: the shard's own advertisement, after it caught up to the leader's refs.
@@ -3812,13 +3822,26 @@ async fn bed_place(
     n: usize,
     fail: bool,
 ) -> Result<std::result::Result<graftyard_git::PackRef, serde_json::Value>> {
-    use sha2::Digest as _;
     let mut bytes = vec![0u8; n];
     let crypto: web_sys::Crypto =
         js_sys::Reflect::get(&js_sys::global(), &"crypto".into()).map_err(|_| "crypto")?.into();
     for chunk in bytes.chunks_mut(65_536) {
         crypto.get_random_values_with_u8_array(chunk).map_err(|_| "random")?;
     }
+    bed_place_bytes(c, repo, bytes, fail).await
+}
+
+/// `bytes` placed as a stored pack of the repository's network, as `bed_place` places its random ones: lifeboatbed's
+/// real git packs (check 8), which the lifeboat's `graft-git` indexes.
+#[cfg(feature = "test-faults")]
+async fn bed_place_bytes(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    bytes: Vec<u8>,
+    fail: bool,
+) -> Result<std::result::Result<graftyard_git::PackRef, serde_json::Value>> {
+    use sha2::Digest as _;
+    let n = bytes.len();
     let raw = buckets(c.env, c.sites)?;
     let refs: Vec<(SiteId, &R2)> = raw
         .iter()
@@ -4172,6 +4195,18 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                 test_format: false,
             };
             let t0 = now().0;
+            // lifeboatbed's check 8: a real git pack (`pack`, base64), inline or placed as a stored pack.
+            if let Some(p) = b.get("pack").and_then(serde_json::Value::as_str) {
+                let bytes = graftyard_git::pack::b64::decode(p).ok_or("pack is not base64")?;
+                if b.get("inline").and_then(serde_json::Value::as_bool) == Some(true) {
+                    push.pack = Some(graftyard_git::PackRef::Inline(bytes));
+                } else {
+                    match bed_place_bytes(c, &repo, bytes, false).await? {
+                        Ok(p) => push.pack = Some(p),
+                        Err(e) => return Response::from_json(&json!({ "placed": e })),
+                    }
+                }
+            }
             if let Some(n) = b.get("stored").and_then(serde_json::Value::as_u64) {
                 let fail = b.get("fail_place").and_then(serde_json::Value::as_bool).unwrap_or(false);
                 match bed_place(c, &repo, n as usize, fail).await? {
@@ -4266,6 +4301,61 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                 .map(|(s, n, v)| json!({ "site": s, "name": n, "rows": v }))
                 .collect();
             Response::from_json(&rows)
+        }
+        // lifeboatbed's check 8, a roll on a real pack history: `place` puts `{"pack": base64}` as a stored pack and
+        // answers its `PackRef`; `record` has the leader record `{"events", "format"}` (a `Promoted` or `Compacted` at
+        // 32.25) and marks each stored pack it names at the entry, as `bed_archive` marks a promotion; `drop_pack`
+        // deletes `?id=`'s pack and `.idx` from every bucket, as the sweeper deletes a roll's consumed packs.
+        "/_bed/place" => {
+            let b: serde_json::Value = req.json().await?;
+            let bytes = graftyard_git::pack::b64::decode(b["pack"].as_str().unwrap_or_default()).ok_or("pack")?;
+            Response::from_json(&match bed_place_bytes(c, &repo, bytes, false).await? {
+                Ok(p) => json!({ "pack": p }),
+                Err(e) => json!({ "placed": e }),
+            })
+        }
+        "/_bed/record" => {
+            let b: serde_json::Value = req.json().await?;
+            let body = json!({ "rid": graftyard_lookup::request_id().to_string(), "events": b["events"],
+                "format": b["format"] });
+            let (v, _) = graftyard_lookup::call(&c.bindings(), chain, &repo.record, "/record", &body)
+                .await
+                .map_err(Error::RustError)?;
+            if let Some(at) = v["recorded"].as_u64() {
+                let raw = buckets(c.env, c.sites)?;
+                let refs: Vec<(SiteId, &R2)> =
+                    raw.iter().filter(|(s, _)| repo.record.sites.contains(s)).map(|(s, b)| (*s, b)).collect();
+                let events: Vec<graftyard_git::repo::RepoEvent> = serde_json::from_value(b["events"].clone())?;
+                for p in graftyard_git::repo::stored_packs(&events) {
+                    let pack = graftyard_git::PackRef::Stored {
+                        id: p.0,
+                        checksum: p.1,
+                        bytes: p.2,
+                        sites: graftyard_types::SiteSet(refs.iter().fold(0, |m, (s, _)| m | 1 << s.0)),
+                    };
+                    graftyard_git::mark_committed(
+                        &refs,
+                        NetworkId(repo.id.0),
+                        &pack,
+                        chain,
+                        graftyard_types::Index(at),
+                    )
+                    .await;
+                }
+            }
+            Response::from_json(&v)
+        }
+        "/_bed/drop_pack" => {
+            let id = qp("id").and_then(|v| v.parse::<Ulid>().ok()).map(PackId).ok_or("id")?;
+            let net = NetworkId(repo.id.0);
+            let keys = vec![
+                graftyard_git::R2Key::Pack { network: net, id }.to_string(),
+                graftyard_git::R2Key::Idx { network: net, id }.to_string(),
+            ];
+            for (_, b) in &buckets(c.env, c.sites)? {
+                graftyard_git::Bucket::delete(b, &keys).await.map_err(|e| Error::RustError(e.0))?;
+            }
+            Response::from_json(&json!({ "dropped": keys }))
         }
         // BF-18: archive `?from=F&to=T` on the repository's real group (`bed_archive`).
         "/_bed/archive" => {

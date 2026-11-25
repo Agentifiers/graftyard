@@ -988,6 +988,7 @@ dependencies = [
  "base64",
  "ed25519-dalek",
  "futures-executor",
+ "futures-util",
  "graftyard-types",
  "serde",
  "serde_json",
