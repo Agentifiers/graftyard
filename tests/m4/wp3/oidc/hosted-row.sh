@@ -21,11 +21,13 @@
 #   token       a row deploy token (scripts and containers write), into graft-m4a-ops-deploy-token; revoked at teardown
 #   ops         graft-m4a-ops from REF (default origin/main), test-faults, OPS_OIDC_PUBLISHED_MS=PUBLISHED_MS (default
 #               300000), GATE=pending, 1-minute cron
+#   fired       waits up to 3 minutes for graft-ops' first scheduled run (`tests/am3/hosted/cron-fired.py`)
+#   cron        by hand only if `fired` saw none: r45-row.sh's re-PUT of the 1-minute cron (R52), then `fired` again
 #   rotate      sign and post `Rotate { ActionsOidcKey, slot: 1 }` with the customer key
 #   view        the `Release` entries since `ops`, and the active slots
 #   logs        graft-ops' Rotate lines from Workers Logs since `ops`
 #   versions    every script's deployment and version count, to compare with `state`
-#   teardown    MinIO removed; graft-m4a-ops parked on OPS_PARKED by version id, cron []; the row token revoked and
+#   teardown    MinIO removed; m3org/bf70-cac deleted; graft-m4a-ops parked on OPS_PARKED by version id, cron []; the row token revoked and
 #               its files shredded. ActionsOidcKey stays on slot B: both slots stay written and published, and the
 #               next rotation (to A) needs no new secret.
 #
@@ -136,6 +138,16 @@ ops)
     deployment $OPS
     api "$B/workers/scripts/$OPS/schedules" | jq -c '{schedules: [.result.schedules[]?.cron]}'
   } 2>&1 | log ;;
+fired)
+  # R52: graft-ops' first scheduled run in Workers Logs since `ops` (or since the last `cron` re-PUT), no reset here.
+  { since=$(cat "$O/cron.ms" 2>/dev/null || cat "$O/start.ms")
+    python3 tests/am3/hosted/cron-fired.py $OPS "* * * * *" --since "$since" --wait-s 180 --tries 0; echo "exit $?"; } 2>&1 | log ;;
+cron)
+  # R52, by hand if `fired` saw no run: r45-row.sh's `cron` step, a reset then the 1-minute cron again.
+  { reset_cron >/dev/null
+    api "$B/workers/scripts/$OPS/schedules" -X PUT -H 'content-type: application/json' --data '[{"cron":"* * * * *"}]' | jq -c '{schedules: .result.schedules}'
+    date -u +%s%3N >"$O/cron.ms"; echo "re-PUT at $(cat "$O/cron.ms")"
+  } 2>&1 | log ;;
 rotate)
   { a=$(node tests/m5/bf46/view.mjs prev); echo "prev $(echo "$a" | jq -r .prev | cut -c1-12) count $(echo "$a" | jq -r .count)"
     echo '{"Intent": {"ttl_s": 21600, "intent": {"Rotate": {"secret": "ActionsOidcKey", "slot": 1}}}}' >"$K/rot.json"
@@ -155,6 +167,7 @@ versions)
   } 2>&1 | log ;;
 teardown)
   { sudo -n docker rm -f bf70minio >/dev/null 2>&1; echo "minio removed"
+    node tests/m4/wp3/oidc/hosted.mjs unmirror - "$O"
     reset_cron
     full=$(api "$B/workers/scripts/$OPS/versions?per_page=100" | jq -r --arg p "$OPS_PARKED" '.result.items[] | select(.id | startswith($p)) | .id')
     npx --prefix tests/m0 wrangler versions deploy "$full@100%" --name $OPS -y 2>&1 | grep -E "Deployed|rror" | tail -2

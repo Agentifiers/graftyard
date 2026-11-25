@@ -1,12 +1,14 @@
 // BF-70's install half on graft-m4a (`tests/m4/wp3/oidc/hosted-row.sh` calls it; `source tests/am1/lf13/env-m4a.sh`).
 //   node tests/m4/wp3/oidc/hosted.mjs action <configure-aws-credentials checkout> <out dir>
 //   node tests/m4/wp3/oidc/hosted.mjs job <runner dir> <out dir> <tag> [fork]
+//   node tests/m4/wp3/oidc/hosted.mjs unmirror - <out dir>
 // `action` creates the public repository `m3org/bf70-cac` and pushes configure-aws-credentials v6.2.0's tree to it as
 // `main` and tag `v6.2.0` (the install resolves `uses:` only in its own repositories, F90), and records the tree hash,
-// which must equal upstream's. `job` dispatches `hosted.yml` (or, with `fork`, `fork.yml` as a fork pull request's run)
-// on an unmodified runner through `../hosted-run.mjs`, reads every job's log, and writes `<out>/job-<tag>.json` with
-// what each check saw. It exits 1 when a check fails. It never prints a token: the workflow prints only the kid, the
-// published kids and the claims, and the log scan fails on anything shaped like a JWT.
+// which must equal upstream's; `unmirror` deletes it at teardown. `job` dispatches `hosted.yml` (or, with `fork`,
+// `fork.yml` as a fork pull request's run) on an unmodified runner through `../hosted-run.mjs`, reads every job's
+// log, and writes `<out>/job-<tag>.json` with what each check saw. It exits 1 when a check fails. It never prints a
+// token: the workflow prints only the kid, the published kids and the claims, and the log scan fails on anything
+// shaped like a JWT.
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -37,6 +39,13 @@ if (phase === "action") {
   result("action", { upstream, tree, commit, remote, anonymous_read: repo.status, visibility: repo.body?.visibility });
   log(`v6.2.0 on the install: ${remote === commit ? "same commit" : `MISMATCH ${remote}`}; anonymous read ${repo.status}`);
   if (remote !== commit || repo.status !== 200) process.exit(1);
+} else if (phase === "unmirror") {
+  // Teardown: the mirrored action's repository, `DELETE /repos/m3org/bf70-cac` (204), then an anonymous read 404s.
+  const d = await api("DELETE", "/api/v3/repos/m3org/bf70-cac", admin);
+  const after = await api("GET", "/api/v3/repos/m3org/bf70-cac", null);
+  result("unmirror", { delete: d.status, anonymous_read_after: after.status });
+  log(`m3org/bf70-cac: DELETE ${d.status}, anonymous read after ${after.status}`);
+  if (![204, 404].includes(d.status) || after.status !== 404) process.exit(1);
 } else if (phase === "job") {
   const runnerDir = a1;
   const fork = mode === "fork";
@@ -95,5 +104,5 @@ if (phase === "action") {
   log(`job ${tag}: ${ok ? "PASS" : "FAIL"} ${JSON.stringify(checks)}`);
   if (!ok) process.exit(1);
 } else {
-  throw new Error("phase: action <cac checkout> <out> | job <runner dir> <out> <tag> [fork]");
+  throw new Error("phase: action <cac checkout> <out> | job <runner dir> <out> <tag> [fork] | unmirror - <out>");
 }
