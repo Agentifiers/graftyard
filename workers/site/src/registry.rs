@@ -404,6 +404,43 @@ impl DurableObject for Registry {
                 }
                 Response::from_json(&serde_json::json!({ "newer": newer }))
             }
+            // Test installs only: the reports this object holds, for exportbed's retired-chain check.
+            #[cfg(feature = "test-faults")]
+            (Method::Get, "/export_report") => {
+                #[derive(Deserialize, serde::Serialize)]
+                struct Held {
+                    chain: String,
+                    idx: i64,
+                }
+                sql.exec(crate::export_feed::REPORTS_SCHEMA, None)?;
+                let rows: Vec<Held> = sql.exec("SELECT chain, idx FROM export_report", None)?.to_array()?;
+                Response::from_json(&rows)
+            }
+            // A retired chain's report goes (`crate::export_feed::drop_report`): its purge, once the feed carried its
+            // tail or the wait passed its cap, and a round that proved it retired (`decisions/DECISIONS.md`,
+            // "`feed-retired`").
+            (Method::Delete, "/export_report") => {
+                sql.exec(crate::export_feed::REPORTS_SCHEMA, None)?;
+                let chain = query(&url, "chain")?;
+                sql.exec(crate::export_feed::REPORT_DROP, vec![chain.clone().into()])?;
+                sql.exec(crate::export_feed::PURGE_WAIT_SCHEMA, None)?;
+                sql.exec(crate::export_feed::PURGE_WAIT_DROP, vec![chain.into()])?;
+                Response::from_json(&serde_json::json!({ "dropped": true }))
+            }
+            // A purge's wait for the feed (`graftyard_git::export::purge_wait`): the first call's `now` is the wait's
+            // start, which every later call reads back, so the cap holds across the purge's retries.
+            (Method::Post, "/export_purge_wait") => {
+                #[derive(Deserialize)]
+                struct Since {
+                    since: i64,
+                }
+                sql.exec(crate::export_feed::PURGE_WAIT_SCHEMA, None)?;
+                let chain = query(&url, "chain")?;
+                let now: i64 = query(&url, "now")?.parse().map_err(|_| Error::RustError("now".into()))?;
+                sql.exec(crate::export_feed::PURGE_WAIT_START, vec![chain.clone().into(), now.into()])?;
+                let rows: Vec<Since> = sql.exec(crate::export_feed::PURGE_WAIT_GET, vec![chain.into()])?.to_array()?;
+                Response::from_json(&serde_json::json!({ "since": rows.first().map_or(now, |r| r.since) }))
+            }
             (Method::Post, "/export_round") => {
                 #[derive(Deserialize)]
                 struct Last {

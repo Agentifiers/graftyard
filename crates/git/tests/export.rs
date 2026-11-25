@@ -429,3 +429,67 @@ fn the_archive_holding_a_cursor_is_found_among_the_chains_keys() {
     assert_eq!(at(91), None, "past every range: no archive, so the page is the stored log's or 410");
     assert_eq!(export::archive_holding(&keys, repo(7), Index(1)), None, "another chain's objects never serve");
 }
+
+/// `feed-retired`: a repository whose leader reported its commit and was purged before a round read the tail. With
+/// (b) the purge waits for the feed, which then carries every entry before the members go, and the report goes with
+/// them; with the feed stalled past `PURGE_FEED_WAIT_MS` the purge goes ahead and names the entries never exported. A
+/// round drops a report only on "not joined" from every source and the members' retire proof (a); a live chain whose
+/// sources fail, or whose members are only briefly not joined, keeps its report and is read once they answer.
+#[test]
+fn a_purged_chain_reaches_the_feed_first_and_leaves_no_report_behind() {
+    use export::{PURGE_FEED_WAIT_MS, PurgeWait, Unread, forgets, purge_wait, unexported_line};
+    let mut inst = Install::default();
+    let (purged, stalled, live) = (repo(1), repo(2), repo(3));
+    let mut now = 1_700_000_000_000u64;
+    for c in [purged, stalled, live] {
+        inst.commit(c, 3);
+    }
+    inst.feed(now, false).unwrap();
+    // The last entries, the retire's included: each leader reports, and no round has read them yet.
+    for c in [purged, stalled, live] {
+        inst.commit(c, 2);
+    }
+    let mut reports: BTreeMap<ChainId, Index> = inst.commits().into_iter().collect();
+    let commit = reports[&purged];
+    // (b): the purge's first call finds the feed behind and waits; a round carries the tail; the next call goes.
+    let since = now;
+    let cursor = |inst: &Install, c| Some(inst.state.cursors.get(c));
+    assert_eq!(purge_wait(cursor(&inst, purged), commit, since, now), PurgeWait::Wait { left_ms: PURGE_FEED_WAIT_MS });
+    assert_eq!(purge_wait(None, commit, since, now), PurgeWait::Go, "an install with no feed purges at once");
+    now += export::FEED_EVERY_MS;
+    let planned: Vec<(ChainId, Index)> = reports.iter().filter(|(c, _)| **c == purged).map(|(c, i)| (*c, *i)).collect();
+    inst.feed_from(now, false, &planned).unwrap();
+    assert_eq!(purge_wait(cursor(&inst, purged), commit, since, now), PurgeWait::Go);
+    reports.remove(&purged);
+    let carried: Vec<Vec<u8>> = inst
+        .objects
+        .values()
+        .flat_map(|o| export::decode_object(o).unwrap().entries)
+        .filter(|(c, ..)| *c == purged)
+        .flat_map(|(_, _, rows)| rows)
+        .collect();
+    assert_eq!(carried, inst.logs[&purged], "every entry of the purged chain, its last ones included, was exported");
+    // The cap: the feed never moves for `stalled`. Under the cap the purge waits; at the cap it goes and names 4..=5.
+    let commit = reports[&stalled];
+    let at = cursor(&inst, stalled);
+    assert!(matches!(purge_wait(at, commit, since, since + PURGE_FEED_WAIT_MS - 1), PurgeWait::Wait { left_ms: 1 }));
+    let PurgeWait::Late { from, to } = purge_wait(at, commit, since, since + PURGE_FEED_WAIT_MS) else {
+        panic!("a stalled feed never holds a purge past the cap")
+    };
+    assert_eq!((from, to), (Index(4), Index(5)));
+    assert_eq!(unexported_line(stalled, from, to), "export feed: repo:2 retired with entries 4..=5 never exported");
+    reports.remove(&stalled);
+    // (a): a round with `stalled`'s report still held (a purge from a build before this one). Every source not
+    // joined and the members' retire proof drop it; anything less keeps it, as it keeps `live`'s.
+    assert!(forgets(Unread::Unjoined, true));
+    for (unread, retired) in [(Unread::Unjoined, false), (Unread::Missed, true), (Unread::Missed, false)] {
+        assert!(!forgets(unread, retired), "{unread:?} retired={retired} keeps the report");
+    }
+    // The live chain's sources failed for a round (`Missed`): its report is kept, so the next round carries it.
+    assert!(!forgets(Unread::Missed, false));
+    now += export::FEED_EVERY_MS;
+    let planned: Vec<(ChainId, Index)> = reports.iter().map(|(c, i)| (*c, *i)).collect();
+    assert_eq!(planned, vec![(live, Index(5))], "only the live chain's report is left to plan");
+    let b = inst.feed_from(now, false, &planned).unwrap();
+    assert_eq!(b.chains, vec![(live, Index(5))]);
+}

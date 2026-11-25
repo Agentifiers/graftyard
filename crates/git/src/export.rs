@@ -722,6 +722,57 @@ pub fn next_round_delay_s(claimed_ms: u64, now_ms: u64) -> u32 {
     (claimed_ms + FEED_EVERY_MS).saturating_sub(now_ms).div_ceil(1000) as u32
 }
 
+/// How long a purge waits for the feed to carry a chain's last entries before it goes ahead without them [guess]
+/// (`decisions/DECISIONS.md`, "`feed-retired`"; `decisions/OPEN-QUESTIONS.md`, R62): a round is about 15 s, so an
+/// hour is a stalled feed, and a purge is never held for good by one.
+pub const PURGE_FEED_WAIT_MS: u64 = 3_600_000;
+
+/// What a purge does about the feed before it retires a chain's members (`purge_wait`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PurgeWait {
+    /// No feed on this install, or it carried the chain to its commit: retire now.
+    Go,
+    /// The feed is behind and the wait is under `PURGE_FEED_WAIT_MS`: answer 503, asked again.
+    Wait { left_ms: u64 },
+    /// The wait passed its cap: retire anyway, and log `from..=to` as entries the feed never carried.
+    Late { from: Index, to: Index },
+}
+
+/// Whether a purge waits for the feed: `cursor` is the feed's cursor for the chain (`None`: no feed configured, so no
+/// wait), `commit` the highest commit a member answered, and `since_ms` when this chain's purge first found the feed
+/// behind.
+pub fn purge_wait(cursor: Option<Index>, commit: Index, since_ms: u64, now_ms: u64) -> PurgeWait {
+    let Some(at) = cursor else { return PurgeWait::Go };
+    if at >= commit {
+        return PurgeWait::Go;
+    }
+    let waited = now_ms.saturating_sub(since_ms);
+    if waited >= PURGE_FEED_WAIT_MS {
+        return PurgeWait::Late { from: Index(at.0 + 1), to: commit };
+    }
+    PurgeWait::Wait { left_ms: PURGE_FEED_WAIT_MS - waited }
+}
+
+/// How a round's source read of a planned chain gave no page: every member asked answered not joined, or any other
+/// miss (down, slow, only the leader answered).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unread {
+    Unjoined,
+    Missed,
+}
+
+/// Whether a round drops a chain's report: only when every source answered not joined and the install's members prove
+/// the group retired for good (`retired`, `graftyard_lookup::retired_group`). Any other miss keeps the report, so a
+/// live chain whose sources are down, or a group whose members are only briefly not joined, is read again.
+pub fn forgets(unread: Unread, retired: bool) -> bool {
+    unread == Unread::Unjoined && retired
+}
+
+/// The error line for a retired chain's entries the feed never carried, `from..=to`.
+pub fn unexported_line(chain: ChainId, from: Index, to: Index) -> String {
+    format!("export feed: {chain} retired with entries {}..={} never exported", from.0, to.0)
+}
+
 /// Whether a leader's commit report replaces the one held for its chain: only a higher commit index, so a deposed
 /// leader's late report never moves the feed's view back.
 pub fn report_newer(held: Option<Index>, reported: Index) -> bool {

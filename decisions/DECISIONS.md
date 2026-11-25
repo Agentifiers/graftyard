@@ -10448,6 +10448,50 @@ is a new Tokens format.
 
 **Flip.** A retired group that comes back: if a retire ever stops sticking (`retire-sticks` reversed), a 404 would stop a lifeboat on a chain that answers again. Then the puller asks a gone chain again daily.
 
+### `feed-retired`: a purge waits for the change feed to carry a chain's last entries, capped at an hour, and drops its report; a round drops a retired chain's report, 2026-11-25
+
+**Status.** Built at $0 on branch `feed-retired` from main `40bb7665`, ruled by the lead on 2026-11-25 ((b) with an hour's cap, (a) as the backstop) after BF-53's feed evidence. Not hosted: the site's half ships on the next site day, which also clears graft-m3f's seven stuck reports through (a), and the purge's half on the next edge day.
+
+**Finding.** The feed site's `export` registry object kept every leader's last report for good, and nothing deleted one. A repository purged before a round read its tail left its report above its cursor: every round planned it, all three sources answered `/log_rows` 409 (not joined, or "graftyard member retired"), and the round logged `planned=N read=0: every source failed`. On graft-m3f [measured, Workers Logs and `export-state`, `tests/m6/raw/bf53/feed/`]:
+
+| Chain | Cursor | Report |
+| --- | --- | --- |
+| `repo:65612` | 13 | 15 |
+| `repo:65614` | 689 | 823 |
+| `repo:65618` | 609 | 770 |
+| one of `repo:65621` to `65623` | 117 | 119 |
+| `repo:65624` | 555 | 791 |
+| `repo:65629` (from 2026-11-24) | 521 | 795 |
+| `repo:65631` (from 22:14Z, retired 22:10:33Z) | 39 | 42 |
+
+Three such chains at 2026-11-23 16:05Z, five by 21:05Z, seven by 2026-11-24 22:20Z. Each costs every round three member wakes (about two a second for the seven), holds a place in the batch, and keeps its last entries, the retire's included, from the vault and every lifeboat. BF-53 first read this as the feed stopping; it was not (`tests/m6/results/bf53.md`).
+
+**Decision.**
+- **(b) The purge waits for the feed.** After the gate and before any `/purge_retire`, `POST .../purge` reads `export-state`'s cursor for each chain against the highest commit a joined member answers (`purge::Status::Joined::commit`). Behind, it answers 503 with `waitLeftMs`, and the operator's retry asks again (`export::purge_wait`). The wait's start is the first call's time, kept in the feed site's `export` object (`/export_purge_wait`), so the cap holds across retries. Past `PURGE_FEED_WAIT_MS`, an hour [guess, R62], it retires anyway, logs `export feed: <chain> retired with entries F..=T never exported` as an error, and names them in the 200's `unexported`. An install whose edge binds no export bucket has no feed and no wait. Once every member is retired, it drops both chains' reports and waits (`DELETE /export_report`).
+- **(a) A round drops a proven retired report.** `graftyard_lookup::log_rows` now answers `LogRows::Unjoined` when every member asked answered 409, apart from `Missed` (down, slow, only the leader). A planned chain that comes back `Unjoined` is asked `retired_group`, the members' retire proof that `export-retired` uses. Only both drop the report, with the same unexported line (`export::forgets`). A `Missed` chain, or an unjoined one whose members do not all hold their `retired` row (a join in progress, a replaced generation), keeps its report and is read again.
+- **graft-m3f's seven.** (a) clears them on the next site day from main. No hand cleanup.
+
+**Why.** The retire entries are what tells the vault and a lifeboat a repository is gone, so the purge should not outrun the feed that carries them. A feed that stalls must not hold a purge for good, though, hence the cap. The round's drop covers reports a purge before this left, and any chain retired some other way, such as the test route.
+
+**What it beat.**
+- **(a) alone.** It stops the empty rounds but drops the tail: the retired chains' last entries never reach the feed.
+- **(b) with no cap.** A held or broken feed would block every purge until it moved.
+- **Dropping on "not joined" from every source alone.** A group's sources answer 409 while it is created and in a placement window, so a live chain could lose its report. The members' `retired` rows prove the group is gone for good (`retire-sticks`).
+- **Waiting inside the purge call.** A round is about 15 s and the call has the edge's time limit; a 503 the operator retries keeps the route bounded, as its other refusals do.
+
+**Evidence.**
+- `crates/git/tests/export.rs`, `a_purged_chain_reaches_the_feed_first_and_leaves_no_report_behind`:
+  - a chain purged before a round read its tail waits, is carried with every entry, and leaves no report;
+  - a stalled feed holds the purge until the cap, then names 4..=5;
+  - a live chain whose sources fail keeps its report and is carried next round.
+- `workers/site/src/export_feed.rs`, `sql_prepares`: the drop and the wait's first-call start in SQLite.
+- `tests/exportbed/run.sh`: a chain whose leader reported, then every member retired, loses its report with the unexported line, and a live chain beside it keeps its report and is carried.
+- `tests/m0carried/plant230.py`: each rule planted.
+
+**Flip.**
+- A hosted purge that hits the cap while the feed was only slow, not stalled: raise the cap, or have the round carry a chain whose purge is waiting first.
+- A live chain's report dropped by a round (its entries missing from the feed after a placement): stop dropping on the round's proof and leave (b) alone.
+
 ### `lifeboat-turns`: a stale lifeboat goes round every chain on a turn, with its own probe budget, and owed packs go round by network, 2026-11-24
 
 **Status.** Built at $0 on branch `bf53-prep` from main `1c1ac169`, ruled by the lead on 2026-11-24 (ruling A, and the pack 404 rule) after BF-53's plan found both starvations. Not hosted: BF-53 on graft-m3f runs it.
@@ -10486,6 +10530,7 @@ At 16 the bed agrees with BF-53 (a 4.5-minute cycle). At 64 a cycle takes about 
 
 **Flip.**
 - A hosted stale window in which the copy does not reach current within one alarm period (5 minutes): raise the budgets or the concurrency, or list the chains that moved.
+- A hosted stale window whose worst lag passes 270 s, 90% of the alarm (lead's ruling, 2026-11-25): build "probe moved chains". The local bed's 298 s at `AT_ONCE` 64 is 2 s under the alarm, which is not margin.
 - A measured probe cost over $1 an hour: probe only chains whose commit moved, from a cheaper source than one read per chain.
 
 ### `user-demote`: the edge sends every authenticated user write with its actor, and the leader counts demotions, 2026-11-24

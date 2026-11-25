@@ -507,8 +507,12 @@ fn a_voter_behind_the_tombstone_is_not_purgeable_and_the_purge_refuses() {
         let members: Vec<(ChainId, SiteId, Box<str>, Status)> = SITES
             .iter()
             .map(|s| {
-                let st =
-                    Status::Joined { purgeable: purgeable(&g.m(*s).group_fold().fold), changing: false, config: None };
+                let st = Status::Joined {
+                    commit: 0,
+                    purgeable: purgeable(&g.m(*s).group_fold().fold),
+                    changing: false,
+                    config: None,
+                };
                 (ChainId::Repo(REPO), *s, format!("repo:7#1#f{}", s.0).into_boxed_str(), st)
             })
             .collect();
@@ -561,6 +565,7 @@ fn a_voter_a_replacement_removed_does_not_block_the_purge() {
     assert_eq!(delete(&mut g, retain_until), Ok(LifecycleOut { changed: false }));
     assert!(SITES.iter().all(|s| g.deleted(*s).is_some()), "the config's voters hold the tombstone");
     let status = |m: &Member<RepoCmd>| Status::Joined {
+        commit: 0,
         purgeable: purgeable(&m.group_fold().fold),
         changing: changing(m.committed_config().map(|c| &c.1), m.latest_config(), false),
         config: m.committed_config().map(|(i, c)| (i.0, c.clone())),
@@ -580,6 +585,7 @@ fn a_voter_a_replacement_removed_does_not_block_the_purge() {
     // The replacement behind the tombstone still refuses: it is in the config.
     let mut behind = members.clone();
     behind[3].3 = Status::Joined {
+        commit: 0,
         purgeable: false,
         changing: false,
         config: g.m(SITES[1]).committed_config().map(|(i, c)| (i.0, c.clone())),

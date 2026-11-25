@@ -1816,17 +1816,24 @@ pub const COMMIT_RECEIPT: Duration = Duration::from_millis(
 /// command is sent again, so a send whose reply was lost costs this at most once.
 pub const RECEIPT_OPEN: Duration = Duration::from_millis(8_000);
 
+/// How a source read of a chain's log ended (`log_rows`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LogRows {
+    /// A member's page, as its bytes.
+    Page(Target, Vec<u8>),
+    /// Every member asked answered 409, not joined: a group retired or not created. It proves nothing alone, since a
+    /// member the caller's view names may be a replaced generation's (`retired_group` is the proof).
+    Unjoined,
+    /// No member gave a page for any other reason: down, slow, or only the leader answered.
+    Missed,
+}
+
 /// The change feed's and the export endpoints' source read (`design/DESIGN.md`, Shape, "Lifeboat feed"): a member's
 /// `/log_rows?from=&to=` page as its bytes, from `chain`'s learners, then its followers, never the member the
 /// caller knows leads; a leader answers JSON (`{"error": "leader"}`), which is not a page, and the next is asked.
-/// `None` when no member gave a page, so the caller retries later rather than read the leader.
-pub async fn log_rows(
-    b: &Bindings<'_>,
-    chain: ChainId,
-    record: &PlacementRecord,
-    from: u64,
-    to: u64,
-) -> Option<(Target, Vec<u8>)> {
+/// `Unjoined` when every member asked answered not joined, `Missed` when no page came for any other reason, so the
+/// caller retries later rather than read the leader.
+pub async fn log_rows(b: &Bindings<'_>, chain: ChainId, record: &PlacementRecord, from: u64, to: u64) -> LogRows {
     learn_voters(b, chain, record).await;
     let (voters, learners, leader) = KNOWN.with(|k| {
         let k = k.borrow();
@@ -1847,23 +1854,28 @@ pub async fn log_rows(
     };
     let leader = leader.and_then(|l| voters.iter().find(|t| t.site == l).cloned());
     let path = format!("https://member/log_rows?from={from}&to={to}");
+    let (mut asked, mut unjoined) = (0, 0);
     for t in sources_of(&learners, &voters, leader.as_ref()) {
+        asked += 1;
         let call = async {
             let stub = b.member(t.site, &t.do_name).ok()?;
             let mut init = RequestInit::new();
             init.with_method(Method::Get).with_headers(call_headers()?);
             let mut res = stub.fetch_with_request(Request::new_with_init(&path, &init).ok()?).await.ok()?;
             let json = res.headers().get("content-type").ok().flatten().is_some_and(|c| c.contains("json"));
-            if res.status_code() != 200 || json {
-                return None;
-            }
-            res.bytes().await.ok()
+            Some(match res.status_code() {
+                200 if !json => res.bytes().await.ok().map(Ok),
+                409 => Some(Err(true)),
+                _ => Some(Err(false)),
+            })
         };
-        if let Some(Some(bytes)) = within(CALL, call).await {
-            return Some((t, bytes));
+        match within(CALL, call).await.flatten().flatten() {
+            Some(Ok(bytes)) => return LogRows::Page(t, bytes),
+            Some(Err(true)) => unjoined += 1,
+            _ => {}
         }
     }
-    None
+    if asked > 0 && unjoined == asked { LogRows::Unjoined } else { LogRows::Missed }
 }
 
 /// The members an export source read goes to, in order: learners, then voters, never `leader`; a `Solo` group's one

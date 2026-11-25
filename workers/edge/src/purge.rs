@@ -20,11 +20,14 @@
 //!
 //! No request path calls the Cloudflare API: the members and registries are bindings and the buckets `BUCKET_<n>`.
 
+use graftyard_git::Bucket as _;
+use graftyard_git::export;
 use graftyard_git::host::R2;
+use graftyard_git::key::R2Key;
 use graftyard_git::purge::{self, Facts, Refused, Status};
 use graftyard_lookup::Bindings;
 use graftyard_raft::GroupConfig;
-use graftyard_types::{ChainId, DbId, MemberRegistry, RepoId, SiteId};
+use graftyard_types::{ChainId, DbId, Index, MemberRegistry, RepoId, SiteId};
 use graftyard_wire::Reply;
 use serde_json::{Value, json};
 use worker::*;
@@ -82,6 +85,34 @@ async fn purge_repo(c: &Ctx<'_>, repo: RepoId, early: bool) -> std::result::Resu
         Ok(o) => o,
         Err(why) => return Ok(refused(&why)),
     };
+    // The feed carries each chain's last entries, its retire's included, before any member goes
+    // (`decisions/DECISIONS.md`, "`feed-retired`"): 503 while it is behind, for at most `PURGE_FEED_WAIT_MS`.
+    let mut late = Vec::new();
+    for chain in purge::chains(repo) {
+        let commit = members
+            .iter()
+            .filter(|(c, ..)| *c == chain)
+            .filter_map(|(.., s)| match s {
+                Status::Joined { commit, .. } => Some(*commit),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        match feed_wait(c, chain, Index(commit)).await? {
+            export::PurgeWait::Go => {}
+            export::PurgeWait::Wait { left_ms } => {
+                return Ok(Reply::json(
+                    503,
+                    json!({ "message": "The change feed has not carried the chain's last entries yet; retry",
+                        "chain": chain.to_string(), "commit": commit, "waitLeftMs": left_ms }),
+                ));
+            }
+            export::PurgeWait::Late { from, to } => {
+                console_error!("{}", export::unexported_line(chain, from, to));
+                late.push(json!({ "chain": chain.to_string(), "from": from.0, "to": to.0 }));
+            }
+        }
+    }
     let mut retired = Vec::new();
     // Outside members first, then the newest committed config's own (`purge::gate`; `decisions/DECISIONS.md`,
     // "`purge-outside`"), so a purge cut between them still finds that config when it is called again.
@@ -113,6 +144,13 @@ async fn purge_repo(c: &Ctx<'_>, repo: RepoId, early: bool) -> std::result::Resu
             retired.push(name.to_string());
         }
     }
+    // Every member is gone, so no leader of either chain reports again: their reports go too, or every round would
+    // plan them and find no source (`decisions/DECISIONS.md`, "`feed-retired`").
+    if feed_bound(c) {
+        for chain in purge::chains(repo) {
+            feed_call(c, Method::Delete, &format!("export_report?chain={chain}")).await?;
+        }
+    }
     let network = purge::network(repo);
     let mut found = 0;
     for s in &c.sites.0 {
@@ -124,7 +162,46 @@ async fn purge_repo(c: &Ctx<'_>, repo: RepoId, early: bool) -> std::result::Resu
         found += n;
     }
     let second = purge::second_pass_at(crate::now());
-    Ok(Reply::json(200, json!({ "repo": repo.0.0, "retired": retired, "objects": found, "secondPassAt": second.0 })))
+    Ok(Reply::json(
+        200,
+        json!({ "repo": repo.0.0, "retired": retired, "objects": found, "secondPassAt": second.0, "unexported": late }),
+    ))
+}
+
+/// Whether this install runs the change feed: the edge binds the export bucket only then.
+fn feed_bound(c: &Ctx<'_>) -> bool {
+    c.env.bucket("EXPORT").is_ok()
+}
+
+/// One call to the feed site's `export` registry object, which holds the reports and the purge waits.
+async fn feed_call(c: &Ctx<'_>, method: Method, path: &str) -> std::result::Result<Value, String> {
+    let feed = c.sites.0.iter().map(|s| s.id).min().ok_or("no site")?;
+    let stub = c.bindings().registry(feed, "export").map_err(|e| e.to_string())?;
+    let mut init = RequestInit::new();
+    init.with_method(method);
+    let req = Request::new_with_init(&format!("https://registry/{path}"), &init).map_err(|e| e.to_string())?;
+    let mut res = stub.fetch_with_request(req).await.map_err(|e| format!("the feed's registry: {e}"))?;
+    if res.status_code() != 200 {
+        return Err(format!("the feed's registry answered {} to {path}; retry", res.status_code()));
+    }
+    res.json().await.map_err(|e| e.to_string())
+}
+
+/// `export::purge_wait` for one chain: the feed's cursor from `export-state`, and the wait's start, which the feed's
+/// registry keeps from this chain's first call. No export bucket: no feed, no wait.
+async fn feed_wait(c: &Ctx<'_>, chain: ChainId, commit: Index) -> std::result::Result<export::PurgeWait, String> {
+    let Ok(bucket) = c.env.bucket("EXPORT") else { return Ok(export::PurgeWait::Go) };
+    let cursor = match R2(bucket).get(&R2Key::ExportState.to_string()).await.map_err(|e| e.0)? {
+        Some(b) => export::FeedState::decode(&b)?.cursors.get(chain),
+        None => Index(0),
+    };
+    let now = crate::now().0;
+    if cursor >= commit {
+        return Ok(export::PurgeWait::Go);
+    }
+    let v = feed_call(c, Method::Post, &format!("export_purge_wait?chain={chain}&now={now}")).await?;
+    let since = v["since"].as_u64().unwrap_or(now);
+    Ok(export::purge_wait(Some(cursor), commit, since, now))
 }
 
 /// Every member to retire for `chain`: each record's bootstrap members, each site's registry row, and the newest
@@ -205,6 +282,7 @@ async fn status(b: &Bindings<'_>, site: SiteId, name: &str) -> Status {
     match member_status(b, site, name).await {
         Some(v) if v["joined"] == json!(false) => Status::NotJoined,
         Some(v) if v["joined"] == json!(true) => Status::Joined {
+            commit: v["commit"].as_u64().unwrap_or(0),
             purgeable: v["purgeable"].as_bool() == Some(true),
             changing: v["changing"].as_bool() != Some(false),
             config: v.pointer("/config/index").and_then(Value::as_u64).zip(
