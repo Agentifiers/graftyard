@@ -157,12 +157,6 @@ fn the_agents_view_never_moves_to_a_lower_index_and_keeps_its_last_view_when_a_r
     assert_eq!(v.extend(&a, &get(&g, 0, 100)[..n - 3]).unwrap(), 0);
     assert_eq!(v.extend(&a, &get(&g, 2, 100)).unwrap(), 0);
     assert_eq!(v, held);
-    // An older history with different bytes at the indexes the view holds, such as a copy from before the pointer
-    // committed with its last entry replaced: still nothing, because the view takes no index it holds.
-    let mut older = get(&g, 0, 100);
-    older[n - 1] = (Index(n as u64), g.log[n - 2].clone(), g.ats[n - 2]);
-    assert_eq!(v.extend(&a, &older).unwrap(), 0);
-    assert_eq!((v.index(), v.controller()), (held.index(), Some(vid(3, 1))));
     // A refresh that fails: no page at all, or a page whose first new entry is refused. The view is unchanged.
     assert_eq!(v.extend(&a, &[]).unwrap(), 0);
     let mut bad = g.entry(ReleaseEntry::IntentStep { intent: id(2), step: 0 }, &[&AGENTS]);
@@ -177,6 +171,42 @@ fn the_agents_view_never_moves_to_a_lower_index_and_keeps_its_last_view_when_a_r
     g2.ok(b);
     assert_eq!(v.extend(&a, &get(&g2, n, 100)).unwrap(), 1);
     assert_eq!(v.fold(), &g2.f);
+}
+
+/// OPEN-QUESTIONS A55 (LF-8 r1; DECISIONS "`agents-equivocation`"): an answer at an index the view holds must carry the
+/// bytes the view applied there. The same bytes are a member behind and add nothing; other bytes at k (the last held)
+/// or k-1 are two signed histories, refused as `Equivocation` naming the index, which pages, and the view, its index
+/// and its pin do not move.
+#[test]
+fn a55_other_bytes_at_a_held_index_are_equivocation_and_the_same_bytes_are_skipped() {
+    let g = controller_pinned();
+    let a = agents_anchor(&g);
+    let n = g.log.len();
+    let mut v = AgentsReleaseView::default();
+    v.extend(&a, &get(&g, 0, 100)).unwrap();
+    let held = v.clone();
+    // The other bytes are a valid next entry, the group's own, so only the index they are offered at is wrong.
+    let next = g.entry(ReleaseEntry::IntentStep { intent: id(2), step: 0 }, &[&AGENTS]);
+    let at = Timestamp(g.at.0 + 60_000);
+    // An equal replay of k and of k-1, alone or with the entries before them: nothing taken, nothing refused.
+    for k in [n, n - 1] {
+        assert_eq!(v.extend(&a, &get(&g, k - 1, 1)), Ok(0), "an equal replay of {k}");
+        assert_eq!(v.extend(&a, &get(&g, 0, 100)[..k]), Ok(0));
+    }
+    assert_eq!(v, held);
+    for k in [n, n - 1] {
+        let mut other = get(&g, 0, 100)[..k].to_vec();
+        other[k - 1].1 = next.clone();
+        for page in [other.clone(), other[k - 1..].to_vec()] {
+            let r = v.extend(&a, &page).expect_err("other bytes at a held index");
+            assert_eq!(r, Refusal::Equivocation { index: k as u64 });
+            assert!(r.pages(), "an equivocation pages");
+            assert_eq!(v, held, "index {k}: the view does not move");
+        }
+    }
+    assert_eq!((v.index(), v.controller()), (held.index(), Some(vid(3, 1))));
+    // After an equal replay of every held index, the next entry still lands.
+    assert_eq!(v.extend(&a, &[get(&g, 0, 100), vec![(Index(n as u64 + 1), next, at)]].concat()), Ok(1));
 }
 
 /// What a reader parses from the edge's page is what `feed` served: the same indexes, bytes, and times, so the view

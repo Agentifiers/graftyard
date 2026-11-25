@@ -10,7 +10,7 @@
 // - `install`, `keys`, gap `order`: a refresh failed since the selection, `lastError` is the class's refusal and
 //   carries the forgery's own `expect` text (so a status answered by another isolate cannot pass a row), and the
 //   view's index and pin are the history's;
-// - replay `order`: the index and pin are the history's (a held index is skipped, so the refresh may count ok).
+// - replay `order`: refused as `Equivocation` naming its index (OPEN-QUESTIONS A55), with the front's `paged` count up.
 // Then `control`: the group's real next entry must be taken (index + 1), so a refusal did not wedge the view.
 // `cold` mode reads only `cold.json` (install B's genesis) through a front that never read a view: index 0 and a
 // `WrongInstall` refusal.
@@ -64,7 +64,7 @@ async function serve(name, alone = false) {
   return { before: before.view, after: (await status()).view, timeout: true, ms: Date.now() - t0 };
 }
 
-const want = { install: "WrongInstall", keys: ["UnknownKey", "WrongSigner"], order: "BadState" };
+const want = { install: "WrongInstall", keys: ["UnknownKey", "WrongSigner"], order: ["BadState", "Equivocation"] };
 const line = (o) => { appendFileSync(out, JSON.stringify(o) + "\n"); };
 if (mode === "main") {
   console.log(JSON.stringify(await lf8("/_lf8/load", { history, pages: {
@@ -85,7 +85,7 @@ if (mode === "main") {
     const refusal = [want[f.class]].flat().includes(variant) && a.fails > (r.before?.fails ?? 0)
       && (a.lastError ?? "").includes(f.expect);
     const replay = f.case?.startsWith("replay");
-    const ok = !r.timeout && same && (replay || refusal);
+    const ok = !r.timeout && same && refusal && (!replay || a.paged > (r.before?.paged ?? 0));
     const key = `${f.class}/${replay ? "replay" : f.case === "gap" ? "gap" : f.class}`;
     tally[key] ??= { ok: 0, of: 0 };
     tally[key].of += 1;

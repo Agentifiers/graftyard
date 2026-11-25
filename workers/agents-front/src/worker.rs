@@ -167,12 +167,16 @@ async fn refresh(env: Env, anchor: AgentsAnchor, start: u64) {
     .await;
     READER.with(|r| {
         let mut r = r.borrow_mut();
+        let paged = r.paged();
         match read {
             Ok(()) => r.apply(&anchor, Ok(pages), start, now_ms()),
             Err(e) => {
                 let e = r.take(&anchor, &pages).err().unwrap_or(e);
                 r.apply(&anchor, Err(e), start, now_ms());
             }
+        }
+        if r.paged() > paged {
+            console_error!("PAGE graft-agents-front: release/entries refused, {}", r.last_error().unwrap_or_default());
         }
     });
 }
@@ -289,6 +293,7 @@ fn status(env: &Env, req: &Request) -> Result<Response> {
             "failing": f.failing,
             "oks": r.oks(),
             "fails": r.fails(),
+            "paged": r.paged(),
             "lastError": r.last_error(),
         })
     });
