@@ -2,10 +2,10 @@
 """M4-WP3 actions-cache, the shard's rules (`crates/actions/src/cache.rs`, `crates/actions/src/shard.rs`;
 `decisions/DECISIONS.md`, "`actions-cache`"): the default branch searched before a pull request's base, a low-trust
 run writing the default branch, eviction by newest use, a commit whose chunks do not tile, a commit of another size
-than the reserve's, a stale reservation still holding its key, a hit moving last use every time, a range's slice
+than the reserve's, a stale reservation still holding its key, a hit moving last use every time, a reserve past the entry cap evicting nothing, a range's slice
 read from the wrong offset, and a download capability that does not bind its size. Run from the repository root:
 
-    python3 tests/m0carried/plant228.py          # every mutant
+    python3 tests/m0carried/plant231.py          # every mutant
 """
 import os
 import sys
@@ -34,6 +34,8 @@ MUTANTS = [
     ("every hit moves last use", S,
      'if s.at().0.saturating_sub(e.last_used.0) < crate::cache::CACHE_USED_EVERY_MS {',
      'if s.at().0.saturating_sub(e.last_used.0) < 1 {', T),
+    ("a reserve past the entry cap evicts nothing", S,
+     '.take(live + 1 - CACHE_ENTRIES_MAX)', '.take(0)', T),
     ("a range slice starts at the chunk's start", C, '(i, from - st, to - from + 1)', '(i, 0, to - from + 1)', T),
     ("a download capability does not bind its size", C,
      'format!("graftyard/cache-download/1\\0{chain}\\0{}\\0{size}\\0{exp}", id.0)',
