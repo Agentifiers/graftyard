@@ -4,7 +4,7 @@
 // narrow-reads-3.md (gates 17 to 19), tests/m4/results/m4-wp1-hosted.md, m4-wp2.md, m4-wp3.md, m4-wp5.md,
 // tests/m5/results/m5-wp1.md to m5-wp6.md, tests/am1/results/b033-closing.md, b034-mt19.md, b029-m3fmf.md,
 // tests/am2/results/am2-wp1.md, am2-wp3.md, am2-wp4.md and tests/m6/results/m6-wp2.md. The plan wins wherever this file is shorter or older.
-export const asOf = '24 November 2026';
+export const asOf = '25 November 2026';
 const row = (id: string) => ` <span class="rid">${id}</span>`;
 
 export type State = 'done' | 'now' | 'next';
@@ -108,7 +108,7 @@ export const milestones: Milestone[] = [
     ],
   },
   {
-    id: 'm5', code: 'M5', name: 'Release control and site days', state: 'now', when: 'Closes when the last five key rotations pass',
+    id: 'm5', code: 'M5', name: 'Release control and site days', state: 'done', when: 'Closed 25 November',
     lead: 'How a new version reaches an install: releases the customer signs, applied one site a day with the site drained first, and a pre-signed way back for every step.',
     groups: [
       { title: 'Passed on hosted test installs', items: [
@@ -121,9 +121,7 @@ export const milestones: Milestone[] = [
         'Gate: a deliberately unreadable format sent to one site commits nothing, and its groups move to another site' + row('BM-5'),
         'Gate: with the vendor\'s token revoked mid-roll, the customer halts, removes the vendor key and aborts. Every site returns to the version it ran before, and a vendor-signed intent is refused' + row('BM-5'),
         'Gate: a bad <code>graft-ops</code> at 1% swaps back by its pre-signed pointer with the Cloudflare API blocked, after about 700 token mints, and returns to the last good version once unblocked' + row('BM-5'),
-      ] },
-      { title: 'Left before it closes', items: [
-        'Rotating the SSH host keys, the MCP and Insights App keys, the MCP client secret and the secrets wrap key under live traffic with no new script version. Each now reads its active key from the release log, and the hosted tests are next' + row('BF-46'),
+        'The SSH host keys, the MCP and Insights App keys, the MCP client secret and the secrets wrap key rotated under live traffic with no new script version: 0 failed SSH sessions in 47 rounds, 0 bad hook signatures, and 16 of 16 MCP logins through the switch' + row('BF-46'),
       ] },
     ],
   },
