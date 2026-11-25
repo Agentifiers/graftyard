@@ -121,3 +121,59 @@ The token handling follows FRAME.md, "Operator decision, 2026-11-24, BF-50's 'ev
 - **`tokens:953` is a precreate miss.** The precreate's repair pass chose chains by row count, the 615 with rows on only two sites. `tokens:953` had rows on all three, but its site 1 member had never joined, so the pass never looked at it. `before` now checks that every row member of every included chain answers `/status` as joined, and excludes a chain that fails with its reason.
 - **Fix 2, `move-unmoved`** (OPEN-QUESTIONS R62). 6 groups could never finish: `tokens:953`, `repo:0` (no group ever formed), and the first-create leftovers `repo:6201` to `repo:6204`. One errored group errors the coordinator and leaves the `ReplaceMember` current for good, which blocks the restore. Such a group now ends unmoved and pages, and the coordinator finishes with the list (`decisions/DECISIONS.md`, "`move-unmoved`").
 - **Campaign steps.** The coordinator's `/campaign` steps are counted per row in the m6aL results from `groups.jsonl` (asked and elected). On the deployed glue, about 50 steps per stuck chain were asked and none elected. After `campaign-rotate`, each of the 16 (and 3) took 1 or 2 asked steps, and one elected.
+
+### m6aL's verdict lines (2026-11-25, judged 03:24:48Z)
+
+The `ReplaceMember` reached `IntentDone` at about 03:07Z, at Release index 6. The coordinator restarted under `move-unmoved` and completed with `{groups: 3118, unmoved: [repo:0, tokens:953]}`. Each unmoved entry reads "no leader after 720 asks: no live joined voter quorum without site 0". `repo:6201` to `repo:6204` moved once their groups had every row of the chain: 4 asks for 6201 and 18 for each of the others.
+
+- **Line 2: FAIL.** 3,099 chains judged (19 excluded), 3,095 held on A, 3,093 moved, 2 short. Controls: 4 of 4 untouched.
+  - Both short chains are pre-row data faults, not move faults. `tokens:953` is a precreate miss: its site 1 member never joined. `repo:6201` is a first-create leftover whose member names collide: `#1#f0` is a `Tri` voter on site 0 and a `Solo` try on site 1, so the snapshot read the `Tri` config before the loss and the `Solo` one after (OPEN-QUESTIONS R65). Its `Tri` group [1, 2, 3] holds no voter on A.
+  - `before`'s new check excludes both. Replayed on m6aL's before-rows, it finds `tokens:953` ("`tokens:953#1#f1` on site 1: not joined", read from `/status`) and `repo:6201` to `repo:6204` ("`#1#f0` on sites 0 and 1"). m6aL2 runs on fresh chains.
+- **Signers: PASS.** Release entries from SiteLost to completion:
+
+| Index | Entry | Signer |
+| --- | --- | --- |
+| 2 | `SiteLost{0}` | customer |
+| 3 | `SiteMode{0: Drain}` | drain key, graft-ops' drain after SiteLost, before the replace path |
+| 4 | `ReplaceMember{lost 0, spare 3}` | executor |
+| 5 | `IntentStep 0` | executor |
+| 6 | `IntentDone` | executor |
+
+  The drain key and the customer key signed nothing in the replace path (indexes 4 to 6).
+- **Line 3: PASS.** 451 coordinator steps, registry rows read from sites 1 and 2 (64 shards each), and the single-copy refill before the full one.
+- **Campaign.** 3,733 campaign steps over 3,114 chains, and 3,112 elected. Verdicts: started 3,353, resumed 14, bootstrapping 365, busy 1. That is 1.006 of the 3,095 chains held on A: nearly every idle chain whose leader was on A needed the coordinator's ask, as DESIGN's request-driven campaigns intend (OPEN-QUESTIONS R66).
+- **Versions.** Every site script, the edge and graft-ops are unchanged. `graft-m6a-workflows` went from f5e20fc4 to f7bc3b1e (`campaign-rotate`) and then ed42f9a7 (`move-unmoved`), deployed mid-row as ruled.
+- **The spare's warm shards** (OPEN-QUESTIONS R67). After the replace, 25 git shard containers stayed active on the spare with no load, about $2.5 an hour.
+
+### m6aL's recovery half (2026-11-25): PASS
+
+- **Undrain.** The site fault lifted at 03:25:49Z. graft-ops undrained A at 03:57Z (Release index 7, drain key), after `OPS_RECOVER_MS` (30 min, lowered under test-faults as recorded above).
+- **restore2.** A customer-signed `RestorePlacement{0}` committed at 03:57:56Z (index 8). Its first coordinator started 3,118 groups, and none stepped in 8 minutes: the groups the replace had moved were idle with lapsed promises, and the glue asked for a campaign only on a dead replace.
+  - The fix, `restore-campaign` (main d5ecbbe7, Workflows b1a6a928), asks for a campaign on every move kind when the voters name no leader.
+  - The 3,118 restore groups and the coordinator were deleted (by 04:37Z), and graft-ops restarted the coordinator at 04:37:56Z. By 04:40Z, 3,117 of 3,118 were complete with 0 errored. `repo:0`, which never formed, ends unmoved at `ASKS_MAX`.
+- **The unmoved chains after restore2.** `tokens:953` elected once A was back: sites 0 and 2 were followers at term 2, with commit moving from 4 to 6 at 04:41Z, and site 1 never joined. The row wrote nothing to it. `repo:0` holds three placement tries, all at commit 0 with no config (`tests/m6/raw/m6a/m6aL/unmoved-status.jsonl`).
+- **The judge, raw and fixed.** `home`'s own lines (`judge.jsonl`, 04:53Z) read writes 0 of 37 and home 72 short, with the 4 controls changed. All three are harness causes, not row faults:
+  - **writes:** the read went to a follower by read-index while each group idled, so it answered `notLeader`;
+  - **home:** the config read ran while groups idled (60 unread, some stale), and the judge required home = A for the 8 register chains homed on B;
+  - **controls:** the controls sat on [1, 2, 3] with the spare, so the restore moved them off it, as it should.
+- **The fixed harness:**
+  - `bf50-edge`'s `/read` campaigns the home and reads it as leader.
+  - The judge merges a reread of unread configs and compares each home with its own before-loss home.
+  - Controls exclude a chain on the site the move leaves.
+  - `before` excludes unjoined members and names on two sites.
+  - Run once over m6aL's saved data, it gives (`judge-fixed.jsonl`):
+
+| Check | Result |
+| --- | --- |
+| line2 | 3,094 judged (24 excluded), 3,090 held on A, 3,090 moved, 0 short; controls 4 of 4 untouched: PASS |
+| home | 3,090 of 3,090 back on [0, 1, 2], none on the spare, each with its own home: PASS |
+| signers | the replace path signed by the executor only: PASS |
+| line3 | 451 steps, rows from sites 1 and 2, single-copy refill first: PASS |
+| writes | 37 of 37 acked values read back from the home leaders (`read-home-leader.jsonl`): PASS |
+
+  The fixed line 2 passes because `before`'s exclusions now name `tokens:953` and `repo:6201` to `repo:6204`. m6aL's verdict stays FAIL on line 2 as ruled: those exclusions were written after the row ran.
+- **Shards stopped.** Every config was checked first: none names the spare. The spare's 25 shards were stopped at 04:55Z, and site a's 25 and site b's 3 at 05:04Z, each through its own `/teardown` from a scratch Worker that was deleted after. The container list then read 0 active on every site. Containers cost $2.69 in 30 minutes before and $0.10 in the 6 minutes after. The day ended at $16.63 on acctcost (OPEN-QUESTIONS R67). `bf50-row.sh`'s `teardown` phase does this from m6aL2 on.
+- **For m6aL2** (next UTC day, fresh chains):
+  - controls that the restore cannot move: not possible as Tri chains, since a Tri group needs three voter sites and the only ones besides A are 1, 2 and the spare 3, while Solo needs an evaluation genesis. So the controls stay Tri on [1, 2, 3], and the judge counts them for line 2 only and leaves them out of `home`'s count, as it now does;
+  - one timed read through the edge to an idle chain after the restore, for R66;
+  - `teardown` after `home`.
