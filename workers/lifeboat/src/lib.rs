@@ -11,6 +11,8 @@
 //! - **Scrub.** Weekly, `graft-blob`'s `POST /_scrub`, which checks every key against its recorded SHA-256 and
 //!   repairs from a sibling. A key it cannot repair alarms with the key and the copy whose entry named it, on every
 //!   pass until a later scrub finds it whole (`pass::scrubbed`).
+//! - **Git.** With `GIT_URL`, after the packs, each network whose copy moved is caught up into `graft-git` with the
+//!   shards' own catch-up (`git`); `GET /git?net=` answers the front whether that network serves.
 //! - **Decoder.** Daily, or when the release changes, a `LifeboatDecoder` for `LIFEBOAT_RELEASE` signed with the
 //!   host's key, bound to the last digest of the edge's group, which a 409 names.
 //!
@@ -18,6 +20,8 @@
 //! a bed, and `POST /scrub` one scrub now, as after an operator pulls a lost key again. Each pass logs one line; a halt or an alarming lag logs it as an error.
 
 use std::cell::RefCell;
+
+mod git;
 
 use graftyard_git::export::EXPORT_PREFIX;
 use graftyard_identity::lifeboat;
@@ -53,6 +57,8 @@ struct Live {
     host: String,
     seed: [u8; 32],
     blob: String,
+    /// `graft-git`, when the bundle runs a git copy (`GIT_URL`).
+    git: Option<String>,
 }
 
 impl Live {
@@ -73,6 +79,7 @@ impl Live {
             host: var("LIFEBOAT_HOST")?,
             seed,
             blob: var("BLOB_URL")?.trim_end_matches('/').to_string(),
+            git: var("GIT_URL").ok().map(|g| g.trim_end_matches('/').to_string()),
         })
     }
 
@@ -323,6 +330,11 @@ impl Puller {
                     Err(e) => json!(e),
                 };
             }
+            // The git copy, after the pass's packs (`git::turn`).
+            let gitted = match &live.git {
+                Some(g) => git::turn(&self.env, &self.state.storage(), g, &live.blob, &mut st, now()).await,
+                None => Value::Null,
+            };
             let mut scrubbed = Value::Null;
             if pass::scrub_due(&st, now()) {
                 scrubbed = self.scrub_now(&live, &mut st).await;
@@ -330,7 +342,7 @@ impl Puller {
             self.state.storage().put(STATE_KEY, st.encode()).await.map_err(err)?;
             let lag = LifeboatStatus::at(ReleaseId(rel_or_zero(&self.env)), st.current_at, now());
             let line = json!({ "lifeboat_pass": r, "lag_s": lag.header(), "decoder": decoder, "halted": st.puller.halted,
-                "scrub": scrubbed, "scrub_lost": st.scrub_lost });
+                "scrub": scrubbed, "scrub_lost": st.scrub_lost, "git": gitted });
             // A halted chain, the lag alarm, a pack unserved on a live chain past `UNSERVED_ALARM_MS`, or a key the
             // last scrub could not repair.
             if !st.puller.halted.is_empty() || lag.alarms() || r.unserved_alarm > 0 || !st.scrub_lost.is_empty() {
@@ -397,6 +409,21 @@ impl DurableObject for Puller {
                     "scrub_lost": st.scrub_lost,
                 }))
             }
+            // The front's readiness check for a network's git requests (`graftyard_lifeboat::git::ready`).
+            (Method::Get, "/git") => {
+                let url = req.url()?;
+                let net = url
+                    .query_pairs()
+                    .find(|(k, _)| k == "net")
+                    .and_then(|(_, v)| v.parse::<i64>().ok())
+                    .map(|n| graftyard_types::NetworkId(graftyard_types::DbId(n)));
+                let (Some(net), Ok(g)) = (net, self.env.var("GIT_URL")) else {
+                    return Response::error("no git copy", 404);
+                };
+                let st = self.load().await;
+                let g = g.to_string();
+                Response::from_json(&git::ready(&self.state.storage(), g.trim_end_matches('/'), &st, net, now()).await)
+            }
             (Method::Post, "/pass") => match self.run().await {
                 Ok(v) => Response::from_json(&v),
                 Err(e) => Response::error(e, 503),
@@ -438,7 +465,8 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let url = req.url()?;
     let stub = env.durable_object("PULLER")?.get_by_name(graftyard_lifeboat::PULLER_OBJECT)?;
     let rest = url.path().strip_prefix("/_lifeboat").unwrap_or(url.path()).to_string();
+    let query = url.query().map(|q| format!("?{q}")).unwrap_or_default();
     let mut init = RequestInit::new();
     init.with_method(req.method());
-    stub.fetch_with_request(Request::new_with_init(&format!("https://puller{rest}"), &init)?).await
+    stub.fetch_with_request(Request::new_with_init(&format!("https://puller{rest}{query}"), &init)?).await
 }

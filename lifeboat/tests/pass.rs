@@ -409,3 +409,57 @@ fn the_scrub_is_weekly_and_a_lost_key_names_its_copy() {
         ]
     );
 }
+
+/// The guard for rolls (`lifeboat-clone`): a copy that took a roll's entry owes its produced pack, and the packs the
+/// roll consumed, which the install deletes `CONSUMED_KEEP` after the roll, are owed no more once the produced pack is
+/// held. Before, a copy enrolled later owed them for good, alarmed on a live chain, and held its git copy back.
+#[test]
+fn a_held_rolls_consumed_packs_are_owed_no_more() {
+    use graftyard_git::pack::Compacted;
+    let h = Fake::default();
+    let mut st = State::default();
+    *h.now.borrow_mut() = 1_000;
+    // Entries 1 and 2 push packs 1 and 2; the install deleted both after rolling them into pack 9 at entry 3.
+    h.round(0, &[(REPO, 1, 2)]);
+    let rolled = b"the rolled pack".to_vec();
+    let roll = Compacted {
+        consumed: vec![PackId(Ulid(1)), PackId(Ulid(2))],
+        produced: PackRef::Stored {
+            id: PackId(Ulid(9)),
+            checksum: Digest(Sha256::digest(&rolled).into()),
+            bytes: rolled.len() as u64,
+            sites: SiteSet(1),
+        },
+        from: Index(1),
+        to: Index(2),
+    };
+    let row3 = codec::to_bytes(&LogEntry {
+        term: Term(1),
+        index: Index(3),
+        prev: Digest([0; 32]),
+        format: graftyard_git::repo::REPO_FORMAT_ROLLUP,
+        tiers: TierSet::CORE,
+        at: Timestamp(1),
+        requests: Default::default(),
+        extend: None,
+        body: EntryBody::Events(vec![RepoEvent::Compacted(roll)]),
+    });
+    h.log.borrow_mut().get_mut(&REPO).unwrap().push(row3.clone());
+    let o = ExportObject {
+        batch: ChangeBatch { minute: 100, seq: 1, chains: vec![(REPO, Index(3))] },
+        entries: vec![(REPO, Index(3), vec![row3])],
+    };
+    h.feed.borrow_mut().push((o.batch.key().to_string(), export::encode_object(&o)));
+    // Pack 9 is not served yet: every pack stays owed, and the consumed ones count as unserved on a live chain.
+    let r = run(&h, &mut st);
+    assert_eq!((r.owed, r.rolled_off), (3, 0), "{r:?}");
+    assert_eq!(r.unserved, 3);
+    // Served and held: the consumed packs go with it, and nothing is left to alarm.
+    h.served.borrow_mut().insert(PackId(Ulid(9)), rolled);
+    *h.now.borrow_mut() += 1;
+    let r = run(&h, &mut st);
+    assert_eq!((r.owed, r.rolled_off, r.unserved), (0, 2, 0), "{r:?}");
+    assert!(h.kept.borrow().contains_key(&PackId(Ulid(9))));
+    assert!(st.rolls.is_empty());
+    assert_eq!(State::decode(&st.encode()).unwrap(), st);
+}

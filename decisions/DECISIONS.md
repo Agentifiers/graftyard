@@ -10756,6 +10756,37 @@ At 16 the bed agrees with BF-53 (a 4.5-minute cycle). At 64 a cycle takes about 
 - A hosted stale window whose worst lag passes 270 s, 90% of the alarm (lead's ruling, 2026-11-25): build "probe moved chains". The local bed's 298 s at `AT_ONCE` 64 is 2 s under the alarm, which is not margin.
 - A measured probe cost over $1 an hour: probe only chains whose commit moved, from a cheaper source than one read per chain.
 
+### `lifeboat-clone`: a lifeboat serves clones and fetches from `graft-git`, a static shard server and git beside workerd, fed by `catch_up` from the copy, 2026-11-25
+
+**Status.** Built at $0 on branch `lifeboat-clone`, ruled by the lead on 2026-11-25 (R58's design, rulings 1 to 6, after `lifeboat-receive` closed receive-pack). Not hosted: a clone and a fetch ride BM-6's lifeboat row as extra lines; BM-6's gate still reads `gh pr list` only.
+
+**Finding.** The bundle's front is the edge's own build, whose upload-pack runs in a git cache shard's container, and the bundle ran no container: a lifeboat answered `gh pr list` and no clone (`decisions/OPEN-QUESTIONS.md`, R58). Journey 3 promises clones and fetches during a Cloudflare-wide outage.
+
+**Decision.**
+- **Packaging.** `containers/git`'s stage `lifeboat-git`: git 2.56.0 built static (musl) from the same checked tarball the shard image uses, and the shard server built static. The bundle's `--git` names the build; `start.sh` pins git's version as it pins workerd's, refuses another git or a `--git-data` another version wrote, naming both, and runs `graft-git` (`GRAFT_LIFEBOAT=1`, `GRAFT_LISTEN` on loopback only) beside workerd, stopping both when either exits so the host's supervisor restarts them.
+- **One catch-up path.** The puller feeds `graft-git` with `graftyard_git::catchup::catch_up` and three lifeboat traits: the copy's member as the `ChainLog` (`/entries?local=1`, refs and ranges from its fold), `graft-blob` as the pack store, and the puller's storage for the cursor and rehydrate state. Up to 4 pieces a pass [guess], round the networks on a turn, after the pass's pulls; a network whose packs are still owed, or whose copy halted or is gone, waits.
+- **Readiness.** The front serves a network's upload-pack and ls-refs from `graft-git` only when its cursor describes the disk `graft-git` runs on, no rehydrate is saved, and the repository was checked on this run of `graft-git` (`/health`'s `boot`). Otherwise 503 with `Retry-After` (30 s; 5 s while `graft-git` does not answer), and a halted copy 503 with none. A partial pack is never served: a rehydrate drops the cursor before its `/init` empties the repository.
+- **ls-refs from `graft-git`, in lifeboat mode only**, so refs and pack always agree; refs move only after their packs are in. The edge's normal path does not change.
+- **The whole log.** A lifeboat member never truncates (no error logged: BF-53 logged 22), because a rebuild replays every entry's own packs. `start.sh` refuses under 3 times the repository bytes free on the git directory [guess] (R68).
+- **Rolls.** The fold's rolls load at their produced pack, from `graft-blob`, in place of the packs they consumed, so a pack the install's sweeper deleted is never needed. The puller drops a roll's consumed packs from `owed` and `unserved` once its produced pack is held. The guard's limit is R69.
+
+**What it beat.**
+- **P1, the shard image under `localDocker`.** It adds an OCI runtime as a host requirement for a recovery tool, on an engine workerd calls development-only.
+- **A smaller lifeboat-only ingest loop.** Two catch-up paths would drift; `catch_up` already handles rehydrate, rolls, restarts, and idempotent ingest by index.
+- **The sweeper waiting for every registered lifeboat.** A lifeboat offline would block the install's cleanup indefinitely, and the install must not depend on a customer's host.
+- **ls-refs from the copy's fold.** The fold can name a tip whose pack `graft-git` has not ingested, and a clone would then fail on a missing object.
+
+**Evidence.** [measured, local]
+- `tests/lifeboatbed/run.sh`, check 8, PASS on this branch (32 lines, 0 wasm traps): a second repository with real history (`gitseed.mjs`: seven thin pushes, inline and stored, on two branches), two promotions and a roll of both at 32.25, the roll's two consumed packs deleted from every bucket before the lifeboat pulled them. The git copy was ready at the leader's commit with nothing owed or unserved, and graft-blob never held a consumed pack. With the edge blocked, an enrolled `git clone` matched the install's refs and passed `git fsck --strict`; a push made with the feed stopped reached the clone by `git fetch`; with `graft-git` killed by -9 and its repository directory deleted, clones answered 503 with `Retry-After`, none short, then a clone from the rebuild matched. The lag header rode git answers, `graft-git` listened on loopback only, and the git directory recorded the bundle's pinned git.
+- The bed's first run found that a failed `/connected` after a restart (a 404 for the lost directory) kept the stale cursor, so the network answered 503 for good; a check that errs now drops the cursor like one that answers not connected.
+- `lifeboat/tests/git.rs`: a rolled network rebuilds without its consumed packs, and a control with no rolls fails on the consumed pack; a new disk rebuilds and the same disk goes on from its cursor; the readiness rules; `due`. `lifeboat/tests/pass.rs`: `a_held_rolls_consumed_packs_are_owed_no_more`.
+- `tests/m0carried/plant238.py`: 7 of 7 native mutants caught (readiness, `due`, `rolled_off`); the restart check caught by lifeboatbed (90 answers of 503 and no rebuild). `cli/src/lifeboat.rs`'s `start_script_refuses_another_git_and_a_disk_under_the_floor` runs `start.sh` with a stand-in git and shard server: it refuses another git and another version's git directory, naming both, and a disk under the floor, and fails with `GIT_DISK_TIMES` at 0.
+
+**Flip.**
+- A hosted lifeboat row where a clone or fetch fails while `gh pr list` passes: the git copy's catch-up or readiness is wrong, not the feed.
+- A host where a static git or shard server will not run (an architecture or kernel the build does not cover): ship per-architecture builds, or reconsider P1.
+- R68's measurement putting the disk floor's need past 3 times: raise `GIT_DISK_TIMES`.
+
 ### `user-demote`: the edge sends every authenticated user write with its actor, and the leader counts demotions, 2026-11-24
 
 **Status.** Built and tested at $0. The lead ruled it on 2026-11-24, from B0-33 h1A. It is not deployed; it ships

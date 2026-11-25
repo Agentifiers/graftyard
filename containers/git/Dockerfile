@@ -21,10 +21,36 @@ RUN curl -fsSLo git.tar.xz "https://mirrors.edge.kernel.org/pub/software/scm/git
  && for f in $(find /out/usr/local -type f -perm -u+x); do \
       if [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' ')" = 7f454c46 ]; then strip --strip-unneeded "$f"; fi; done
 
+# The lifeboat's git (`design/DESIGN.md`, "Install operations", Lifeboat; `decisions/DECISIONS.md`, "`lifeboat-clone`"):
+# the same checked tarball linked statically against musl, with no curl, expat, or Rust, which a server-side git does
+# not use, so the bundle runs it on any x86-64 Linux host with no OCI runtime and no shared libraries. Built with
+# `docker build --target lifeboat-git --output type=local,dest=<dir> containers/git`, or exported by
+# `graftyard lifeboat bundle --git`'s caller from that stage.
+FROM alpine:3.22 AS static-git
+ARG GIT_VERSION
+ARG GIT_SHA256
+RUN apk add --no-cache build-base linux-headers zlib-dev zlib-static pcre2-dev pcre2-static curl xz
+WORKDIR /src
+RUN curl -fsSLo git.tar.xz "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz" \
+ && echo "${GIT_SHA256}  git.tar.xz" | sha256sum -c - \
+ && tar -xJf git.tar.xz --strip-components=1 \
+ && make -j"$(nproc)" prefix=/usr/local NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1 NO_GETTEXT=1 NO_CURL=1 NO_EXPAT=1 \
+      NO_OPENSSL=1 NO_RUST=1 USE_LIBPCRE2=1 NO_REGEX=NeedsStartEnd NO_INSTALL_HARDLINKS=1 \
+      LDFLAGS=-static CFLAGS="-O2" DESTDIR=/out all install \
+ && rm -rf /out/usr/local/share \
+ && for f in $(find /out/usr/local -type f -perm -u+x); do \
+      if [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' ')" = 7f454c46 ]; then strip --strip-unneeded "$f"; fi; done \
+ && /out/usr/local/bin/git --version && ! ldd /out/usr/local/bin/git 2>/dev/null | grep -q '=>'
+
 FROM golang:1.23-alpine AS server
 WORKDIR /src
 COPY server/ .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /shard-server .
+
+# What `lifeboat bundle` ships as `graft-git/`: the static git under `usr/local` and the static shard server.
+FROM scratch AS lifeboat-git
+COPY --from=static-git /out/usr/local /usr/local
+COPY --from=server /shard-server /shard-server
 
 FROM alpine:3.22
 RUN apk add --no-cache zlib pcre2 expat libcurl ca-certificates

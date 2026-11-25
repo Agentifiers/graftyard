@@ -13,10 +13,12 @@
 //! - `status`: `LifeboatStatus` and the `X-Graftyard-Lifeboat-Lag` header every response carries.
 //! - `blob`: `graft-blob`'s durable create-only write and its checked reads and scrub, over the `Fs` trait.
 //! - `acme`: when to renew the certificate through DNS-01, and the challenge record's name.
+//! - `git`: the git copy, `graft-git` fed by the shards' own catch-up from each repository's learner.
 
 pub mod acme;
 pub mod blob;
 pub mod feed;
+pub mod git;
 pub mod pass;
 pub mod puller;
 pub mod status;
