@@ -210,6 +210,24 @@ impl TaskBox {
     }
 }
 
+/// What the host answers traffic `admit` refused, and the line it logs: 403 for a Sandbox's outbound request or report
+/// that is late (counted in `late`), logged with the task, the Sandbox and the count so far; 409 unlogged for a final
+/// task's. LM-3's kill row reads these lines and `late` to show every late report refused, counted, and logged.
+pub fn refused(b: &TaskBox, r: &Report) -> (u16, Option<String>) {
+    match r {
+        Report::Late { from } => (
+            403,
+            Some(format!(
+                "graft-controller: task {} refused late traffic from {} ({} late)",
+                b.task.id.text(),
+                from.0,
+                b.late
+            )),
+        ),
+        Report::Refused(_) => (409, None),
+    }
+}
+
 /// The new tips the host acknowledged in a receive-pack response, for refs in `refs`: each `ok <ref>` line of the
 /// report-status, in or out of side-band 1, paired with the new id the request's command list gave that ref. An
 /// `unpack` other than `ok`, an `ng` line, a delete, or a ref outside `refs` yields nothing for that ref; a response

@@ -3,7 +3,8 @@
 // (`AGENT_APP_KEY`, a Secrets Store binding), so the key never leaves the store. `POST /probe` with
 // `x-probe-token: <PROBE_TOKEN>` and `{since, flushes: [{name, counts}]}` reads `GET release/errors?since=`, posts each
 // flush to `POST release/errors` under a fresh App JWT, and reads again after each, answering the statuses, the
-// edge's bodies, and the summed counts. It answers no JWT and logs nothing. Deployed and deleted by
+// edge's bodies, and the summed counts. `POST /hook` sets graftyard-agent's webhook (LM-3's kill row). It answers no
+// JWT and logs nothing. Deployed and deleted by
 // `tests/am3/hosted/lf7-day.sh` (ROW=lm3, steps `probe-deploy` and `teardown`).
 const PATH = "/api/graftyard/v1/release/errors";
 const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -33,11 +34,16 @@ async function call(env, auth, method, url, body) {
 
 export default {
   async fetch(req, env) {
-    if (req.method !== "POST" || new URL(req.url).pathname !== "/probe" || req.headers.get("x-probe-token") !== env.PROBE_TOKEN) {
+    if (req.method !== "POST" || !["/probe", "/hook"].includes(new URL(req.url).pathname) || req.headers.get("x-probe-token") !== env.PROBE_TOKEN) {
       return new Response("not found", { status: 404 });
     }
-    const { since, flushes } = await req.json();
     const auth = await jwt(env);
+    if (new URL(req.url).pathname === "/hook") {
+      // LM-3's kill row: graftyard-agent's webhook config through GHES's `PATCH /app/hook/config` under its App JWT,
+      // the body (url and secret) passed through and never logged.
+      return Response.json(await call(env, auth, "PATCH", `https://${env.GRAFTYARD_HOST}/api/v3/app/hook/config`, await req.json()));
+    }
+    const { since, flushes } = await req.json();
     const base = `https://${env.GRAFTYARD_HOST}${PATH}`;
     const read = () => call(env, auth, "GET", `${base}?since=${since}`);
     const out = { before: await read(), flushes: [] };

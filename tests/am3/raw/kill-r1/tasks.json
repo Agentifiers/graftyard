@@ -1,0 +1,396 @@
+[
+  {
+    "i": 0,
+    "id": "01a214ae-d6b1-84ef-8204-51b94916b47a",
+    "plan": "before",
+    "kill": {
+      "at": 1795643353728,
+      "sandbox": "01a214ae-d6b1-84ef-8204-51b94916b47a-1",
+      "last_push": null,
+      "hit": "before"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 200,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 409,
+          "url": "https://graft-m4a-edge.<subdomain>.workers.dev/m3org/kill-r1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 0
+    },
+    "end": {
+      "state": "Done",
+      "generation": 1,
+      "late": 0,
+      "running": false
+    },
+    "first": "01a214ae-d6b1-84ef-8204-51b94916b47a-1"
+  },
+  {
+    "i": 1,
+    "id": "01a214ae-e34e-87bf-87ca-ccafacead89f",
+    "plan": "between",
+    "kill": {
+      "at": 1795643365785,
+      "sandbox": "01a214ae-e34e-87bf-87ca-ccafacead89f-1",
+      "last_push": [
+        11,
+        34,
+        209,
+        153,
+        70,
+        21,
+        193,
+        59,
+        98,
+        191,
+        101,
+        26,
+        87,
+        57,
+        39,
+        73,
+        70,
+        254,
+        175,
+        85
+      ],
+      "hit": "between"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 200,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 409,
+          "url": "https://graft-m4a-edge.<subdomain>.workers.dev/m3org/kill-r1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 0
+    },
+    "end": {
+      "state": "Done",
+      "generation": 1,
+      "late": 0,
+      "running": false
+    },
+    "first": "01a214ae-e34e-87bf-87ca-ccafacead89f-1"
+  },
+  {
+    "i": 2,
+    "id": "01a214ae-e9ac-87b9-9895-4818337a99fa",
+    "plan": "during",
+    "kill": {
+      "at": 1795643364752,
+      "sandbox": "01a214ae-e9ac-87b9-9895-4818337a99fa-1",
+      "last_push": null,
+      "hit": "during"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 200,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 409,
+          "url": "https://graft-m4a-edge.<subdomain>.workers.dev/m3org/kill-r1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 0
+    },
+    "end": {
+      "state": "Done",
+      "generation": 1,
+      "late": 0,
+      "running": false
+    },
+    "first": "01a214ae-e9ac-87b9-9895-4818337a99fa-1"
+  },
+  {
+    "i": 3,
+    "id": "01a214ae-efca-8d83-ac61-80d35c9542fe",
+    "plan": "between",
+    "kill": {
+      "at": 1795643368528,
+      "sandbox": "01a214ae-efca-8d83-ac61-80d35c9542fe-1",
+      "last_push": [
+        131,
+        150,
+        19,
+        43,
+        243,
+        147,
+        16,
+        23,
+        92,
+        78,
+        124,
+        242,
+        42,
+        132,
+        52,
+        190,
+        33,
+        40,
+        201,
+        125
+      ],
+      "hit": "between"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 200,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 409,
+          "url": "https://graft-m4a-edge.<subdomain>.workers.dev/m3org/kill-r1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 0
+    },
+    "end": {
+      "state": "Done",
+      "generation": 1,
+      "late": 0,
+      "running": false
+    },
+    "first": "01a214ae-efca-8d83-ac61-80d35c9542fe-1"
+  },
+  {
+    "i": 4,
+    "id": "01a214ae-f618-86f6-a514-4db4aa667e78",
+    "plan": "between",
+    "kill": {
+      "at": 1795643366325,
+      "sandbox": "01a214ae-f618-86f6-a514-4db4aa667e78-1",
+      "last_push": [
+        211,
+        166,
+        184,
+        100,
+        16,
+        250,
+        212,
+        200,
+        247,
+        234,
+        93,
+        80,
+        242,
+        211,
+        246,
+        199,
+        13,
+        186,
+        30,
+        185
+      ],
+      "hit": "between"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 200,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 409,
+          "url": "https://graft-m4a-edge.<subdomain>.workers.dev/m3org/kill-r1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 0
+    },
+    "end": {
+      "state": "Done",
+      "generation": 1,
+      "late": 0,
+      "running": false
+    },
+    "first": "01a214ae-f618-86f6-a514-4db4aa667e78-1"
+  },
+  {
+    "i": 5,
+    "id": "01a214ae-fc5b-88fa-8680-853ad2b73505",
+    "plan": "between",
+    "kill": {
+      "at": 1795643370615,
+      "sandbox": "01a214ae-fc5b-88fa-8680-853ad2b73505-1",
+      "last_push": [
+        127,
+        240,
+        51,
+        205,
+        249,
+        31,
+        233,
+        172,
+        233,
+        10,
+        65,
+        246,
+        156,
+        25,
+        217,
+        166,
+        120,
+        180,
+        178,
+        68
+      ],
+      "hit": "between"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 200,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 409,
+          "url": "https://graft-m4a-edge.<subdomain>.workers.dev/m3org/kill-r1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 0
+    },
+    "end": {
+      "state": "Done",
+      "generation": 1,
+      "late": 0,
+      "running": false
+    },
+    "first": "01a214ae-fc5b-88fa-8680-853ad2b73505-1"
+  },
+  {
+    "i": 6,
+    "id": "01a214af-030b-8f36-97ea-d9e2c740d5df",
+    "plan": "during",
+    "kill": {
+      "at": 1795643368198,
+      "sandbox": "01a214af-030b-8f36-97ea-d9e2c740d5df-1",
+      "last_push": null,
+      "hit": "during"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 200,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 409,
+          "url": "https://graft-m4a-edge.<subdomain>.workers.dev/m3org/kill-r1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 0
+    },
+    "end": {
+      "state": "Done",
+      "generation": 1,
+      "late": 0,
+      "running": false
+    },
+    "first": "01a214af-030b-8f36-97ea-d9e2c740d5df-1"
+  },
+  {
+    "i": 7,
+    "id": "01a214af-0a25-8d07-bd73-6303a2e248bd",
+    "plan": "during",
+    "kill": {
+      "at": 1795643369746,
+      "sandbox": "01a214af-0a25-8d07-bd73-6303a2e248bd-1",
+      "last_push": null,
+      "hit": "during"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 200,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 409,
+          "url": "https://graft-m4a-edge.<subdomain>.workers.dev/m3org/kill-r1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 0
+    },
+    "end": {
+      "state": "Done",
+      "generation": 1,
+      "late": 0,
+      "running": false
+    },
+    "first": "01a214af-0a25-8d07-bd73-6303a2e248bd-1"
+  },
+  {
+    "i": 8,
+    "id": "01a214af-0ff3-89bf-89cc-d1a6ef33722c",
+    "plan": "during",
+    "kill": {
+      "at": 1795643371895,
+      "sandbox": "01a214af-0ff3-89bf-89cc-d1a6ef33722c-1",
+      "last_push": null,
+      "hit": "during"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 200,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 409,
+          "url": "https://graft-m4a-edge.<subdomain>.workers.dev/m3org/kill-r1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 0
+    },
+    "end": {
+      "state": "Done",
+      "generation": 1,
+      "late": 0,
+      "running": false
+    },
+    "first": "01a214af-0ff3-89bf-89cc-d1a6ef33722c-1"
+  },
+  {
+    "i": 9,
+    "id": "01a214af-15a3-82c6-981c-4670b5c97894",
+    "plan": "during",
+    "kill": {
+      "at": 1795643373232,
+      "sandbox": "01a214af-15a3-82c6-981c-4670b5c97894-1",
+      "last_push": null,
+      "hit": "during"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 200,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 409,
+          "url": "https://graft-m4a-edge.<subdomain>.workers.dev/m3org/kill-r1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 0
+    },
+    "end": {
+      "state": "Done",
+      "generation": 1,
+      "late": 0,
+      "running": false
+    },
+    "first": "01a214af-15a3-82c6-981c-4670b5c97894-1"
+  }
+]

@@ -18,6 +18,10 @@ crate-type = ["cdylib", "rlib"]
 # from. A build, not a variable, because only the code may differ between N and N+1. `node deploy.mjs --bad` builds
 # with it; a product build never does.
 test-bad = []
+# LM-3's kill row (`build/BUILD-PLAN.md`, AM3-WP1), test installs only: `/_controller/box/{task}/...` reads a
+# `TaskBox`, destroys its Sandbox as a crash would, and replays a killed Sandbox's report and outbound request through
+# the box's own refusal. `node deploy.mjs --test-faults` builds with it; a product build never does.
+test-faults = []
 
 [dependencies]
 # `sealed::hmac_sha256`, the `X-Hub-Signature-256` MAC the install's event pipeline signs with.

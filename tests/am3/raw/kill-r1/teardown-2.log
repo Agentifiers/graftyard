@@ -1,0 +1,19 @@
+2026-11-25T21:51:01Z
+cf6f54740
+{"graft-agents-m4a-ops":[]}
+Successfully deleted graft-agents-m4a-ops
+Successfully deleted graft-agents-m4a-front
+Successfully deleted graft-agents-m4a-controller
+Successfully deleted graft-agents-m4a-probe
+{"delete":"graft-agents-m4a-AGENTS_APP_KEY_A","ok":true}
+{"delete":"graft-agents-m4a-WORKSPACE_APP_KEY_A","ok":true}
+{"delete":"graft-agents-m4a-AGENTS_WEBHOOK_SECRET_A","ok":true}
+{"delete":"graft-agents-m4a-AGENTS_EXECUTOR_KEY","ok":true}
+{"delete":"graft-agents-m4a-deploy-token","ok":true}
+{"revoke":"graft-agents-m4a-deploy","ok":true}
+objects deleted: 7
+{"delete":"graft-agents-m4a-releases","ok":true,"errors":[]}
+row token and secret files shredded
+runner scripts: ["graft-runners"]
+runner store secrets named graft-agents-m4a-: []
+runner buckets: []

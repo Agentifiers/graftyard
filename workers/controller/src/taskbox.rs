@@ -157,6 +157,9 @@ pub struct TaskBox {
     env: Env,
     /// (credential, token, expires ms): the installation tokens this object minted.
     tokens: RefCell<Vec<(Cred, String, u64)>>,
+    /// Receive-packs forwarded and not yet answered, which `/status` reports: LM-3's kill row records from it whether a
+    /// kill landed during a push.
+    pushing: std::cell::Cell<u32>,
 }
 
 fn now_ms() -> u64 {
@@ -198,15 +201,13 @@ fn host(route: &Route) -> Option<&str> {
     })
 }
 
-fn late_log(b: &tb::TaskBox, r: &Report) {
-    if let Report::Late { from } = r {
-        console_log!(
-            "graft-controller: task {} refused late traffic from {} ({} late)",
-            b.task.id.text(),
-            from.0,
-            b.late
-        );
+/// Logs a refusal's line (`tb::refused`) and answers its status.
+fn refuse(b: &tb::TaskBox, r: &Report, message: &str) -> Result<Response> {
+    let (status, line) = tb::refused(b, r);
+    if let Some(l) = line {
+        console_log!("{l}");
     }
+    reply(status, json!({ "message": message }))
 }
 
 impl TaskBox {
@@ -322,8 +323,7 @@ impl TaskBox {
         let admitted = s.b.admit(&props.sandbox, now_ms());
         self.save(&s).await?;
         if let Err(r) = admitted {
-            late_log(&s.b, &r);
-            return reply(403, json!({ "message": "refused: this Sandbox is not the task's" }));
+            return refuse(&s.b, &r, "refused: this Sandbox is not the task's");
         }
         if req.url()?.host_str() == Some(REPORT_HOST) {
             return self.report(req, props.sandbox).await;
@@ -356,8 +356,12 @@ impl TaskBox {
         if !matches!(method.as_str(), "GET" | "HEAD") {
             init.with_body(Some(js_sys::Uint8Array::from(sent.as_slice()).into()));
         }
-        let mut resp = Fetch::Request(Request::new_with_init(&fwd.url, &init)?).send().await?;
-        if !(method == "POST" && fwd.url.ends_with("/git-receive-pack")) {
+        let push = method == "POST" && fwd.url.ends_with("/git-receive-pack");
+        self.pushing.set(self.pushing.get() + u32::from(push));
+        let answered = Fetch::Request(Request::new_with_init(&fwd.url, &init)?).send().await;
+        self.pushing.set(self.pushing.get() - u32::from(push));
+        let mut resp = answered?;
+        if !push {
             return Ok(resp);
         }
         // A push: the host's report moves `last_push` on its `ok`, and the Sandbox gets the same bytes.
@@ -367,7 +371,7 @@ impl TaskBox {
             let mut s = self.load().await?.ok_or_else(|| err("the box went away"))?;
             let pushed = Input::Report { from: props.sandbox, event: TaskEvent::Pushed { head } };
             if let Err(r) = s.b.on(pushed, now_ms()) {
-                late_log(&s.b, &r);
+                tb::refused(&s.b, &r).1.into_iter().for_each(|l| console_log!("{l}"));
             }
             self.save(&s).await?;
         }
@@ -389,10 +393,7 @@ impl TaskBox {
                 self.act(&act, &s).await?;
                 reply(200, json!({ "state": s.b.task.state }))
             }
-            Err(r) => {
-                late_log(&s.b, &r);
-                reply(409, json!({ "message": format!("{r:?}") }))
-            }
+            Err(r) => refuse(&s.b, &r, &format!("{r:?}")),
         }
     }
 
@@ -452,7 +453,7 @@ impl TaskBox {
 
 impl DurableObject for TaskBox {
     fn new(state: State, env: Env) -> Self {
-        TaskBox { state, env, tokens: RefCell::default() }
+        TaskBox { state, env, tokens: RefCell::default(), pushing: Default::default() }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -485,7 +486,44 @@ impl DurableObject for TaskBox {
             (Method::Get, "/status") => {
                 let running = self.container().map(|c| c.running()).unwrap_or(false);
                 let b = self.load().await?.map(|s| s.b);
-                reply(200, json!({ "box": b, "running": running, "version": version(&self.env) }))
+                let pushing = self.pushing.get();
+                reply(200, json!({ "box": b, "running": running, "version": version(&self.env), "pushing": pushing }))
+            }
+            // LM-3's kill row, test installs only: destroy the Sandbox as a crash would, leaving the box to find it
+            // stopped at its next alarm.
+            #[cfg(feature = "test-faults")]
+            (Method::Post, "/_kill") => {
+                let c = self.container()?;
+                let was = c.running();
+                if was {
+                    c.destroy(None).await?;
+                }
+                let b = self.load().await?.map(|s| s.b);
+                reply(200, json!({ "killed": was, "pushing": self.pushing.get(), "at": now_ms(), "box": b }))
+            }
+            // LM-3's kill row, test installs only: replay a report and an outbound request as the Sandbox `sandbox`
+            // would send them, through the same `outbound` path `Outbound` hands the box, so a killed Sandbox's late
+            // traffic is refused, counted, and logged by the product code.
+            #[cfg(feature = "test-faults")]
+            (Method::Post, "/_late") => {
+                let body: Value = req.json().await?;
+                let sandbox = SandboxId(body["sandbox"].as_str().ok_or_else(|| err("no sandbox"))?.into());
+                let mut out = Vec::new();
+                for (method, url, payload) in [
+                    ("POST", format!("https://{REPORT_HOST}/report"), Some(json!("Finished").to_string())),
+                    ("GET", body["url"].as_str().unwrap_or("https://example.invalid/").to_string(), None),
+                ] {
+                    let mut init = RequestInit::new();
+                    init.with_method(Method::from(method.to_string()));
+                    if let Some(p) = payload {
+                        init.with_body(Some(p.into()));
+                    }
+                    let r =
+                        self.outbound(Request::new_with_init(&url, &init)?, Props { sandbox: sandbox.clone() }).await?;
+                    out.push(json!({ "url": url, "status": r.status_code() }));
+                }
+                let b = self.load().await?.map(|s| s.b);
+                reply(200, json!({ "replayed": out, "box": b }))
             }
             _ => reply(404, json!({ "message": "Not Found" })),
         }

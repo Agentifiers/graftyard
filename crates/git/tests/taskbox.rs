@@ -8,7 +8,7 @@ use graftyard_git::controller::{
 use graftyard_git::pkt::{self, Band};
 use graftyard_git::refs::ObjectId;
 use graftyard_git::task::run_refs;
-use graftyard_git::taskbox::{Act, HEARTBEAT, Input, Pointer, Report, SILENT_MAX, TaskBox, acked_pushes};
+use graftyard_git::taskbox::{Act, HEARTBEAT, Input, Pointer, Report, SILENT_MAX, TaskBox, acked_pushes, refused};
 use graftyard_identity::{Login, RepoName, SessionId, UserId, WorkspaceMode};
 use graftyard_types::{AccountId, DbId, Index};
 
@@ -113,6 +113,27 @@ fn every_late_report_from_an_old_sandbox_is_refused_and_counted() {
         d.on(Input::Report { from: sb(1), event: TaskEvent::Finished }, 6),
         Err(Report::Refused(StepErr::Final))
     );
+    assert_eq!(d.late, 0);
+}
+
+/// LM-3's kill row's late-traffic line: after a kill, the old Sandbox's report and its outbound request are each
+/// refused 403, counted, and logged with the Sandbox and the count; a final task's report is refused 409, not logged.
+#[test]
+fn a_killed_sandboxs_late_report_and_request_are_refused_counted_and_logged() {
+    let mut b = started();
+    b.on(alarm(false, "v1"), 10).unwrap();
+    for n in 1..=2u64 {
+        let r = b.admit(&sb(1), 20).unwrap_err();
+        let (status, line) = refused(&b, &r);
+        assert_eq!(status, 403);
+        assert_eq!(b.late, n);
+        let line = line.expect("a late refusal is logged");
+        assert!(line.contains(&*sb(1).0) && line.contains(&format!("({n} late)")), "{line}");
+    }
+    let mut d = started();
+    d.on(Input::Report { from: sb(1), event: TaskEvent::Finished }, 5).unwrap();
+    let r = d.admit(&sb(1), 6).unwrap_err();
+    assert_eq!(refused(&d, &r), (409, None));
     assert_eq!(d.late, 0);
 }
 
