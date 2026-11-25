@@ -92,6 +92,7 @@ const releaseRows = [
   ['A release roll end to end, then the vault upgraded (BF-47)', 'Three site days, the Workflows script, edge and ops', ok('In order') + '; the vault upgraded under its own token; an install token refused with 0 requests made'],
   ['The vault pulls every export endpoint, then its token is revoked (BF-49)', '100 probes after the revoke', ok('Refused within 8.7 s') + ' against a 10 s cache'],
   ['Deploy, read and mint keys rotated under live traffic (BF-46)', '6 rotations, 235 mints', ok('0 failed calls') + '; no new script version'],
+  ['SSH host keys, the MCP and Insights App keys, the MCP client secret and the secrets wrap key rotated (BF-46)', 'SSH every 20 s; 120 hook deliveries; MCP logins through the switch', ok('0 failed') + ' SSH sessions in 47 rounds; 0 bad hook signatures; ' + ok('16 of 16') + ' MCP logins; no new script version'],
   ['A deliberately unreadable format sent to one site (BM-5)', '3 repositories homed there', ok('Nothing committed') + '; the site handed its groups to another, and pushes landed there'],
   ['The vendor\'s token revoked mid-roll (BM-5)', 'Halt, remove the vendor key, abort', ok('Every site back') + ' on its earlier version in 34 s; a vendor-signed intent refused'],
   ['A bad <code>graft-ops</code> at 1% with its deploy token made invalid (BM-5)', 'About 700 token mints through the edge', ok('Swapped back') + ' by its pre-signed pointer with no deploy or API call; back on the last good version once unblocked'],
@@ -218,7 +219,7 @@ const latencyRows = [
         <p>New versions roll out one site a day under releases the customer signs. Each check breaks a rollout on purpose, then reads back where every site ended up.</p>
       </div>
       <Table head={['Check', 'Runs', 'Result']} rows={releaseRows} />
-      <p class="note">On the hosted test installs <code>graft-m4a</code> and <code>graft-m3f</code>, 22 to 24 November 2026. The vault ran on the runner account as a stand-in. Every clause of Milestone 5's gate now passes.</p>
+      <p class="note">On the hosted test installs <code>graft-m4a</code> and <code>graft-m3f</code>, 22 to 25 November 2026. The vault ran on the runner account as a stand-in. Every row of Milestone 5 passes, and it closed on 25 November.</p>
     </div>
   </section>
 
