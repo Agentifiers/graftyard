@@ -15,6 +15,8 @@
 //!   or the `Range` asked for with 206, with each chunk's slice a ranged `get`. A chunk that does not arrive whole ends
 //!   the body short, which the toolkit's length check refuses.
 //!
+//! - **Off** until the edge's `FORMATS_ENABLED` holds 21.6 (0x15.6): every route then answers 404, as before the cache.
+//!
 //! Nothing here calls the Cloudflare API.
 
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
@@ -104,6 +106,13 @@ async fn chunks(b: &Bucket, prefix: &str) -> std::result::Result<Vec<(u64, u64, 
     Ok(out)
 }
 
+/// Whether this edge serves the cache at all: only once its `FORMATS_ENABLED` holds 0x15.6 (21.6). Before that every
+/// route, downloads included, answers 404, as a GHES without the cache does, so the edge var is a kill switch that needs
+/// no site day.
+fn served(enabled: &[graftyard_raft::Format]) -> bool {
+    enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_CACHE)
+}
+
 /// A `CacheId` from the path's `caches/<id>`.
 fn path_id(rest: &str) -> Option<CacheId> {
     rest.strip_prefix("caches/")?.parse().ok().map(CacheId)
@@ -117,6 +126,9 @@ pub async fn serve(
     grant: Option<(ChainId, Grant)>,
     public: &[u8; 32],
 ) -> Result<Response> {
+    if !served(&c.cfg.enabled) {
+        return error(404, "Not Found");
+    }
     if let Some(d) = tail.strip_prefix("download/") {
         return download(c, &req, d, public).await;
     }
@@ -275,7 +287,17 @@ async fn download(c: &Ctx<'_>, req: &Request, path: &str, public: &[u8; 32]) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::span;
+    use super::{served, span};
+    use graftyard_raft::Format;
+
+    #[test]
+    fn the_cache_is_served_only_once_21_6_is_enabled() {
+        assert!(!served(&[]));
+        // 0x15.5 and a format of another family with version 6 are not 0x15.6.
+        let near = [Format { family: 0x15, version: 5 }, Format { family: 0x14, version: 6 }];
+        assert!(!served(&near));
+        assert!(served(&[near[0], Format { family: 0x15, version: 6 }, near[1]]));
+    }
 
     #[test]
     fn a_download_answers_the_whole_entry_one_range_or_416() {
