@@ -428,12 +428,13 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
     }
     let mut ctx = serde_json::Map::new();
     ctx.insert("github".into(), m.github.clone());
-    if !m.matrix.is_null() {
-        ctx.insert("matrix".into(), m.matrix.clone());
-    }
-    if !m.strategy.is_null() {
-        ctx.insert("strategy".into(), m.strategy.clone());
-    }
+    // `strategy` and `matrix` always, empty when the job has none: the runner evaluates an action input's default
+    // (`input-default-context`: github, strategy, matrix, job, runner) only when every one of those contexts is
+    // present, and otherwise fails the step, so `actions/checkout`'s `repository: ${{ github.repository }}` stopped
+    // every job that used it (BF-69 on graft-m4a).
+    let empty = || json!({"t": 2});
+    ctx.insert("strategy".into(), if m.strategy.is_null() { empty() } else { m.strategy.clone() });
+    ctx.insert("matrix".into(), if m.matrix.is_null() { empty() } else { m.matrix.clone() });
     ctx.insert("needs".into(), json!({"t": 2}));
     ctx.insert("inputs".into(), json!({"t": 2}));
     ctx.insert("vars".into(), ctx_dict(m.variables.iter().map(|(k, v)| (k.as_str(), Value::from(v.clone())))));
@@ -717,6 +718,10 @@ mod tests {
             id_token: false,
         };
         let v = job_message(&urls, &m);
+        // A job without a matrix still carries both contexts, or the runner fails any step whose action defaults
+        // an input from an expression.
+        assert_eq!(v["contextData"]["strategy"], json!({"t": 2}));
+        assert_eq!(v["contextData"]["matrix"], json!({"t": 2}));
         let data = &v["resources"]["endpoints"][0]["data"];
         assert_eq!(data["CacheServerUrl"], Value::Null, "no cache before the site day sets it");
         let mut m = m;

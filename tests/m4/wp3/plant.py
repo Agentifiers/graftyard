@@ -246,6 +246,9 @@ MUTANTS = [
      "    r[8..].copy_from_slice(&attempt.to_be_bytes());\n", '', LIB),
     ('a job token is for every repository', T,
      '        repos: RepoScope::Selected(smallvec::smallvec![run.repo]),', '        repos: RepoScope::All,', LIB),
+    # ---- the job message's contexts (BF-69 on graft-m4a: actions/checkout's defaults) ----
+    ('a job without a matrix carries no strategy context', R,
+     '    ctx.insert("strategy".into(), if m.strategy.is_null() { empty() } else { m.strategy.clone() });\n', '', LIB),
 ]
 
 env = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin:') + os.environ['PATH'],
