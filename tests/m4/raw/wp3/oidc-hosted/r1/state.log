@@ -1,0 +1,12 @@
+2026-11-25T07:53:35Z
+da46cdedd
+discovery: {"issuer":"https://graft-m4a-edge.<sub>.workers.dev/_services/token","jwks_uri":"https://graft-m4a-edge.<sub>.workers.dev/_services/token/.well-known/jwks"}
+jwks kids: ["xGTXBDFSTAgZPaEknItTcA4H69VLmaXS4XMnKlWWDDA","g-7DvKNwFRNdKn5xF8YpU1tlE7H2n65FfIVhvJS8mLk"]
+{"script":"graft-m4a-site-a","created_on":"2026-11-25T06:54:21.896605Z","versions":["eb5c77f2 100"]} versions 100
+{"script":"graft-m4a-site-b","created_on":"2026-11-25T06:54:30.762144Z","versions":["c6b12562 100"]} versions 100
+{"script":"graft-m4a-site-c","created_on":"2026-11-25T06:54:38.896934Z","versions":["3a1ea21b 100"]} versions 100
+{"script":"graft-m4a-edge","created_on":"2026-11-25T04:50:15.165428Z","versions":["d3d76118 100"]} versions 46
+{"script":"graft-m4a-ops","created_on":"2026-11-25T02:25:07.522227Z","versions":["ac4cd9a5 100"]} versions 51
+{"ops_schedules":[]}
+{"count":532,"current":null,"ActionsOidcKey":0}
+install day: {"prefix_usd":1.95}

@@ -71,7 +71,7 @@ state)
     api "$B/workers/scripts/$OPS/schedules" | jq -c '{ops_schedules: [.result.schedules[]?.cron]}'
     node tests/m5/bf46/view.mjs slots | jq -c '{count, current, ActionsOidcKey: (.slots.ActionsOidcKey // 0)}'
     echo "install day: $(cost)"
-    [ -s "$O/cost.from" ] && echo "row so far: $(cost "$(date -u -d @"$(cat "$O/cost.from")" +%FT%TZ)") (stop at \$5)"
+    [ ! -s "$O/cost.from" ] || echo "row so far: $(cost "$(date -u -d @"$(cat "$O/cost.from")" +%FT%TZ)") (stop at \$5)"
   } 2>&1 | log ;;
 minio)
   { unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
@@ -105,11 +105,11 @@ job)
   # (v6.2.0 `src/index.ts:46,67`), so the call to 127.0.0.1:9000 would go through it.
   { [ -s "$O/cost.from" ] || date -u +%s >"$O/cost.from"
     env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
-      node tests/m4/wp3/oidc/hosted.mjs job "${RUNNER:?runner dir}" "$O" "${3:?before|after}"
+      node tests/m4/wp3/oidc/hosted.mjs job "${RUNNER:?runner dir}" "$PWD/$O" "${3:?before|after}"
   } 2>&1 | log ;;
 fork)
   { env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
-      node tests/m4/wp3/oidc/hosted.mjs job "${RUNNER:?runner dir}" "$O" fork fork; } 2>&1 | log ;;
+      node tests/m4/wp3/oidc/hosted.mjs job "${RUNNER:?runner dir}" "$PWD/$O" fork fork; } 2>&1 | log ;;
 token)
   { ( umask 077
       jq -nc --arg a "com.cloudflare.api.account.$CLOUDFLARE_ACCOUNT_ID" \

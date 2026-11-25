@@ -1,0 +1,6 @@
+2026-11-25T07:54:04Z
+da46cdedd
+Created policy `m3org` successfully.
+Error: unable to rename (/data/.minio.sys/tmp -> /data/.minio.sys/tmp-old/130ec0b4-1804-40ee-aa29-6bd7cf65311d) Rename across devices not allowed, please fix your backend configuration (/data/.minio.sys/tmp)->(/data/.minio.sys/tmp-old/130ec0b4-1804-40ee-aa29-6bd7cf65311d), drive may be faulty, please investigate (*fmt.wrapError)
+       2: github.com/chainguard-forks/minio/cmd/format-erasure.go:568:cmd.initStorageDisksWithErrors.func1()
+minio: 200

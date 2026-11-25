@@ -32,7 +32,12 @@ if (phase === "action") {
   const commit = execFileSync("git", ["-C", cac, "-c", "user.name=bf70", "-c", "user.email=bf70@x", "commit-tree", tree,
     "-m", `configure-aws-credentials v6.2.0 (upstream ${upstream}), its tree only`],
   { env: { ...process.env, GIT_AUTHOR_DATE: "2026-01-01T00:00:00Z", GIT_COMMITTER_DATE: "2026-01-01T00:00:00Z" } }).toString().trim();
-  const push = g.run(["-C", cac, "push", "-q", "--force", g.url, `${commit}:refs/heads/main`, `${commit}:refs/tags/v6.2.0`], g.dir);
+  // Pushed from a fresh repository holding only that commit: a push from a shallow clone is a shallow push, which the
+  // install refuses ("shallow pushes are not supported", 400) even for a parentless commit.
+  const bare = join(g.dir, "cac.git");
+  execFileSync("git", ["init", "-q", "--bare", bare]);
+  execFileSync("git", ["-C", cac, "push", "-q", bare, `${commit}:refs/heads/main`]);
+  const push = g.run(["-C", bare, "push", "-q", "--force", g.url, `${commit}:refs/heads/main`, `${commit}:refs/tags/v6.2.0`], g.dir);
   log(`push v6.2.0 tree ${tree.slice(0, 12)} as ${commit.slice(0, 12)}: ${push.ok ? "ok" : push.out}`);
   const remote = g.remoteHead("refs/tags/v6.2.0");
   const repo = await api("GET", `/api/v3/repos/m3org/${name}`, null);
