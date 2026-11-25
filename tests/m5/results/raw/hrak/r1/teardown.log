@@ -1,0 +1,5 @@
+2026-11-25T07:51:17Z
+494238bf
+Service hrak-jobs stopped.
+{"delete":"m3org/hrak-jobs","status":204}
+the new key stays: App 1835008's only key and HostedRunnersAppKey's value, private half in ~/.graft-m4a/hosted/app.pem

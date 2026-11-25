@@ -750,3 +750,114 @@ the times shown.
   undo it gives.
 - Not measured: a holder that caches the value in isolate memory sees it only when its cache ends. That is the
   holder's code, not the platform's.
+
+## HostedRunnersAppKey, end to end: plan (2026-11-25, graft-m4a and the runner account)
+
+The runbook's in-place rotation (`decisions/DECISIONS.md`, "`rotate-holders`") of the key `graft-runners` signs App
+1835008's JWT with, under live hosted jobs. Driver `tests/m5/a17/hrak.sh` with `tests/m5/a17/hrak.mjs`; the App's
+keys are read and rewritten by `appkeys` (`tests/m3/hosted/tools`). Logs go under `raw/hrak/<tag>/`.
+
+**When `graft-runners` reads the key.** `Live::load` reads `HOSTED_RUNNERS_APP_KEY` once per pass: the `*/5` cron or a
+`workflow_job` delivery. It keeps nothing between passes. The installation tokens live in one pass's `RefCell`, and
+there is no static or thread-local (`workers/runners/src/worker.rs`). So any pass that starts more than A17's 4 s after
+the write signs with the new key. The row reads every pass after the write, and it takes the old key off only after
+one clean pass.
+
+**Before the row (read 2026-11-25 03:48Z, Cloudflare time).**
+- `graft-runners`: 8 versions, `13193b05` at 100%, cron `*/5`. `HostedRunnersAppKey` was last modified 2026-11-19.
+  Every pass is clean ("started 0 …", no error line).
+- App 1835008 (`graftyard-hosted-runners`, `authz:7100003`) lists one key, id 1, SPKI `31e2cc5bbbbd0dd9`, with its
+  `workflow_job` webhook.
+- That key's private half is not on this orb: `~/.graft-m4a/m3/app.pem` is m3-ci's App (`4e4fca2b…`), and
+  `~/.graft-m4a/hosted/` does not exist. Clean passes show the store holds key 1's private half. The rotation is
+  therefore one-way: the new key stays as the App's only key and the store's value, with its private half in
+  `~/.graft-m4a/hosted/app.pem` (0600).
+
+**Steps.**
+1. `state`, then `key`: a new RSA 2048 key.
+2. `add`: `PutApp` with key 2 beside key 1, then an independent `mint` with key 2, which must get 201 on
+   `access_tokens`.
+3. `repo`, `jobs start`: one `ubuntu-latest` smoke run (20 s) every 4 minutes on `m3org/hrak-jobs`, from before the
+   write until after the old key is off.
+4. `put`: a `PATCH` of the one slot, timed by the answer's `Date`. It is refused unless `~/.graft-m4a/hosted/app.pem`
+   is mode 0600 and byte-equal to the value sent, and the record lists keys 1 and 2. A failed `PATCH`, or a pass after
+   it that errs, stops the row with key 1 still listed (the lead's condition, 2026-11-25).
+5. `passes`: every pass from the write on, after at least one full pass.
+6. `only`: key 1 off. The step is refused until the write is 600 s old (an App JWT signed before it lives at most that
+   long) and a clean pass has followed it. Then a `mint` with key 2, and `passes` again after one more pass.
+7. `jobs stop`, `state`, `teardown`: the repository is deleted. Then `app.pem` is staged for LM-1's copy of the
+   graft-m4a install material, and its SPKI prefix (not the key) goes into `tests/am1/results/install-m4a.md`.
+
+The lead approved the one-way rotation: key 1's private half exists only in the Secrets Store, which cannot be read
+back, so leaving key 1 listed gives no restore path.
+
+The runbook waits 24 h before it takes the old key off. The row waits 600 s, because the only holder re-reads the key
+at every pass.
+
+**Pass:** the first pass after the write, and every pass after it, logs no `access_tokens` error, so it got 201. Both
+`mint`s get 201. Every smoke run dispatched across the switch ends `Success`. `graft-runners` stays at 8 versions.
+**Fail:** any `access_tokens` error after the write, a run that fails or never finishes, or a new `graft-runners`
+version.
+
+**Cost:** about 8 smoke runs (a `standard-3` Sandbox for under a minute each), two `PutApp` commits and one store write.
+That is under $0.10, with a stop at $1. There is no site day and no edge day.
+
+## HostedRunnersAppKey, end to end: row r1 (2026-11-25, graft-m4a and the runner account): PASS
+
+Run under the lead's go, from `hrak-row` `494238bf`, after LM-1's BF-69 (done 07:19Z) and AM2's LM-3 (done 06:47Z).
+Driver `tests/m5/a17/hrak.sh`, logs `raw/hrak/r1/`. Every time below is Cloudflare's: `Date` headers and Workers
+Logs. The orb ran 29 s behind (`state*.log`). Done line 07:51:46Z, the teardown. graft-m4a was on edge `d3d76118`,
+ops `ac4cd9a5` (schedules `[]`) and sites `eb5c77f2`, `c6b12562`, `3a1ea21b`, and none of them changed.
+
+| Cloudflare time | Step | Result |
+| --- | --- | --- |
+| 07:29:28 | `add` | `PutApp` ok: keys 1 (`31e2cc5b…`) and 2 (`35a71a94…`); mint with key 2: 201 at 07:29:32 |
+| 07:30:14 | run 1376354 | key 1 in the store: `Success` at 07:31:16 |
+| 07:31:48 | `put` | `app.pem` 0600, 1,704 bytes, byte-equal to the value sent; `PATCH` ok; secret modified 07:31:49 |
+| 07:35:44 | first pass after the write | clean (cron) |
+| 07:40:22 | run 1376356 | started by a webhook pass at 07:40:32 that minted with key 2: `Success` at 07:41:10 |
+| 07:43:09 | `only` | refused by the driver's own filter (below), not by the rule |
+| about 07:43:39 | `only` | 711 s after the write, 5 clean passes: `PutApp` ok, key 2 only; mint with key 2: 201 at 07:43:48 |
+| 07:44:30, 07:48:31 | runs 1376358, 1376360 | key 2 only: `Success` at 07:45:23 and 07:49:09 |
+| 07:50:53 | last pass read | 12 passes since the write, 0 error lines |
+| about 07:51 | unlisted key | a JWT under a key the record never listed: 401 on `access_tokens` |
+
+**Against the pass line:**
+- **Every pass after the write got 201.** 12 passes from 07:35:44 to 07:50:53, cron and `workflow_job`, logged no
+  error line. `graft-runners` logs an `access_tokens` status other than 201 as `graft-runners: m3org: demand:
+  access_tokens: <status>`.
+- **No smoke job failed across the switch.** 4 of 4 runs ended `Success`: one before the write, one with both keys
+  listed, and two with key 2 only.
+- **`only` waited.** The step needs 600 s from the write (an App JWT's lifetime) and a clean pass. It committed at
+  711 s, after 5 clean passes.
+- **Not measured: the 600 s refusal.** Both `only` tries came after 600 s, so the refusal never ran live. It is a
+  check in `hrak.sh` with no test of its own. What native tests cover is the bound it relies on:
+  `APP_JWT_MAX_LIFETIME_S` (600) and `verify_app_jwt` refusing a JWT 600 s after `iat` (`crates/identity/tests/wp4.rs`).
+- **No new version.** `graft-runners` stayed at 8 versions, `13193b05` at 100%, cron `*/5`.
+- **Spend.** The graft-m4a prefix went from $1.80 to $1.94 for the UTC day, and the runner account read $0.05. That is
+  under the $1 stop.
+
+**What happened along the way:**
+- **The driver refused `only` once.** Its clean-pass check counted every line with the `graft-runners: ` prefix as an
+  error, and that included the RunnerBox's info line "graft-runners: launched 3 s after arm"
+  (`workers/runners/box.mjs`), written for run 1376356. The filter now skips that one line, and the next try
+  committed.
+- **The new repository's tier reads answered 503 (F128).** The edge logged every Actions call on
+  `m3org/hrak-jobs` (Workers Logs, `graft-m4a-edge`). Before the write, the dispatch at 07:30:14 and six run reads to
+  07:31:16 answered 201 and 200. After it:
+  - 503s at 07:34:21 (dispatch), 07:37:34, 07:38:24 (dispatch), 07:38:27 and 07:39:00. The first 200 came at
+    07:39:15.
+  - Then exactly one 503 on the first dispatch after each idle gap: 07:40:17, 07:44:25 and 07:48:26. Each retry
+    answered 201 within 5 s.
+  - The reason text was "the repository's tier rows did not answer; retry (repo:65596: every member declined a read
+    the leader never serves: overloaded (tierOff))". These calls carry the admin PAT, not the App's key, so the
+    rotation is not on their path.
+  - The loop now retries a 503 dispatch every 2 s for up to a minute (`tries` in `jobs.jsonl`). That retry masks
+    F128, so this row's run count says nothing about it.
+
+**Left behind:**
+- App 1835008 lists only key 2 (`35a71a94b701f6a2`), and `HostedRunnersAppKey` holds key 2's private half. The
+  rotation was one-way by the lead's ruling, because key 1's private half was only in the store.
+- The private half is kept in `~/.graft-m4a/hosted/app.pem` (0600) and staged for LM-1's copy of the install material.
+  `tests/am1/results/install-m4a.md` records the SPKI prefix.
+- `m3org/hrak-jobs` is deleted (204), and the job service is stopped.
