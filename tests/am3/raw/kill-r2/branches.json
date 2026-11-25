@@ -1,0 +1,222 @@
+[
+  {
+    "i": 0,
+    "plan": "before",
+    "hit": "before",
+    "commits": 8,
+    "first_sandbox_pushes": 0,
+    "second_sandbox_pushes": 8,
+    "last_acked_at_kill": null,
+    "second_starts_on": "a90f2daf82",
+    "first_after_kill_s": 30.8,
+    "last_first_push_before_kill_s": null,
+    "msgs": [
+      "push 1 by 01a21505-33f9-8a9e-b701-208ef5210960-2 at 1795649044.161",
+      "push 2 by 01a21505-33f9-8a9e-b701-208ef5210960-2 at 1795649064.205",
+      "push 3 by 01a21505-33f9-8a9e-b701-208ef5210960-2 at 1795649081.080",
+      "push 4 by 01a21505-33f9-8a9e-b701-208ef5210960-2 at 1795649100.456",
+      "push 5 by 01a21505-33f9-8a9e-b701-208ef5210960-2 at 1795649119.934",
+      "push 6 by 01a21505-33f9-8a9e-b701-208ef5210960-2 at 1795649136.493",
+      "push 7 by 01a21505-33f9-8a9e-b701-208ef5210960-2 at 1795649154.535",
+      "push 8 by 01a21505-33f9-8a9e-b701-208ef5210960-2 at 1795649171.320"
+    ]
+  },
+  {
+    "i": 1,
+    "plan": "between",
+    "hit": "between",
+    "commits": 8,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 7,
+    "last_acked_at_kill": "4794a4d78c",
+    "second_starts_on": "4794a4d78c",
+    "first_after_kill_s": 25.0,
+    "last_first_push_before_kill_s": 4.0,
+    "msgs": [
+      "push 1 by 01a21505-3d11-8425-b593-504dd0a3f4bc-1 at 1795649017.926",
+      "push 2 by 01a21505-3d11-8425-b593-504dd0a3f4bc-2 at 1795649046.165",
+      "push 3 by 01a21505-3d11-8425-b593-504dd0a3f4bc-2 at 1795649066.909",
+      "push 4 by 01a21505-3d11-8425-b593-504dd0a3f4bc-2 at 1795649083.648",
+      "push 5 by 01a21505-3d11-8425-b593-504dd0a3f4bc-2 at 1795649102.792",
+      "push 6 by 01a21505-3d11-8425-b593-504dd0a3f4bc-2 at 1795649123.020",
+      "push 7 by 01a21505-3d11-8425-b593-504dd0a3f4bc-2 at 1795649142.088",
+      "push 8 by 01a21505-3d11-8425-b593-504dd0a3f4bc-2 at 1795649161.707"
+    ]
+  },
+  {
+    "i": 2,
+    "plan": "during",
+    "hit": "during",
+    "commits": 8,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 7,
+    "last_acked_at_kill": null,
+    "second_starts_on": "293076867d",
+    "first_after_kill_s": 26.2,
+    "last_first_push_before_kill_s": 1.8,
+    "msgs": [
+      "push 1 by 01a21505-4303-8710-84e5-30f26c36894b-1 at 1795649019.580",
+      "push 2 by 01a21505-4303-8710-84e5-30f26c36894b-2 at 1795649047.807",
+      "push 3 by 01a21505-4303-8710-84e5-30f26c36894b-2 at 1795649067.509",
+      "push 4 by 01a21505-4303-8710-84e5-30f26c36894b-2 at 1795649084.713",
+      "push 5 by 01a21505-4303-8710-84e5-30f26c36894b-2 at 1795649105.106",
+      "push 6 by 01a21505-4303-8710-84e5-30f26c36894b-2 at 1795649124.033",
+      "push 7 by 01a21505-4303-8710-84e5-30f26c36894b-2 at 1795649145.506",
+      "push 8 by 01a21505-4303-8710-84e5-30f26c36894b-2 at 1795649165.602"
+    ]
+  },
+  {
+    "i": 3,
+    "plan": "before",
+    "hit": "before",
+    "commits": 8,
+    "first_sandbox_pushes": 0,
+    "second_sandbox_pushes": 8,
+    "last_acked_at_kill": null,
+    "second_starts_on": "a90f2daf82",
+    "first_after_kill_s": 34.8,
+    "last_first_push_before_kill_s": null,
+    "msgs": [
+      "push 1 by 01a21505-49b5-8b72-a48f-da6f9338a650-2 at 1795649048.944",
+      "push 2 by 01a21505-49b5-8b72-a48f-da6f9338a650-2 at 1795649068.022",
+      "push 3 by 01a21505-49b5-8b72-a48f-da6f9338a650-2 at 1795649085.599",
+      "push 4 by 01a21505-49b5-8b72-a48f-da6f9338a650-2 at 1795649104.281",
+      "push 5 by 01a21505-49b5-8b72-a48f-da6f9338a650-2 at 1795649124.302",
+      "push 6 by 01a21505-49b5-8b72-a48f-da6f9338a650-2 at 1795649144.691",
+      "push 7 by 01a21505-49b5-8b72-a48f-da6f9338a650-2 at 1795649164.786",
+      "push 8 by 01a21505-49b5-8b72-a48f-da6f9338a650-2 at 1795649185.649"
+    ]
+  },
+  {
+    "i": 4,
+    "plan": "before",
+    "hit": "before",
+    "commits": 8,
+    "first_sandbox_pushes": 0,
+    "second_sandbox_pushes": 8,
+    "last_acked_at_kill": null,
+    "second_starts_on": "a90f2daf82",
+    "first_after_kill_s": 37.8,
+    "last_first_push_before_kill_s": null,
+    "msgs": [
+      "push 1 by 01a21505-51c7-81e7-958c-b40afdedb851-2 at 1795649051.436",
+      "push 2 by 01a21505-51c7-81e7-958c-b40afdedb851-2 at 1795649070.657",
+      "push 3 by 01a21505-51c7-81e7-958c-b40afdedb851-2 at 1795649087.435",
+      "push 4 by 01a21505-51c7-81e7-958c-b40afdedb851-2 at 1795649106.636",
+      "push 5 by 01a21505-51c7-81e7-958c-b40afdedb851-2 at 1795649126.779",
+      "push 6 by 01a21505-51c7-81e7-958c-b40afdedb851-2 at 1795649146.078",
+      "push 7 by 01a21505-51c7-81e7-958c-b40afdedb851-2 at 1795649165.057",
+      "push 8 by 01a21505-51c7-81e7-958c-b40afdedb851-2 at 1795649182.637"
+    ]
+  },
+  {
+    "i": 5,
+    "plan": "between",
+    "hit": "between",
+    "commits": 8,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 7,
+    "last_acked_at_kill": "87f03e9d8b",
+    "second_starts_on": "87f03e9d8b",
+    "first_after_kill_s": 24.3,
+    "last_first_push_before_kill_s": 3.7,
+    "msgs": [
+      "push 1 by 01a21505-57e8-82e9-9655-a5c7635340a3-1 at 1795649024.818",
+      "push 2 by 01a21505-57e8-82e9-9655-a5c7635340a3-2 at 1795649052.687",
+      "push 3 by 01a21505-57e8-82e9-9655-a5c7635340a3-2 at 1795649071.851",
+      "push 4 by 01a21505-57e8-82e9-9655-a5c7635340a3-2 at 1795649088.600",
+      "push 5 by 01a21505-57e8-82e9-9655-a5c7635340a3-2 at 1795649108.502",
+      "push 6 by 01a21505-57e8-82e9-9655-a5c7635340a3-2 at 1795649128.186",
+      "push 7 by 01a21505-57e8-82e9-9655-a5c7635340a3-2 at 1795649147.624",
+      "push 8 by 01a21505-57e8-82e9-9655-a5c7635340a3-2 at 1795649167.222"
+    ]
+  },
+  {
+    "i": 6,
+    "plan": "before",
+    "hit": "before",
+    "commits": 8,
+    "first_sandbox_pushes": 0,
+    "second_sandbox_pushes": 8,
+    "last_acked_at_kill": null,
+    "second_starts_on": "a90f2daf82",
+    "first_after_kill_s": 40.8,
+    "last_first_push_before_kill_s": null,
+    "msgs": [
+      "push 1 by 01a21505-5f8c-88ed-ab6e-ac58bc8a1d86-2 at 1795649054.033",
+      "push 2 by 01a21505-5f8c-88ed-ab6e-ac58bc8a1d86-2 at 1795649073.058",
+      "push 3 by 01a21505-5f8c-88ed-ab6e-ac58bc8a1d86-2 at 1795649090.438",
+      "push 4 by 01a21505-5f8c-88ed-ab6e-ac58bc8a1d86-2 at 1795649110.243",
+      "push 5 by 01a21505-5f8c-88ed-ab6e-ac58bc8a1d86-2 at 1795649130.702",
+      "push 6 by 01a21505-5f8c-88ed-ab6e-ac58bc8a1d86-2 at 1795649149.604",
+      "push 7 by 01a21505-5f8c-88ed-ab6e-ac58bc8a1d86-2 at 1795649168.005",
+      "push 8 by 01a21505-5f8c-88ed-ab6e-ac58bc8a1d86-2 at 1795649185.333"
+    ]
+  },
+  {
+    "i": 7,
+    "plan": "between",
+    "hit": "between",
+    "commits": 8,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 7,
+    "last_acked_at_kill": "7ff5363714",
+    "second_starts_on": "7ff5363714",
+    "first_after_kill_s": 26.2,
+    "last_first_push_before_kill_s": 3.8,
+    "msgs": [
+      "push 1 by 01a21505-6729-84d2-a384-a9acaf0cc0a6-1 at 1795649026.794",
+      "push 2 by 01a21505-6729-84d2-a384-a9acaf0cc0a6-2 at 1795649056.076",
+      "push 3 by 01a21505-6729-84d2-a384-a9acaf0cc0a6-2 at 1795649075.290",
+      "push 4 by 01a21505-6729-84d2-a384-a9acaf0cc0a6-2 at 1795649092.474",
+      "push 5 by 01a21505-6729-84d2-a384-a9acaf0cc0a6-2 at 1795649111.510",
+      "push 6 by 01a21505-6729-84d2-a384-a9acaf0cc0a6-2 at 1795649130.312",
+      "push 7 by 01a21505-6729-84d2-a384-a9acaf0cc0a6-2 at 1795649150.471",
+      "push 8 by 01a21505-6729-84d2-a384-a9acaf0cc0a6-2 at 1795649169.594"
+    ]
+  },
+  {
+    "i": 8,
+    "plan": "during",
+    "hit": "during",
+    "commits": 8,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 7,
+    "last_acked_at_kill": null,
+    "second_starts_on": "e9fe1a8909",
+    "first_after_kill_s": 27.1,
+    "last_first_push_before_kill_s": 1.9,
+    "msgs": [
+      "push 1 by 01a21505-6ccb-81a7-9ae6-13d47d2e579b-1 at 1795649028.767",
+      "push 2 by 01a21505-6ccb-81a7-9ae6-13d47d2e579b-2 at 1795649057.834",
+      "push 3 by 01a21505-6ccb-81a7-9ae6-13d47d2e579b-2 at 1795649077.657",
+      "push 4 by 01a21505-6ccb-81a7-9ae6-13d47d2e579b-2 at 1795649094.265",
+      "push 5 by 01a21505-6ccb-81a7-9ae6-13d47d2e579b-2 at 1795649113.058",
+      "push 6 by 01a21505-6ccb-81a7-9ae6-13d47d2e579b-2 at 1795649132.230",
+      "push 7 by 01a21505-6ccb-81a7-9ae6-13d47d2e579b-2 at 1795649151.666",
+      "push 8 by 01a21505-6ccb-81a7-9ae6-13d47d2e579b-2 at 1795649170.802"
+    ]
+  },
+  {
+    "i": 9,
+    "plan": "during",
+    "hit": "during",
+    "commits": 8,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 7,
+    "last_acked_at_kill": null,
+    "second_starts_on": "c610dc74ec",
+    "first_after_kill_s": 27.0,
+    "last_first_push_before_kill_s": 2.0,
+    "msgs": [
+      "push 1 by 01a21505-74a6-8dfb-8a6c-19695456b83c-1 at 1795649031.828",
+      "push 2 by 01a21505-74a6-8dfb-8a6c-19695456b83c-2 at 1795649060.790",
+      "push 3 by 01a21505-74a6-8dfb-8a6c-19695456b83c-2 at 1795649081.858",
+      "push 4 by 01a21505-74a6-8dfb-8a6c-19695456b83c-2 at 1795649099.027",
+      "push 5 by 01a21505-74a6-8dfb-8a6c-19695456b83c-2 at 1795649120.222",
+      "push 6 by 01a21505-74a6-8dfb-8a6c-19695456b83c-2 at 1795649141.066",
+      "push 7 by 01a21505-74a6-8dfb-8a6c-19695456b83c-2 at 1795649158.436",
+      "push 8 by 01a21505-74a6-8dfb-8a6c-19695456b83c-2 at 1795649178.384"
+    ]
+  }
+]

@@ -1,0 +1,6 @@
+2026-11-25T23:17:48Z
+e1613fc6a
+2026-11-25T23:17:51.802Z App 3801088 installed on m3org as 7190003
+2026-11-25T23:17:53.565Z App 3866624 installed on m3org as 7190004
+2026-11-25T23:17:56.402Z PATCH /orgs/m3org/agents: 200 {"agents_enabled":true,"code_mode":false,"workspace":"in_repo","workspace_org":"m3org-agents"}
+install exit 0

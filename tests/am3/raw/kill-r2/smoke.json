@@ -1,0 +1,69 @@
+[
+  {
+    "i": 0,
+    "id": "01a21501-cc0f-8b1a-a9ea-0ed09786f1c2",
+    "plan": "before",
+    "kill": {
+      "at": 1795648779194,
+      "sandbox": "01a21501-cc0f-8b1a-a9ea-0ed09786f1c2-1",
+      "last_push": null,
+      "hit": "before"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 403,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 403,
+          "url": "https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-r2.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 2
+    },
+    "end": {
+      "state": "Done",
+      "generation": 2,
+      "late": 2,
+      "running": false
+    },
+    "first": "01a21501-cc0f-8b1a-a9ea-0ed09786f1c2-1",
+    "restarted": {
+      "sandbox": "01a21501-cc0f-8b1a-a9ea-0ed09786f1c2-2",
+      "from_ms": 1795648797536
+    },
+    "last": {
+      "state": {
+        "Running": {
+          "last_push": [
+            175,
+            68,
+            96,
+            148,
+            83,
+            203,
+            243,
+            83,
+            87,
+            199,
+            140,
+            108,
+            43,
+            220,
+            130,
+            253,
+            78,
+            243,
+            99,
+            147
+          ],
+          "sandbox": "01a21501-cc0f-8b1a-a9ea-0ed09786f1c2-2"
+        }
+      },
+      "generation": 2,
+      "late": 2,
+      "running": true
+    }
+  }
+]

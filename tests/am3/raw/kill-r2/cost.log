@@ -1,0 +1,9 @@
+2026-11-25T23:22:40Z
+e1613fc6a
+cat: tests/am3/raw/kill-r2/cost.from: No such file or directory
+date: invalid date ‘@’
+jq: error (at <stdin>:1): Cannot index array with string ("prefix_usd")
+graft-m4a from : 
+graft-m4a day: {"prefix_usd":8.97}
+jq: error (at <stdin>:1): Cannot index array with string ("prefix_usd")
+runner graft-agents-m4a- from : 

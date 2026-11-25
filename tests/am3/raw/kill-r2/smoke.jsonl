@@ -1,0 +1,6 @@
+{"t":1795648759953,"create":0,"status":201,"id":"01a21501-cc0f-8b1a-a9ea-0ed09786f1c2","state":"queued","plan":"before"}
+{"t":1795648766853,"started":0,"sandbox":"01a21501-cc0f-8b1a-a9ea-0ed09786f1c2-1"}
+{"t":1795648767140,"kill":0,"plan":"before","at":1795648779194,"sandbox":"01a21501-cc0f-8b1a-a9ea-0ed09786f1c2-1","last_push":null,"hit":"before"}
+{"t":1795648797536,"restarted":0,"sandbox":"01a21501-cc0f-8b1a-a9ea-0ed09786f1c2-2","from_ms":1795648797536}
+{"t":1795648797642,"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-r2.git/info/refs?service=git-upload-pack"}]}
+{"t":1795648949249,"end":0,"state":"Done","generation":2,"late":2,"running":false}

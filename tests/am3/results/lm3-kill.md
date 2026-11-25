@@ -4,7 +4,41 @@ The kill row (`build/BUILD-PLAN.md`, AM3-WP1, LM-3's second row; the lead's GO a
 lead's plan. The runner account stands in as the agents account, as for LF-7 and LM-3's first row (`FRAME.md`,
 "Operator decision, 2026-11-24, AM1 closed and the runner account stands in as the agents account"). Driver
 `tests/am3/hosted/kill-row.sh` with `kill.mjs`, the agents half through `lf7-day.sh` with `ROW=kill TB=1`. Logs are in
-`tests/am3/raw/kill-r1/`, and the site and edge days are in `tests/m4/raw/wp3/lm3kill/r1/`.
+`tests/am3/raw/kill-r1/` and `kill-r2/`, and the site and edge days are in `tests/m4/raw/wp3/lm3kill/r1/`.
+
+## Run r2: PASS
+
+**Verdict: PASS**, on the lead's GO after BF-72's done line (23:01:40Z), from main `e1613fc6` with no site or edge day
+(sites `f7704ee3`, `b6e66c3a`, `7bbf3cbd`; edge `7b3bf05d`). The driver is r1's with the restart wait (`kill.mjs`).
+Logs are in `tests/am3/raw/kill-r2/`: `row.jsonl`, `tasks.json`, `branches.json` (each work branch read from a mirror
+clone, with the Sandbox and wall time of every commit), and `late-logs.jsonl` (the controller's refusal lines).
+
+| Line | r2 |
+| --- | --- |
+| 10 of 10 return to `Running` under a new `SandboxId` | 10 of 10: each box named `<task>-2` after its kill, and every task ended `Done` at generation 2 |
+| ... from their last acked push | 6 of 6 tasks killed after a push restarted on the first Sandbox's last commit. The 4 killed before any push restarted from the base, which is right: they had no push to lose |
+| At most 2 minutes of work lost | at most 4.0 s: the between kills came 3.7 to 4.0 s after the last commit, and the during kills 1.8 to 2.0 s after the last commit, whose push the new Sandbox built on. The before kills came 0.9 to 2.6 s after the start, with no commit. The new Sandbox's first push came 24 to 41 s after each kill (`HEARTBEAT` 30 s, a clone, then one 15 s interval) |
+| Every task finishes | 10 of 10 `Done`, 8 commits on each work branch |
+| Every late report from an old `SandboxId` refused, counted and logged | 20 of 20 replays (a `Finished` report and an outbound request per killed Sandbox) answered 403; `late` reads 2 on all 10 boxes; 20 lines `graft-controller: task <id> refused late traffic from <task>-1 (n late)` in the controller's log, one per replay |
+| Kill points: before the first push, between pushes, during a push | hit 4, 3 and 3 times, each as planned |
+| No task stalls past `TASK_IDLE` or ends with two live Sandboxes | none stalled (last task `Done` 3 min 24 s after the first create); one container per object, generation 2 throughout |
+
+The smoke before the row ran the same path with one task: it was killed before its first push, restarted under `-2`
+30 s later, had both replays refused (late 2), and ended `Done` at generation 2.
+
+The during kills found the box's `last_push` empty at the kill, but the new Sandbox started on the commit the killed
+Sandbox was pushing. So that push was acked and reached the box before its alarm restarted the task [inference from
+`branches.json` and the harness, which starts from the box's `GRAFTYARD_START`].
+
+**Teardown.**
+- Done line 23:35:13Z. m3org/kill-r2 is deleted, agents_enabled is false again, and installations 7190003 and 7190004
+  are uninstalled. The driver's new `uninstall` step makes the same calls I made by hand at r1.
+- Every `graft-agents-m4a-` resource is deleted, including the `-controller-taskbox` container application, which had
+  0 running. The install's shard sweep found no shard container running.
+- The teardown step exited 1 with no failure line. Its last test was `grep && exit` with no `else`, which returns 1
+  when the grep finds nothing. It is now an `if`.
+- graft-m4a is unchanged except for one `Keys` entry (count 583), a new `agents_executor` whose seed is deleted.
+- Cost: $0.38 on graft-m4a since 23:07:57Z, $0.00 on the runner account; graft-m4a's UTC day is $9.18.
 
 ## Run r1: no verdict, because the driver replayed the late traffic too early
 
@@ -52,7 +86,8 @@ Sandbox's late traffic.
   I rolled it with the deploy token blocked, aborted it to itself at step 0 (entries 578 and 579), and unblocked it.
   The agents `graft-ops` then deployed c1 `437bbc42` at 100% with the TaskBox bindings and container kept
   (`upload_metadata` carries the deployed version's bindings and `containers`), and committed `IntentDone`. Count
-  582, `controller_pin` null. So the roll carried taskbox.json's bindings, and option A was not needed.
+  582, `controller_pin` null. So the roll carried taskbox.json's bindings, and option A was not needed. The roll was
+  aborted to its own release, not walked through its steps (the lead accepted this, 2026-11-25).
 - **Deploy token:** `graft-agents-m4a-deploy` was minted with Workers Scripts Write, Secrets Store Write (A54) and
   Workers Containers Write. It was deleted at teardown.
 - **Keys** generation 9 at entry 576, a new `agents_executor`. Apps 3801088 and 3866624 were re-registered (8 of 8),
