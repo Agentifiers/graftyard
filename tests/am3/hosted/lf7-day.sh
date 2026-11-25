@@ -349,9 +349,8 @@ probe)
          {name: "unknown version", counts: {versions: {"00000000-0000-0000-0000-00000000005a": {answers: 1, fivexx: 0}}, threw: 0, unversioned: {answers: 0, fivexx: 0}}},
          {name: "over FLUSH_CALLS_MAX", counts: {versions: {($n1): {answers: $over, fivexx: 0}}, threw: 0, unversioned: {answers: 0, fivexx: 0}}}]}' |
       curl -s -m 60 -X POST -H "x-probe-token: $(cat "$K/probe.token")" -H 'content-type: application/json' --data-binary @- "$PROBE_URL/probe" |
-      tee "$O/probe.json" | jq -c '{before: .before.status, sum: .before.body.counts,
-        flushes: [.flushes[] | {name, post: .post.status, why: .post.body.message, after: .after.status, unchanged: (.after.body.counts == $b)}]}' \
-        --argjson b "$(jq -c .before.body.counts "$O/probe.json" 2>/dev/null || echo null)"
+      tee "$O/probe.json" | jq -c '.before.body.counts as $b | {before: .before.status, sum: $b,
+        flushes: [.flushes[] | {name, post: .post.status, why: .post.body.message, after: .after.status, unchanged: (.after.body.counts == $b)}]}'
   } 2>&1 | log ;;
 errors)
   { since=${3:-$(cat "$O/roll.t0" 2>/dev/null || echo 0)}
