@@ -10,6 +10,8 @@ restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COM
 
 The round's drop and the lookup's not-joined answer are caught only by `tests/exportbed/run.sh` (it builds the site,
 about 11 minutes): `python3 tests/m0carried/plant230.py 6 7` runs them, and `BED=1` with no numbers runs every mutant.
+
+Run on main `9776c91c` (2026-11-25): 0 to 5 caught 6 of 6 natively, and 6 and 7 caught 2 of 2 by exportbed.
 """
 import os
 import sys
