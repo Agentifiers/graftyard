@@ -383,6 +383,20 @@ Under that direction the orchestrator settled how graft-m6a's BF-50 rows read "L
 
 - **graft-m6a may spend at most $70 in total since it was created**, up from the $40 in its approval (`tests/m6/results/m6-wp1.md`). Its $20 a UTC day stays, and so do each row's stops. At the raise the install had spent $31.35, and m6aL2 plus BM-6's journey 5 drill were estimated to take it to about $55 to $60.
 
+### Operator decision, 2026-11-25, M4 holds for GitHub Actions parity
+
+> "If I told you I want as close to GitHub spec as possible within reason, with a few reasonable caveats, what would you do here?" … "Go with that plan: record it in FRAME and start the work"
+
+- **M4 stays open until BF-72 to BF-77 pass hosted**, beside BF-69 to BF-71, which passed (`build/BUILD-PLAN.md`, M4-WP3). They close the gaps a workflow or trust policy written for GitHub would hit:
+  - BF-72: reusable workflows (job-level `uses:`, `with:`, `secrets: inherit`, outputs), and `job_workflow_ref` naming the called workflow (`decisions/OPEN-QUESTIONS.md`, F118);
+  - BF-73: the OIDC claims `actor` and `actor_id` (F120), `run_number` (F119), `head_ref` and `base_ref` (F121), and the `sub` customization routes (F122), each read by a relying party's trust policy;
+  - BF-74: an install edge on a custom hostname in `graftyard.dev`, with `graftyard oidc bic-rule` applied and the Python-urllib JWKS fetch read before and after (F130);
+  - BF-75: the artifacts REST routes, the zip, `gh run download`, delete, and per-artifact `retention-days` (F131);
+  - BF-76: `upload-artifact@v4` and `download-artifact@v4` through the `graftyard-actions` forks and the pin map (`design/SHARED.md`, "Actions");
+  - BF-77: a repository delete that drops its cache entries (F125's cache half), and a hosted read of `GITHUB_TOKEN` minting and its `permissions`.
+- **Known limits that stay, not gate lines:** the `x5t` header (F123: AWS, Vault, and MinIO select keys by `kid`); `graftyard actions import`; an unapproved SHA pin to `upload-artifact@v4` failing until an org admin approves the pin map, as on GHES; and `FormatsEnable` of the Actions formats on a test install (F124).
+- **Cost:** the code is $0. Each hosted row runs on graft-m4a with a stop of at most $3, inside its $40 a UTC day; `graftyard.dev` is the Pro zone the vendor already has, so the custom hostname adds no paid product.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
