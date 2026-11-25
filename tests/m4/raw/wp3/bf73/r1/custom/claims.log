@@ -1,0 +1,17 @@
+2026-11-25T17:28:49.3012250Z Current runner version: '2.338.2'
+2026-11-25T17:28:49.3016544Z Runner name: 'bf73-r1-1'
+2026-11-25T17:28:49.3016922Z Machine name: '172'
+2026-11-25T17:28:49.3019735Z Prepare workflow directory
+2026-11-25T17:28:49.3371966Z Prepare all required actions
+2026-11-25T17:28:49.3648548Z Complete job name: claims
+2026-11-25T17:28:50.4222068Z ##[group]Run echo "context actor=m3-admin run_number=3 event=workflow_dispatch"
+2026-11-25T17:28:50.4222393Z [36;1mecho "context actor=m3-admin run_number=3 event=workflow_dispatch"[0m
+2026-11-25T17:28:50.4222446Z [36;1mumask 077[0m
+2026-11-25T17:28:50.4222497Z [36;1mcurl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=bf73" |[0m
+2026-11-25T17:28:50.4222581Z [36;1m  python3 -c 'import json,sys; sys.stdout.write(json.load(sys.stdin)["value"])' >"$BF73_TOKEN_OUT"[0m
+2026-11-25T17:28:50.4222634Z [36;1mecho "token written: $(wc -c <"$BF73_TOKEN_OUT") bytes"[0m
+2026-11-25T17:28:50.4247099Z shell: /usr/sbin/bash -e {0}
+2026-11-25T17:28:50.4247774Z ##[endgroup]
+2026-11-25T17:28:50.4433167Z context actor=m3-admin run_number=3 event=workflow_dispatch
+2026-11-25T17:28:53.2546790Z token written: 1746 bytes
+2026-11-25T17:28:53.2765802Z Cleaning up orphan processes

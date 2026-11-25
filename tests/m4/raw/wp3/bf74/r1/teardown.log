@@ -1,0 +1,8 @@
+2026-11-25T17:33:22Z
+e0cb27246
+2026-11-25T17:33:28.534Z m3org/bf74-r1: DELETE 204, anonymous read after 404
+repo delete exit 0
+{"rule_deleted":true,"errors":[]}
+rules after: {"rules":[],"errors":[]}
+token file shredded
+custom domains after (read 17:34Z): []

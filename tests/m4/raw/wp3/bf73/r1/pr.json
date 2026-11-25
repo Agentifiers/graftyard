@@ -1,0 +1,54 @@
+{
+  "phase": "pr",
+  "run": 2031978,
+  "number": 1,
+  "want": {
+    "sub": "repo:m3org/bf73-r1:pull_request",
+    "actor": "m3-admin",
+    "actor_id": "7100003",
+    "head_ref": "bf-pr-mwwearo4",
+    "base_ref": "main",
+    "run_number": "1",
+    "job_workflow_ref": "m3org/bf73-r1/.github/workflows/claims.yml@refs/pull/1/merge",
+    "event_name": "pull_request"
+  },
+  "claims": {
+    "iss": "https://m4a.graftyard.dev/_services/token",
+    "aud": "bf73",
+    "sub": "repo:m3org/bf73-r1:pull_request",
+    "actor": "m3-admin",
+    "actor_id": "7100003",
+    "run_number": "1",
+    "head_ref": "bf-pr-mwwearo4",
+    "base_ref": "main",
+    "event_name": "pull_request",
+    "ref": "refs/pull/1/merge",
+    "job_workflow_ref": "m3org/bf73-r1/.github/workflows/claims.yml@refs/pull/1/merge"
+  },
+  "mismatch": {},
+  "fetch": [
+    {
+      "url": "https://m4a.graftyard.dev/_services/token/.well-known/openid-configuration",
+      "status": 200,
+      "agent": "Python-urllib/3.14",
+      "body": null
+    },
+    {
+      "url": "https://m4a.graftyard.dev/_services/token/.well-known/jwks",
+      "status": 200,
+      "agent": "Python-urllib/3.14",
+      "body": null
+    }
+  ],
+  "checks": {
+    "job_succeeded": true,
+    "token_file": true,
+    "no_token_in_logs": true,
+    "context_line": true,
+    "policy_accepts": true,
+    "other_actor_refused": true,
+    "other_branch_refused": true,
+    "run_listed": true
+  },
+  "ok": true
+}

@@ -1,0 +1,54 @@
+{
+  "phase": "dispatch",
+  "run": 2031981,
+  "number": 2,
+  "want": {
+    "sub": "repo:m3org/bf73-r1:ref:refs/heads/main",
+    "actor": "m3-admin",
+    "actor_id": "7100003",
+    "head_ref": "",
+    "base_ref": "",
+    "run_number": "2",
+    "job_workflow_ref": "m3org/bf73-r1/.github/workflows/claims.yml@refs/heads/main",
+    "event_name": "workflow_dispatch"
+  },
+  "claims": {
+    "iss": "https://m4a.graftyard.dev/_services/token",
+    "aud": "bf73",
+    "sub": "repo:m3org/bf73-r1:ref:refs/heads/main",
+    "actor": "m3-admin",
+    "actor_id": "7100003",
+    "run_number": "2",
+    "head_ref": "",
+    "base_ref": "",
+    "event_name": "workflow_dispatch",
+    "ref": "refs/heads/main",
+    "job_workflow_ref": "m3org/bf73-r1/.github/workflows/claims.yml@refs/heads/main"
+  },
+  "mismatch": {},
+  "fetch": [
+    {
+      "url": "https://m4a.graftyard.dev/_services/token/.well-known/openid-configuration",
+      "status": 200,
+      "agent": "Python-urllib/3.14",
+      "body": null
+    },
+    {
+      "url": "https://m4a.graftyard.dev/_services/token/.well-known/jwks",
+      "status": 200,
+      "agent": "Python-urllib/3.14",
+      "body": null
+    }
+  ],
+  "checks": {
+    "job_succeeded": true,
+    "token_file": true,
+    "no_token_in_logs": true,
+    "context_line": true,
+    "policy_accepts": true,
+    "other_actor_refused": true,
+    "other_branch_refused": true,
+    "run_listed": true
+  },
+  "ok": true
+}

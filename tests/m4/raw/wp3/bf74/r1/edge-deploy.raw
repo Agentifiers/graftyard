@@ -1,0 +1,80 @@
+[INFO]: 🎯  Checking for the Wasm target...
+[INFO]: 🌀  Compiling to Wasm...
+   Compiling graftyard-git v0.1.0 (~/wt-bf70/crates/git)
+   Compiling graftyard-lifeboat v0.1.0 (~/wt-bf70/lifeboat)
+   Compiling graftyard-actions v0.1.0 (~/wt-bf70/crates/actions)
+   Compiling graftyard-api v0.1.0 (~/wt-bf70/crates/api)
+   Compiling graftyard-edge v0.1.0 (~/wt-bf70/workers/edge)
+    Finished `release` profile [optimized] target(s) in 2m 05s
+[INFO]: Optimizing wasm binaries with `wasm-opt`...
+[INFO]: ✨  Done in 2m 30s
+[INFO]: 📦   Your wasm pkg is ready to publish at ~/wt-bf70/workers/edge/build/.tmp.
+
+  index.js  32.7kb
+
+⚡ Done in 11ms
+npm notice run npx
+npm notice run 'wrangler' deploy -c graft-m4a-edge.jsonc
+
+ ⛅️ wrangler 4.153.0 (update available 4.168.0)
+───────────────────────────────────────────────
+🌀 Building list of assets...
+✨ Read 397 files from the assets directory /tmp/bf71web
+🌀 Starting asset upload...
+🌀 Found 1 new or modified static asset to upload. Proceeding with upload...
++ /_shell.html
+Uploaded 1 of 1 asset
+✨ Success! Uploaded 1 file (395 already uploaded) (0.70 sec)
+
+Total Upload: 7011.21 KiB / gzip: 2309.14 KiB
+Worker Startup Time: 8 ms
+Your Worker has access to the following bindings:
+Binding                                                                      Resource                     
+env.MEMBER_0 (Member, defined in graft-m4a-site-a)                           Durable Object               
+env.REGISTRY_0 (Registry, defined in graft-m4a-site-a)                       Durable Object               
+env.SHARD_0 (GitShard, defined in graft-m4a-site-a)                          Durable Object               
+env.HOOKSEQ_0 (HookSequencer, defined in graft-m4a-site-a)                   Durable Object               
+env.SEARCH_0 (SearchShard, defined in graft-m4a-site-a)                      Durable Object               
+env.INBOX_0 (Inbox, defined in graft-m4a-site-a)                             Durable Object               
+env.LOGRELAY_0 (LogRelay, defined in graft-m4a-site-a)                       Durable Object               
+env.BROKER_0 (RunnerBroker, defined in graft-m4a-site-a)                     Durable Object               
+env.MEMBER_1 (Member, defined in graft-m4a-site-b)                           Durable Object               
+env.REGISTRY_1 (Registry, defined in graft-m4a-site-b)                       Durable Object               
+env.SHARD_1 (GitShard, defined in graft-m4a-site-b)                          Durable Object               
+env.HOOKSEQ_1 (HookSequencer, defined in graft-m4a-site-b)                   Durable Object               
+env.SEARCH_1 (SearchShard, defined in graft-m4a-site-b)                      Durable Object               
+env.INBOX_1 (Inbox, defined in graft-m4a-site-b)                             Durable Object               
+env.LOGRELAY_1 (LogRelay, defined in graft-m4a-site-b)                       Durable Object               
+env.BROKER_1 (RunnerBroker, defined in graft-m4a-site-b)                     Durable Object               
+env.MEMBER_2 (Member, defined in graft-m4a-site-c)                           Durable Object               
+env.REGISTRY_2 (Registry, defined in graft-m4a-site-c)                       Durable Object               
+env.SHARD_2 (GitShard, defined in graft-m4a-site-c)                          Durable Object               
+env.HOOKSEQ_2 (HookSequencer, defined in graft-m4a-site-c)                   Durable Object               
+env.SEARCH_2 (SearchShard, defined in graft-m4a-site-c)                      Durable Object               
+env.INBOX_2 (Inbox, defined in graft-m4a-site-c)                             Durable Object               
+env.LOGRELAY_2 (LogRelay, defined in graft-m4a-site-c)                       Durable Object               
+env.BROKER_2 (RunnerBroker, defined in graft-m4a-site-c)                     Durable Object               
+env.BUCKET_0 (graft-m4a-site-a-packs)                                        R2 Bucket                    
+env.BUCKET_1 (graft-m4a-site-b-packs)                                        R2 Bucket                    
+env.BUCKET_2 (graft-m4a-site-c-packs)                                        R2 Bucket                    
+env.OPS (graft-m4a-ops)                                                      Worker                       
+env.ASSETS                                                                   Assets                       
+env.VERSION                                                                  Worker Version Metadata      
+env.PLAN ("pro")                                                             Environment Variable         
+env.SSH_OPTION ("off")                                                       Environment Variable         
+env.EDGE_CAP_BYTES ("80000000")                                              Environment Variable         
+env.FORMATS_ENABLED ("32.1,32.4,32.5,32.6,32.7,32.9,32.11,3...")             Environment Variable         
+env.PART_BYTES ("5242880")                                                   Environment Variable         
+env.HOST ("m4a.graftyard.dev")                                               Environment Variable         
+env.GRAFTYARD_SITES ("[{"id":0,"script":"graft-m4a-site-a",...")             Environment Variable         
+env.GRAFTYARD_INSTALL ("01M79F6BJFJSQCH68C772935XB")                         Environment Variable         
+env.GRAFTYARD_CUSTOMER_KEY ("031923da25f100f1e0586087cd86b749be1ae...")      Environment Variable         
+env.OPS_SCRIPT ("graft-m4a-ops")                                             Environment Variable         
+env.RUN_SERVICE_PUBLIC ("35f3192f9087eceb3316c4abecb151fd3f324...")          Environment Variable         
+env.GRAFTYARD_CACHE_LIMIT ("1073741824")                                     Environment Variable         
+env.GRAFTYARD_ARTIFACTS ("1")                                                Environment Variable         
+
+Uploaded graft-m4a-edge (6.81 sec)
+Deployed graft-m4a-edge triggers (0.54 sec)
+  https://graft-m4a-edge.<sub>.workers.dev
+Current Version ID: 73e9a637-58a7-4e75-80dd-104d4dd0071d

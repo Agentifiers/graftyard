@@ -27,14 +27,18 @@
 #              audience `bf74` to the runner's host (the orb), never to a log
 #   rp         `rp.py <token> --iss https://CUSTOM/_services/token --aud bf74`
 #   back       the site day (with BF-73's flags) and the edge day again with the workers.dev host, logged under
-#              <tag>/back/; the rule stays, matching only CUSTOM
-#   teardown   the repository deleted, the token file shredded, and the custom domain deleted unless KEEP=1
+#              <tag>/back/
+#   teardown   the repository deleted, the token file shredded, the rule deleted and the zone's rules read back, and
+#              the custom domain deleted unless KEEP=1
 #
 # Needs CLOUDFLARE_* (the install account, with Zone DNS, SSL and Config Rules edit on graftyard.dev),
 # CF_WORKERS_SUBDOMAIN, `source tests/am1/lf13/env-m4a.sh`, ~/.graft-m4a, G (the graftyard binary), RUNNER (an unpacked
 # actions/runner 2.338.2) for `token`, and for `site` and
 # `edge` the builds `tests/m4/wp3/bf71/days.sh` needs.
 set -uo pipefail
+# No proxy: the orb's proxy answers CONNECT to a new hostname 502 (BF-74 r1, m4a.graftyard.dev), and Python's
+# urllib, the runner and ureq would all take it; BF-70's row ran its runner the same way.
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
 TAG=${1:?tag}; STEP=${2:?step}
 REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
 O=$REPO/tests/m4/raw/wp3/${ROW:-bf74}/$TAG; mkdir -p "$O"
@@ -76,10 +80,12 @@ domain)
     jq -nc --arg h "$CUSTOM" --arg z "$Z" '{hostname: $h, service: "graft-m4a-edge", zone_id: $z, environment: "production"}' |
       api "$B/workers/domains" -X PUT -H 'content-type: application/json' --data-binary @- |
       jq -c '{ok: .success, hostname: .result.hostname, service: .result.service, errors: [.errors[]?.code]}'
+    # `/_services/` routes by path before HOST is read; `/status` answers 404 here until the edge day moves HOST.
     for i in $(seq 1 60); do
-      s=$(curl -s -o /dev/null -w '%{http_code}' -A curl/8 "https://$CUSTOM/status"); [ "$s" = 200 ] && break; sleep 10
+      s=$(curl -s -o /dev/null -w '%{http_code}' -A curl/8 "https://$CUSTOM/_services/token/.well-known/jwks"); [ "$s" = 200 ] && break; sleep 10
     done
-    echo "GET https://$CUSTOM/status (curl agent): $s after ${i}0 s"
+    echo "GET https://$CUSTOM/_services/token/.well-known/jwks (curl agent): $s after ${i}0 s"
+    echo "GET https://$CUSTOM/status before the edge day: $(curl -s -o /dev/null -w '%{http_code}' -A curl/8 "https://$CUSTOM/status")"
     echo "workers.dev stays: $(curl -s -o /dev/null -w '%{http_code}' -A curl/8 "https://$WD/status")"
   } 2>&1 | log ;;
 site)
@@ -97,7 +103,7 @@ edge)
     echo "$before" | jq -S . >"$O/edge-before.json"
     fmt=$(echo "$before" | jq -r .FORMATS_ENABLED); rsp=$(echo "$before" | jq -r .RUN_SERVICE_PUBLIC)
     lim=$(echo "$before" | jq -r .GRAFTYARD_CACHE_LIMIT); art=$(echo "$before" | jq -r '.GRAFTYARD_ARTIFACTS // empty')
-    for f in ${ADDFMT//,/ }; do case ",$fmt," in *",$f,"*) ;; *) fmt="$fmt,$f" ;; esac; done
+    for f in ${ADDFMT:+${ADDFMT//,/ }}; do case ",$fmt," in *",$f,"*) ;; *) fmt="$fmt,$f" ;; esac; done
     echo "before $(deployment graft-m4a-edge)"
     (cd "${TREE:?}" && export PATH=$HOME/.cargo/bin:$PATH && unset CARGO_TARGET_DIR && CARGO_INCREMENTAL=0 \
       node tests/m1/integ/deploy-edge.mjs "$W/sites.json" graft-m4a-edge --test-faults --anchor "$W/install.toml" --ops graft-m4a-ops \
@@ -136,10 +142,17 @@ teardown)
   { node "$REPO/tests/m4/wp3/bf74/token.mjs" --delete; echo "repo delete exit $?"
     if [ "${KEEP:-0}" = 0 ]; then
       id=$(api "$B/workers/domains?hostname=$CUSTOM" | jq -r '.result[0].id // empty')
-      [ -n "$id" ] && api "$B/workers/domains/$id" -X DELETE | jq -c '{deleted: .success}'
+      # The DELETE answers an empty body; the zone's custom domains read again are the record.
+      [ -n "$id" ] && api "$B/workers/domains/$id" -X DELETE -o /dev/null -w 'domain DELETE %{http_code}\n'
+      echo "custom domains after: $(api "$B/workers/domains?zone_name=$ZONE" | jq -c '[.result[]?.hostname]')"
     else
       echo "the domain $CUSTOM stays (KEEP=1)"
     fi
+    # The lead's F130 ruling: no vendor zone keeps a rule. Ours is deleted by its ref; the read-back must hold none.
+    Z=$(zone_id); e=$(api "https://api.cloudflare.com/client/v4/zones/$Z/rulesets/phases/http_config_settings/entrypoint")
+    rs=$(echo "$e" | jq -r '.result.id // empty'); rid=$(echo "$e" | jq -r '.result.rules[]? | select(.ref == "graftyard-oidc-bic") | .id')
+    [ -n "$rid" ] && api "https://api.cloudflare.com/client/v4/zones/$Z/rulesets/$rs/rules/$rid" -X DELETE | jq -c '{rule_deleted: .success, errors: [.errors[]?.code]}'
+    echo "rules after: $(rules "$Z")"
     shred -u "$K/token.jwt" 2>/dev/null; echo "token file shredded"
   } 2>&1 | log ;;
 *) echo "step: state domain site edge before rule after token rp back teardown"; exit 2 ;;

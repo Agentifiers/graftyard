@@ -1,0 +1,8 @@
+2026-11-25T17:06:28Z
+e0cb27246
+{"ok":true,"hostname":"m4a.graftyard.dev","service":"graft-m4a-edge","errors":[]}
+GET https://m4a.graftyard.dev/status (curl agent): 200 after 460 s
+workers.dev stays: 404
+s
+GET https://m4a.graftyard.dev/status before the edge day: 404
+workers.dev stays: 200

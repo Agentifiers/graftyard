@@ -1,0 +1,6 @@
+2026-11-25T17:22:53Z
+e0cb27246
+graftyard: GET https://m4a.graftyard.dev/_services/token/.well-known/jwks as Python-urllib/3.12: HTTP 403: <!doctype html>
+<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <! (Browser Integrity Check? run `graftyard oidc bic-rule`)
+check exit 1
+issuer: https://m4a.graftyard.dev/_services/token

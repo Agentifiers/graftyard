@@ -1,0 +1,4 @@
+{"t":1128,"status":"Queued","jobs":[{"id":4325378,"name":"token","state":"Queued","s":{"Queued":{"labels":["linux","self-hosted"],"since":1795627490054}}}]}
+{"t":8993,"status":"InProgress","jobs":[{"id":4325378,"name":"token","state":"InProgress","s":{"InProgress":{"lease_until":1795628095528,"runner":4325376}}}]}
+{"t":16562,"status":"InProgress","jobs":[{"id":4325378,"name":"token","state":"InProgress","s":{"InProgress":{"lease_until":1795628095528,"runner":4325376}}}]}
+{"t":23249,"status":{"Completed":"Success"},"jobs":[{"id":4325378,"name":"token","state":"Completed","s":{"Completed":{"at":1795627509464,"conclusion":"Success"}}}]}

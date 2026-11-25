@@ -1,0 +1,4 @@
+2026-11-25T17:25:32Z
+e0cb27246
+{"fetch": [{"url": "https://m4a.graftyard.dev/_services/token/.well-known/openid-configuration", "status": 200, "agent": "Python-urllib/3.14", "body": null}, {"url": "https://m4a.graftyard.dev/_services/token/.well-known/jwks", "status": 200, "agent": "Python-urllib/3.14", "body": null}], "verified": true, "mismatch": {}, "accepted": true, "kid": "g-7DvKNwFRNdKn5xF8YpU1tlE7H2n65FfIVhvJS8mLk", "claims": {"iss": "https://m4a.graftyard.dev/_services/token", "aud": "bf74", "sub": "repo:m3org/bf74-r1:ref:refs/heads/main", "actor": "m3-admin", "actor_id": "7100003", "run_number": "1", "head_ref": "", "base_ref": "", "event_name": "workflow_dispatch", "ref": "refs/heads/main", "job_workflow_ref": "m3org/bf74-r1/.github/workflows/token.yml@refs/heads/main"}}
+rp exit 0

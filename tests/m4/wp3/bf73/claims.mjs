@@ -93,7 +93,9 @@ const want = {
   job_workflow_ref: `${R}/${WF}@${ref}`,
   event_name: pr ? "pull_request" : "workflow_dispatch",
 };
-checks.context_line = new RegExp(`context actor=${me.login} run_number=${number} event=${want.event_name}`).test(text);
+// Output lines only: the runner's `##[group]Run` echo shows the same line with the expressions already evaluated.
+const said = text.split("\n").filter((l) => !l.includes("##[group]") && !l.includes("\u001b[36;1m")).join("\n");
+checks.context_line = new RegExp(`context actor=${me.login} run_number=${number} event=${want.event_name}`).test(said);
 
 // The trust policies, as a relying party with stock urllib reads them. A workers.dev issuer refuses urllib's agent
 // (F130; BF-74 removes that on a custom host), so only there the relying party names its own agent.
