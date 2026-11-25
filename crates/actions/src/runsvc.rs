@@ -142,6 +142,11 @@ impl Urls {
     pub fn feed(&self, site: u8, job: JobId) -> String {
         format!("{}logrelay/{site}/{}", self.services, job.0.0).replacen("http", "ws", 1)
     }
+    /// `GenerateIdTokenUrl`, under the run path so the job token the edge verifies there authorizes it. It holds a
+    /// query, because the toolkit appends `&audience=` (`crate::oidc`).
+    pub fn id_token(&self) -> String {
+        format!("{}idtoken?api-version=2.0", self.run())
+    }
 }
 
 // ---- JIT config
@@ -388,6 +393,8 @@ pub struct JobMessage<'a> {
     pub locked_until: &'a str,
     /// `CacheServerUrl` in `SystemVssConnection`'s data: only where a site day set `GRAFTYARD_ACTIONS_CACHE`.
     pub cache: bool,
+    /// The job is granted `id-token: write`, so the message names `GenerateIdTokenUrl` (`crate::oidc`).
+    pub id_token: bool,
 }
 
 /// The `acquirejob` answer: the runner's `AgentJobRequestMessage` with `messageType` `RunnerJobRequest`
@@ -413,6 +420,11 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
     // `actions-cache`: without it `isFeatureAvailable()` is false and every save and restore is skipped.
     if m.cache {
         data.insert("CacheServerUrl".into(), json!(urls.cache()));
+    }
+    // The runner exports `ACTIONS_ID_TOKEN_REQUEST_URL` and `_TOKEN` only when the connection names this URL, so a job
+    // without the grant gets neither (`crate::oidc`).
+    if m.id_token {
+        data.insert("GenerateIdTokenUrl".into(), json!(urls.id_token()));
     }
     let mut ctx = serde_json::Map::new();
     ctx.insert("github".into(), m.github.clone());
@@ -460,6 +472,8 @@ pub struct Acquired<'a> {
     pub variables: Vec<(String, String)>,
     /// `JobMessage::cache`.
     pub cache: bool,
+    /// `JobMessage::id_token`.
+    pub id_token: bool,
 }
 
 /// The `acquirejob` answer for `job` of `run`, as `job_message` renders it, with `github.*` from the run.
@@ -508,6 +522,7 @@ pub fn acquire_message(
         job_token: a.job_token,
         locked_until: &graftyard_wire::time::iso(a.locked_until),
         cache: a.cache,
+        id_token: a.id_token,
     };
     job_message(urls, &m)
 }
@@ -699,6 +714,7 @@ mod tests {
             job_token: "t",
             locked_until: "2026-11-18T00:00:00Z",
             cache: false,
+            id_token: false,
         };
         let v = job_message(&urls, &m);
         let data = &v["resources"]["endpoints"][0]["data"];
@@ -714,6 +730,15 @@ mod tests {
         // The path the runner posts to names this message's plan and job, which `launch::job_of_path` takes.
         let p = crate::launch::path_for(3, m.job);
         assert!(p.contains(v["plan"]["planId"].as_str().unwrap()) && p.contains(v["jobId"].as_str().unwrap()));
+        // `GenerateIdTokenUrl` only for a job granted `id-token: write`, under the run path, with a query to append to.
+        let data = |v: &Value| v["resources"]["endpoints"][0]["data"].clone();
+        assert!(data(&v).get("GenerateIdTokenUrl").is_none());
+        let v = job_message(&urls, &JobMessage { id_token: true, ..m });
+        assert_eq!(
+            data(&v)["GenerateIdTokenUrl"],
+            json!("https://graft.example/_services/run/idtoken?api-version=2.0")
+        );
+        assert!(data(&v)["FeedStreamUrl"].is_string());
     }
 
     #[test]

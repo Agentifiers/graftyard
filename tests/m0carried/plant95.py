@@ -64,8 +64,8 @@ MUTANTS = [
     ("an old slot with the new kid is retired", LIB,
      '            if old_kid == kid {', '            if false && old_kid == kid {', OPSLIB),
     ("a test install's publish wait is ignored (BF-46 hosted's OPS_ROTATE_PUBLISHED_MS)", OPS,
-     'let wait = if secret == SecretName::SshHostKeys { dwell.ssh_announce } else { dwell.rotate_published };',
-     'let wait = if secret == SecretName::SshHostKeys { dwell.ssh_announce } else { ROTATE_PUBLISHED_FOR + 0 * dwell.rotate_published };', REL),
+     '                _ => dwell.rotate_published,\n',
+     '                _ => ROTATE_PUBLISHED_FOR + 0 * dwell.rotate_published,\n', REL),
 ]
 
 

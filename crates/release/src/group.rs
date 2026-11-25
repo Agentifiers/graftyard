@@ -57,7 +57,8 @@ pub enum RotateStep {
     /// `MintWrapKey`: the new slot's key unwraps, and its `VerifyingKey` row is committed on `TokenShard(0)`.
     Publish,
     /// A dwell from the step before: `MintWrapKey`'s one installation-token lifetime after its row, so every edge has
-    /// read it; `SshHostKeys`' `SSH_ANNOUNCE_FOR`, so `UpdateHostKeys` clients have learned the new keys.
+    /// read it; `SshHostKeys`' `SSH_ANNOUNCE_FOR`, so `UpdateHostKeys` clients have learned the new keys;
+    /// `ActionsOidcKey`'s `OIDC_PUBLISHED_FOR`, so relying parties have fetched the JWKS that lists the new key.
     Wait,
     /// The switch: when this step's `IntentStep` commits, the fold's `slots` names the new slot, and every reader of
     /// the secret takes it from its view, with no new script version.
@@ -88,6 +89,9 @@ pub fn rotate_steps(secret: SecretName) -> Result<&'static [RotateStep], &'stati
         }
         // The switch picks the slot new values wrap under; each owner's `rewrap-secrets` then moves the old ones.
         SecretName::SecretsWrapKey => Ok(&[Probe, Switch]),
+        // Every site publishes both slots in its JWKS; relying parties cache it, so the switch waits
+        // `OIDC_PUBLISHED_FOR` after the probe saw the new key on every site.
+        SecretName::ActionsOidcKey => Ok(&[Probe, Wait, Switch]),
     }
 }
 

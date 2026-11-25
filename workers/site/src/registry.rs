@@ -281,6 +281,13 @@ impl DurableObject for Registry {
                 };
                 ns.get_by_name(&format!("ssh#{}", id.0))?.fetch_with_str("https://front/status").await
             }
+            // Both `ActionsOidcKey` slots' public halves on this site, `{"keys": [jwk..], "slots": {"A": kid, "B": kid}}`
+            // (`graftyard_actions::oidc::published`): the edge serves `keys` as the issuer's JWKS, and `graft-ops`
+            // reads `slots` as the `ActionsOidcKey` `Rotate`'s probe. No private byte leaves.
+            (Method::Get, "/oidc_slots") => match crate::actions::oidc::published(&self.env).await {
+                Ok(v) => Response::from_json(&v),
+                Err(e) => Response::error(e, 500),
+            },
             // Test installs only: B0-07's site modes (`crate::faults::SiteModes`), in the object `faults`.
             #[cfg(feature = "test-faults")]
             (Method::Get, "/site_modes") | (Method::Put, "/site_modes") => {
