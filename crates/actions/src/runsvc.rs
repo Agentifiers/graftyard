@@ -137,6 +137,11 @@ impl Urls {
     pub fn feed(&self, site: u8, job: JobId) -> String {
         format!("{}logrelay/{site}/{}", self.services, job.0.0).replacen("http", "ws", 1)
     }
+    /// `GenerateIdTokenUrl`, under the run path so the job token the edge verifies there authorizes it. It holds a
+    /// query, because the toolkit appends `&audience=` (`crate::oidc`).
+    pub fn id_token(&self) -> String {
+        format!("{}idtoken?api-version=2.0", self.run())
+    }
 }
 
 // ---- JIT config
@@ -381,6 +386,8 @@ pub struct JobMessage<'a> {
     pub github_token: &'a str,
     pub job_token: &'a str,
     pub locked_until: &'a str,
+    /// The job is granted `id-token: write`, so the message names `GenerateIdTokenUrl` (`crate::oidc`).
+    pub id_token: bool,
 }
 
 /// The `acquirejob` answer: the runner's `AgentJobRequestMessage` with `messageType` `RunnerJobRequest`
@@ -412,7 +419,7 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
     ctx.insert("needs".into(), json!({"t": 2}));
     ctx.insert("inputs".into(), json!({"t": 2}));
     ctx.insert("vars".into(), ctx_dict(m.variables.iter().map(|(k, v)| (k.as_str(), Value::from(v.clone())))));
-    json!({
+    let mut out = json!({
         "messageType": "RunnerJobRequest",
         "plan": {"scopeIdentifier": job_guid(3, 0), "planType": "actions", "version": 1, "planId": job_guid(2, m.run_id)},
         "timeline": {"id": job_guid(1, m.job.0.0)},
@@ -431,7 +438,13 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
         "steps": m.steps,
         "workspace": {},
         "mask": m.secrets.iter().map(|(_, v)| json!({"type": "regex", "value": v})).collect::<Vec<_>>(),
-    })
+    });
+    // The runner exports `ACTIONS_ID_TOKEN_REQUEST_URL` and `_TOKEN` only when the connection names this URL, so a job
+    // without the grant gets neither (`crate::oidc`).
+    if m.id_token {
+        out["resources"]["endpoints"][0]["data"]["GenerateIdTokenUrl"] = json!(urls.id_token());
+    }
+    out
 }
 
 /// What `acquire_message` needs beyond the fold: the repository's name, the token the job's `GITHUB_TOKEN` is, the
@@ -445,6 +458,8 @@ pub struct Acquired<'a> {
     pub locked_until: Timestamp,
     pub secrets: Vec<(String, String)>,
     pub variables: Vec<(String, String)>,
+    /// `JobMessage::id_token`.
+    pub id_token: bool,
 }
 
 /// The `acquirejob` answer for `job` of `run`, as `job_message` renders it, with `github.*` from the run.
@@ -492,6 +507,7 @@ pub fn acquire_message(
         github_token: a.github_token,
         job_token: a.job_token,
         locked_until: &graftyard_wire::time::iso(a.locked_until),
+        id_token: a.id_token,
     };
     job_message(urls, &m)
 }
@@ -682,6 +698,7 @@ mod tests {
             github_token: "",
             job_token: "t",
             locked_until: "2026-11-18T00:00:00Z",
+            id_token: false,
         };
         let v = job_message(&urls, &m);
         assert_eq!(v["variables"]["system.github.launch_endpoint"]["value"], json!("https://graft.example/"));
@@ -689,6 +706,15 @@ mod tests {
         // The path the runner posts to names this message's plan and job, which `launch::job_of_path` takes.
         let p = crate::launch::path_for(3, m.job);
         assert!(p.contains(v["plan"]["planId"].as_str().unwrap()) && p.contains(v["jobId"].as_str().unwrap()));
+        // `GenerateIdTokenUrl` only for a job granted `id-token: write`, under the run path, with a query to append to.
+        let data = |v: &Value| v["resources"]["endpoints"][0]["data"].clone();
+        assert!(data(&v).get("GenerateIdTokenUrl").is_none());
+        let v = job_message(&urls, &JobMessage { id_token: true, ..m });
+        assert_eq!(
+            data(&v)["GenerateIdTokenUrl"],
+            json!("https://graft.example/_services/run/idtoken?api-version=2.0")
+        );
+        assert!(data(&v)["FeedStreamUrl"].is_string());
     }
 
     #[test]

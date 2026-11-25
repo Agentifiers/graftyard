@@ -23,7 +23,8 @@
 // new slot only for its `Rotate` probe, which checks the App's record lists it. `SecretsWrapKey`'s slots stay the
 // fourth and fifth arguments (`_A` is slot 0, `_B` slot 1); once a `Rotate` switches it, the view's slot, not the
 // sixth argument, names the slot new values wrap under. BF-46-style `"ssh_announce_ms": n` (test-faults) lowers an
-// `SshHostKeys` `Rotate`'s announce wait (`OPS_SSH_ANNOUNCE_MS`).
+// `SshHostKeys` `Rotate`'s announce wait (`OPS_SSH_ANNOUNCE_MS`), and BF-70's `"oidc_published_ms": n` an
+// `ActionsOidcKey` `Rotate`'s publish wait (`OPS_OIDC_PUBLISHED_MS`).
 // AM3-WP1's agents account (`src/agents.rs`): `--agents <agents.json>` binds the agents `graft-ops` instead, with no
 // minting route in use. The file holds `{"anchor": <install.toml path>, "host": "<install host>", "app_id": <graftyard-
 // agent App id>, "app_key": <secret name>, "executor_key": <secret name>, "deploy_token": <secret name>, "scripts":
@@ -110,6 +111,7 @@ if (executor) {
     ...(faults && executor.rotate_published_ms != null ? { OPS_ROTATE_PUBLISHED_MS: String(executor.rotate_published_ms) } : {}),
     ...(faults && executor.recover_ms != null ? { OPS_RECOVER_MS: String(executor.recover_ms) } : {}),
     ...(faults && executor.ssh_announce_ms != null ? { OPS_SSH_ANNOUNCE_MS: String(executor.ssh_announce_ms) } : {}),
+    ...(faults && executor.oidc_published_ms != null ? { OPS_OIDC_PUBLISHED_MS: String(executor.oidc_published_ms) } : {}),
   };
   // `"cron": "* * * * *"` for BF-39's kills on a test install; the design's cadence otherwise.
   cfg.triggers = { crons: [faults && executor.cron ? executor.cron : "*/5 * * * *"] };

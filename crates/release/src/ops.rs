@@ -57,6 +57,9 @@ pub struct Dwell {
     /// An `SshHostKeys` `Rotate`'s wait between its probe and switch: `SSH_ANNOUNCE_FOR`, lowered only by a test-faults
     /// `graft-ops` (`OPS_SSH_ANNOUNCE_MS`).
     pub ssh_announce: u64,
+    /// An `ActionsOidcKey` `Rotate`'s wait between its probe and switch: `OIDC_PUBLISHED_FOR`, lowered only by a
+    /// test-faults `graft-ops` (`OPS_OIDC_PUBLISHED_MS`).
+    pub oidc_published: u64,
     /// How long a registered lifeboat may send no `LifeboatDecoder` before `graft-ops` pages: `LIFEBOAT_SILENT`,
     /// lowered only by a test-faults `graft-ops` (`OPS_LIFEBOAT_SILENT_MS`), so BF-53 reads the alarm in hours.
     pub lifeboat_silent: u64,
@@ -69,6 +72,7 @@ impl Default for Dwell {
             first_day: FIRST_DAY,
             rotate_published: ROTATE_PUBLISHED_FOR,
             ssh_announce: SSH_ANNOUNCE_FOR,
+            oidc_published: OIDC_PUBLISHED_FOR,
             lifeboat_silent: LIFEBOAT_SILENT,
         }
     }
@@ -222,6 +226,10 @@ pub const ROTATE_PUBLISHED_FOR: u64 = 3_600_000;
 /// How long every `graft-sshd` announces a new `SshHostKeys` slot before it serves key exchange, so `UpdateHostKeys`
 /// clients have learned it (\"Install operations\", Rotation runbook) [guess].
 pub const SSH_ANNOUNCE_FOR: u64 = 30 * 24 * 3_600_000;
+/// How long every site publishes a new `ActionsOidcKey` slot in its JWKS before tokens are signed under it, so a
+/// relying party that cached the JWKS has fetched it again (\"Install operations\", Rotation runbook) [guess:
+/// `decisions/OPEN-QUESTIONS.md`, R64].
+pub const OIDC_PUBLISHED_FOR: u64 = 24 * 3_600_000;
 
 /// A `Rotate`'s next action (`group::rotate_steps`). An `Abort` of one moves nothing, so it ends at once and leaves the
 /// slot the last switch chose.
@@ -246,7 +254,11 @@ fn rotate_next(fold: &ReleaseFold, c: &Current, secret: SecretName, slot: u8, w:
         None => done,
         Some(RotateStep::Switch) => Action::Commit { body: step, signer: Signer::Executor },
         Some(RotateStep::Wait) => {
-            let wait = if secret == SecretName::SshHostKeys { dwell.ssh_announce } else { dwell.rotate_published };
+            let wait = match secret {
+                SecretName::SshHostKeys => dwell.ssh_announce,
+                SecretName::ActionsOidcKey => dwell.oidc_published,
+                _ => dwell.rotate_published,
+            };
             let until = Timestamp(c.since.0.saturating_add(wait));
             if w.now < until {
                 Action::Wait { until: Some(until), why: format!("{secret:?}'s new slot is announced").into() }

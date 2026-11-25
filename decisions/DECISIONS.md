@@ -11131,3 +11131,33 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 **Flip.**
 - An unmoved chain that loses an acknowledged write.
 - A restore2 that fails to elect an unmoved chain once the lost site is back.
+
+### `actions-oidc`: Actions ID tokens under `ActionsOidcKey`, an RSA-2048 key in two slots read from the `Release` view, 2026-11-25
+
+**Status.** Approved by the lead (T-01a17bda) and built at $0 on branch `actions-oidc`. It needs a site day that ships the `SecretName::ActionsOidcKey` reader and binds both slots (`workers/site/deploy.mjs --oidc`), an edge day, and both slots written, before BF-70 (M4-WP3).
+
+**Decision.**
+- **The runner's wire.** A job whose declared permissions hold `id-token: write` gets `GenerateIdTokenUrl`, `{services}run/idtoken?api-version=2.0`, in its job message's connection data (`runsvc::job_message`), so the runner exports `ACTIONS_ID_TOKEN_REQUEST_URL` and `_TOKEN`. `token::parse` keeps the grant under `id_token`, `write-all` sets it, and `token::job_permissions` drops it, so no `GITHUB_TOKEN` carries it. The grant rides 0x15.5's `JobTokens` with the rest of the declared set, so there is no new Actions format, event, or fold row.
+- **Who mints** (`oidc::may_mint`): the token's attempt, `InProgress`, granted, not a fork's pull request; else 403. The edge's `GET run/idtoken` reads the repository's name, visibility and enterprise and the runner's `hosted` flag, and the shard leader checks the grant and signs (`workers/site/src/actions/oidc.rs`).
+- **The key.** `SecretName::ActionsOidcKey`, wire tag 12, RSA-2048 PKCS#8, RS256, `kid` the RFC 7638 thumbprint. Every site binds `ACTIONS_OIDC_KEY_A` and `_B` and signs under the `Release` view's slot. Each site's Registry serves both slots' public halves at `/oidc_slots`. The edge serves them as the JWKS at `/_services/token/.well-known/jwks`, with no token. Its `Rotate` is `[Probe, Wait, Switch]`. The probe wants the new slot's `kid` on every non-spare site, the same on each and not the active one (`graft-ops`, `oidc_slot_ready`). The wait is `OIDC_PUBLISHED_FOR`, 24 h [guess: `decisions/OPEN-QUESTIONS.md`, R64], which a test-faults `graft-ops` lowers with `OPS_OIDC_PUBLISHED_MS`. The old slot stays published until the next rotation writes over it, which meets SHARED's "every current and previous key epoch".
+- **Claims** are GHES 3.22's, each value a string, with a 5-minute life (`oidc::claims`). `runner_environment` is `github-hosted` on `graft-runners`' Sandboxes and `self-hosted` otherwise. `actor` and `actor_id`, `head_ref` and `base_ref`, `run_number`, a reusable workflow's `job_workflow_ref`, `include_claim_keys` and the immutable `sub`, and `x5t` are gaps F117 to F122. `actor` needs a new run event and a trigger change. `base_ref` waits for `actions-cache`'s `RunBase`. Neither was small enough to build here.
+
+**Why.**
+- AWS STS takes only RSA and ECDSA keys, so none of the install's Ed25519 keys (`RUN_SERVICE_KEY` among them) can sign a token AWS accepts. A new secret with the A/B slots every other rotatable secret has gives a `Rotate` that ships no script version.
+- Keeping the grant in `JobTokens` costs no format, and no `WorkflowRun` field: postcard has no optional trailing fields, so a new field would make every stored `RunCreated` unreadable (LM-1, 2026-11-25).
+- Signing on the shard leader keeps the private key on the sites, the one place `RUN_SERVICE_KEY` already lives. The edge holds only public halves.
+
+**What it beat.**
+- **Reusing `RUN_SERVICE_KEY`**: Ed25519, which AWS refuses.
+- **Signing in `graft-ops`**, which holds the other signing keys: every mint would cost a service-binding call and put `graft-ops` on the job's path. A bad `graft-ops` would then fail every OIDC job, which BM-5 already guards for `GITHUB_TOKEN`.
+- **One slot and a JWKS of every key ever used**: a rotation would need a new script version to bind the new key.
+
+**Evidence.**
+- `tests/m4/wp3/oidc/run.sh`, run on the orb 2026-11-25 (`tests/m4/raw/wp3/oidc/run.log`). An unmodified runner 2.338.2 under `runsvc_host` ran `minio.yml`. configure-aws-credentials v6.2.0, with `sts-endpoint` and `output-env-credentials: false`, assumed a role at MinIO RELEASE.2026-11-23T00-10-37Z, whose OpenID claim mode maps `repository_owner` to a policy. The issued credentials listed the bucket. The host switched to slot B after the first mint, and MinIO took the second, B-signed, token. The job without the grant saw no URL: PASS on all seven checks.
+- MinIO and the action [measured, the same probe]:
+  - v6.2.1 and later call `GetCallerIdentity` after the assume, and MinIO answers "Unsupported action GetCallerIdentity", so only v6.2.0 works against it.
+  - v6.2.0 takes `AWS_ENDPOINT_URL_STS` as well as `sts-endpoint`.
+  - The action refuses a role ARN that does not start `arn:aws`, so MinIO's role-policy ARNs cannot be used with it.
+- `crates/actions/src/oidc.rs` tests: the RFC 7638 example thumbprint, GHES's `sub` examples, every claim of a push token written out by hand, and both slots' tokens verifying through `graftyard_identity::oidc::verify_id_token`.
+
+**Flip.** Two conditions reverse this. If a relying party BF-70 needs refuses RS256 or the bare-key JWKS, add ECDSA or `x5c` first (F122). If the JWKS read on the edge costs a site call per isolate too often, keep the slots in the edge's own variables, which costs a new edge version per rotation.

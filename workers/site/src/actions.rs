@@ -41,6 +41,8 @@ use crate::member::Join;
 
 pub struct Actions;
 
+pub(crate) mod oidc;
+
 /// How soon after applying entries the leader checks the deadlines: the earliest is at least a lease or a queue limit
 /// away from any entry that set it, so a second is ample.
 const CHECK_AFTER_MS: i64 = 1_000;
@@ -800,9 +802,14 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 // Opened by the edge through `graft-ops` for this job alone; never logged or stored here.
                 secrets: serde_json::from_value(b["secrets"].clone()).unwrap_or_default(),
                 variables: serde_json::from_value(b["variables"].clone()).unwrap_or_default(),
+                id_token: h.core.borrow().as_ref().is_some_and(|c| {
+                    graftyard_actions::oidc::id_token_granted(c.m.group_fold().fold.more.tokens.get(&job), run.fork)
+                }),
             };
             json!({ "status": 200, "body": runsvc::acquire_message(&urls, &run, &row, &a), "repo": run.repo })
         }
+        // `GET run/idtoken` (`oidc::mint`): the job's ID token, with the facts the edge read for it.
+        ("idtoken", Some(Grant::Job { job, attempt })) => oidc::mint(h, &b, owner, job, attempt).await,
         ("renew", Some(Grant::Job { job, .. })) => {
             let Some((row, _)) = fold_job(job) else { return Ok(refused(404, "no job")) };
             let op = ActionsOp::Job { job, version: row.version, event: JobEvent::Renewed };

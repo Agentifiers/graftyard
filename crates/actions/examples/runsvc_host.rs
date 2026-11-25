@@ -7,6 +7,12 @@
 //! from the workflow's jobs on `push` to `refs/heads/main`, and serves until every job completed. `<out>/calls.jsonl`
 //! logs each call, `<out>/fold.json` the final jobs, `<out>/live.jsonl` the `FeedStreamUrl` frames, and `<out>/blobs/`
 //! the step logs.
+//!
+//! Actions OIDC (`graftyard_actions::oidc`): the host holds two RSA-2048 slots, A active, serves the issuer's
+//! discovery document and both slots' JWKS under `/_services/token/.well-known/`, and mints a granted job's ID token at
+//! `GET /_services/run/idtoken`. With `OIDC_ROTATE_AFTER=n` it switches to slot B after the n-th mint, as a committed
+//! `Rotate` does, so a relying party sees tokens under both. Each mint is logged to `<out>/idtokens.jsonl`.
+//! `MIRROR_EXTRA=owner/repo=<git dir>,...` adds public repositories to the mirror, such as an action under test.
 
 #[path = "../tests/common/mod.rs"]
 mod common;
@@ -87,6 +93,9 @@ struct Host {
     log: Arc<Mutex<std::fs::File>>,
     t0: Instant,
     mirror: Mirror,
+    /// `ActionsOidcKey`'s two slots and the active one's index.
+    oidc: ([graftyard_actions::oidc::OidcKey; 2], std::sync::atomic::AtomicUsize),
+    mints: std::sync::atomic::AtomicUsize,
 }
 
 impl Host {
@@ -117,7 +126,10 @@ fn bearer(req: &tiny_http::Request) -> Option<String> {
 fn form(body: &str) -> BTreeMap<String, String> {
     body.split('&')
         .filter_map(|kv| kv.split_once('='))
-        .map(|(k, v)| (k.to_string(), v.replace("%3A", ":").replace("%3a", ":").replace('+', " ")))
+        .map(|(k, v)| {
+            let v = v.replace("%3A", ":").replace("%3a", ":").replace("%2F", "/").replace("%2f", "/");
+            (k.to_string(), v.replace('+', " "))
+        })
         .collect()
 }
 
@@ -158,6 +170,10 @@ impl Mirror {
             git(&dir, &["update-ref", "refs/heads/main", commit.trim()]);
             git(&dir, &["tag", "v1", commit.trim()]);
             m.insert(name.to_ascii_lowercase(), (dir, public));
+        }
+        for pair in std::env::var("MIRROR_EXTRA").unwrap_or_default().split(',').filter(|p| !p.is_empty()) {
+            let (name, dir) = pair.split_once('=').expect("MIRROR_EXTRA is owner/repo=<dir>,...");
+            m.insert(name.to_ascii_lowercase(), (std::path::PathBuf::from(dir), true));
         }
         Mirror(m)
     }
@@ -261,6 +277,12 @@ fn handle(h: &Host, mut req: tiny_http::Request) {
         h.log(json!({"method": method, "path": path, "note": "live log socket", "grant": grant}));
         return live(h, req, grant);
     }
+    if method == "GET"
+        && let Some(r) = oidc_get(h, &url, &path, grant)
+    {
+        h.log(json!({"method": method, "path": path, "grant": grant, "status": r.0}));
+        return respond(req, r.0, r.1);
+    }
     let mut body = String::new();
     let _ = req.as_reader().read_to_string(&mut body);
     let jbody: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
@@ -343,6 +365,68 @@ fn handle(h: &Host, mut req: tiny_http::Request) {
     respond(req, status, reply);
 }
 
+/// The issuer's discovery document and JWKS, with no token, and a job's ID token, as the edge and the shard leader
+/// answer them (`workers/edge/src/actions/oidc.rs`, `workers/site/src/actions/oidc.rs`).
+fn oidc_get(h: &Host, url: &str, path: &str, grant: Option<Grant>) -> Option<(u16, Value)> {
+    use graftyard_actions::oidc;
+    use std::sync::atomic::Ordering::SeqCst;
+    let issuer = oidc::issuer(&h.urls.server);
+    match path {
+        "/_services/token/.well-known/openid-configuration" => Some((200, oidc::discovery(&issuer))),
+        "/_services/token/.well-known/jwks" => {
+            let keys: Vec<Value> = h.oidc.0.iter().map(|k| oidc::jwk(&k.to_public_key())).collect();
+            Some((200, oidc::jwks(&json!({ "keys": keys }))))
+        }
+        "/_services/run/idtoken" => {
+            let Some(Grant::Job { job, attempt }) = grant else { return Some((401, Value::Null)) };
+            let audience = form(url.split_once('?').map_or("", |(_, q)| q)).remove("audience");
+            let read = h.w.with(move |w| {
+                let f = w.fold();
+                let row = f.job(job).cloned()?;
+                let run = f.run(row.run)?.run.clone();
+                Some((row, run, f.more.tokens.get(&job).cloned()))
+            });
+            let (row, run, declared) = read?;
+            let f = oidc::Facts {
+                server: &h.urls.server,
+                repository: "owner/repo",
+                repository_id: REPO,
+                owner_id: OWNER,
+                visibility: graftyard_identity::Visibility::Private,
+                enterprise: None,
+                run: &run,
+                job: &row,
+                hosted: false,
+            };
+            let slot = h.oidc.1.load(SeqCst);
+            let n = h.mints.fetch_add(1, SeqCst) + 1;
+            let jti = format!("{}-{n}", job.0.0);
+            let now_s = now().0 / 1000;
+            let r = oidc::mint(&f, attempt, declared.as_ref(), audience.as_deref(), now_s, &jti, &h.oidc.0[slot]);
+            let kid = oidc::kid(&h.oidc.0[slot].to_public_key());
+            let mut log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(format!("{}/idtokens.jsonl", h.out))
+                .unwrap();
+            let rec = match &r {
+                Ok(t) => json!({"n": n, "slot": slot, "kid": kid, "audience": audience, "token": t}),
+                Err(e) => json!({"n": n, "refused": e.to_string()}),
+            };
+            writeln!(log, "{rec}").unwrap();
+            let after: usize = std::env::var("OIDC_ROTATE_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+            if after > 0 && n == after {
+                h.oidc.1.store(1, SeqCst);
+            }
+            Some(match r {
+                Ok(t) => (200, json!({ "value": t })),
+                Err(e) => (403, json!({"source": "actions-run-service", "statusCode": 403, "message": e.to_string()})),
+            })
+        }
+        _ => None,
+    }
+}
+
 fn token(h: &Host, f: &BTreeMap<String, String>) -> (u16, Value) {
     let bad = (400, json!({"error": "invalid_client"}));
     let Some(a) = f.get("client_assertion") else { return bad };
@@ -415,6 +499,8 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
         matches!(r, Some(Ok(_))).then(|| (w.fold().run(j.run).cloned().expect("the job's run"), j))
     });
     let Some((run, j)) = got else { return refuse(409) };
+    let declared = h.w.with(move |w| w.fold().more.tokens.get(&job).cloned());
+    let id_token = graftyard_actions::oidc::id_token_granted(declared.as_ref(), run.run.fork);
     let n = now();
     let orch = runsvc::orch_id(run.run.id.0.0, job, run.run.attempt);
     let job_token = runsvc::sign_token(
@@ -433,6 +519,7 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
         locked_until: Timestamp(n.0 + 600_000),
         secrets: Vec::new(),
         variables: Vec::new(),
+        id_token,
     };
     (200, runsvc::acquire_message(&h.urls, &run.run, &j, &a))
 }
@@ -529,7 +616,12 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
     let urls = Urls::new(&format!("http://127.0.0.1:{port}"));
     let t = now();
-    let mut shard = Group::new(CHAIN, vec![ACTIONS_FORMAT], ActionsFold::default(), t);
+    let mut shard = Group::new(
+        CHAIN,
+        vec![ACTIONS_FORMAT, graftyard_actions::shard::ACTIONS_FORMAT_TOKENS],
+        ActionsFold::default(),
+        t,
+    );
     shard.id_block(t, IdBlock::whole(0, 9).unwrap());
     let mut w = World {
         shard,
@@ -547,7 +639,7 @@ fn main() {
     let src = std::fs::read_to_string(wf).unwrap();
     let parsed = workflow::parse(wf, &src);
     assert!(parsed.ok(), "{:?}", parsed.errors);
-    let jobs = graftyard_actions::specs::job_specs(&parsed.workflow).unwrap();
+    let (jobs, permissions) = graftyard_actions::specs::job_specs_declared(&parsed.workflow).unwrap();
     let run = WorkflowRun {
         id: graftyard_actions::RunId(DbId(0)),
         repo: REPO,
@@ -560,7 +652,13 @@ fn main() {
         concurrency: None,
         fork: false,
     };
-    let created = w.cmd(ActionsActor::Operator, ActionsOp::CreateRun { run, jobs });
+    // `gh-token`'s `CreateRunWith` when a job declared `permissions:`, as the site's trigger sends it.
+    let op = if permissions.is_empty() {
+        ActionsOp::CreateRun { run, jobs }
+    } else {
+        ActionsOp::CreateRunWith { run, jobs, permissions }
+    };
+    let created = w.cmd(ActionsActor::Operator, op);
     assert!(matches!(created, Some(Ok(ActionsOut::Run(_)))), "{created:?}");
     println!("runner {} registered; jit config in {out}/jitconfig.txt; listening on {}", rid.0.0, urls.server);
 
@@ -574,6 +672,11 @@ fn main() {
         log: log.clone(),
         t0: Instant::now(),
         mirror: Mirror::build(&out),
+        oidc: (
+            [0, 1].map(|_| rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap()),
+            std::sync::atomic::AtomicUsize::new(0),
+        ),
+        mints: std::sync::atomic::AtomicUsize::new(0),
     });
     let h0 = host.clone();
     std::thread::spawn(move || {

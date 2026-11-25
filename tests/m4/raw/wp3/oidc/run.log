@@ -1,0 +1,11 @@
+Created policy `owner` successfully.
+PASS the id-token job succeeded
+PASS the job with no grant succeeded
+PASS the runner exported ACTIONS_ID_TOKEN_REQUEST_URL and _TOKEN
+PASS configure-aws-credentials' credentials read the bucket
+PASS MinIO took the token signed after the rotation
+PASS a job without the grant got no token URL
+mints: 2 slots: [0, 1] kids: ['0PQgbY5wD5bYQegZNx0fzMkhNzXRzK7r2mxDV598H6Y', 'zrRE91QCxxkAjUjFc7rU6hna03j2b0zu6W-JPZFwolw']
+claims: {"iss": "http://127.0.0.1:8792/_services/token", "aud": "sts.amazonaws.com", "sub": "repo:owner/repo:ref:refs/heads/main", "repository": "owner/repo", "workflow_ref": "owner/repo/tests/m4/wp3/oidc/minio.yml@refs/heads/main", "runner_environment": "self-hosted", "event_name": "push", "ref": "refs/heads/main"}
+PASS tokens under slot A then slot B
+PASS

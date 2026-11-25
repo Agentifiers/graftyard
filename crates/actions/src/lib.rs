@@ -8,6 +8,7 @@ pub mod ids;
 pub mod job;
 pub mod labels;
 pub mod launch;
+pub mod oidc;
 pub mod relay;
 pub mod rest;
 pub mod run_owner;

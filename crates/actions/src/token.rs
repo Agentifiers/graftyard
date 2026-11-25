@@ -49,14 +49,21 @@ fn set<const N: usize>(p: [(&str, Access); N]) -> PermissionSet {
 pub struct BadPermissions(pub String);
 
 /// A workflow's or job's `permissions:` as the token's: `read-all`, `write-all`, `{}`, or a mapping of the GHES
-/// scopes to `read`, `write`, or `none`, a scope left out being `none`. `metadata` read is always added. `id-token`
-/// (OIDC) and the scopes GHES 3.22 does not list take no token permission [inference: the schema names them for
-/// github.com; `ACTIONS_SCOPES` is the GHES table].
+/// scopes to `read`, `write`, or `none`, a scope left out being `none`. `metadata` read is always added. `id-token:
+/// write` (OIDC) is kept as `crate::oidc::ID_TOKEN_SCOPE`, and `write-all` sets it [inference: `write-all` is "write
+/// access for all of the available permissions"], but it is no token permission: `job_permissions` drops it. The
+/// scopes GHES 3.22 does not list take none [inference: the schema names them for github.com; `ACTIONS_SCOPES` is the
+/// GHES table].
 pub fn parse(n: &Node) -> Result<PermissionSet, BadPermissions> {
+    use crate::oidc::ID_TOKEN_SCOPE;
     let all = |a: Access| ACTIONS_SCOPES.iter().map(|s| (Box::from(*s), a)).collect::<BTreeMap<_, _>>();
     let mut out = match &n.t {
         T::Str(s) if s == "read-all" => all(Access::Read),
-        T::Str(s) if s == "write-all" => all(Access::Write),
+        T::Str(s) if s == "write-all" => {
+            let mut m = all(Access::Write);
+            m.insert(ID_TOKEN_SCOPE.into(), Access::Write);
+            m
+        }
         T::Map(pairs) => {
             let mut m = BTreeMap::new();
             for (k, v) in pairs {
@@ -72,6 +79,8 @@ pub fn parse(n: &Node) -> Result<PermissionSet, BadPermissions> {
                 let scope = k.replace('-', "_");
                 if let (Some(a), true) = (level, ACTIONS_SCOPES.contains(&scope.as_str())) {
                     m.insert(scope.into_boxed_str(), a);
+                } else if scope == ID_TOKEN_SCOPE && level == Some(Access::Write) {
+                    m.insert(scope.into_boxed_str(), Access::Write);
                 }
             }
             m
@@ -91,9 +100,11 @@ pub fn declared(workflow: Option<&Node>, job: Option<&Node>) -> Result<Option<Pe
 
 /// The token's permissions: the declared set or the default, with every write read for a fork's pull request run,
 /// which GHES does unless "Send write tokens to workflows from pull requests" is set, a setting Graftyard does not
-/// have [doc: GHES 3.22, as the module docs].
+/// have [doc: GHES 3.22, as the module docs]. `id-token` is never one of them: it grants the OIDC token alone
+/// (`crate::oidc::id_token_granted`).
 pub fn job_permissions(declared: Option<&PermissionSet>, fork: bool) -> PermissionSet {
     let mut p = declared.cloned().unwrap_or_else(default_permissions);
+    p.0.remove(crate::oidc::ID_TOKEN_SCOPE);
     if fork {
         for a in p.0.values_mut() {
             *a = (*a).min(Access::Read);
@@ -184,9 +195,14 @@ mod tests {
         assert_eq!(level(&m, "pull_requests"), Some(Access::Read), "the token's name for pull-requests");
         assert_eq!(level(&m, "contents"), None, "none");
         assert_eq!(level(&m, "packages"), None, "a scope left out is none, though the default had it");
-        assert_eq!(level(&m, "id_token"), None, "OIDC is no token permission");
+        assert_eq!(level(&m, "id_token"), Some(Access::Write), "the OIDC grant is kept beside the scopes");
+        assert_eq!(level(&job_permissions(Some(&m), false), "id_token"), None, "and is no token permission");
+        assert_eq!(level(&parse(&node("{id-token: none}")).unwrap(), "id_token"), None, "only write grants it");
         assert_eq!(level(&m, "metadata"), Some(Access::Read));
         let w = parse(&node("write-all")).unwrap();
+        assert_eq!(level(&w, "id_token"), Some(Access::Write));
+        assert_eq!(level(&parse(&node("read-all")).unwrap(), "id_token"), None);
+        let w = job_permissions(Some(&w), false);
         assert_eq!(w.0.len(), ACTIONS_SCOPES.len() + 1);
         assert!(ACTIONS_SCOPES.iter().all(|s| level(&w, s) == Some(Access::Write)));
         let r = parse(&node("read-all")).unwrap();
@@ -200,7 +216,7 @@ mod tests {
         // A fork's pull request run: every write is read, and no scope is added.
         let f = job_permissions(Some(&w), true);
         assert!(ACTIONS_SCOPES.iter().all(|s| level(&f, s) == Some(Access::Read)));
-        assert_eq!(job_permissions(Some(&m), true).0.len(), m.0.len());
+        assert_eq!(job_permissions(Some(&m), true).0.len(), m.0.len() - 1, "every scope but id-token");
         assert_eq!(job_permissions(None, false), d);
         assert_eq!(job_permissions(Some(&w), false), w);
     }
@@ -227,7 +243,8 @@ mod tests {
         let g = job_grant(&run, owner, job, Some(&w));
         assert_eq!((g.app, g.installation), (ACTIONS_APP, actions_installation(owner)));
         assert_eq!(g.repos, RepoScope::Selected(smallvec::smallvec![run.repo]));
-        assert_eq!(g.permissions, w);
+        assert_eq!(g.permissions, job_permissions(Some(&w), false));
+        assert!(!g.permissions.0.contains_key(crate::oidc::ID_TOKEN_SCOPE), "no GITHUB_TOKEN carries id-token");
         assert_eq!(g.lifetime_ms, Some((6 * 3600 + 600) * 1000));
         assert_eq!(g.jti, Some(job_jti(job, 2)));
         run.fork = true;
