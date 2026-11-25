@@ -917,6 +917,9 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
                 crate::ident::app_hook_config(c, req, m.clone()).await
             }
             (Method::Delete, ["installation", "token"]) => crate::ident::delete_installation_token(c, req).await,
+            (Method::Get, ["repos", owner, repo, "installation"]) => {
+                crate::ident::repo_installation(c, req, owner, repo).await
+            }
             (Method::Delete, ["applications", client, "token"]) => crate::ident::revoke_app_token(c, req, client).await,
             (Method::Post, ["applications", client, "token", "scoped"]) => {
                 crate::mcp::token_scoped(c, req, client).await
@@ -1248,9 +1251,7 @@ pub(crate) async fn tasks(
         }
         (Route::Task { id, .. }, Method::Get) => return Ok(t::get(&view, authz, crate::now(), id, reader)),
         (Route::Log { id, .. }, Method::Get) => return Ok(t::log(&view, id, reader)),
-        (Route::Tasks { .. }, Method::Post) => {
-            t::parse_create(body, requester.map(graftyard_identity::UserId)).map(IssueOp::CreateTask)
-        }
+        (Route::Tasks { .. }, Method::Post) => t::parse_create(body, requester.map(graftyard_identity::UserId)),
         (Route::Task { id, .. }, Method::Patch) => match t::path_id(id, caller) {
             Some(id) => t::parse_patch(id, body),
             None => return Ok(Reply::not_found()),
@@ -1266,7 +1267,7 @@ pub(crate) async fn tasks(
         Err(r) => return Ok(r),
     };
     let Some(who) = who else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
-    let created = matches!(op, IssueOp::CreateTask(_));
+    let created = matches!(op, IssueOp::CreateTask(_) | IssueOp::CreateRun(_));
     commit_issue(c, &rd, &who, op, What::Task { created, contents: reader.contents }).await
 }
 

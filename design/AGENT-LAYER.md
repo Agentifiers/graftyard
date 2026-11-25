@@ -657,7 +657,7 @@ Costs grow linearly with tasks, at about $0.018 per task at 2,000 developers, an
 
 | Surface | Path or field | Tag |
 | --- | --- | --- |
-| GitHub Apps, manifests, narrowed installation tokens, revoke | `/settings/apps/new`, `/app-manifests/{code}/conversions`, `/app/installations/{id}/access_tokens`, `DELETE /installation/token` (revokes a stateless token by `jti`) | wire-compatible |
+| GitHub Apps, manifests, narrowed installation tokens, revoke | `/settings/apps/new`, `/app-manifests/{code}/conversions`, `/app/installations/{id}/access_tokens`, `GET /repos/{owner}/{repo}/installation` (the controller finds `graftyard-workspace`'s installation with it), `DELETE /installation/token` (revokes a stateless token by `jti`) | wire-compatible |
 | Task claim on token requests | Optional `graftyard_task` field on `POST /app/installations/{id}/access_tokens`, absent for every other client | additive |
 | Grant fields on scoped tokens | Optional `graftyard_grant` and `graftyard_write` on `POST /applications/{client_id}/token/scoped`, accepted only from the install's `Graftyard MCP` and required from it | additive |
 | Agent settings, MCP grants, workspace forks, insight verdicts, coordination reads (`overlaps`, `provenance`, served only from a member's narrow read), `Release` reads | The `/api/graftyard/v1` paths in "API reference" below | additive; GHES serves no `/api/graftyard/` path [inference] |

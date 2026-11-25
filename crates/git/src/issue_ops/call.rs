@@ -106,6 +106,10 @@ impl IssueCall {
         if self.op.is_lease() || self.leases {
             return crate::repo::REPO_FORMAT_LEASES;
         }
+        // 32.28 before 32.12: a Graftyard-run create, which a release that reads only 32.12 cannot decode.
+        if matches!(self.op, IssueOp::CreateRun(_)) {
+            return crate::repo::REPO_FORMAT_RUNS;
+        }
         // 32.12 next: a task command, a `task` claim on the token, or a session the client named, none of which an
         // earlier release reads. It may carry 32.8's agent events too.
         if self.op.is_task() || crate::task::claim(&self.actor).is_some() || self.session.is_some() {
@@ -241,14 +245,18 @@ impl<'de> Deserialize<'de> for IssueCall {
             REPO_FORMAT_CHECKS,
             REPO_FORMAT_REVIEWS,
             crate::secrets::REPO_FORMAT_SECRETS,
+            crate::repo::REPO_FORMAT_RUNS,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
         }
         let fmt = |x: Format| f == serde_json::json!([x.family, x.version]);
         let leases = fmt(crate::repo::REPO_FORMAT_LEASES);
+        // 32.28 (a Graftyard-run create) carries any principal, so an App's or a claimed token's create reaches
+        // `decide` and is refused there, as 32.12 does.
+        let runs = fmt(crate::repo::REPO_FORMAT_RUNS);
         // 32.14 is a superset of 32.12: it carries a task claim and a session as 32.12 does.
-        let tasks = fmt(crate::repo::REPO_FORMAT_TASKS) || leases;
+        let tasks = fmt(crate::repo::REPO_FORMAT_TASKS) || leases || runs;
         let (app, agent) = (fmt(REPO_FORMAT_APP_CALLS), fmt(crate::repo::REPO_FORMAT_AGENT));
         // 32.16 carries an App's claims, or none for a user, as 32.8 does.
         let hooks = fmt(crate::hooks::REPO_FORMAT_HOOKS);
@@ -351,6 +359,7 @@ impl IssueCall {
         f == crate::repo::REPO_FORMAT_AGENT
             || f == crate::repo::REPO_FORMAT_TASKS
             || f == crate::repo::REPO_FORMAT_LEASES
+            || f == crate::repo::REPO_FORMAT_RUNS
     }
 
     pub fn replay(&self, events: &[RepoEvent]) -> IssueCallOut {
@@ -362,6 +371,7 @@ impl IssueCall {
             }
             // A task command's replay reads which command it was (`crate::task::replay`); none names a blob.
             IssueOp::CreateTask(t) => IssueOp::CreateTask(t.clone()),
+            IssueOp::CreateRun(n) => IssueOp::CreateRun(n.clone()),
             IssueOp::UpdateTask { id, state, pr, summary } => {
                 IssueOp::UpdateTask { id: id.clone(), state: *state, pr: *pr, summary: summary.clone() }
             }

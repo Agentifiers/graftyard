@@ -8,7 +8,8 @@
 //! - `STATUS_TOKEN`, a Worker secret: `GET /_controller/status` with it as `x-controller-token` answers this version,
 //!   the isolate's counts, and its last `RECENT_MAX` accepted deliveries. Without it the route does not exist.
 //!
-//! Every `POST` is a webhook: 202 `{"accepted": event}`, 200 `{"duplicate": true}`, or the refusal's status. No
+//! Every `POST` is a webhook: 202 `{"accepted": event}`, 200 `{"duplicate": true}`, or the refusal's status. A
+//! `graftyard_task` delivery answers as its task's `TaskBox` does (`taskbox::deliver`). No
 //! request path calls the Cloudflare API, and nothing logs a body or a secret.
 
 use std::cell::RefCell;
@@ -103,6 +104,12 @@ async fn webhook(mut req: Request, env: &Env) -> Result<Response> {
         }
     });
     match out {
+        // The first-party delivery starts or stops the task's `TaskBox`; it reaches no one else (`intake` checked it
+        // was signed with `graftyard-agent`'s secret).
+        Intake::Accepted { event, .. } if event == graftyard_git::hooks::TASK_EVENT => {
+            let payload: serde_json::Value = serde_json::from_slice(&body)?;
+            crate::taskbox::deliver(env, &payload).await
+        }
         Intake::Accepted { event, .. } => reply(202, json!({ "accepted": event })),
         Intake::Duplicate => reply(200, json!({ "duplicate": true })),
         Intake::Refused(code, why) => reply(code, json!({ "message": why })),

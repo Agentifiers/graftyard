@@ -11510,3 +11510,32 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - `tests/m0carried/plant240.py`: 14 mutants, one for each rule, all caught. The first run missed the suffix-host mutant, and the test gained hosts that end in an allowed name.
 
 **Flip.** If the hosted L0-02 rerun shows a variant the pure function cannot see, such as one that depends on the TLS leg, that rule moves to the host with its own test.
+
+#### `run-create`: a Graftyard-run create is its own command in repository format 32.28, and its delivery targets one App's hook (2026-11-25)
+
+**Status.** Built (AM3-WP3's minimum for LM-3's kill row, step S3 of the lead's plan, 2026-11-25); native only. Its hosted proof is LM-3's kill row on `graft-m4a`.
+
+**Decision.**
+- `POST .../tasks` without `kind` parses to `IssueOp::CreateRun(NewRun { issue, prompt, summary })`, a new variant at the end of `IssueOp` (tag 45), in repository format 32.28 (`REPO_FORMAT_RUNS`). External creates keep `CreateTask` and 32.12.
+- `decide` refuses `NotWriter` (403) for any credential but a user's that may write contents within its own token limits and is not an `AgentApp`'s user-to-server token; `AgentsOff` (422) while `agents_enabled` is off; `ForkMode` (422) while `agents_workspace` is `Fork`; and `NoRunApps` (422) unless the install's `GraftyardRun` Apps `graftyard-agent` and `graftyard-workspace` are both installed on the repository. The four are appended to `TaskErr`.
+- The session is the create's request id as a version-8 UUID (`task::run_session`), so `decide` stays pure and the same request mints the same id. The task's App and installation are `graftyard-agent`'s, read from the install's and owner's `Authz` folds the command already depends on.
+- `TaskCreated` of a `GraftyardRun` task, and its `TaskUpdated` to `cancelled`, carry a `graftyard_task` webhook whose `target` is `HookId::app(task.app)`. `sequencer::plan` sends a webhook aimed at an App's hook to that App alone, so no repository hook and no other App takes it, and `graftyard_task` is not in `EVENTS`, so none can subscribe. The payload is the API reference's, with the task as the fold stored it, its prompt included.
+- `graft-controller` starts the task's `TaskBox` from a signed `created` (`Task::of_delivery`, in-repo) and stops it on `cancelled`. It finds `graftyard-workspace`'s installation with GHES's `GET /repos/{owner}/{repo}/installation`, which the edge now serves under an App JWT.
+
+**Why.**
+- `NewTask` is inside `IssueOp::CreateTask`'s stored bytes, so new fields there would change 32.12's encoding. A new variant and format leave every 32.12 entry as it was, and a member that cannot read 32.28 refuses it instead of misreading it.
+- A host-minted id from the request id needs no randomness in `decide` and replays the same on a duplicate.
+- Targeting the App's own hook reuses the `Webhooks` consumer, its GUIDs, signing, and retries, and keeps GHES clients from ever seeing the event.
+
+**Beat.**
+- A random UUID from the edge in the body: the body would then name the session, which the design says the host derives.
+- A separate first-party queue for the delivery: a second pipeline with its own cursor and failure modes, for one event.
+- Bumping `CreateTask`'s fields under 32.12: every member reading 32.12 would decode a 32.28 create wrong.
+
+**Evidence.**
+- `crates/git/tests/task_gates.rs`: `a_human_writer_creates_a_run_task_only_with_agents_enabled_in_repo`, `a_run_session_is_minted_from_the_request`, `the_graftyard_task_delivery_reaches_only_graftyard_agent`.
+- `crates/api/tests/task_api.rs`: `the_graftyard_task_payload_is_what_the_controller_starts_from`.
+- `tests/m0carried/plant251.py`, 13 of 13 mutants caught.
+
+**Flip.** If AM3-WP3's fork mode needs the create to carry the workspace fork, that is a field on `NewRun` under a later format. If the hosted kill row shows a delivery lost behind the `Webhooks` consumer's cursor, the delivery gets its own retry path.
+

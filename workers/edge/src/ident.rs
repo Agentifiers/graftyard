@@ -351,6 +351,70 @@ pub async fn access_tokens(c: &Ctx<'_>, req: &mut Request, id: &str) -> Result<R
     mint(c, &grant).await
 }
 
+/// `GET /repos/{owner}/{repo}/installation` (GHES 3.22's "Get a repository installation for the authenticated app"):
+/// under the App's JWT, verified against its record, the App's live installation on the repository's owner whose
+/// selection reaches the repository, read fresh from the owner's `Authz` fold; 404 when there is none. The controller
+/// finds `graftyard-workspace`'s installation for a task's repository this way (AM3-WP3).
+pub async fn repo_installation(c: &Ctx<'_>, req: &Request, owner: &str, repo: &str) -> Result<Reply> {
+    let doc = "rest/apps/apps#get-a-repository-installation-for-the-authenticated-app";
+    let Some(jwt) = crate::token_of(req)? else { return Ok(Reply::error(401, "Requires authentication", doc)) };
+    let jwt_401 =
+        |e: &dyn std::fmt::Display| Reply::error(401, &format!("A JSON web token could not be decoded ({e})"), doc);
+    let Some(app) = graftyard_identity::appauth::claimed_app(&jwt) else { return Ok(jwt_401(&"no App in iss")) };
+    let rec = match app_record(c, app).await {
+        Ok(Some((_, r))) => r,
+        Ok(None) => return Ok(jwt_401(&"no such App")),
+        Err(x) => return Ok(x),
+    };
+    if let Err(e) = graftyard_identity::appauth::verify_app_jwt(&jwt, &rec, now()) {
+        return Ok(jwt_401(&e));
+    }
+    let not_found = || Reply::error(404, "Not Found", doc);
+    let account = match account_of(c, owner).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return Ok(not_found()),
+        Err(e) => return Ok(crate::api::unavailable(&e)),
+    };
+    let authz = match authz_of(c, account.0).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return Ok(not_found()),
+        Err(e) => return Ok(crate::api::unavailable(&e)),
+    };
+    let Some((repo_id, _)) = RepoName::parse(repo).ok().and_then(|n| authz.resolve(&n.key())) else {
+        return Ok(not_found());
+    };
+    let found = authz.more.installations.iter().find_map(|(id, st)| {
+        let row = st.row.as_ref().filter(|r| r.app == app)?;
+        let reaches = match &row.repos {
+            RepoScope::All => true,
+            RepoScope::Selected(ids) => ids.contains(&repo_id),
+        };
+        reaches.then_some((*id, row, st.not_before))
+    });
+    let Some((id, row, since)) = found else { return Ok(not_found()) };
+    let api = format!("https://{}/api/v3", c.cfg.host);
+    let org = account.1 == graftyard_identity::AccountKind::Org;
+    let selection = match row.repos {
+        RepoScope::All => "all",
+        RepoScope::Selected(_) => "selected",
+    };
+    // The installation's row keeps when it was last reset (`not_before`), which stands for both times [inference].
+    let at = graftyard_wire::iso(since);
+    Ok(Reply::json(
+        200,
+        json!({
+            "id": id.0.0, "account": user_json(c, account.0, owner, org), "repository_selection": selection,
+            "access_tokens_url": format!("{api}/app/installations/{}/access_tokens", id.0.0),
+            "repositories_url": format!("{api}/installation/repositories"),
+            "html_url": format!("https://{}/organizations/{owner}/settings/installations/{}", c.cfg.host, id.0.0),
+            "app_id": app.0.0, "app_slug": rec.slug.as_str(), "target_id": account.0.0.0,
+            "target_type": if org { "Organization" } else { "User" }, "permissions": permissions_json(&row.permissions),
+            "events": rec.events.iter().map(|e| &*e.0).collect::<Vec<_>>(), "created_at": at, "updated_at": at,
+            "single_file_name": null, "suspended_by": null, "suspended_at": null,
+        }),
+    ))
+}
+
 /// Asks `graft-ops` to sign `grant`, and renders GitHub's `installation-token`.
 async fn mint(c: &Ctx<'_>, grant: &Grant) -> Result<Reply> {
     let mut init = RequestInit::new();

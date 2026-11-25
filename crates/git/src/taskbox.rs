@@ -161,6 +161,14 @@ impl TaskBox {
         Ok(())
     }
 
+    /// The first-party delivery's `cancelled`: the task ends `Cancelled` and its Sandbox stops. A final task changes
+    /// nothing, and its container is stopped anyway.
+    pub fn cancel(&mut self) -> Act {
+        let _ = self.task.step(TaskEvent::Cancelled);
+        self.hold = None;
+        Act::Stop
+    }
+
     /// Takes one input at `now` (ms).
     pub fn on(&mut self, input: Input, now: u64) -> Result<Act, Report> {
         match input {

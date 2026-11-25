@@ -330,6 +330,10 @@ pub enum IssueOp<B = DurableBlob> {
         scope: graftyard_identity::sealed::SecretScope,
         name: graftyard_identity::sealed::ActionsName,
     },
+    // ---- AM3-WP3, format 32.28 (`crate::repo::REPO_FORMAT_RUNS`) ----
+    /// `POST /api/graftyard/v1/repos/{o}/{r}/tasks` without `kind`: a Graftyard-run task, by a human writer
+    /// (`crate::task::decide`).
+    CreateRun(crate::task::NewRun),
 }
 
 impl<B> IssueOp<B> {
@@ -398,6 +402,7 @@ impl<B> IssueOp<B> {
                 O::PutActionsVariable { scope, name, value, create }
             }
             O::DeleteActionsVariable { scope, name } => O::DeleteActionsVariable { scope, name },
+            O::CreateRun(n) => O::CreateRun(n),
         })
     }
 
@@ -424,7 +429,10 @@ impl<B> IssueOp<B> {
 
     /// Whether this is a task command (`crate::task::decide`), which never counts toward DEMOTE_PER_MIN.
     pub fn is_task(&self) -> bool {
-        matches!(self, IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. })
+        matches!(
+            self,
+            IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } | IssueOp::CreateRun(_)
+        )
     }
 }
 
@@ -526,7 +534,10 @@ impl IssueCmd {
             // `Settings` writes the metadata tier's `retention` too.
             IssueOp::InitRepo(_) => both,
             // A task's core row changes on every task command, and its metadata row on a create, a `pr`, or a summary.
-            IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } => both,
+            IssueOp::CreateTask(_)
+            | IssueOp::UpdateTask { .. }
+            | IssueOp::CancelTask { .. }
+            | IssueOp::CreateRun(_) => both,
             IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => TierSet::CORE,
             // A body edit may replace a plan-block lease (Core).
             IssueOp::Change { change: IssueChange::Body(_), .. } => both,
@@ -1281,9 +1292,10 @@ impl IssueCmd {
                 Ok((one(RepoEvent::AgentPolicy(p.clone())), IssueOut::Done))
             }
             // Decided on the scratch, which carries the entry's time (`crate::issue_ops::call::IssueCall::decide`).
-            IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } => {
-                Err(IssueErr::Invalid("a task command is decided by crate::task::decide"))
-            }
+            IssueOp::CreateTask(_)
+            | IssueOp::UpdateTask { .. }
+            | IssueOp::CancelTask { .. }
+            | IssueOp::CreateRun(_) => Err(IssueErr::Invalid("a task command is decided by crate::task::decide")),
             IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => {
                 Err(IssueErr::Invalid("a lease command is decided by crate::lease::decide"))
             }
@@ -1422,6 +1434,30 @@ impl IssueCmd {
         if perm.is_none() {
             return Err(IssueErr::NotFound);
         }
+        // A Graftyard-run create: a user's credential that may write contents within its own limits, never an
+        // `AgentApp`'s user-to-server token, and the install's two Graftyard-run Apps installed on the repository.
+        let (human_writer, run) = match &self.op {
+            IssueOp::CreateRun(_) => {
+                let install = crate::repo::install_authz(deps);
+                let access = Access { repo: v.tiers.repo, owner, core: v.core() };
+                let fields = crate::repo::stored_fields(&self.actor, deps);
+                let own = graftyard_identity::token_allows(fields, &[("contents", AppAccess::Write)], &access);
+                let agent_token =
+                    self.credential_app(deps).is_some_and(|a| crate::agent::agent_app(install, a).is_some());
+                let human = app.is_none() && own == Decision::Allow && !agent_token;
+                let fold = |o: AccountId| {
+                    deps.iter().find_map(|(c, d)| match (c, d) {
+                        (ChainId::Authz(x), IdentityDep::Authz(f)) if *x == o && f.owner == Some(o) => Some(f),
+                        _ => None,
+                    })
+                };
+                let run = fold(graftyard_identity::install_account())
+                    .zip(fold(owner))
+                    .and_then(|(i, o)| crate::task::run_apps(i, o, v.tiers.repo));
+                (human, run)
+            }
+            _ => (false, None),
+        };
         let ctx = crate::task::TaskCtx {
             repo: v.tiers.repo,
             at,
@@ -1430,6 +1466,9 @@ impl IssueCmd {
             install: crate::repo::install_authz(deps),
             perm,
             leases,
+            request: self.request,
+            human_writer,
+            run,
         };
         crate::task::decide(&self.op, &self.actor, v.core(), &ctx).map_err(IssueErr::Task)
     }
@@ -1535,7 +1574,10 @@ impl IssueCmd {
             | IssueOp::UnlockLfs { .. } => smallvec![w("contents")],
             IssueOp::RecordStatus(_) | IssueOp::AnswerInvitation { .. } => SmallVec::new(),
             // External create and cancel need `issues: write` (and `contents: read`, which `crate::task` checks).
-            IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } => {
+            IssueOp::CreateTask(_)
+            | IssueOp::UpdateTask { .. }
+            | IssueOp::CancelTask { .. }
+            | IssueOp::CreateRun(_) => {
                 smallvec![w("issues")]
             }
             IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => {
