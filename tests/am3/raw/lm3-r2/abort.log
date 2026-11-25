@@ -1,0 +1,7 @@
+2026-11-25T08:29:05Z
+09494b06
+current: {"intent":"ControllerRoll { release: ReleaseId([220, 155, 25, 102, 97, 154, 135, 244, 144, 210, 209, 68, 146, 170, 74, 26, 235, 99, 151, 23, 182, 176, 92, 112, 34, 152, 151, 180, 208, 92, 221, 72]) }","next":0,"since":1795595343993,"state":"Running { step: 0 }"}
+step-0 check: next 0, controller deployment [["9fe0868d-1ef9-4dc8-89f4-3f510f01da35",100]], at roll [["9fe0868d-1ef9-4dc8-89f4-3f510f01da35",100]]
+abort intent 01M88X4TYBCVMGVTZ1V2YXAANW to dc9b1966619a87f490d2d14492aa4a1aeb639717b6b05c70229897b4d05cdd48
+{"digest":"68e13e9566e455aa8782128f8e019688e3eb647d967e1b25368421ea38df5fdf","index":1348,"status":201}
+{"count":537,"current":{"intent":"ControllerRoll { release: ReleaseId([220, 155, 25, 102, 97, 154, 135, 244, 144, 210, 209, 68, 146, 170, 74, 26, 235, 99, 151, 23, 182, 176, 92, 112, 34, 152, 151, 180, 208, 92, 221, 72]) }","next":0,"since":1795595359578,"state":"Aborting { target: ReleaseId([220, 155, 25, 102, 97, 154, 135, 244, 144, 210, 209, 68, 146, 170, 74, 26, 235, 99, 151, 23, 182, 176, 92, 112, 34, 152, 151, 180, 208, 92, 221, 72]) }"}}

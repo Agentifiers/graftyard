@@ -1,0 +1,6 @@
+2026-11-25T08:28:35Z
+09494b06
+{"script":"graft-agents-m4a-controller","created_on":"2026-11-25T08:15:12.284249Z","versions":["9fe0868d 100"]}
+{"script":"graft-agents-m4a-front","created_on":"2026-11-25T08:15:27.918348Z","versions":["d2dea896 100"]}
+{"script":"graft-agents-m4a-ops","created_on":"2026-11-25T08:16:19.714046Z","versions":["e284c442 100"]}
+{"count":535,"current":null,"rolled":{"Controller":"fcd70122","Edge":"e23f69e9","Front":"b48fa157","Mcp":"4d6e33f1","Ops":"7def7980","Site(SiteId(0))":"2f379da8","Site(SiteId(1))":"4c6729de","Site(SiteId(2))":"4c6729de","Workflows":"e23f69e9"},"entries":[{"at":1795594454050,"entry":"Keys","index":532,"kind":"Keys","sigs":["031923"]},{"at":1795594910631,"entry":"ReleaseUploaded","index":533,"kind":"ReleaseUploaded","sigs":["e08c62"]},{"at":1795594915635,"entry":"ReleaseUploaded","index":534,"kind":"ReleaseUploaded","sigs":["e08c62"]}]}

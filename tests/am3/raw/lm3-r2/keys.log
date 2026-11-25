@@ -1,0 +1,6 @@
+2026-11-25T08:13:59Z
+09494b06
+{"count":532,"prev":"aa43c7d8fa1ca3ea07c67af187c17e4d61ab1136b3bf485d37a392084fb8625d"}
+wrote unsigned Keys to ~/.graft-m4a/lm3/keys.unsigned, prev aa43c7d8fa1ca3ea07c67af187c17e4d61ab1136b3bf485d37a392084fb8625d
+{"digest":"050f6f8e255c55f7d8af5e75de175db2ef600b5226c4d16bacf4a8b5b8e78574","index":1342,"status":201}
+{"count":533,"keys":{"agents_executor":"e08c6206fb4a1c5c53547cfbd71db87ec792b2c89a7a54cb287b33ced7bd9a54","customer":"031923da25f100f1e0586087cd86b749be1ae6d26a75f4fa8cc6112f2dd882bd","drain":"477de5269050c38534d965f1a4d95c17f2f0fe1a4089bfa51c0b598d8c67c70b","executor":"d387253b7e8b191191dfd4508252587bf37f0dcad90ed180e2b8b42d85aaef1b","generation":8,"release":"dbde3befb57425850c8dc215410af552b1a23eede0ecc7c42dd2299076f3893f","vendor":null}}
