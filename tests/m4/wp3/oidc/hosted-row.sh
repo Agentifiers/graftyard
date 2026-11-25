@@ -27,7 +27,8 @@
 #   view        the `Release` entries since `ops`, and the active slots
 #   logs        graft-ops' Rotate lines from Workers Logs since `ops`
 #   versions    every script's deployment and version count, to compare with `state`
-#   teardown    MinIO removed; m3org/bf70-cac deleted; graft-m4a-ops parked on OPS_PARKED by version id, cron []; the row token revoked and
+#   teardown    MinIO removed; m3org/bf70-cac deleted; graft-m4a-ops parked by version id on the one `ops` found live
+#               (OPS_PARKED overrides), cron []; the row token revoked and
 #               its files shredded. ActionsOidcKey stays on slot B: both slots stay written and published, and the
 #               next rotation (to A) needs no new secret.
 #
@@ -41,7 +42,7 @@ TAG=${1:?tag}; STEP=${2:?step}
 O=tests/m4/raw/wp3/oidc-hosted/$TAG; mkdir -p "$O"
 W=$HOME/.graft-m4a; K=$W/bf70; mkdir -p "$K"; chmod 700 "$K"
 STORE=bfaa0c1573de4775b1b92a12fb89acb4
-OPS=graft-m4a-ops; OPS_PARKED=${OPS_PARKED:-ac4cd9a5}
+OPS=graft-m4a-ops
 SCRIPTS="graft-m4a-site-a graft-m4a-site-b graft-m4a-site-c graft-m4a-edge $OPS"
 B="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$1" "${@:2}"; }
@@ -127,6 +128,9 @@ ops)
       "$W/ops/exec-ck-pending.json" >"$W/ops/exec-bf70.json"
     jq -c '{test_faults, gate, cron, step_dwell_ms, oidc_published_ms}' "$W/ops/exec-bf70.json"
     date -u +%s%3N >"$O/start.ms"
+    # The version the rows before this one left (LM-3's, which B0-02's row does not change): teardown parks on it.
+    [ -s "$O/ops.parked" ] || api "$B/workers/scripts/$OPS/deployments" | jq -r '.result.deployments[0].versions[0].version_id' >"$O/ops.parked"
+    echo "graft-ops before the row: $(cut -c1-8 "$O/ops.parked")"
     git fetch -q origin main
     rm -rf /tmp/bf70-deploy && git worktree add -f --detach /tmp/bf70-deploy "${REF:-origin/main}" >/dev/null 2>&1
     echo "graft-ops built from $(git -C /tmp/bf70-deploy rev-parse --short HEAD)"
@@ -169,7 +173,9 @@ teardown)
   { sudo -n docker rm -f bf70minio >/dev/null 2>&1; echo "minio removed"
     node tests/m4/wp3/oidc/hosted.mjs unmirror - "$O"
     reset_cron
-    full=$(api "$B/workers/scripts/$OPS/versions?per_page=100" | jq -r --arg p "$OPS_PARKED" '.result.items[] | select(.id | startswith($p)) | .id')
+    full=${OPS_PARKED:-$(cat "$O/ops.parked")}
+    full=$(api "$B/workers/scripts/$OPS/versions?per_page=100" | jq -r --arg p "$full" '.result.items[] | select(.id | startswith($p)) | .id')
+    echo "parking graft-ops on ${full:0:8}"
     npx --prefix tests/m0 wrangler versions deploy "$full@100%" --name $OPS -y 2>&1 | grep -E "Deployed|rror" | tail -2
     reset_cron
     deployment $OPS
