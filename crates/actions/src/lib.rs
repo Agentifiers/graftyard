@@ -11,6 +11,7 @@ pub mod job;
 pub mod labels;
 pub mod launch;
 pub mod oidc;
+pub mod pin_map;
 pub mod relay;
 pub mod rest;
 pub mod reusable;

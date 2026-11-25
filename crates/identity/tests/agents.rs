@@ -147,3 +147,65 @@ const M3_FOLD: &str = "0101828020010100000000000001000000000001020000000000";
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
+
+/// BF-76 (`pin-map`): an org admin's `SetActionsSubstitution` sets tag substitution and the approved pin map field by
+/// field (a field left `None` keeps what the fold holds, so two admins' writes never undo each other), withdraws the
+/// approval with `Some(None)`, and a repeat writes no event. A member who is not an admin, and a user account, are
+/// refused. A fold holding M4-WP3's Actions rows and no policy keeps its bytes, and one with a policy round-trips.
+#[test]
+fn actions_substitution_is_an_org_admins_and_keeps_older_folds_bytes() {
+    use graftyard_identity::{AUTHZ_FORMAT_V15, ActionsSubstitution};
+    use graftyard_types::Digest;
+    let mut w = World::default();
+    let (owner, admin, member) = (acct(0, 4, 1), acct(0, 4, 2), acct(0, 4, 3));
+    org(&mut w, owner, admin);
+    w.authz_cmd(
+        owner,
+        AuthzCmd { cred: OPS, op: AuthzOp::SetMember { user: UserId(member), role: Some(OrgRole::Member) } },
+    )
+    .unwrap();
+    let op = NamesOp::PutAccount { id: member, suspended: false, sessions_not_before: Timestamp(0) };
+    w.names_cmd(ChainId::Names(account_shard(member)), NamesCmd { cred: OPS, op }).unwrap();
+    let before: AuthzFold = w.authz(owner).fresh_leader();
+    let set = |tags, pin_map| AuthzOp::SetActionsSubstitution { tags, pin_map };
+    assert_eq!(graftyard_raft::Command::format(&AuthzCmd { cred: OPS, op: set(None, None) }), AUTHZ_FORMAT_V15);
+    assert_eq!(before.actions().more.substitution, ActionsSubstitution::default(), "off and none until set");
+    // A fold that never set a policy is the bytes M4-WP3 wrote: the trailing part is absent.
+    let mut no_part = before.clone();
+    no_part.more.more.more.more.more = Default::default();
+    assert_eq!(codec::to_bytes(&before), codec::to_bytes(&no_part));
+    assert_eq!(
+        refused(w.authz_cmd(owner, AuthzCmd { cred: as_user(member), op: set(Some(true), None) })),
+        AuthzErr::Forbidden
+    );
+    let d1 = Digest([1; 32]);
+    w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: set(Some(true), None) }).unwrap();
+    w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: set(None, Some(Some(d1))) }).unwrap();
+    let f: AuthzFold = w.authz(owner).fresh_leader();
+    assert_eq!(f.actions().more.substitution, ActionsSubstitution { tags: true, pin_map: Some(d1) }, "both kept");
+    // Tags off alone keeps the approval, and the approval alone kept the tags above.
+    w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: set(Some(false), None) }).unwrap();
+    let f: AuthzFold = w.authz(owner).fresh_leader();
+    assert_eq!(f.actions().more.substitution, ActionsSubstitution { tags: false, pin_map: Some(d1) });
+    w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: set(Some(true), None) }).unwrap();
+    let count = |w: &mut World| {
+        let evs = w.authz(owner).committed_events(common::A);
+        evs.iter().filter(|e| matches!(e, AuthzEvent::ActionsSubstitution(_))).count()
+    };
+    let n = count(&mut w);
+    w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: set(Some(true), Some(Some(d1))) }).unwrap();
+    assert_eq!(count(&mut w), n, "a repeat writes no event");
+    w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: set(None, Some(None)) }).unwrap();
+    let f: AuthzFold = w.authz(owner).fresh_leader();
+    assert_eq!(f.actions().more.substitution, ActionsSubstitution { tags: true, pin_map: None }, "approval withdrawn");
+    let back: AuthzFold = codec::from_bytes(&codec::to_bytes(&f)).unwrap();
+    assert_eq!(back, f);
+    let g = w.authz(owner);
+    g.settle(&mut |c| panic!("{c}"));
+    for m in [common::A, common::B, common::C] {
+        assert_eq!(g.m(m).group_fold().fold.actions().more.substitution, f.actions().more.substitution, "{m:?}");
+    }
+    let user = acct(0, 4, 9);
+    w.authz_cmd(user, AuthzCmd { cred: OPS, op: AuthzOp::Open { kind: AccountKind::User, enterprise: None } }).unwrap();
+    assert_eq!(refused(w.authz_cmd(user, AuthzCmd { cred: OPS, op: set(Some(true), None) })), AuthzErr::NotAnOrg);
+}

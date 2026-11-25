@@ -47,9 +47,9 @@ pub use apps::{
     PermissionSet, RsaPublic, SecretHash, Slug, Url,
 };
 pub use authz::{
-    AccountKind, ActionsRows, AgentRows, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore, AuthzOp, AuthzOut,
-    AuthzRead, AuthzScratch, CREATE_INIT_MAX, CursorRows, InstallationRow, InstallationState, NameEpoch, OrgRole,
-    OrgRows, RepoEntry, RepoPermission, actions_row,
+    AccountKind, ActionsRows, ActionsSubstitution, AgentRows, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore,
+    AuthzOp, AuthzOut, AuthzRead, AuthzScratch, CREATE_INIT_MAX, CursorRows, InstallationRow, InstallationState,
+    NameEpoch, OrgRole, OrgRows, RepoEntry, RepoPermission, SubstitutionRows, actions_row,
 };
 pub use cache::{IDENTITY_BUDGET_PER_ISOLATE, IdentityCache, Lookup, READ_CACHE, RequestClass};
 pub use credential::{
@@ -117,6 +117,9 @@ pub const AUTHZ_FORMAT_V13: Format = Format { family: 0x12, version: 13 };
 /// since version 2; the format guards `decide`'s rule for it, which needs no `Names` route and no App record. Read and
 /// enabled on the same terms as version 2.
 pub const AUTHZ_FORMAT_V14: Format = Format { family: 0x12, version: 14 };
+/// BF-76 (`pin-map`): `AuthzOp::SetActionsSubstitution` and `AuthzEvent::ActionsSubstitution`, an org's tag
+/// substitution and approved pin-map digest. Read and enabled on the same terms as version 2.
+pub const AUTHZ_FORMAT_V15: Format = Format { family: 0x12, version: 15 };
 /// The `Audit` consumer's cursor on `Names` and `Tokens` shards (`crate::audit`), M3's close. Read and enabled on the
 /// same terms as version 2.
 pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };
