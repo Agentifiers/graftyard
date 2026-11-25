@@ -750,3 +750,48 @@ the times shown.
   undo it gives.
 - Not measured: a holder that caches the value in isolate memory sees it only when its cache ends. That is the
   holder's code, not the platform's.
+
+## HostedRunnersAppKey, end to end: plan (2026-11-25, graft-m4a and the runner account)
+
+The runbook's in-place rotation (`decisions/DECISIONS.md`, "`rotate-holders`") of the key `graft-runners` signs App
+1835008's JWT with, under live hosted jobs. Driver `tests/m5/a17/hrak.sh` with `tests/m5/a17/hrak.mjs`; the App's
+keys are read and rewritten by `appkeys` (`tests/m3/hosted/tools`). Logs go under `raw/hrak/<tag>/`.
+
+**When `graft-runners` reads the key.** `Live::load` reads `HOSTED_RUNNERS_APP_KEY` once per pass: the `*/5` cron or a
+`workflow_job` delivery. It keeps nothing between passes. The installation tokens live in one pass's `RefCell`, and
+there is no static or thread-local (`workers/runners/src/worker.rs`). So any pass that starts more than A17's 4 s after
+the write signs with the new key. The row reads every pass after the write, and it takes the old key off only after
+one clean pass.
+
+**Before the row (read 2026-11-25 03:48Z, Cloudflare time).**
+- `graft-runners`: 8 versions, `13193b05` at 100%, cron `*/5`. `HostedRunnersAppKey` was last modified 2026-11-19.
+  Every pass is clean ("started 0 …", no error line).
+- App 1835008 (`graftyard-hosted-runners`, `authz:7100003`) lists one key, id 1, SPKI `31e2cc5bbbbd0dd9`, with its
+  `workflow_job` webhook.
+- That key's private half is not on this orb: `~/.graft-m4a/m3/app.pem` is m3-ci's App (`4e4fca2b…`), and
+  `~/.graft-m4a/hosted/` does not exist. Clean passes show the store holds key 1's private half. The rotation is
+  therefore one-way: the new key stays as the App's only key and the store's value, with its private half in
+  `~/.graft-m4a/hosted/app.pem` (0600).
+
+**Steps.**
+1. `state`, then `key`: a new RSA 2048 key.
+2. `add`: `PutApp` with key 2 beside key 1, then an independent `mint` with key 2, which must get 201 on
+   `access_tokens`.
+3. `repo`, `jobs start`: one `ubuntu-latest` smoke run (20 s) every 4 minutes on `m3org/hrak-jobs`, from before the
+   write until after the old key is off.
+4. `put`: a `PATCH` of the one slot, timed by the answer's `Date`.
+5. `passes`: every pass from the write on, after at least one full pass.
+6. `only`: key 1 off. The step is refused until the write is 600 s old (an App JWT signed before it lives at most that
+   long) and a clean pass has followed it. Then a `mint` with key 2, and `passes` again after one more pass.
+7. `jobs stop`, `state`, `teardown`: the repository is deleted.
+
+The runbook waits 24 h before it takes the old key off. The row waits 600 s, because the only holder re-reads the key
+at every pass.
+
+**Pass:** the first pass after the write, and every pass after it, logs no `access_tokens` error, so it got 201. Both
+`mint`s get 201. Every smoke run dispatched across the switch ends `Success`. `graft-runners` stays at 8 versions.
+**Fail:** any `access_tokens` error after the write, a run that fails or never finishes, or a new `graft-runners`
+version.
+
+**Cost:** about 8 smoke runs (a `standard-3` Sandbox for under a minute each), two `PutApp` commits and one store write.
+That is under $0.10, with a stop at $1. There is no site day and no edge day.
