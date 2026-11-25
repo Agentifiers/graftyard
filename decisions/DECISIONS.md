@@ -11582,3 +11582,20 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **Flip.** If AM3-WP3's fork mode needs the create to carry the workspace fork, that is a field on `NewRun` under a later format. If the hosted kill row shows a delivery lost behind the `Webhooks` consumer's cursor, the delivery gets its own retry path.
 
+
+### `pin-map`: BF-76's org substitution policy, the signed pin map under `Keys.release`, and the pin-map annotation, 2026-11-25
+
+**Status.** Design approved by the lead (T-01a17bda) and the operator's ruling of 2026-11-25 ("Build the full annotation so it matches GHES exactly", FRAME). Built in heads on `bf76-*` branches at $0; hosted by BF-76 on graft-m4a after its site and edge days.
+
+**Decision.**
+- **Signer.** A pin map verifies against the `Keys.release` key, never `Keys.vendor`. SHARED's Keys says "The vendor's release key signs only releases, action packs, and pin maps", and DESIGN's `ReleaseUploaded` checks a release record "under `Keys.release`", so `Keys.release` is the vendor's release key; `Keys.vendor` is the vendor's intent key, and self-hosted sets it `None`, where pin maps must still verify. On graft-m4a that is the key `~/.graft-m4a/release.key` holds: no `Keys` change.
+- **Policy.** `AuthzOp::SetActionsSubstitution { tags, pin_map }`, format 0x12.15, an org admin's, writing `AuthzEvent::ActionsSubstitution`, stored in a trailing part of the fold so an org that never sets it keeps its bytes (`graftyard_identity::compat`).
+- **Failure.** An unapproved SHA pin runs the exact upstream bytes, which fail in the action's own step with GHES's lines; the step's `##[error]` reaches the job's check run as a `failure` annotation from `completejob`'s `stepResults`, and a Graftyard annotation names the approval page and the fork SHA (SHARED, "Toolkit hostname heuristics and SHA pins").
+
+**Why.** The failure GHES shows comes from the action, not the server, so the only faithful way to fail "exactly as on GHES" is to run the bytes; a 422 at launch would fail at "Set up job" with a line GHES never prints. The annotation path is the runner's own (`IssueExtensions.ToAnnotation`), so the same route also carries every other step's `##[error]` and `##[warning]`.
+
+**What it beat.** A 422 from the launch service naming the fork (fails a step earlier, with another line). Signing pin maps with `Keys.vendor` (absent on self-hosted). A `Keys` generation adding a vendor key on graft-m4a (needs a customer signature for no gain).
+
+**Evidence.** `upload-artifact` v4.6.2 and `download-artifact` v4.3.0 `dist/` (mirrored on the orb), runner 2.338.2 source (`ExecutionContext.Complete`, `IssueExtensions`, `CompleteJobRequest`). BF-76's hosted row.
+
+**Flip.** GHES failing an unapproved v4 pin before the step runs (a server-side check in a later GHES), or GitHub merging a vendor-neutral `isGhes()` escape (toolkit issue #2439), which retires the forks and the policy.
