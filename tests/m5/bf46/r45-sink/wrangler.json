@@ -1,0 +1,9 @@
+{
+  "name": "graft-m4a-r45-sink",
+  "main": "index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "SEEN", "class_name": "Seen" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Seen"] }]
+}
