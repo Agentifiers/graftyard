@@ -7,10 +7,10 @@
 //   node tests/m4/wp3/bf69/bf69.mjs <out> <case> <runner dir>...
 // Cases, in the row's order: save-main, exact-main, f-prefix, f-save, main-not-f, parallel, rel-seed, pr-rel, pr-main,
 // lru (with GRAFTYARD_CACHE_LIMIT=1073741824 on the edge), sweep (after the alarm's CacheSweep and chunk delete).
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { EDGE, Git, api, log, row, sleep, tokens } from "../../../am1/hosted/lib.mjs";
+import { EDGE, Git, api, ghs, log, row, sleep, tokens } from "../../../am1/hosted/lib.mjs";
 
 const [out, kase, ...runnerDirs] = process.argv.slice(2);
 const NAME = process.env.BF69_REPO ?? "bf69";
@@ -18,7 +18,9 @@ const R = `m3org/${NAME}`;
 const admin = tokens.admin;
 const repoRoot = new URL("../../../..", import.meta.url).pathname;
 const jit = process.env.JITCONFIG ?? join(process.env.CARGO_TARGET_DIR ?? join(repoRoot, "target"), "release/examples/jitconfig");
-const WF = ".github/workflows/cache.yml";
+// The `par` case (BF-69's parallel-save line) runs `par.yml` instead, from the `actions-mirror` org.
+const WFSRC = kase === "par" ? "./par.yml" : "./cache.yml";
+const WF = kase === "par" ? ".github/workflows/par.yml" : ".github/workflows/cache.yml";
 const A = `/api/graftyard/v1/repos/${R}/actions`;
 mkdirSync(out, { recursive: true });
 const must = (what, r, ...ok) => {
@@ -38,7 +40,7 @@ function onBranch(br, env, from = "main") {
   const base = g.run(["rev-parse", "-q", "--verify", `origin/${br}`]).ok ? `origin/${br}` : `origin/${from}`;
   g.run(["checkout", "-q", "-B", br, base]);
   mkdirSync(join(g.wt, ".github/workflows"), { recursive: true });
-  writeFileSync(join(g.wt, WF), Object.entries(env).reduce((t, [k, v]) => t.replaceAll(`__${k}__`, String(v)), readFileSync(new URL("./cache.yml", import.meta.url), "utf8")));
+  writeFileSync(join(g.wt, WF), Object.entries(env).reduce((t, [k, v]) => t.replaceAll(`__${k}__`, String(v)), readFileSync(new URL(WFSRC, import.meta.url), "utf8")));
   writeFileSync(join(g.wt, "bf69.env"), Object.entries(env).map(([k, v]) => `${k}=${JSON.stringify(String(v))}`).join("\n") + "\n");
   g.run(["add", "-A"]);
   g.run(["commit", "-q", "--allow-empty", "-m", `BF-69 ${kase} on ${br}`]);
@@ -249,6 +251,84 @@ switch (kase) {
       && what["bf69-lru-1"].every((w) => w === "restored") && what["bf69-lru-2"].every((w) => w === "restored")
       && what["bf69-rel-1"].every((w) => w === "miss");
     result({ ok, r2: { ids, bytes: byId, total }, what });
+    break;
+  }
+  case "par": {
+    // BF-69's parallel-save line (the lead's ruling, 2026-11-25): one dispatch fans out to four jobs, two per major
+    // (`par.yml`'s matrix), every leg seeding one key per major and holding its bytes until AT, so each key's two
+    // reserves come within about a second of each other. Needs four runner slots. Pass: every job succeeds, one save
+    // per major commits (the other's reserve is refused, so its post step only warns), and the read after restores one
+    // whole entry's bytes, equal to the bytes of the leg whose save committed. The overlap is shown from each job's
+    // reserve, read in the edge's own request log (`$workers.event.request`) for `POST …/caches`, and from the
+    // toolkit's lines.
+    if (runnerDirs.length < 4) throw new Error("par needs four runner directories");
+    // checkout reads the repository with an installation token of m3-ci limited to contents:read on this repository,
+    // set as the repository secret BF69_READ through `gh secret set` (stdin), since m4a enables no job tokens.
+    const t = await ghs({ repositories: [NAME], permissions: { contents: "read" } });
+    if (t.status !== 201) throw new Error(`installation token: ${t.status}`);
+    const host = new URL(EDGE).host;
+    const gh = spawnSync("gh", ["secret", "set", "BF69_READ", "-R", `${host}/${R}`], { input: t.body.token, encoding: "utf8",
+      env: { ...process.env, GH_HOST: host, GH_ENTERPRISE_TOKEN: admin, GH_CONFIG_DIR: join(out, "ghcfg"), GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1", NO_COLOR: "1" } });
+    log(`gh secret set BF69_READ -> ${gh.status} ${(gh.stderr || "").trim().slice(0, 200)}`);
+    if (gh.status !== 0) throw new Error("gh secret set");
+    // AT leaves time for four runners to start and reach the seed step (acquire, checkout, the cache lookup).
+    const at = Math.floor(Date.now() / 1000) + Number(process.env.BF69_LEAD_S ?? 150);
+    onBranch("main", { KEY: "bf69-par-2", SEED: 1, MIB, AT: at });
+    const run = await dispatch("main");
+    const r = await runAll([run]);
+    const lines = (j) => readFileSync(join(out, `${kase}-job-${j.job}.log`), "utf8").split("\n");
+    const stamp = (l) => Date.parse(l.slice(0, 23) + "Z");
+    const per = Object.fromEntries(["v4", "v5"].map((m) => {
+      const js = r.jobs.filter((j) => j.name.startsWith(m));
+      return [m, js.map((j) => {
+        const L = lines(j);
+        const at = (re) => { const l = L.find((x) => re.test(x)); return l ? new Date(stamp(l)).toISOString() : null; };
+        return { job: j.job, name: j.name, conclusion: j.conclusion, made: parse([{ ...j, name: m }])[m]?.sha256,
+          checkout: (L.find((l) => /BF69 v[45] leg=/.test(l) && !/echo /.test(l)) ?? "").replace(/^.*?BF69/, "BF69").trim(),
+          postStart: at(/Post job cleanup|Post Run actions-mirror\/cache/), saved: at(/Cache saved with key/),
+          refused: (L.find((l) => /Failed to save|Unable to reserve|another job may be creating|already exists/i.test(l)) ?? "").replace(/^\S+\s/, "").slice(0, 200) || null };
+      })];
+    }));
+    // The read after: one job per major, no seed.
+    onBranch("main", { KEY: "bf69-par-2", SEED: 0, MIB, AT: 0 });
+    const check = await runAll([await dispatch("main")]);
+    const read = Object.fromEntries(["v4", "v5"].map((m) => {
+      const js = check.jobs.filter((j) => j.name.startsWith(m));
+      return [m, js.map((j) => ({ job: j.job, conclusion: j.conclusion, ...parse([{ ...j, name: m }])[m] }))];
+    }));
+    // F126: every cache step's runner-side span against the edge's own log of the same job's cache calls. A step over
+    // 30 s with no edge call inside its gap places the hold before the edge.
+    const edgeCalls = (await (await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/workers/observability/telemetry/query`, {
+      method: "POST", headers: { authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ queryId: `bf69f126-${Date.now()}`, timeframe: { from: Date.now() - 50 * 60_000, to: Date.now() }, view: "events", limit: 500,
+        parameters: { datasets: ["cloudflare-workers"], filters: [{ key: "$metadata.service", operation: "eq", type: "string", value: "graft-m4a-edge" },
+          { key: "$workers.event.request.url", operation: "includes", type: "string", value: "_services/cache/" }] } }) })).json()).result?.events?.events ?? [];
+    const edge = edgeCalls.map((e) => ({ t: e.timestamp, ms: e.$workers?.wallTimeMs, m: e.$workers?.event?.request?.method,
+      path: (e.$workers?.event?.request?.url ?? "").replace(/^https:\/\/[^/]+/, "").replace(/\?.*/, ""), status: e.$workers?.event?.response?.status })).sort((x, y) => x.t - y.t);
+    const slow = [];
+    for (const j of [...r.jobs, ...check.jobs]) {
+      const L = lines(j);
+      const debug = L.filter((l) => /##\[debug\].*(getCacheEntry|reserveCache|commitCache|Resource Url|Attempt \d+ of|Cache Result|failed with error)/.test(l)).map((l) => l.replace(/^(\S+).*?##\[debug\]/, "$1 ").slice(0, 200));
+      for (const [from, to] of [[/##\[group\]Run actions-mirror\/cache/, /Cache (restored|not found)|Failed to restore/], [/Post job cleanup|Post Run actions-mirror\/cache/, /Cache saved|Failed to save|Unable to reserve|already exists|another job/i]]) {
+        const a = L.find((l) => from.test(l)), b = a && L.slice(L.indexOf(a)).find((l) => to.test(l));
+        if (!a || !b || stamp(b) - stamp(a) < 30_000) continue;
+        const inGap = edge.filter((e) => e.t > stamp(a) && e.t < stamp(b));
+        slow.push({ job: j.job, step: from.source.slice(0, 30), from: new Date(stamp(a)).toISOString(), to: new Date(stamp(b)).toISOString(), runnerDebug: debug, edgeInGap: inGap.length, edgeAround: edge.filter((e) => Math.abs(e.t - stamp(a)) < 400_000).slice(0, 12) });
+      }
+    }
+    writeFileSync(join(out, "par-edge-cache.json"), JSON.stringify(edge));
+    // The reserves (`POST …/caches`) from the same log, read after the check run: Workers Logs lags the request by up to
+    // a minute, so a query right after the four jobs found none.
+    const reserves = edge.filter((e) => e.m === "POST" && /artifactcache\/caches$/.test(e.path)).map((e) => ({ at: new Date(e.t).toISOString(), status: e.status, ms: e.ms }));
+    const ok = r.jobs.length === 4 && r.jobs.every((j) => j.conclusion === "Success") && check.jobs.every((j) => j.conclusion === "Success")
+      && ["v4", "v5"].every((m) => per[m].filter((x) => x.saved).length === 1
+        && read[m].every((x) => x.what === "restored" && x.sha256 === per[m].find((y) => y.saved).made));
+    // The read token goes now: the secret, then the token itself (`DELETE /installation/token`), not left to its hour.
+    const del = await api("DELETE", `/api/v3/repos/${R}/actions/secrets/BF69_READ`, admin);
+    const rev = await api("DELETE", "/api/v3/installation/token", null, undefined, { authorization: `token ${t.body.token}` });
+    const after = await api("GET", `/api/v3/repos/${R}`, null, undefined, { authorization: `token ${t.body.token}` });
+    log(`BF69_READ: secret delete ${del.status}, token revoke ${rev.status}, the token after ${after.status}`);
+    result({ ok, at: new Date(at * 1000).toISOString(), per, reserves, read, slow, token: { secretDelete: del.status, revoke: rev.status, after: after.status } });
     break;
   }
   case "chunks": {
