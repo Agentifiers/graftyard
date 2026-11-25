@@ -9946,7 +9946,7 @@ restarted home a 19-part chain, and its first step built the fold from scratch b
 additions: a restarted container deletes a kept fold, the swap checks that the chain still extends the fold's, and the
 settling row reads `chain_head` against `chain_chk` and hits p99 past 20 packs. Built on branch `fold-aside` from main
 `9568234e`, not yet measured hosted. Container only (`containers/git/server/compose.go`), so it ships with a new shard
-image on a site day, with no edge day.
+image on a site day, with no edge day. **Measured hosted on B0-34 mt26 (2026-11-25), and G37 closed on it** (the lead's ruling).
 
 **Decision.**
 - A step that leaves the chain at `foldStart` parts (12 [guess]) or more starts one fold for the network, unless one
@@ -10004,6 +10004,14 @@ behind it, and a restart steps a part first.
   - 168: no ceiling at `partsMax`;
   - a restarted container keeps a fold its disk held.
 - `tests/composed/plant.py`'s "no fold" mutant now plants no fold start, and is caught.
+- **Hosted, B0-34 mt26 (2026-11-25, `tests/am1/results/b034-mt26.md`), settling G37:** the only gap between part puts
+  over 60 s was 109 s across the kill and the home's rehydrate, 54 s at most outside it; every clone 99.2% in kill and
+  100% in second; the moved-load site's one composed miss while held 1,853 ms [measured].
+- **The flip's baseline (mt26).** While the chain was past 20 packs (05:21:35 to 05:26:07, up to 27 parts), hits read
+  `chain_chk` 0 at p50 and p99, `chain_head` p99 11 to 17 ms, `chain_open` p99 226 to 336 ms, and hits p99 727 to 759 ms
+  by phase (n 172), against j9's 652 ms with outages removed [measured, `server-timing` on a1's hits]. Whether any head
+  in that window was put without its pack records (past `HEAD_MAX`) is [unverified]: `chain_chk` 0 says the data
+  center's sets or the records covered every pack. The flip compares later rows against these numbers.
 
 **What it costs** [inference]. Folds start at 12 parts, not 20, so there are about 1.5 times as many base builds and
 puts (about 258 MB to each warm bucket for the mono). Under load, a fold that takes over 120 s, as on mt25, lets the
