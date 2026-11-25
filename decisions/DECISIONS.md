@@ -10539,7 +10539,7 @@ is a new Tokens format.
 Three such chains at 2026-11-23 16:05Z, five by 21:05Z, seven by 2026-11-24 22:20Z. Each costs every round three member wakes (about two a second for the seven), holds a place in the batch, and keeps its last entries, the retire's included, from the vault and every lifeboat. BF-53 first read this as the feed stopping; it was not (`tests/m6/results/bf53.md`).
 
 **Decision.**
-- **(b) The purge waits for the feed.** After the gate and before any `/purge_retire`, `POST .../purge` reads `export-state`'s cursor for each chain against the highest commit a joined member answers (`purge::Status::Joined::commit`). Behind, it answers 503 with `waitLeftMs`, and the operator's retry asks again (`export::purge_wait`). The wait's start is the first call's time, kept in the feed site's `export` object (`/export_purge_wait`), so the cap holds across retries. Past `PURGE_FEED_WAIT_MS`, an hour [guess, R62], it retires anyway, logs `export feed: <chain> retired with entries F..=T never exported` as an error, and names them in the 200's `unexported`. An install whose edge binds no export bucket has no feed and no wait. Once every member is retired, it drops both chains' reports and waits (`DELETE /export_report`).
+- **(b) The purge waits for the feed.** After the gate and before any `/purge_retire`, `POST .../purge` reads `export-state`'s cursor for each chain against the highest commit a joined member answers (`purge::Status::Joined::commit`). Behind, it answers 503 with `waitLeftMs`, and the operator's retry asks again (`export::purge_wait`). The wait's start is the first call's time, kept in the feed site's `export` object (`/export_purge_wait`), so the cap holds across retries. Past `PURGE_FEED_WAIT_MS`, an hour [guess, R63], it retires anyway, logs `export feed: <chain> retired with entries F..=T never exported` as an error, and names them in the 200's `unexported`. An install whose edge binds no export bucket has no feed and no wait. Once every member is retired, it drops both chains' reports and waits (`DELETE /export_report`).
 - **(a) A round drops a proven retired report.** `graftyard_lookup::log_rows` now answers `LogRows::Unjoined` when every member asked answered 409, apart from `Missed` (down, slow, only the leader). A planned chain that comes back `Unjoined` is asked `retired_group`, the members' retire proof that `export-retired` uses. Only both drop the report, with the same unexported line (`export::forgets`). A `Missed` chain, or an unjoined one whose members do not all hold their `retired` row (a join in progress, a replaced generation), keeps its report and is read again.
 - **graft-m3f's seven.** (a) clears them on the next site day from main. No hand cleanup.
 
@@ -11107,3 +11107,27 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 **Flip.**
 - A legitimate history that rewrites an applied index, such as a `Release` restore into the same install id. A restore is a new install (`design/DESIGN.md`, "Install operations"), so none exists now.
 - A view so long that 32 bytes an entry matters to an isolate. Then keep a digest of the entries since a checkpoint the view signs.
+
+#### `move-unmoved`: a group that no leader answers in `ASKS_MAX` asks ends unmoved, and the coordinator finishes with it listed (2026-11-25)
+
+**Status.** Built (OPEN-QUESTIONS R62, the lead's ruling of 2026-11-25); Workflows script only, no site script and no Release format change. Hosted on m6aL's recovery half.
+
+**Decision.**
+- A `MoveGroup` instance that reaches `ASKS_MAX` asks with no answer from a leader (no step planned, held or taken) ends `unmoved` rather than erroring: it writes one `PAGE graft-workflows: <chain> unmoved: <why>` line to Workers Logs, from a step so a replay does not repeat it, and returns `{chain, asks, unmoved}` (`workers/workflows/move.mjs`, `group`).
+- The coordinator reads each complete group's output and finishes with `{groups, unmoved: [{chain, why}]}`, kept in its instance output for the row and an operator. `graft-ops` reads it as `complete` and commits the `ReplaceMember`'s `IntentDone`, so `RestorePlacement` can bring the lost site back, and that is what lets those chains elect again.
+- A group a leader answered and that still did not finish in `ASKS_MAX`, and every other group error, still errors the coordinator, which `graft-ops` pages on, as before.
+
+**Why.** One chain whose live voters cannot elect without the lost site blocked the whole `ReplaceMember` for good. On m6aL six groups could never finish: `tokens:953`, whose only live joined voter was on site 2, `repo:0`, which never formed a group, and four first-create leftovers. An errored coordinator pages and leaves the intent current. `Abort` of a `ReplaceMember` moves nothing the executor runs, `Halt` keeps it current, and a restarted coordinator meets the same groups, so the restore that would let those chains elect was refused (`IntentCurrent`) (`tests/m6/results/m6-wp1.md`, "m6aL").
+
+**Beat.**
+- **Leave it errored and repair by hand,** by recreating group instances with more rows. Rejected: `tokens:953` and `repo:0` still cannot elect, so it unblocks nothing.
+- **List the unmoved chains in `IntentDone`.** Rejected for now: it is a Release format change, and the coordinator's output and the pages already name them. It stays open in R62.
+- **Skip a group that cannot elect early,** before `ASKS_MAX`. Rejected: an election can take a while after a loss, and `campaign-rotate`'s m6aL groups needed 7 or 8 asks; `ASKS_MAX`'s hour is the bound the paging already used.
+
+**Evidence.**
+- `workers/workflows/tests/move.test.mjs`: "a group no leader answers in ASKS_MAX asks ends unmoved and pages; one a leader answered still errors", and "a coordinator finishes with its unmoved groups listed, and still errors on an errored one". Both fail on main a8f4780e, along with the replay test's output shape.
+- `tests/m0carried/plant133.py`: 5 mutants, all caught.
+
+**Flip.**
+- An unmoved chain that loses an acknowledged write.
+- A restore2 that fails to elect an unmoved chain once the lost site is back.

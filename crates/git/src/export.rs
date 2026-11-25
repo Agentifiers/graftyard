@@ -723,7 +723,7 @@ pub fn next_round_delay_s(claimed_ms: u64, now_ms: u64) -> u32 {
 }
 
 /// How long a purge waits for the feed to carry a chain's last entries before it goes ahead without them [guess]
-/// (`decisions/DECISIONS.md`, "`feed-retired`"; `decisions/OPEN-QUESTIONS.md`, R62): a round is about 15 s, so an
+/// (`decisions/DECISIONS.md`, "`feed-retired`"; `decisions/OPEN-QUESTIONS.md`, R63): a round is about 15 s, so an
 /// hour is a stalled feed, and a purge is never held for good by one.
 pub const PURGE_FEED_WAIT_MS: u64 = 3_600_000;
 
