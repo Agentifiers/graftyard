@@ -759,34 +759,55 @@ async fn dispatch(c: &Ctx<'_>, rd: &Read, chain: ChainId, b: &Value) -> Result<R
         Ok(v) => v["text"].as_str().unwrap_or_default().to_owned(),
         Err(x) => return Ok(x),
     };
-    let parsed = graftyard_actions::workflow::parse(path, &src);
-    if !parsed.ok() {
-        return Ok(Reply::json(422, json!({ "message": "invalid workflow", "errors": parsed.errors })));
-    }
-    let jobs = match graftyard_actions::specs::job_specs(&parsed.workflow) {
-        Ok(j) => j,
-        Err(e) => return Ok(Reply::json(422, json!({ "message": e }))),
+    let tokens = c.cfg.enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_TOKENS)
+        && c.cfg.enabled.contains(&graftyard_identity::AUTHZ_FORMAT_V14);
+    // A run marked as a fork pull request's, whose jobs read no secret (BF-59): no fork route exists yet, so the
+    // admin's dispatch marks it [inference: the refusal is `acquirejob`'s, which reads only `run.fork`].
+    let fork = b["fork"].as_bool().unwrap_or(false);
+    let (call, jobs) = match dispatch_call(rd.repo.id, Index(rd.index), path, &src, r, sha.0, fork, tokens) {
+        Ok(x) => x,
+        Err(reply) => return Ok(reply),
     };
-    let run = WorkflowRun {
-        id: RunId(DbId(0)),
-        repo: rd.repo.id,
-        workflow: path.into(),
-        event: "workflow_dispatch".into(),
-        head_sha: sha.0,
-        head_ref: format!("refs/heads/{r}").into(),
-        trigger: (ChainId::Repo(rd.repo.id), Index(rd.index)),
-        attempt: 1,
-        concurrency: None,
-        // A run marked as a fork pull request's, whose jobs read no secret (BF-59): no fork route exists yet, so the
-        // admin's dispatch marks it [inference: the refusal is `acquirejob`'s, which reads only `run.fork`].
-        fork: b["fork"].as_bool().unwrap_or(false),
-    };
-    Ok(match runsvc_call(c, chain, &json!({ "op": "create_run", "run": run, "jobs": jobs })).await {
-        Ok((s, v)) => {
-            Reply::json(s, json!({ "run": v["body"]["run"], "jobs": jobs.len(), "shard": chain.to_string() }))
-        }
+    Ok(match runsvc_call(c, chain, &call).await {
+        Ok((s, v)) => Reply::json(s, json!({ "run": v["body"]["run"], "jobs": jobs, "shard": chain.to_string() })),
         Err(e) => unavailable(&e),
     })
+}
+
+/// The dispatch's `/runsvc` `create_run` call for workflow `path` (source `src`) at `sha` on branch `r`, and its job
+/// count, or the 422 a bad workflow answers. Once job tokens are on (`tokens`), the jobs' declared permissions ride
+/// along as the site's trigger sends them (`runsvc::create_run_call`), so a dispatched job's `GITHUB_TOKEN` and
+/// `id-token: write` follow its `permissions:` (F127).
+#[allow(clippy::too_many_arguments)]
+fn dispatch_call(
+    repo: graftyard_types::RepoId,
+    index: Index,
+    path: &str,
+    src: &str,
+    r: &str,
+    sha: [u8; 20],
+    fork: bool,
+    tokens: bool,
+) -> std::result::Result<(Value, usize), Reply> {
+    let parsed = graftyard_actions::workflow::parse(path, src);
+    if !parsed.ok() {
+        return Err(Reply::json(422, json!({ "message": "invalid workflow", "errors": parsed.errors })));
+    }
+    let (jobs, permissions) = graftyard_actions::specs::job_specs_declared(&parsed.workflow)
+        .map_err(|e| Reply::json(422, json!({ "message": e })))?;
+    let run = WorkflowRun {
+        id: RunId(DbId(0)),
+        repo,
+        workflow: path.into(),
+        event: "workflow_dispatch".into(),
+        head_sha: sha,
+        head_ref: format!("refs/heads/{r}").into(),
+        trigger: (ChainId::Repo(repo), index),
+        attempt: 1,
+        concurrency: None,
+        fork,
+    };
+    Ok((runsvc::create_run_call(&run, &jobs, &permissions, tokens, None), jobs.len()))
 }
 
 /// `/api/graftyard/v1/repos/{o}/{r}/actions/...`, or `None` for any other path under `/api/graftyard/v1`.
@@ -1052,5 +1073,79 @@ mod tests {
         let f = Fake { fail: None, gone: false, made: Cell::new(0) };
         let none = acquire_config(&f, &json!({})).now_or_never().expect("ready");
         assert!(matches!(none, Err(Refused::Gone(_))), "a request naming no job");
+    }
+
+    /// F127: a dispatched workflow whose job declares `id-token: write` gets `GenerateIdTokenUrl` once job tokens are
+    /// on. The dispatch's call goes through the site's decode (`create_run_op`) and the shard's `decide` and fold, and
+    /// the job message reads the grant from the fold as the shard leader does. On main the dispatch sent no
+    /// permissions, so the run was `CreateRun`, no `JobTokens` row existed, and the URL was missing.
+    #[test]
+    fn a_dispatched_job_granted_id_token_write_gets_the_token_url_once_job_tokens_are_on() {
+        use graftyard_actions::shard::{ActionsActor, ActionsCmd, ActionsFold, ActionsOp};
+        use graftyard_raft::{Command as _, EntryBody, Fold as _, LogEntry, Scratch as _, TierSet};
+        use graftyard_types::IdBlock;
+
+        const SRC: &str = "on: workflow_dispatch\npermissions:\n  contents: read\n  id-token: write\njobs:\n  \
+                           sts:\n    runs-on: self-hosted\n    steps:\n      - run: \"true\"\n  denied:\n    \
+                           runs-on: self-hosted\n    permissions:\n      contents: read\n    steps:\n      - run: \
+                           \"true\"\n";
+        let urls = runsvc::Urls::new("https://graft.example");
+        let granted = |tokens: bool, fork: bool| -> Vec<(String, bool)> {
+            let (call, n) =
+                super::dispatch_call(REPO, Index(4), ".github/workflows/bf70.yml", SRC, "main", [7; 20], fork, tokens)
+                    .unwrap();
+            assert_eq!(n, 2);
+            let (_, op) = runsvc::create_run_op(&call).unwrap();
+            assert_eq!(matches!(op, ActionsOp::CreateRunWith { .. }), tokens, "{op:?}");
+            let mut f = ActionsFold::default();
+            f.apply_id_block(IdBlock::whole(0, 9).unwrap());
+            let cmd = ActionsCmd { actor: ActionsActor::Operator, op };
+            let (evs, _) = cmd.decide(&f.scratch_at(Timestamp(5), TierSet::CORE), &[]).unwrap();
+            let mut sc = f.scratch_at(Timestamp(5), TierSet::CORE);
+            for ev in &evs {
+                sc.check(ev).unwrap();
+                sc.apply(ev);
+            }
+            f.apply_entry(&LogEntry {
+                term: graftyard_raft::Term(1),
+                index: Index(1),
+                prev: graftyard_raft::PREV_ZERO,
+                format: graftyard_actions::shard::ACTIONS_FORMAT_TOKENS,
+                tiers: TierSet::CORE,
+                at: Timestamp(5),
+                requests: Default::default(),
+                extend: None,
+                body: EntryBody::Events(evs.into_vec()),
+            });
+            let run = f.runs.values().next().unwrap().run.clone();
+            let mut out = Vec::new();
+            for row in f.jobs.values() {
+                let a = runsvc::Acquired {
+                    repository: "m3org/bf70",
+                    owner_login: "m3org",
+                    relay_site: 0,
+                    github_token: "",
+                    job_token: "jt",
+                    locked_until: Timestamp(9),
+                    secrets: vec![],
+                    variables: vec![],
+                    cache: false,
+                    // As the shard leader reads it (`workers/site/src/actions.rs`, `acquire`).
+                    id_token: graftyard_actions::oidc::id_token_granted(f.more.tokens.get(&row.spec.id), run.fork),
+                };
+                let m = runsvc::acquire_message(&urls, &run, row, &a);
+                let data = &m["resources"]["endpoints"][0]["data"];
+                out.push((row.spec.name.to_string(), data.get("GenerateIdTokenUrl").is_some()));
+            }
+            out.sort();
+            out
+        };
+        assert_eq!(granted(true, false), [("denied".into(), false), ("sts".into(), true)]);
+        assert_eq!(
+            granted(false, false),
+            [("denied".into(), false), ("sts".into(), false)],
+            "job tokens off: as before"
+        );
+        assert_eq!(granted(true, true), [("denied".into(), false), ("sts".into(), false)], "a fork's run: never");
     }
 }

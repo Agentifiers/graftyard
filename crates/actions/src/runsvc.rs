@@ -596,6 +596,42 @@ pub fn steps_json(steps: &[crate::workflow::Step]) -> Value {
     Value::Array(out)
 }
 
+/// The `/runsvc` `create_run` call a trigger or the edge's dispatch sends: the jobs' declared permissions ride along
+/// only where job tokens are on (`tokens`) and a job declared some, and a `pull_request` run's base branch only where
+/// `actions-cache` is (`base`). Every other run's call is the one it was before either.
+pub fn create_run_call(
+    run: &crate::shard::WorkflowRun,
+    jobs: &[crate::shard::JobSpec],
+    permissions: &crate::specs::Declared,
+    tokens: bool,
+    base: Option<&str>,
+) -> Value {
+    let mut b = json!({ "op": "create_run", "run": run, "jobs": jobs });
+    if tokens && !permissions.is_empty() {
+        b["permissions"] = json!(permissions);
+    }
+    if let Some(base) = base {
+        b["base_ref"] = json!(base);
+    }
+    b
+}
+
+/// The command a shard leader commits for a `create_run_call`, with the run's key: `CreateRunOn` for a `pull_request`
+/// run with a base, else `CreateRunWith` when the call carries permissions, else `CreateRun`.
+pub fn create_run_op(b: &Value) -> Result<(crate::shard::RunKey, crate::shard::ActionsOp), String> {
+    use crate::shard::ActionsOp;
+    let run: crate::shard::WorkflowRun = serde_json::from_value(b["run"].clone()).map_err(|e| e.to_string())?;
+    let jobs: Vec<crate::shard::JobSpec> = serde_json::from_value(b["jobs"].clone()).map_err(|e| e.to_string())?;
+    let permissions: crate::specs::Declared = serde_json::from_value(b["permissions"].clone()).unwrap_or_default();
+    let key = run.key();
+    let op = match b["base_ref"].as_str() {
+        Some(base) if run.is_pull_request() => ActionsOp::CreateRunOn { run, jobs, permissions, base_ref: base.into() },
+        _ if permissions.is_empty() => ActionsOp::CreateRun { run, jobs },
+        _ => ActionsOp::CreateRunWith { run, jobs, permissions },
+    };
+    Ok((key, op))
+}
+
 /// Plain JSON as runner context data (`PipelineContextDataJsonConverter`), keys in serde_json's order.
 pub fn context_of(v: &Value) -> Value {
     match v {

@@ -279,17 +279,8 @@ pub fn create_run_body(
     permissions: &graftyard_actions::specs::Declared,
     base: Option<&str>,
 ) -> Value {
-    let mut b = json!({ "op": "create_run", "run": run, "jobs": jobs });
-    if job_tokens(env) && !permissions.is_empty() {
-        b["permissions"] = json!(permissions);
-    }
     // `actions-cache`: a `pull_request` run's base branch, which its jobs read caches from (`CreateRunOn`).
-    if actions_cache(env)
-        && let Some(base) = base
-    {
-        b["base_ref"] = json!(base);
-    }
-    b
+    runsvc::create_run_call(run, jobs, permissions, job_tokens(env), base.filter(|_| actions_cache(env)))
 }
 
 /// The most stored log bytes one `RunOwner` round reads: a round past it stops at the entry before, and the next alarm
@@ -874,23 +865,12 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
         }
         // `CreateRun` from the trigger (the edge's dispatch until `ActionsTrigger` runs on the repository leader).
         ("create_run", None) => {
-            let run: act::WorkflowRun =
-                serde_json::from_value(b["run"].clone()).map_err(|e| worker::Error::RustError(e.to_string()))?;
-            let jobs: Vec<act::JobSpec> =
-                serde_json::from_value(b["jobs"].clone()).map_err(|e| worker::Error::RustError(e.to_string()))?;
+            // `gh-token`: declared permissions come only from a caller where job tokens are on
+            // (`runsvc::create_run_call`: `create_run_body`, and the edge's dispatch).
+            let (key, op) = runsvc::create_run_op(&b).map_err(worker::Error::RustError)?;
             let mut k = Vec::new();
-            graftyard_fold::canon::write(&mut k, &run.key());
+            graftyard_fold::canon::write(&mut k, &key);
             let rid = act::consumer_request(chain, &k);
-            // `gh-token`: declared permissions come only from a trigger where `job_tokens` (`create_run_body`).
-            let permissions: graftyard_actions::specs::Declared =
-                serde_json::from_value(b["permissions"].clone()).unwrap_or_default();
-            let op = match b["base_ref"].as_str() {
-                Some(base) if run.is_pull_request() => {
-                    ActionsOp::CreateRunOn { run, jobs, permissions, base_ref: base.into() }
-                }
-                _ if permissions.is_empty() => ActionsOp::CreateRun { run, jobs },
-                _ => ActionsOp::CreateRunWith { run, jobs, permissions },
-            };
             match commit(h, rid, ActionsActor::Operator, op).await {
                 Ok(Ok(ActionsOut::Run(r))) => json!({ "status": 201, "body": { "run": r } }),
                 Ok(r) => refused(422, r),

@@ -487,3 +487,62 @@ fn a_slow_event_holds_one_slot_and_the_cursor_waits_below_it() {
     assert_eq!(st.cursor(), through);
     assert_eq!(runs(&w).len(), 10);
 }
+
+/// BF-70's oracle gap (F127): a `pull_request` run whose job declares `id-token: write`, taken the way the site's
+/// `ActionsTrigger` takes it: `pull_request_run`'s declared permissions in `create_run_call` with the site day's flags,
+/// decoded by the shard leader's `create_run_op`, committed on real members, and the job message rendered from the
+/// fold's grant. With job tokens on, the granted job's message names `GenerateIdTokenUrl` and the job without the grant
+/// gets none; with them off (graft-m4a before BF-70 r2), neither does. `runsvc_host` builds `CreateRunWith` itself, so
+/// it never ran this path.
+#[test]
+fn a_pull_request_runs_granted_job_gets_the_id_token_url_only_with_job_tokens_on() {
+    use graftyard_actions::shard::{ACTIONS_FORMAT_CACHE, ACTIONS_FORMAT_TOKENS};
+    const OIDC: &str = "on: pull_request\npermissions:\n  contents: read\n  id-token: write\njobs:\n  sts:\n    \
+                        runs-on: [self-hosted, linux]\n    steps:\n      - run: \"true\"\n  denied:\n    runs-on: \
+                        [self-hosted, linux]\n    permissions:\n      contents: read\n    steps:\n      - run: \"true\"\n";
+    let urls = graftyard_actions::runsvc::Urls::new("https://graft.example");
+    for (tokens, want) in [(true, [("denied", false), ("sts", true)]), (false, [("denied", false), ("sts", false)])] {
+        let mut w =
+            World::new(vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST, ACTIONS_FORMAT_TOKENS, ACTIONS_FORMAT_CACHE]);
+        let e = w.push_both(oid(121), oid(122));
+        w.test_merge(1, clean(1));
+        let p = w.events(&e).remove(0);
+        let v = w.view(p.n.0);
+        let PrTarget::Merge(m) = pr_target(&v) else { panic!("clean merge") };
+        let (run, jobs, permissions) =
+            pull_request_run(REPO, e.index, WF, OIDC, p.n, p.action, &v.base, m).unwrap().unwrap();
+        // The site day's flags: `job_tokens` as given, `actions_cache` on (graft-m4a's), so the base rides along.
+        let base = v.base.display();
+        let call = graftyard_actions::runsvc::create_run_call(&run, &jobs, &permissions, tokens, Some(&base));
+        let (_, op) = graftyard_actions::runsvc::create_run_op(&call).unwrap();
+        assert!(matches!(op, ActionsOp::CreateRunOn { .. }), "a pull_request run with its base: {op:?}");
+        let (now, id) = (w.now, w.id());
+        assert!(matches!(w.shard.commit(now, id, ActionsCmd { actor: ActionsActor::Operator, op }), Some(Ok(_))));
+        let f = w.shard.fold();
+        let row = f.runs.values().next().unwrap();
+        let mut seen: Vec<(&str, bool)> = f
+            .jobs
+            .values()
+            .map(|j| {
+                let a = graftyard_actions::runsvc::Acquired {
+                    repository: "m3org/bf70",
+                    owner_login: "m3org",
+                    relay_site: 0,
+                    github_token: "",
+                    job_token: "jt",
+                    locked_until: Timestamp(9),
+                    secrets: vec![],
+                    variables: vec![],
+                    cache: true,
+                    // As the shard leader reads it (`workers/site/src/actions.rs`, `acquire`).
+                    id_token: graftyard_actions::oidc::id_token_granted(f.more.tokens.get(&j.spec.id), row.run.fork),
+                };
+                let msg = graftyard_actions::runsvc::acquire_message(&urls, &row.run, j, &a);
+                let name: &str = if &*j.spec.name == "sts" { "sts" } else { "denied" };
+                (name, msg["resources"]["endpoints"][0]["data"].get("GenerateIdTokenUrl").is_some())
+            })
+            .collect();
+        seen.sort();
+        assert_eq!(seen, want, "job tokens {tokens}");
+    }
+}

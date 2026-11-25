@@ -377,6 +377,12 @@ Under that direction the orchestrator settled how graft-m6a's BF-50 rows read "L
 - **M5 closes when BF-46's hosted rows for the five rotations R45 added pass** (`SshHostKeys`, `McpAppKey`, `McpClientSecret`, `InsightsAppKey`, `SecretsWrapKey`; `build/BUILD-PLAN.md`, M5-WP6). Every other M5 row is met. The lead closes M5 in BUILD-PLAN once those rows pass, with no further operator decision. Known limits, not gate lines: `McpAppKey` and `InsightsAppKey` have no reader yet, so their rows read the probe and the switch only; BF-47 ran with the runner account as the vault account and a minimal Worker as the Workflows script (R10); BF-49's hosted revocation was pulled by `pull.py`, not the vault Worker; BM-5's revocation clause moved no pinned script.
 - **M4 stays open until `actions-cache`, `actions-artifacts`, and `actions-oidc` each have a gate row in M4-WP3 and it passes hosted** (`decisions/OPEN-QUESTIONS.md`, F116). Every M4 row written today is met. `graftyard actions import` and a hosted read of `GITHUB_TOKEN` minting stay known limits, not gate lines.
 
+### Operator decision, 2026-11-25, graft-m6a's total spend rises to $70
+
+> "Raise graft-m6a's total to $70"
+
+- **graft-m6a may spend at most $70 in total since it was created**, up from the $40 in its approval (`tests/m6/results/m6-wp1.md`). Its $20 a UTC day stays, and so do each row's stops. At the raise the install had spent $31.35, and m6aL2 plus BM-6's journey 5 drill were estimated to take it to about $55 to $60.
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
