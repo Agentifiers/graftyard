@@ -1,0 +1,76 @@
+# BF-69's parallel-save line (the lead's ruling, 2026-11-25): one workflow_dispatch fans out to four jobs, two per
+# actions/cache major, all saving one key per major at once, so two reserves of each key overlap by construction. The
+# actions are mirrored as `actions-mirror/cache` and `actions-mirror/checkout`: graft-m4a holds `actions/cache` and
+# `actions/checkout` Deleted for 90 days after BF-69's teardown (a create answers 422). `actions-mirror/checkout@v4` is
+# the unmodified actions/checkout v4, which checks the `strategy`/`matrix` context fix (runsvc-ctx) hosted. The driver
+# writes KEY, SEED, MIB and AT into `env` before it commits the file; every leg that seeds waits until AT (epoch
+# seconds) before writing its bytes, so all four post steps reserve within about a second of each other. The install
+# has no job tokens (21.5 is not enabled on m4a), so checkout's `token` comes from the repository secret BF69_READ;
+# its `repository` default, the expression the context fix is about, is left to the action. Each job prints `BF69`
+# lines: the checked-out `bf69.env`'s hash, then `made sha256=…`, `restored sha256=…`, or `miss`. The cache steps
+# run with ACTIONS_STEP_DEBUG and RUNNER_DEBUG, so `core.isDebug()` is true and the toolkit logs each call's attempt
+# lines (F126: a lookup the edge logged twice, 6 min apart).
+on:
+  workflow_dispatch:
+env:
+  KEY: "__KEY__"
+  SEED: "__SEED__"
+  MIB: "__MIB__"
+  AT: "__AT__"
+jobs:
+  v4:
+    runs-on: self-hosted
+    strategy:
+      matrix:
+        leg: [a, b]
+    steps:
+      - uses: actions-mirror/checkout@v4
+        with:
+          token: ${{ secrets.BF69_READ }}
+      - id: in
+        run: |
+          rm -rf bf69-data
+          echo "key=v4-$KEY" >>"$GITHUB_OUTPUT"
+          echo "BF69 v4 leg=${{ matrix.leg }} checkout=$(sha256sum bf69.env | cut -c1-16) cache_url=$([ -n "$ACTIONS_CACHE_URL" ] && echo set || echo env-unset)"
+      - id: c
+        uses: actions-mirror/cache@v4
+        env:
+          ACTIONS_STEP_DEBUG: "true"
+          RUNNER_DEBUG: "1"
+        with:
+          path: bf69-data
+          key: ${{ steps.in.outputs.key }}
+      - run: |
+          if [ -f bf69-data/blob ]; then echo "BF69 v4 restored sha256=$(sha256sum bf69-data/blob | cut -d' ' -f1) hit=${{ steps.c.outputs.cache-hit }}"
+          elif [ "$SEED" = 1 ]; then w=$((AT - $(date +%s))); [ $w -gt 0 ] && sleep $w
+            mkdir -p bf69-data && head -c $((MIB * 1048576)) /dev/urandom >bf69-data/blob
+            echo "BF69 v4 made sha256=$(sha256sum bf69-data/blob | cut -d' ' -f1)"
+          else echo "BF69 v4 miss"; fi
+  v5:
+    runs-on: self-hosted
+    strategy:
+      matrix:
+        leg: [a, b]
+    steps:
+      - uses: actions-mirror/checkout@v4
+        with:
+          token: ${{ secrets.BF69_READ }}
+      - id: in
+        run: |
+          rm -rf bf69-data
+          echo "key=v5-$KEY" >>"$GITHUB_OUTPUT"
+          echo "BF69 v5 leg=${{ matrix.leg }} checkout=$(sha256sum bf69.env | cut -c1-16) cache_url=$([ -n "$ACTIONS_CACHE_URL" ] && echo set || echo env-unset)"
+      - id: c
+        uses: actions-mirror/cache@v5
+        env:
+          ACTIONS_STEP_DEBUG: "true"
+          RUNNER_DEBUG: "1"
+        with:
+          path: bf69-data
+          key: ${{ steps.in.outputs.key }}
+      - run: |
+          if [ -f bf69-data/blob ]; then echo "BF69 v5 restored sha256=$(sha256sum bf69-data/blob | cut -d' ' -f1) hit=${{ steps.c.outputs.cache-hit }}"
+          elif [ "$SEED" = 1 ]; then w=$((AT - $(date +%s))); [ $w -gt 0 ] && sleep $w
+            mkdir -p bf69-data && head -c $((MIB * 1048576)) /dev/urandom >bf69-data/blob
+            echo "BF69 v5 made sha256=$(sha256sum bf69-data/blob | cut -d' ' -f1)"
+          else echo "BF69 v5 miss"; fi

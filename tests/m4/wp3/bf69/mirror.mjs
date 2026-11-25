@@ -11,24 +11,27 @@ import { OP, api, bed, log, must, accountShard, loginShard, repoShard, state, to
 
 const [bare, name, ...tags] = process.argv.slice(2);
 if (!bare || !name || !tags.length) throw new Error("usage: mirror.mjs <bare clone> <name> <tag>...");
-const ORG = 7100010;
+// MIRROR_ORG and MIRROR_ORG_ID name another org: m4a holds `actions/*` Deleted for 90 days after BF-69's teardown,
+// so the parallel-save row mirrors as `actions-mirror` (7100011).
+const LOGIN = process.env.MIRROR_ORG ?? "actions";
+const ORG = Number(process.env.MIRROR_ORG_ID ?? 7100010);
 const TRI = { name: "Tri", sites: [0, 1, 2], home: 0, generation: 1, moving_from: null, at: 5 };
 
 await must(`names:${accountShard(ORG)}`, { cred: OP, op: { PutAccount: { id: ORG, suspended: false, sessions_not_before: 0 } } });
-await must(`names:${loginShard("actions")}`, { cred: OP, op: { ClaimLogin: { login: "actions", kind: "Org", account: ORG } } }, "Taken");
-await must(`names:${accountShard(ORG)}`, { cred: OP, op: { SetAccountLogin: { account: ORG, login: "actions" } } });
+await must(`names:${loginShard(LOGIN)}`, { cred: OP, op: { ClaimLogin: { login: LOGIN, kind: "Org", account: ORG } } }, "Taken");
+await must(`names:${accountShard(ORG)}`, { cred: OP, op: { SetAccountLogin: { account: ORG, login: LOGIN } } });
 await must(`names:${accountShard(ORG)}`, { cred: OP, op: { InitPlacement: { owner: ORG, record: TRI } } }, "RecordExists");
 await must(`authz:${ORG}`, { cred: OP, op: { Open: { kind: "Org", enterprise: null } } }, "AlreadyOpened");
 await must(`authz:${ORG}`, { cred: OP, op: { SetMember: { user: state.admin, role: "Admin" } } });
-log(`actions = ${ORG}, m3-admin its admin`);
+log(`${LOGIN} = ${ORG}, m3-admin its admin`);
 
 // The repository, public, through the GHES route as the org's admin (auto_init off: the mirror's history is pushed).
-const made = await api("POST", "/api/v3/orgs/actions/repos", tokens.admin, { name, private: false });
+const made = await api("POST", `/api/v3/orgs/${LOGIN}/repos`, tokens.admin, { name, private: false });
 if (!(made.status === 201 || (made.status === 422 && JSON.stringify(made.body).includes("already exists")))) {
-  throw new Error(`create actions/${name}: ${made.status} ${JSON.stringify(made.body).slice(0, 300)}`);
+  throw new Error(`create ${LOGIN}/${name}: ${made.status} ${JSON.stringify(made.body).slice(0, 300)}`);
 }
 const repo = made.body?.id ?? (await bed({ chain: `authz:${ORG}`, read: { repo: name } })).value?.repo?.repo;
-log(`actions/${name} = ${repo}`);
+log(`${LOGIN}/${name} = ${repo}`);
 
 // Push each tag and its commit as a branch head too, so the default branch has a tip, through a 0600 credential file.
 const dir = execFileSync("mktemp", ["-d"]).toString().trim();
@@ -36,7 +39,7 @@ const tok = join(dir, ".tok");
 writeFileSync(tok, tokens.admin, { mode: 0o600 });
 writeFileSync(join(dir, ".cred.sh"), `#!/bin/sh\n[ "$1" = get ] || exit 0\necho username=x\necho "password=$(cat "${tok}")"\n`, { mode: 0o700 });
 const git = (...a) => execFileSync("git", ["-c", `credential.helper=${join(dir, ".cred.sh")}`, "-C", bare, ...a], { stdio: ["ignore", "pipe", "pipe"] }).toString();
-const url = `${EDGE}/actions/${name}.git`;
+const url = `${EDGE}/${LOGIN}/${name}.git`;
 const refspecs = [`refs/tags/${tags[0]}^{commit}:refs/heads/main`, ...tags.map((t) => `refs/tags/${t}:refs/tags/${t}`)];
 for (let i = 0; ; i++) {
   try { git("push", "--force", url, ...refspecs); break; } catch (e) {
@@ -45,7 +48,7 @@ for (let i = 0; ; i++) {
   }
 }
 execFileSync("rm", ["-rf", dir]);
-for (const t of tags) log(`actions/${name}@${t} = ${git("rev-parse", `refs/tags/${t}^{commit}`).trim()}`);
+for (const t of tags) log(`${LOGIN}/${name}@${t} = ${git("rev-parse", `refs/tags/${t}^{commit}`).trim()}`);
 const out = `${process.env.HOME}/.graft-m4a/bf69-mirrors.txt`;
 let prev = ""; try { prev = readFileSync(out, "utf8"); } catch {}
 if (!prev.split("\n").includes(`${name} ${repo}`)) writeFileSync(out, prev + `${name} ${repo}\n`, { mode: 0o600 });
