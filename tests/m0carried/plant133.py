@@ -28,6 +28,9 @@ MUTANTS = [
     ("the coordinator drops its unmoved list", WF,
      "    unmoved.push(...r.unmoved);\n",
      ""),
+    ("a restore group whose voters name no leader asks none to campaign", WF,
+     "    if (l === null || l === undefined || (lost !== null && l === lost)) return { campaign: true };\n",
+     "    if (lost !== null && (l === null || l === undefined || l === lost)) return { campaign: true };\n"),
     ("the coordinator reads an errored group as unmoved", WF,
      "        if (s.status === \"errored\" || s.status === \"terminated\") {\n",
      "        if (s.status === \"errored\") { left.push({ chain: chains[i].chain, why: \"errored\" }); continue; }\n"

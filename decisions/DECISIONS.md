@@ -11289,6 +11289,8 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - An unmoved chain that loses an acknowledged write.
 - A restore2 that fails to elect an unmoved chain once the lost site is back.
 
+**Amended 2026-11-25 (`restore-campaign`).** A follower that names no leader is asked to campaign on any move, not only a dead replace's. m6aL's restore started 3,118 groups and none stepped in 8 minutes: each group the replace moved had been led from the spare and gone idle, and its voters' promises had lapsed about 3 h before, so every ask answered `notLeader` naming no leader. `judge` asked for a campaign only when `lost` was set, which a restore (`dead: false`) never sets. `lost` now only adds the dead replace's case, a leader named on the lost site. Evidence: `workers/workflows/tests/move.test.mjs`, "a restore group whose voters name no leader asks one to campaign, then steps", fails on main 271fedba for a restore and a home (the replace case passed there), and the same rule is tested on all three kinds. plant133's new mutant 4 is caught.
+
 ### `actions-oidc`: Actions ID tokens under `ActionsOidcKey`, an RSA-2048 key in two slots read from the `Release` view, 2026-11-25
 
 **Status.** Approved by the lead (T-01a17bda) and built at $0 on branch `actions-oidc`. It needs a site day that ships the `SecretName::ActionsOidcKey` reader and binds both slots (`workers/site/deploy.mjs --oidc`), an edge day, and both slots written, before BF-70 (M4-WP3).
