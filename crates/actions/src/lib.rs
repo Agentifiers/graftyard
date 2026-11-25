@@ -13,6 +13,7 @@ pub mod launch;
 pub mod oidc;
 pub mod relay;
 pub mod rest;
+pub mod reusable;
 pub mod run_owner;
 pub mod runsvc;
 pub mod shard;
@@ -20,6 +21,7 @@ pub mod specs;
 pub mod token;
 pub mod trigger;
 pub mod workflow;
+pub mod zip;
 
 pub use ids::{ACTIONS_SHARDS, JobId, OWNER_SCOPE_SHARD, RunId, RunnerId, RunnerSessionId, actions_shard};
 pub use job::{

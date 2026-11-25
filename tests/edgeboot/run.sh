@@ -95,6 +95,46 @@ if [ -z "${PRODUCT:-}" ]; then
   echo "gzip through the front: put $c, get $c2, stored $want B, answered $got B, content-length ${len:-none}"
   { [ "$c" = 204 ] && [ "$c2" = 200 ] && cmp -s "$B/got.gz" "$B/stored.gz" && [ "$len" = "$want" ]; } \
     || { echo "  FAIL: the stored gzip did not leave the edge as stored"; ok=0; }
+  # F131's REST half on the edge's own wasm: two finalized artifacts (one file gzipped as the client stores it, one
+  # plain beside an empty file), each zip read back by Python's zipfile against the files' SHA-256, a one-day
+  # retention, and a delete that removes one artifact's objects and row and no other's.
+  head -c 250000 /dev/urandom >"$B/bin" && : >"$B/empty"
+  B="$B" FP="$FP" python3 - <<'PY' || ok=0
+import gzip, hashlib, io, json, os, urllib.request, zipfile
+b, port = os.environ["B"], os.environ["FP"]
+base = f"http://127.0.0.1:{port}/_bed/artifacts"
+def call(method, q="", body=None, h=None):
+    r = urllib.request.Request(f"{base}{q}", data=body, method=method, headers={"x-bed-token": "edgeboot-bed", **(h or {})})
+    with urllib.request.urlopen(r, timeout=60) as a:
+        return a.read()
+plain, binary, empty = (open(f"{b}/{n}", "rb").read() for n in ("plain", "bin", "empty"))
+z = gzip.compress(plain)
+a1 = json.loads(call("PUT", "?path=one/dir/text.txt&days=1", z, {"content-encoding": "gzip", "x-file-length": str(len(plain))}))["id"]
+a2 = json.loads(call("PUT", "?path=two/bin.dat", binary, {"x-file-length": str(len(binary))}))["id"]
+call("PUT", "?path=two/sub/empty", empty, {"x-file-length": "0"})
+rows = {r["name"]: r for r in json.loads(call("GET"))}
+fail = []
+day = rows["one"]["expires"] - rows["one"]["created"]
+if day != 86400000 or rows["two"]["expires"] - rows["two"]["created"] != 90 * 86400000:
+    fail.append(f"retention: one {day} ms, two {rows['two']['expires'] - rows['two']['created']} ms")
+sha = lambda x: hashlib.sha256(x).hexdigest()
+for aid, want in ((a1, {"dir/text.txt": plain}), (a2, {"bin.dat": binary, "sub/empty": empty})):
+    zf = zipfile.ZipFile(io.BytesIO(call("GET", f"?zip={aid}")))
+    if zf.testzip() is not None:
+        fail.append(f"zip {aid}: bad CRC")
+    got = {i.filename: sha(zf.read(i)) for i in zf.infolist()}
+    if got != {k: sha(v) for k, v in want.items()}:
+        fail.append(f"zip {aid}: {sorted(got)}")
+    print(f"zip {aid}: {sorted(got)} {[i.compress_type for i in zf.infolist()]}")
+call("DELETE", f"?id={a1}")
+keys = json.loads(call("GET", "?keys=1"))
+left = sorted({r["name"] for r in json.loads(call("GET"))})
+if any("/one" in k or k.endswith(f"/a/{a1}") for k in keys) or left != ["two"] or not any("/two/" in k for k in keys):
+    fail.append(f"delete: left {left}, keys {keys}")
+print(f"rest artifacts: {len(keys)} objects after the delete, rows {left}")
+print("  FAIL: " + "; ".join(fail) if fail else "rest artifacts ok")
+raise SystemExit(1 if fail else 0)
+PY
   n=$(grep -c 'out of bounds\|RuntimeError' "$B/front.log"); [ "$n" = 0 ] || ok=0
 fi
 sleep 1

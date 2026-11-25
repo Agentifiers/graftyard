@@ -15,9 +15,10 @@
 //!   reads, whole.
 //! - `m/<name>`: the artifact's manifest, written by the client's finalize. Only a name with a manifest is listed.
 
-use graftyard_types::{ChainId, DbId, RepoId};
+use graftyard_types::{ChainId, DbId, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::cache::{Tiling, tiles};
 use crate::ids::{JobId, RunId};
@@ -29,10 +30,40 @@ pub const API_VERSION: &str = "6.0-preview";
 pub const ITEM_PATH_MAX: usize = 512;
 /// One chunk's bytes at most: the client sends 8 MiB (`config-variables.js`, `getUploadChunkSize`).
 pub const CHUNK_MAX: u64 = 64 << 20;
+/// The default and maximum artifact retention, in days.
+pub const RETENTION_DAYS_MAX: u64 = 90;
+/// How long a zip URL works: "This URL expires after 1 minute" [doc: GHES 3.22 REST, "Download an artifact"].
+pub const ZIP_URL_LIFE_S: u64 = 60;
+const DAY_MS: u64 = 86_400_000;
 
 /// Everything one repository's artifacts hold on its owner's shard `chain`: what a repository delete drops.
 pub fn repo_prefix(chain: ChainId, repo: RepoId) -> String {
     format!("{ARTIFACTS_ROOT}{chain}/{}/", repo.0.0)
+}
+
+/// One finalized artifact's row in the repository index.
+pub fn index_key(chain: ChainId, repo: RepoId, id: i64) -> String {
+    format!("{}a/{id}", repo_prefix(chain, repo))
+}
+
+/// Every finalized artifact's row in the repository index.
+pub fn index_prefix(chain: ChainId, repo: RepoId) -> String {
+    format!("{}a/", repo_prefix(chain, repo))
+}
+
+/// The retention a create request grants: the default unless asked for at least one day, capped at the maximum.
+pub fn retention_days(asked: Option<i64>) -> u64 {
+    match asked {
+        Some(days) if days >= 1 => (days as u64).min(RETENTION_DAYS_MAX),
+        _ => RETENTION_DAYS_MAX,
+    }
+}
+
+/// A stable, positive JavaScript-safe id for one artifact name in one run.
+pub fn artifact_id(chain: ChainId, repo: RepoId, run: RunId, name: &str) -> i64 {
+    let hash = Sha256::digest(format!("graftyard/artifact/1\0{chain}\0{}\0{}\0{name}", repo.0.0, run.0.0).as_bytes());
+    let id = u64::from_be_bytes(hash[..8].try_into().expect("eight hash bytes")) & ((1 << 53) - 1);
+    if id == 0 { 1 } else { id as i64 }
 }
 
 /// One run's artifact container, as its `fileContainerResourceUrl` names it: `artifacts/<owner>/<shard>/<repo>/<run>`
@@ -70,6 +101,11 @@ impl Container {
         format!("{}m/{name}", self.prefix())
     }
 
+    /// Where the create POST writes the artifact's retention and creation time.
+    pub fn create_key(&self, name: &str) -> String {
+        format!("{}c/{name}", self.prefix())
+    }
+
     pub fn manifests(&self) -> String {
         format!("{}m/", self.prefix())
     }
@@ -95,6 +131,107 @@ impl Container {
     pub fn chunk_key(&self, job: JobId, upload: u64, path: &str, start: u64) -> String {
         format!("{}{start:020}", self.chunk_prefix(job, upload, path))
     }
+}
+
+/// One finalized artifact's REST metadata, with millisecond timestamps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactRow {
+    pub id: i64,
+    pub name: String,
+    pub size: i64,
+    pub run: RunId,
+    pub created: u64,
+    pub updated: u64,
+    pub expires: u64,
+    pub head_sha: String,
+    pub head_branch: Option<String>,
+}
+
+impl ArtifactRow {
+    pub fn expired(&self, now_ms: u64) -> bool {
+        now_ms >= self.expires
+    }
+
+    pub fn expires_at(created_ms: u64, days: u64) -> u64 {
+        created_ms + days * DAY_MS
+    }
+}
+
+/// What the create POST keeps for the finalize: the retention the client asked for (`RetentionDays`, sent only when
+/// the workflow sets `retention-days`) and when the artifact was created, in ms.
+pub fn create_record(asked: Option<i64>, now_ms: u64) -> Value {
+    json!({ "days": retention_days(asked), "created": now_ms })
+}
+
+/// The row a finalize writes: its creation and retention from the create POST's record (90 days from now without
+/// one), its size as the client finalized it, and the run's head.
+pub fn finalized_row(
+    ct: &Container,
+    name: &str,
+    size: i64,
+    created: Option<&Value>,
+    run: &crate::shard::WorkflowRun,
+    now_ms: u64,
+) -> ArtifactRow {
+    let at = created.and_then(|v| v["created"].as_u64()).unwrap_or(now_ms);
+    let days = created.and_then(|v| v["days"].as_u64()).unwrap_or(RETENTION_DAYS_MAX).min(RETENTION_DAYS_MAX);
+    ArtifactRow {
+        id: artifact_id(ct.chain, ct.repo, ct.run, name),
+        name: name.to_owned(),
+        size,
+        run: ct.run,
+        created: at,
+        updated: now_ms,
+        expires: ArtifactRow::expires_at(at, days),
+        head_sha: run.head_sha.iter().map(|b| format!("{b:02x}")).collect(),
+        head_branch: run.head_ref.strip_prefix("refs/heads/").map(str::to_owned),
+    }
+}
+
+/// The repository and API base an artifact's REST JSON names.
+pub struct RestCtx<'a> {
+    pub api: &'a str,
+    pub full_name: &'a str,
+    pub repo: RepoId,
+}
+
+/// GHES's `artifact` schema for one row at `now_ms`.
+pub fn rest_json(c: &RestCtx<'_>, a: &ArtifactRow, now_ms: u64) -> Value {
+    let url = format!("{}/repos/{}/actions/artifacts/{}", c.api, c.full_name, a.id);
+    json!({
+        "id": a.id,
+        "node_id": graftyard_wire::ids::legacy("Artifact", a.id),
+        "name": a.name,
+        "size_in_bytes": a.size,
+        "url": url,
+        "archive_download_url": format!("{url}/zip"),
+        "expired": a.expired(now_ms),
+        "created_at": graftyard_wire::time::iso(Timestamp(a.created)),
+        "expires_at": graftyard_wire::time::iso(Timestamp(a.expires)),
+        "updated_at": graftyard_wire::time::iso(Timestamp(a.updated)),
+        "workflow_run": {
+            "id": a.run.0.0,
+            "repository_id": c.repo.0.0,
+            "head_repository_id": c.repo.0.0,
+            "head_branch": a.head_branch,
+            "head_sha": a.head_sha,
+        },
+    })
+}
+
+/// Filter and newest-first sort artifact rows, then take one page.
+pub fn page_rows(
+    rows: Vec<ArtifactRow>,
+    name: Option<&str>,
+    run: Option<RunId>,
+    page: graftyard_wire::Page,
+) -> (usize, Vec<ArtifactRow>, bool) {
+    let mut rows: Vec<ArtifactRow> =
+        rows.into_iter().filter(|r| name.is_none_or(|n| r.name == n) && run.is_none_or(|run| r.run == run)).collect();
+    rows.sort_by(|a, b| b.created.cmp(&a.created).then_with(|| b.id.cmp(&a.id)));
+    let total = rows.len();
+    let page_rows = rows.into_iter().skip(page.skip()).take(page.per_page).collect();
+    (total, page_rows, total > page.end())
 }
 
 /// Why a call is refused.
@@ -145,6 +282,34 @@ pub fn check_item_path(path: &str) -> Result<&str, Refused> {
         return Err(bad);
     }
     Ok(name)
+}
+
+/// The artifact name a key relative to its run prefix belongs to.
+pub fn of_artifact(rel: &str) -> Option<&str> {
+    fn named(rest: &str) -> Option<&str> {
+        let (name, tail) = rest.split_once('/')?;
+        (!name.is_empty() && !tail.is_empty()).then_some(name)
+    }
+
+    match rel.split_once('/') {
+        Some(("m" | "c", name)) => (!name.is_empty() && !name.contains('/')).then_some(name),
+        Some(("i", rest)) => named(rest),
+        Some(("u", rest)) => {
+            let (job, rest) = rest.split_once('/')?;
+            if job.is_empty() { None } else { named(rest) }
+        }
+        Some(("f", rest)) => {
+            let (job, rest) = rest.split_once('/')?;
+            let (upload, rest) = rest.split_once('/')?;
+            if job.is_empty() || upload.is_empty() { None } else { named(rest) }
+        }
+        _ => None,
+    }
+}
+
+/// A file's path inside its artifact's zip.
+pub fn zip_path<'p>(path: &'p str, name: &str) -> Option<&'p str> {
+    path.strip_prefix(format!("{name}/").as_str())
 }
 
 /// A chunk's `Content-Range: bytes s-e/total`, inclusive. An empty file is `bytes 0--1/0`, as `getContentRange(0, -1,
@@ -256,6 +421,44 @@ pub fn entry_json(c: &Container, services: &str, path: &str, r: &FileRecord) -> 
         "contentLocation": content_location(c, services, path),
         "contentId": "",
     })
+}
+
+/// Where the zip URL's ticket for artifact `id` lives: one object per `GET .../zip`, named by 128 random bits and
+/// holding the artifact's id and the ticket's expiry, so the URL needs no key and the repository delete drops it.
+pub fn ticket_key(chain: ChainId, repo: RepoId, nonce: &str) -> String {
+    format!("{}z/{nonce}", repo_prefix(chain, repo))
+}
+
+/// A ticket's name: 32 lowercase hex digits.
+pub fn ticket_name(bytes: &[u8; 16]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Whether a ticket `{"id", "exp"}` (seconds) admits artifact `id` at `now`.
+pub fn ticket_admits(ticket: &Value, id: i64, now: Timestamp) -> bool {
+    ticket["id"].as_i64() == Some(id) && ticket["exp"].as_u64().is_some_and(|e| e > now.0 / 1000)
+}
+
+/// The run service URL of one artifact's zip, named by its ticket.
+pub fn zip_url(services: &str, chain: ChainId, repo: RepoId, id: i64, nonce: &str) -> String {
+    let ChainId::Actions(owner, shard) = chain else { unreachable!("an Actions shard") };
+    format!("{services}artifact-zip/{}/{shard}/{}/{id}/{nonce}", owner.0.0, repo.0.0)
+}
+
+/// The chain, repository, artifact, and ticket in the path after `artifact-zip/`.
+pub fn parse_zip_path(path: &str) -> Option<(ChainId, RepoId, i64, &str)> {
+    let parts: Vec<&str> = path.split('/').collect();
+    let [o, s, r, id, nonce] = parts.as_slice() else { return None };
+    let positive = |v: &str| v.parse::<i64>().ok().filter(|n| *n > 0);
+    if nonce.len() != 32 || !nonce.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return None;
+    }
+    Some((
+        ChainId::Actions(graftyard_types::AccountId(DbId(positive(o)?)), s.parse::<u8>().ok()?),
+        RepoId(DbId(positive(r)?)),
+        positive(id)?,
+        nonce,
+    ))
 }
 
 #[cfg(test)]
@@ -376,5 +579,191 @@ mod tests {
             e["contentLocation"],
             "https://h/_services/artifacts/7100001/11/65000/41?itemPath=art/a%20b%2Bc.txt"
         );
+    }
+
+    #[test]
+    fn rest_retention_defaults_caps_and_sets_expiry() {
+        for (asked, days) in [(None, 90), (Some(0), 90), (Some(-3), 90), (Some(1), 1), (Some(30), 30), (Some(400), 90)]
+        {
+            assert_eq!(retention_days(asked), days, "{asked:?}");
+        }
+        let created = 1_234_567;
+        assert_eq!(ArtifactRow::expires_at(created, 1) - created, DAY_MS);
+    }
+
+    #[test]
+    fn rest_artifact_ids_are_stable_scoped_and_safe() {
+        let base = artifact_id(CHAIN, c().repo, c().run, "art");
+        assert_eq!(base, artifact_id(CHAIN, c().repo, c().run, "art"));
+        let other_chain = ChainId::Actions(AccountId(DbId(7_100_001)), 12);
+        let others = [
+            artifact_id(CHAIN, c().repo, RunId(DbId(42)), "art"),
+            artifact_id(CHAIN, RepoId(DbId(65_001)), c().run, "art"),
+            artifact_id(CHAIN, c().repo, c().run, "other"),
+            artifact_id(other_chain, c().repo, c().run, "art"),
+        ];
+        assert!((1..(1_i64 << 53)).contains(&base));
+        for other in others {
+            assert_ne!(base, other);
+            assert!((1..(1_i64 << 53)).contains(&other), "{other}");
+        }
+    }
+
+    fn rest_row(id: i64, name: &str, run: i64, created: u64) -> ArtifactRow {
+        ArtifactRow {
+            id,
+            name: name.into(),
+            size: 123,
+            run: RunId(DbId(run)),
+            created,
+            updated: created,
+            expires: ArtifactRow::expires_at(created, 1),
+            head_sha: "abc123".into(),
+            head_branch: None,
+        }
+    }
+
+    #[test]
+    fn rest_artifact_json_matches_ghes() {
+        let row = ArtifactRow { id: 1, created: 0, updated: 0, expires: DAY_MS, ..rest_row(1, "art", 41, 0) };
+        let ctx = RestCtx { api: "https://h/api/v3", full_name: "o/r", repo: RepoId(DbId(65_000)) };
+        let before = rest_json(&ctx, &row, DAY_MS - 1);
+        assert_eq!(before.as_object().unwrap().len(), 11);
+        assert_eq!(before["node_id"], "MDg6QXJ0aWZhY3Qx");
+        assert_eq!(before["name"], "art");
+        assert_eq!(before["size_in_bytes"], 123);
+        assert_eq!(before["url"], "https://h/api/v3/repos/o/r/actions/artifacts/1");
+        assert_eq!(before["archive_download_url"], "https://h/api/v3/repos/o/r/actions/artifacts/1/zip");
+        assert_eq!(before["expired"], false);
+        assert_eq!(rest_json(&ctx, &row, DAY_MS)["expired"], true);
+        assert_eq!(before["created_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(before["expires_at"], "1970-01-02T00:00:00Z");
+        assert_eq!(before["updated_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(before["workflow_run"]["id"], 41);
+        assert_eq!(before["workflow_run"]["repository_id"], 65_000);
+        assert_eq!(before["workflow_run"]["head_repository_id"], 65_000);
+        assert_eq!(before["workflow_run"]["head_branch"], Value::Null);
+        assert_eq!(before["workflow_run"]["head_sha"], "abc123");
+    }
+
+    #[test]
+    fn rest_pages_filter_sort_and_count_before_slicing() {
+        let rows = || {
+            vec![
+                rest_row(1, "art", 41, 100),
+                rest_row(2, "other", 41, 400),
+                rest_row(3, "art", 42, 300),
+                rest_row(4, "art", 41, 300),
+                rest_row(5, "art", 41, 200),
+            ]
+        };
+        let ids = |rows: &[ArtifactRow]| rows.iter().map(|r| r.id).collect::<Vec<_>>();
+        for (page, expected, more) in [(1, vec![2, 4], true), (2, vec![3, 5], true), (3, vec![1], false)] {
+            let (total, got, has_more) = page_rows(rows(), None, None, graftyard_wire::Page { per_page: 2, page });
+            assert_eq!(total, 5);
+            assert_eq!(ids(&got), expected, "page {page}");
+            assert_eq!(has_more, more, "page {page}");
+        }
+        let p = graftyard_wire::Page { per_page: 2, page: 1 };
+        let (total, got, more) = page_rows(rows(), Some("art"), None, p);
+        assert_eq!((total, ids(&got), more), (4, vec![4, 3], true));
+        let (total, got, more) = page_rows(rows(), None, Some(RunId(DbId(42))), p);
+        assert_eq!((total, ids(&got), more), (1, vec![3], false));
+        let (total, got, more) = page_rows(rows(), Some("art"), Some(RunId(DbId(41))), p);
+        assert_eq!((total, ids(&got), more), (3, vec![4, 5], true));
+    }
+
+    #[test]
+    fn every_artifact_key_maps_to_only_its_name() {
+        for (key, name) in [
+            ("m/art", "art"),
+            ("c/art2", "art2"),
+            ("i/art/x/00000000000000000000", "art"),
+            ("u/9/art2/x", "art2"),
+            ("f/9/5/art/x/00000000000000000000", "art"),
+        ] {
+            assert_eq!(of_artifact(key), Some(name), "{key}");
+        }
+        for bad in ["m/", "m", "m/art/x", "c/", "i/art", "i/art/", "u/9/art", "f/9/5/art", "z/art"] {
+            assert_eq!(of_artifact(bad), None, "{bad}");
+        }
+        assert_eq!(zip_path("art/dir/f.bin", "art"), Some("dir/f.bin"));
+        assert_eq!(zip_path("other/dir/f.bin", "art"), None);
+        assert_eq!(zip_path("art", "art"), None);
+    }
+
+    #[test]
+    fn rest_create_and_index_keys_stay_in_the_repository() {
+        let container = c();
+        assert_eq!(container.create_key("art"), format!("{}c/art", container.prefix()));
+        assert_eq!(index_key(CHAIN, container.repo, 9), "actions/artifacts/actions:7100001.11/65000/a/9");
+        assert_eq!(index_prefix(CHAIN, container.repo), "actions/artifacts/actions:7100001.11/65000/a/");
+    }
+
+    /// BF-75's expiry line: a `retention-days: 1` artifact expires one day after its create POST, not after its
+    /// finalize and not after 90 days; one with no retention asked expires after 90.
+    #[test]
+    fn a_finalized_row_expires_by_its_create_records_retention() {
+        let run = crate::shard::WorkflowRun {
+            id: c().run,
+            repo: c().repo,
+            workflow: "ci.yml".into(),
+            event: "push".into(),
+            head_sha: [0xab; 20],
+            head_ref: "refs/heads/main".into(),
+            trigger: (ChainId::Repo(c().repo), graftyard_types::Index(1)),
+            attempt: 1,
+            concurrency: None,
+            fork: false,
+        };
+        let created = 1_000_000;
+        let finalized = created + 5 * 60_000;
+        let short = finalized_row(&c(), "a", 40, Some(&create_record(Some(1), created)), &run, finalized);
+        assert_eq!((short.created, short.updated, short.expires), (created, finalized, created + DAY_MS));
+        assert_eq!(short.id, artifact_id(CHAIN, c().repo, c().run, "a"));
+        assert_eq!(short.head_sha, "ab".repeat(20));
+        assert_eq!(short.head_branch.as_deref(), Some("main"));
+        let long = finalized_row(&c(), "b", 40, Some(&create_record(None, created)), &run, finalized);
+        assert_eq!(long.expires, created + 90 * DAY_MS);
+        // A finalize whose create record is gone keeps 90 days from the finalize.
+        assert_eq!(finalized_row(&c(), "b", 40, None, &run, finalized).expires, finalized + 90 * DAY_MS);
+        let tag = crate::shard::WorkflowRun { head_ref: "refs/tags/v1".into(), ..run };
+        assert_eq!(finalized_row(&c(), "a", 1, None, &tag, finalized).head_branch, None);
+    }
+
+    #[test]
+    fn a_zip_ticket_admits_only_its_artifact_until_it_expires() {
+        let t = json!({ "id": 41, "exp": 100 });
+        assert!(ticket_admits(&t, 41, Timestamp(99_999)));
+        assert!(!ticket_admits(&t, 41, Timestamp(100_000)), "expired at exp");
+        assert!(!ticket_admits(&t, 42, Timestamp(1)), "another artifact");
+        assert!(!ticket_admits(&json!({ "id": 41 }), 41, Timestamp(1)), "no expiry");
+        let n = ticket_name(&[0xab; 16]);
+        assert_eq!(n.len(), 32);
+        assert_eq!(ticket_key(CHAIN, c().repo, &n), format!("{}z/{n}", repo_prefix(CHAIN, c().repo)));
+    }
+
+    #[test]
+    fn zip_urls_parse_back_and_bad_paths_do_not() {
+        let repo = c().repo;
+        let n = ticket_name(&[0x0f; 16]);
+        let url = zip_url("https://h/_services/", CHAIN, repo, 41, &n);
+        assert_eq!(url, format!("https://h/_services/artifact-zip/7100001/11/65000/41/{n}"));
+        let path = url.strip_prefix("https://h/_services/artifact-zip/").unwrap();
+        assert_eq!(parse_zip_path(path), Some((CHAIN, repo, 41, n.as_str())));
+        // Shard 0 is a shard (`actions_shard` is a hash mod the shard count).
+        let zero = ChainId::Actions(AccountId(DbId(7100001)), 0);
+        assert_eq!(parse_zip_path(&format!("7100001/0/65000/41/{n}")), Some((zero, repo, 41, n.as_str())));
+        for bad in [
+            format!("1/2/3/{n}"),
+            format!("1/2/3/4/{n}/x"),
+            format!("0/2/3/4/{n}"),
+            format!("1/x/3/4/{n}"),
+            format!("1/2/3/-4/{n}"),
+            "1/2/3/4/short".to_owned(),
+            format!("1/2/3/4/{}", n.to_uppercase()),
+        ] {
+            assert_eq!(parse_zip_path(&bad), None, "{bad}");
+        }
     }
 }

@@ -300,3 +300,21 @@ On graft-m4a after BF-70 r2, $3 stop, on its own edge day from main at adfdaf4a 
 
 **Teardown.** `m3org/bf71` deleted (above); `teardown.py --sweep` tore down 3 shard containers (`git#1#net:65604`, and the two mirrors' `git#0#net:4128770` and `4128771`) and then reported no shard container running. No runner process is left. The mirrors stay as BF-69's did. m4a is left with sites `1d6a9c52` / `2a294df5` / `ed3481e0`, edge `3c453149`, ops `ac4cd9a5`, every cron `[]`.
 
+
+## BF-75, the REST artifact routes (F131): built at $0 (2026-11-25)
+
+Branch `bf75-artifacts-rest`. R2-only, no fold rows and no format (`decisions/DECISIONS.md`, "`actions-artifacts`", the amendment): the finalize writes a row object `actions/artifacts/<chain>/<repo>/a/<id>` whose JSON rides its custom metadata, so a list is one R2 list; the create POST keeps `RetentionDays` and the creation time; `GET .../zip` writes a 60 s ticket under the repository prefix and answers 302 to `/_services/artifact-zip/...`, which streams one zip composed from the stored chunks (`graftyard_actions::zip`: a gzipped file's deflate stream passed through as DEFLATE with the trailer's CRC, any other file STORED). Edge code only: it rides an edge day with `GRAFTYARD_ARTIFACTS=1` and needs no site day.
+
+Local evidence:
+- `tests/edgeboot/run.sh` on the edge's own wasm: two finalized artifacts' zips read back through Python's `zipfile` SHA-256 identical (`dir/text.txt` gzipped, method 8; `bin.dat` and an empty `sub/empty`, method 0), the one-day row expires 86,400,000 ms after creation and the default 90 days, and a delete leaves 8 objects, all the other artifact's, with its row. `PRODUCT=1` passes too; 0 wasm traps in each.
+- `crates/actions/src/zip.rs` tests, cross-checked once by Python `zipfile.testzip()` and `unzip -t` (no errors, hashes equal).
+- Plant `tests/m0carried/plant253.py`: 8 of 8 caught (expiry from the finalize, retention past 90, a pointer key mapped to its job, a page counted as the total, a ticket for another artifact, a ticket at its expiry, a plain file's length and a gzip's ISIZE unchecked).
+
+### BF-75 hosted: the plan
+
+- **Days.** One edge day on graft-m4a from this branch merged on main, keeping every live var (`FORMATS_ENABLED`, `RUN_SERVICE_PUBLIC`, `GRAFTYARD_CACHE_LIMIT`, `GRAFTYARD_ARTIFACTS=1`), as `tests/m4/wp3/bf71/days.sh edge` did. No site day.
+- **Driver.** `node tests/m4/wp3/bf75/bf75.mjs <out> <runner dir>`: one ephemeral runner 2.338.2 runs `tests/m4/wp3/bf75/art.yml` (upload-artifact@v3.2.2 from `actions-mirror`) uploading `keep` (3,000,000 B of text, gzipped by the client; 9,000,000 B random in two chunks; an empty file) and `short` with `retention-days: 1`. The driver then reads, as the admin user: both lists, `GET artifacts/{id}`, each zip (302, then the URL with no token, `unzip -t`, SHA-256 against the job's printed sums), `gh run download <run>` with `GH_HOST` set to the edge, the zip URL again after 65 s (403), `DELETE` of `short` (204), both lists again, a `GET` of it (404), R2's objects under the repository's prefix, and an anonymous `DELETE` (401).
+- **Pass.** Both lists name both artifacts with GHES's eleven fields and the finalized sizes (12,000,000 and 4,000); every zip and `gh run download` file is SHA-256 identical to the job's; `short`'s `expires_at` is its `created_at` plus one day and `keep`'s plus 90; the delete removes `short` from both lists and leaves none of its objects, with `keep`'s three records still there.
+- **Fail.** A missing or extra artifact, a file that differs, a delete that leaves objects, or a wrong expiry.
+- **Also recorded.** Elect and tierOff shed counts apart (`tests/fanout/tieroff503.py` over the row's window), and the edge version.
+- **Estimate.** About $0.60: the edge day and one job of under 2 minutes, a few hundred R2 operations, no shard container. **Stop $3** by `PREFIX=graft-m4a python3 tests/fanout/acctcost.py`.

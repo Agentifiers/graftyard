@@ -539,6 +539,7 @@ fn a_pull_request_runs_granted_job_gets_the_id_token_url_only_with_job_tokens_on
                     id_token: graftyard_actions::oidc::id_token_granted(f.more.tokens.get(&j.spec.id), row.run.fork),
                     actor: None,
                     run_number: None,
+                    reusable: None,
                 };
                 let msg = graftyard_actions::runsvc::acquire_message(&urls, &row.run, j, &a);
                 let name: &str = if &*j.spec.name == "sts" { "sts" } else { "denied" };
@@ -704,6 +705,7 @@ fn a_pull_request_runs_actor_and_number_ride_with_the_claims_flag() {
                 id_token: false,
                 actor: actor.as_deref(),
                 run_number: f.run_number(r),
+                reusable: None,
             };
             let msg = graftyard_actions::runsvc::acquire_message(&urls, &row.run, j, &acq);
             let gh = |k: &str| {

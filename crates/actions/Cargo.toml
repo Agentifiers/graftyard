@@ -25,6 +25,7 @@ thiserror.workspace = true
 yaml-rust2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 rand = "0.8"
 tiny_http = "0.12"
 tungstenite = "0.24"

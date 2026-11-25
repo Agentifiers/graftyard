@@ -127,6 +127,10 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
     if let Some(tail) = rest.strip_prefix("cache/") {
         return crate::cache::serve(c, req, tail, grant, &public).await;
     }
+    // A REST artifact zip (F131), whose ticket in the URL is the capability: no bearer token.
+    if let Some(tail) = rest.strip_prefix("artifact-zip/") {
+        return crate::artifacts::zip(c, &req, tail).await;
+    }
     // actions-artifacts (`crate::artifacts`), whose chunk uploads and downloads stream and are never read here.
     if crate::artifacts::claims(rest) {
         return crate::artifacts::serve(c, req, rest, grant).await;
@@ -191,7 +195,9 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
             answer(c, chain, json!({ "op": "renew", "grant": g })).await
         }
         (Method::Post, "run/completejob", Some((chain, g @ Grant::Job { .. }))) => {
-            answer(c, chain, json!({ "op": "complete", "grant": g, "conclusion": b["conclusion"] })).await
+            // `reusable`: the outputs the runner evaluated, which a planned run's job commits with its `Finished`.
+            let body = json!({ "op": "complete", "grant": g, "conclusion": b["conclusion"], "outputs": b["outputs"] });
+            answer(c, chain, body).await
         }
         (Method::Post, r, Some((chain, Grant::Job { job, .. }))) if r.starts_with("results/") => {
             let method = r.rsplit('/').next().unwrap_or("");
@@ -779,11 +785,33 @@ async fn dispatch(c: &Ctx<'_>, rd: &Read, chain: ChainId, b: &Value) -> Result<R
     // A run marked as a fork pull request's, whose jobs read no secret (BF-59): no fork route exists yet, so the
     // admin's dispatch marks it [inference: the refusal is `acquirejob`'s, which reads only `run.fork`].
     let fork = b["fork"].as_bool().unwrap_or(false);
-    let (mut call, jobs) = match dispatch_call(rd.repo.id, Index(rd.index), path, &src, r, sha.0, fork, tokens) {
+    // `reusable`: every called workflow read at its ref and pinned, once 0x15.9 is enabled (`called_file`).
+    let planned = {
+        let parsed = graftyard_actions::workflow::parse(path, &src);
+        let origin = graftyard_actions::reusable::Origin {
+            repo: None,
+            path: path.into(),
+            r#ref: format!("refs/heads/{r}"),
+            sha: sha.0,
+        };
+        let enabled = c.cfg.enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_REUSABLE);
+        let own = format!("{}/{}", rd.at.owner, rd.at.name);
+        match graftyard_actions::reusable::plan_run(&parsed.workflow, &origin, parsed.ok() && enabled, |w| {
+            called_file(c, rd, &own, w)
+        })
+        .await
+        {
+            Ok(p) => p,
+            Err(e) if parsed.ok() => return Ok(Reply::json(422, json!({ "message": e }))),
+            Err(_) => None,
+        }
+    };
+    let (mut call, jobs) = match dispatch_call(rd.repo.id, Index(rd.index), path, &src, r, sha.0, fork, tokens, planned)
+    {
         Ok(x) => x,
         Err(reply) => return Ok(reply),
     };
-    // BF-73 (F120): the dispatching admin is the run's actor once 0x15.8 is enabled, which makes it `CreateRunAs`.
+    // BF-73 (F120): the dispatching admin is the run's actor once 0x15.8 is enabled, which makes it `CreateRunAs`, or rides a planned run's `CreateRunPlanned` (`reusable`).
     if c.cfg.enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_CLAIMS)
         && let Some((id, login)) = b["actor"].as_array().and_then(|a| Some((a.first()?.as_i64()?, a.get(1)?.as_str()?)))
     {
@@ -795,10 +823,72 @@ async fn dispatch(c: &Ctx<'_>, rd: &Read, chain: ChainId, b: &Value) -> Result<R
     })
 }
 
+/// A called workflow file for the dispatch's plan (`graftyard_actions::reusable`): `./` in the dispatched repository at
+/// the caller's commit, or `owner/repo` resolved by name on this install and read as an anonymous caller, as the
+/// launch service reads an action's repository (F90), its version a full SHA, else a tag, else a branch. The file is
+/// read from the network's git cache at the commit, and that commit is what its jobs' tokens name.
+async fn called_file(
+    c: &Ctx<'_>,
+    rd: &Read,
+    own: &str,
+    w: graftyard_actions::reusable::Want,
+) -> std::result::Result<graftyard_actions::reusable::Fetched, String> {
+    use graftyard_actions::reusable::{Fetched, Origin, Version, resolve_version};
+    let other;
+    let (at, (r#ref, sha)) = match (&w.repo, &w.version) {
+        (None, Version::At { r#ref, sha }) => (rd, (r#ref.clone(), *sha)),
+        (Some(name), version) => {
+            let (o, r) = name.split_once('/').ok_or("owner/repo")?;
+            let v = match version {
+                Version::At { sha, .. } => graftyard_git::refs::ObjectId(*sha).hex(),
+                Version::Named(v) => v.clone(),
+            };
+            let route = graftyard_api::narrow::Route::Rest {
+                tail: vec!["tarball".into(), v.clone()],
+                query: String::new(),
+                path: format!("/repos/{o}/{r}/tarball/{v}"),
+                agent: false,
+            };
+            other = match crate::api::read_as(c, o, r, None, crate::api::Rows::Api(route)).await {
+                Ok(Ok(x)) => x,
+                Ok(Err(x)) if x.status == 404 => return Err(format!("{name}: not found or not readable")),
+                Ok(Err(x)) => return Err(format!("{name}: {}", x.status)),
+                Err(e) => return Err(format!("{name}: {e}")),
+            };
+            let pinned = match version {
+                Version::At { r#ref, sha } => (r#ref.clone(), *sha),
+                Version::Named(v) => {
+                    let host = graftyard_wire::Host::new(&c.cfg.host, false).map_err(|e| format!("{e:?}"))?;
+                    let view = other.view(&host);
+                    let (r, sha) = resolve_version(v, |n| view.ref_value(n))
+                        .ok_or_else(|| format!("{name}@{v}: no such version"))?;
+                    (r, sha.0)
+                }
+            };
+            (&other, pinned)
+        }
+        (None, Version::Named(_)) => return Err(format!("{own}: a call in this repository names no version")),
+    };
+    let q = [("commit", graftyard_git::refs::ObjectId(sha).hex()), ("path", w.path.clone())];
+    let src = match crate::ui::shard_json(c, at, "blob", &q).await {
+        Ok(v) => v["text"].as_str().unwrap_or_default().to_owned(),
+        Err(x) => {
+            return Err(format!(
+                "{}: {} {}",
+                w.path,
+                x.status,
+                if x.status == 404 { "not found" } else { "the git cache did not answer" }
+            ));
+        }
+    };
+    Ok(Fetched { origin: Origin { repo: w.repo, path: w.path, r#ref, sha }, src })
+}
+
 /// The dispatch's `/runsvc` `create_run` call for workflow `path` (source `src`) at `sha` on branch `r`, and its job
 /// count, or the 422 a bad workflow answers. Once job tokens are on (`tokens`), the jobs' declared permissions ride
 /// along as the site's trigger sends them (`runsvc::create_run_call`), so a dispatched job's `GITHUB_TOKEN` and
-/// `id-token: write` follow its `permissions:` (F127).
+/// `id-token: write` follow its `permissions:` (F127). A run `planned` with its called workflows' jobs
+/// (`graftyard_actions::reusable::plan_run`) is sent with its plan, as `CreateRunPlanned`.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_call(
     repo: graftyard_types::RepoId,
@@ -809,13 +899,20 @@ fn dispatch_call(
     sha: [u8; 20],
     fork: bool,
     tokens: bool,
+    planned: Option<graftyard_actions::reusable::Expanded>,
 ) -> std::result::Result<(Value, usize), Reply> {
     let parsed = graftyard_actions::workflow::parse(path, src);
     if !parsed.ok() {
         return Err(Reply::json(422, json!({ "message": "invalid workflow", "errors": parsed.errors })));
     }
-    let (jobs, permissions) = graftyard_actions::specs::job_specs_declared(&parsed.workflow)
-        .map_err(|e| Reply::json(422, json!({ "message": e })))?;
+    let (jobs, permissions, plan) = match planned {
+        Some(e) => (e.jobs, e.declared, e.plan),
+        None => {
+            let (j, p) = graftyard_actions::specs::job_specs_declared(&parsed.workflow)
+                .map_err(|e| Reply::json(422, json!({ "message": e })))?;
+            (j, p, None)
+        }
+    };
     let run = WorkflowRun {
         id: RunId(DbId(0)),
         repo,
@@ -828,7 +925,9 @@ fn dispatch_call(
         concurrency: None,
         fork,
     };
-    Ok((runsvc::create_run_call(&run, &jobs, &permissions, tokens, None, None, None), jobs.len()))
+    let call =
+        runsvc::with_plan(runsvc::create_run_call(&run, &jobs, &permissions, tokens, None, None, None), plan.as_ref());
+    Ok((call, jobs.len()))
 }
 
 /// `/api/graftyard/v1/repos/{o}/{r}/actions/...`, or `None` for any other path under `/api/graftyard/v1`.
@@ -1112,9 +1211,18 @@ mod tests {
                            \"true\"\n";
         let urls = runsvc::Urls::new("https://graft.example");
         let granted = |tokens: bool, fork: bool| -> Vec<(String, bool)> {
-            let (call, n) =
-                super::dispatch_call(REPO, Index(4), ".github/workflows/bf70.yml", SRC, "main", [7; 20], fork, tokens)
-                    .unwrap();
+            let (call, n) = super::dispatch_call(
+                REPO,
+                Index(4),
+                ".github/workflows/bf70.yml",
+                SRC,
+                "main",
+                [7; 20],
+                fork,
+                tokens,
+                None,
+            )
+            .unwrap();
             assert_eq!(n, 2);
             let (_, op) = runsvc::create_run_op(&call).unwrap();
             assert_eq!(matches!(op, ActionsOp::CreateRunWith { .. }), tokens, "{op:?}");
@@ -1155,6 +1263,7 @@ mod tests {
                     id_token: graftyard_actions::oidc::id_token_granted(f.more.tokens.get(&row.spec.id), run.fork),
                     actor: None,
                     run_number: None,
+                    reusable: None,
                 };
                 let m = runsvc::acquire_message(&urls, &run, row, &a);
                 let data = &m["resources"]["endpoints"][0]["data"];

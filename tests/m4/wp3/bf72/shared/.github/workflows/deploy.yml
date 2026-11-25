@@ -1,0 +1,36 @@
+# BF-72's called workflow, in `octo/shared` at tag `v1`. Each line it prints is read by the row's checks.
+on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        required: true
+      dry:
+        type: boolean
+        default: false
+    secrets:
+      DEPLOY_KEY:
+        required: false
+    outputs:
+      url:
+        value: ${{ jobs.deploy.outputs.url }}
+jobs:
+  deploy:
+    runs-on: [self-hosted]
+    outputs:
+      url: ${{ steps.d.outputs.url }}
+    steps:
+      - id: d
+        env:
+          KEY: ${{ secrets.DEPLOY_KEY }}
+        run: |
+          echo "BF72 called target=${{ inputs.target }} dry=${{ inputs.dry }} dry_is_bool=${{ inputs.dry == true }}"
+          echo "BF72 called key_sha=$(printf %s "$KEY" | sha256sum | cut -c1-16)"
+          echo "BF72 called version=v1"
+          echo "url=https://${{ inputs.target }}.example/v1" >> "$GITHUB_OUTPUT"
+      - name: ID token
+        run: |
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          t=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=bf72" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          p=$(printf %s "$t" | cut -d. -f2 | tr '_-' '/+'); while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done
+          printf %s "$p" | base64 -d | python3 -c 'import json,sys; c=json.load(sys.stdin); print("BF72 job_workflow_ref=" + c["job_workflow_ref"]); print("BF72 workflow_ref=" + c["workflow_ref"]); print("BF72 actor=" + c.get("actor", "") + " run_number=" + c.get("run_number", ""))'

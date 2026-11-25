@@ -1,0 +1,16 @@
+PASS every job succeeded
+PASS the called job ran as 'call / deploy'
+PASS typed inputs
+PASS the inherited secret
+PASS the tag, not the branch
+PASS the later job read the output
+PASS job_workflow_ref names the called file
+PASS workflow_ref stays the caller's
+PASS the called job's token carries the caller run's actor and number
+BF72 actor=monalisa run_number=1
+BF72 after url=https://prod-7.example/v1 result=success
+BF72 called key_sha=7f4f213c9c52fa8b
+BF72 called target=prod-7 dry=true dry_is_bool=true
+BF72 called version=v1
+BF72 job_workflow_ref=octo/shared/.github/workflows/deploy.yml@refs/tags/v1
+BF72 workflow_ref=owner/repo/tests/m4/wp3/bf72/caller.yml@refs/heads/main
