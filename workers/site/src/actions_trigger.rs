@@ -323,7 +323,7 @@ async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
             let t0 = crate::now_ms();
             let make = |path: &str, src: &str| merge_group_run(f.repo, c.index, path, src, q);
             let mut times = Times::default();
-            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, None, &mut times).await {
+            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, None, None, &mut times).await {
                 Ok(n) => {
                     let ms = crate::now_ms() - t0;
                     console_log!(
@@ -390,15 +390,21 @@ async fn pull_request_try(
     at: u64,
     p: &PrEvent,
 ) -> std::result::Result<Tried, String> {
-    let view = || -> std::result::Result<git::prsync::PrView, String> {
+    let view = || -> std::result::Result<(git::prsync::PrView, Option<git::refs::RefName>), String> {
         let core = h.core.borrow();
         let c = core.as_ref().ok_or("not joined")?;
         let (_, mut v) = git::prsync::views(&c.m.group_fold().fold.core, repo, &[p.n]);
-        v.pop().ok_or_else(|| format!("pull request {} is not in the fold", p.n.0))
+        let head = graftyard_actions::trigger::pr_head(
+            &*c.m.group_fold().fold.core,
+            repo,
+            p.n,
+            crate::actions::oidc_head_ref(&h.env),
+        );
+        Ok((v.pop().ok_or_else(|| format!("pull request {} is not in the fold", p.n.0))?, head))
     };
     let started = crate::now_ms();
     let mut times = Times::default();
-    let mut v = view()?;
+    let (mut v, mut head) = view()?;
     let mut tries = 0;
     while pr_target(&v) == PrTarget::Pending && tries < DEMAND_TRIES {
         if tries > 0 {
@@ -408,7 +414,7 @@ async fn pull_request_try(
         if let Err(e) = crate::prsync::demand(&h.env, repo, p.n, git::prsync::MergeCause::Dispatch).await {
             console_error!("actions dispatch {} #{} demand {tries}: {e}", repo.0.0, p.n.0);
         }
-        v = view()?;
+        (v, head) = view()?;
     }
     times.demand = crate::now_ms().saturating_sub(started);
     let superseded = p.after.is_some_and(|a| a != v.head);
@@ -416,7 +422,8 @@ async fn pull_request_try(
         PrTarget::Merge(merge) => {
             let make = |path: &str, src: &str| pull_request_run(repo, index, path, src, p.n, p.action, &v.base, merge);
             let base = v.base.display();
-            runs_on(&h.env, site, b, repo, owner, record, merge, make, Some(&base), &mut times).await?
+            let head = head.as_ref().map(|h| h.display());
+            runs_on(&h.env, site, b, repo, owner, record, merge, make, Some(&base), head.as_deref(), &mut times).await?
         }
         PrTarget::Pending | PrTarget::Conflict | PrTarget::None => 0,
     };
@@ -456,6 +463,7 @@ async fn runs_on(
     tip: git::refs::ObjectId,
     make: impl Fn(&str, &str) -> std::result::Result<Option<(WorkflowRun, Vec<JobSpec>, Declared)>, String>,
     base: Option<&str>,
+    head: Option<&str>,
     times: &mut Times,
 ) -> std::result::Result<usize, String> {
     let commit = tip.hex();
@@ -500,7 +508,7 @@ async fn runs_on(
                 chain,
                 record,
                 "/runsvc",
-                &crate::actions::create_run_body(env, &run, &jobs, &permissions, base),
+                &crate::actions::create_run_body(env, &run, &jobs, &permissions, base, head),
             )
             .await
         }

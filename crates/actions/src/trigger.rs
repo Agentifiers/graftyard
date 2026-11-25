@@ -127,6 +127,15 @@ pub enum PrTarget {
     None,
 }
 
+/// The head branch pull request `n`'s runs carry (`refs/heads/feature`), which their ID tokens name as `head_ref`
+/// (F121): only where the site day turned it on (`on`, `GRAFTYARD_OIDC_HEAD_REF`, after 0x15.7 was enabled), and only
+/// for a same-repository pull request, since a fork's branch is the fork's and its runs mint no ID token. `None` keeps
+/// the run's call `CreateRunOn`, which every 0x15.6 reader takes.
+pub fn pr_head(core: &(impl Read + ?Sized), repo: RepoId, n: IssueNumber, on: bool) -> Option<RefName> {
+    let ph = graftyard_git::tiers::pull_head(core, n).filter(|_| on)?;
+    (ph.head.repo == repo).then_some(ph.head.branch)
+}
+
 /// A merge at an older base tip still counts: requiring the base tip now left B0-35's dispatch, whose base moves every
 /// 6 s, waiting on a merge that is stale by the time it commits, round after round (`decisions/DECISIONS.md`,
 /// "`pr-trigger`").

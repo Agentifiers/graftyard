@@ -80,10 +80,11 @@ pub async fn mint(h: &Rc<Host<Actions>>, b: &Value, owner: AccountId, job: JobId
             let row = f.job(job)?.clone();
             let run = f.run(row.run)?.run.clone();
             let base = f.run_base(run.id).map(str::to_owned);
-            Some((row, run, f.more.tokens.get(&job).cloned(), base))
+            let head = f.run_head(run.id).map(str::to_owned);
+            Some((row, run, f.more.tokens.get(&job).cloned(), base, head))
         })
     };
-    let Some((row, run, declared, base)) = read else { return refused(404, "no job") };
+    let Some((row, run, declared, base, head)) = read else { return refused(404, "no job") };
     let f = Facts {
         server: &super::urls(&h.env).server,
         repository,
@@ -95,6 +96,7 @@ pub async fn mint(h: &Rc<Host<Actions>>, b: &Value, owner: AccountId, job: JobId
         job: &row,
         hosted: b["hosted"].as_bool() == Some(true),
         base_ref: base.as_deref(),
+        head_ref: head.as_deref(),
     };
     // Refused before the key is read, so a job with no grant never reaches the Secrets Store.
     if let Err(e) = oidc::may_mint(&row, &run, attempt, declared.as_ref()) {

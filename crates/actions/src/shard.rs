@@ -51,6 +51,11 @@ pub const ACTIONS_FORMAT_TOKENS: Format = Format { family: 0x15, version: 5 };
 /// after `FormatsEnable` enabled 0x15.6, and that day follows the one that shipped this reader to every member
 /// (`decisions/DECISIONS.md`, "`actions-cache`").
 pub const ACTIONS_FORMAT_CACHE: Format = Format { family: 0x15, version: 6 };
+/// `CreateRunFrom`, whose entry also records a same-repository `pull_request` run's head branch
+/// (`ActionsEvent::RunHead`), which its jobs' ID tokens carry as `head_ref` (F121). Only a site whose site day set
+/// `GRAFTYARD_OIDC_HEAD_REF` sends one, after 0x15.7 was enabled, and that day follows the one that shipped this reader
+/// to every member (`decisions/DECISIONS.md`, "`actions-oidc`").
+pub const ACTIONS_FORMAT_HEAD_REF: Format = Format { family: 0x15, version: 7 };
 
 #[cfg(test)]
 const JOB_LEASE_MS: u64 = crate::job::JOB_LEASE.as_millis() as u64;
@@ -208,6 +213,12 @@ pub enum ActionsEvent {
         run: RunId,
         base_ref: Box<str>,
     },
+    /// A same-repository `pull_request` run's head branch, in its `RunCreated`'s entry, which its jobs' ID tokens
+    /// carry as `head_ref` (0x15.7).
+    RunHead {
+        run: RunId,
+        head_ref: Box<str>,
+    },
 }
 
 impl Record for ActionsEvent {
@@ -328,6 +339,8 @@ trait Tables {
     fn put_cache(&mut self, id: CacheId, e: Option<CacheEntry>);
     /// A `pull_request` run's base branch, which `decide` never reads, so the scratch drops it.
     fn put_base(&mut self, _run: RunId, _base: &str) {}
+    /// A `pull_request` run's head branch, likewise.
+    fn put_head(&mut self, _run: RunId, _head: &str) {}
 }
 
 fn is_queued(s: &JobState) -> bool {
@@ -400,6 +413,7 @@ fn apply_event(t: &mut impl Tables, ev: &ActionsEvent, at: Timestamp) {
             }
         }
         ActionsEvent::RunBase { run, base_ref } => t.put_base(*run, base_ref),
+        ActionsEvent::RunHead { run, head_ref } => t.put_head(*run, head_ref),
     }
 }
 
@@ -481,6 +495,9 @@ impl Tables for ActionsFold {
     fn put_base(&mut self, run: RunId, base: &str) {
         self.more.more.bases.insert(run, base.into());
     }
+    fn put_head(&mut self, run: RunId, head: &str) {
+        self.more.more.more.heads.insert(run, head.into());
+    }
 }
 
 impl ActionsFold {
@@ -526,6 +543,11 @@ impl ActionsFold {
     /// A `pull_request` run's base branch (`ActionsEvent::RunBase`), which its jobs' ID tokens carry as `base_ref`.
     pub fn run_base(&self, r: RunId) -> Option<&str> {
         self.more.more.bases.get(&r).map(|b| &**b)
+    }
+    /// A same-repository `pull_request` run's head branch (`ActionsEvent::RunHead`), which its jobs' ID tokens carry
+    /// as `head_ref`.
+    pub fn run_head(&self, r: RunId) -> Option<&str> {
+        self.more.more.more.heads.get(&r).map(|h| &**h)
     }
     /// The run of a running job, which a cache call acts for.
     pub fn cache_run(&self, job: JobId) -> Result<&WorkflowRun, ActionsErr> {
@@ -724,6 +746,9 @@ impl Scratch for ActionsScratch<'_> {
             ActionsEvent::RunBase { run, .. } if self.run(*run).is_none() => {
                 Err("a base branch for a run the entry did not create".into())
             }
+            ActionsEvent::RunHead { run, .. } if self.run(*run).is_none() => {
+                Err("a head branch for a run the entry did not create".into())
+            }
             _ => Ok(()),
         }
     }
@@ -874,6 +899,14 @@ pub enum ActionsOp {
     /// `/runsvc` call, and no entry type holds a command.
     CacheDropRepo {
         repo: RepoId,
+    },
+    /// `CreateRunOn` for a same-repository `pull_request` run, with its head branch too (`ActionsEvent::RunHead`).
+    CreateRunFrom {
+        run: WorkflowRun,
+        jobs: Vec<JobSpec>,
+        permissions: Vec<(u16, PermissionSet)>,
+        base_ref: Box<str>,
+        head_ref: Box<str>,
     },
 }
 
@@ -1171,6 +1204,7 @@ impl Command for ActionsCmd {
             | ActionsOp::CacheSweep
             | ActionsOp::CacheDropRepo { .. }
             | ActionsOp::CreateRunOn { .. } => ACTIONS_FORMAT_CACHE,
+            ActionsOp::CreateRunFrom { .. } => ACTIONS_FORMAT_HEAD_REF,
             _ => ACTIONS_FORMAT,
         }
     }
@@ -1199,6 +1233,15 @@ impl Command for ActionsCmd {
                 let (mut evs, out) = self.create_run(s, run, jobs, permissions)?;
                 if let ActionsOut::Run(id) = out {
                     evs.push(ActionsEvent::RunBase { run: id, base_ref: base_ref.clone() });
+                }
+                Ok((evs, out))
+            }
+            ActionsOp::CreateRunFrom { run, jobs, permissions, base_ref, head_ref } => {
+                only(operator)?;
+                let (mut evs, out) = self.create_run(s, run, jobs, permissions)?;
+                if let ActionsOut::Run(id) = out {
+                    evs.push(ActionsEvent::RunBase { run: id, base_ref: base_ref.clone() });
+                    evs.push(ActionsEvent::RunHead { run: id, head_ref: head_ref.clone() });
                 }
                 Ok((evs, out))
             }
@@ -1747,6 +1790,7 @@ mod tests {
                 job: &row,
                 hosted: false,
                 base_ref: sh.f.run_base(r),
+                head_ref: None,
             };
             assert_eq!(crate::oidc::claims(&facts, None, 1, "j")["base_ref"], serde_json::json!("rel"));
             // The run's job reads `rel`'s entry over a newer one on `main`, then `main`'s once `rel` has none.
@@ -1776,6 +1820,61 @@ mod tests {
             assert_eq!(sh.f.cache_find(JobId(DbId(999_999)), &["npm-"], "v", MAIN).err(), Some(ActionsErr::NotFound));
             let sc = sh.f.scratch_at(Timestamp(sh.at), TierSet::CORE);
             assert!(sc.check(&ActionsEvent::RunBase { run: RunId(DbId(1)), base_ref: "x".into() }).is_err());
+        }
+
+        /// `CreateRunFrom` (0x15.7) records the base and the head beside the run, and its jobs' tokens carry both as
+        /// short names; `CreateRunOn` records no head. A follower refuses a head for another run, and a fold with no
+        /// head row keeps 0x15.6's bytes, so the site day that ships this reader changes no stored fold.
+        #[test]
+        fn a_same_repository_pull_request_run_records_its_head() {
+            let mut sh = Shard::new();
+            sh.f.ids.apply_block(IdBlock::new(DbId(500), 10).unwrap());
+            let l = LabelSet::parse(["linux"]).unwrap();
+            let on = ActionsOp::CreateRunOn {
+                run: run(0, "refs/pull/2/merge", "pull_request"),
+                jobs: vec![job(0, &l)],
+                permissions: Vec::new(),
+                base_ref: "refs/heads/rel".into(),
+            };
+            let ActionsOut::Run(r0) = sh.run(ActionsActor::Operator, on).unwrap() else { panic!() };
+            assert_eq!((sh.f.run_base(r0), sh.f.run_head(r0)), (Some("refs/heads/rel"), None));
+            let rows = &sh.f.more.more;
+            let v6 = postcard::to_allocvec(&(&rows.entries, rows.next, &rows.bases)).unwrap();
+            assert_eq!(postcard::to_allocvec(rows).unwrap(), v6, "no head row writes 0x15.6's cache rows");
+            let before = postcard::to_allocvec(&sh.f).unwrap();
+            assert_eq!(postcard::from_bytes::<ActionsFold>(&before).unwrap(), sh.f, "0x15.6's bytes read back");
+            let op = ActionsOp::CreateRunFrom {
+                run: run(1, "refs/pull/3/merge", "pull_request"),
+                jobs: vec![job(1, &l)],
+                permissions: Vec::new(),
+                base_ref: "refs/heads/main".into(),
+                head_ref: "refs/heads/fix/a".into(),
+            };
+            assert_eq!(ActionsCmd { actor: ActionsActor::Operator, op: op.clone() }.format(), ACTIONS_FORMAT_HEAD_REF);
+            let ActionsOut::Run(r) = sh.run(ActionsActor::Operator, op).unwrap() else { panic!() };
+            assert_eq!((sh.f.run_base(r), sh.f.run_head(r)), (Some("refs/heads/main"), Some("refs/heads/fix/a")));
+            assert_eq!(sh.f.run_head(r0), None, "the other run has no head");
+            let row = sh.f.run_jobs(r)[0].clone();
+            let rrow = &sh.f.run(r).unwrap().run;
+            let facts = crate::oidc::Facts {
+                server: "https://graft.example",
+                repository: "octo/hello",
+                repository_id: RepoId(DbId(7)),
+                owner_id: graftyard_types::AccountId(DbId(1)),
+                visibility: graftyard_identity::Visibility::Private,
+                enterprise: None,
+                run: rrow,
+                job: &row,
+                hosted: false,
+                base_ref: sh.f.run_base(r),
+                head_ref: sh.f.run_head(r),
+            };
+            let c = crate::oidc::claims(&facts, None, 1, "j");
+            assert_eq!((c["base_ref"].as_str(), c["head_ref"].as_str()), (Some("main"), Some("fix/a")));
+            let after = postcard::to_allocvec(&sh.f).unwrap();
+            assert_eq!(postcard::from_bytes::<ActionsFold>(&after).unwrap(), sh.f);
+            let sc = sh.f.scratch_at(Timestamp(sh.at), TierSet::CORE);
+            assert!(sc.check(&ActionsEvent::RunHead { run: RunId(DbId(1)), head_ref: "x".into() }).is_err());
         }
     }
 

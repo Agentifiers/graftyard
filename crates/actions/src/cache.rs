@@ -93,12 +93,27 @@ impl CacheEntry {
 
 /// The shard's cache rows (format 0x15.6): every entry, the highest id assigned (ids only grow, so a removed one never
 /// returns and its chunks are safe to delete), and each `pull_request` run's base branch
-/// (`ActionsEvent::RunBase`), which its jobs read caches from.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// (`ActionsEvent::RunBase`), which its jobs read caches from. Each `pull_request` run's head branch (0x15.7) is a
+/// trailing part of its own, so a fold with none keeps 0x15.6's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CacheRows {
     pub entries: BTreeMap<CacheId, CacheEntry>,
     pub next: u64,
     pub bases: BTreeMap<RunId, Box<str>>,
+    pub more: HeadRows,
+}
+
+graftyard_identity::tail_serde!(CacheRows {
+    entries: BTreeMap<CacheId, CacheEntry>,
+    next: u64,
+    bases: BTreeMap<RunId, Box<str>>,
+} more: HeadRows);
+
+/// Each same-repository `pull_request` run's head branch (`ActionsEvent::RunHead`, format 0x15.7), which its jobs' ID
+/// tokens carry as `head_ref`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadRows {
+    pub heads: BTreeMap<RunId, Box<str>>,
 }
 
 impl CacheRows {
