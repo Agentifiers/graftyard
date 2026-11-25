@@ -8,18 +8,21 @@
 //!   wrote) as `LIFEBOAT_HOST` (`graftyard_identity::lifeboat::sign`).
 //! - **Copies.** Each chain's rows to the site build's `Member` on `MEMBER` (`POST /import`), one learner per chain.
 //! - **Packs.** To `graft-blob` on `BLOB_URL`, which checks the checksum again before its durable put.
+//! - **Scrub.** Weekly, `graft-blob`'s `POST /_scrub`, which checks every key against its recorded SHA-256 and
+//!   repairs from a sibling. A key it cannot repair alarms with the key and the copy whose entry named it, on every
+//!   pass until a later scrub finds it whole (`pass::scrubbed`).
 //! - **Decoder.** Daily, or when the release changes, a `LifeboatDecoder` for `LIFEBOAT_RELEASE` signed with the
 //!   host's key, bound to the last digest of the edge's group, which a 409 names.
 //!
 //! The front reads `GET /status`: the decoder and when the copy was last current. `POST /pass` runs one pass now, for
-//! a bed. Each pass logs one line; a halt or an alarming lag logs it as an error.
+//! a bed, and `POST /scrub` one scrub now, as after an operator pulls a lost key again. Each pass logs one line; a halt or an alarming lag logs it as an error.
 
 use std::cell::RefCell;
 
 use graftyard_git::export::EXPORT_PREFIX;
 use graftyard_identity::lifeboat;
 use graftyard_lifeboat::feed::{S3, Signed, listed};
-use graftyard_lifeboat::pass::{self, Copied, Host, Imported, Owed, Page, State};
+use graftyard_lifeboat::pass::{self, Copied, Host, Imported, Owed, Page, ScrubReport, State};
 use graftyard_lifeboat::status::LifeboatStatus;
 use graftyard_release::{Bound, ReleaseEntry, SignedEntry};
 use graftyard_types::{ChainId, Digest, Index, ReleaseId, Timestamp};
@@ -207,6 +210,25 @@ fn open_files_error(chain: ChainId, e: &str) -> String {
     }
 }
 
+/// One `graft-blob` scrub, or why it did not answer. Each key it could not repair is logged as an error naming the
+/// copy to pull it from again.
+async fn scrub(live: &Live) -> std::result::Result<ScrubReport, String> {
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post);
+    let req = Request::new_with_init(&format!("{}/_scrub", live.blob), &init).map_err(err)?;
+    let mut r = Fetch::Request(req).send().await.map_err(err)?;
+    if r.status_code() != 200 {
+        return Err(format!("graft-blob scrub: {}", r.status_code()));
+    }
+    let report = pass::scrubbed(&r.text().await.map_err(err)?);
+    for l in &report.lost {
+        let from =
+            l.copy.map_or_else(|| "no copy names it".to_string(), |c| format!("pull it again from {c}'s entries"));
+        console_error!("lifeboat scrub {}: {} is {}; no sibling holds it whole: {from}", l.outcome, l.key, l.outcome);
+    }
+    Ok(report)
+}
+
 /// A repository chain's owner, from the copy of its `Names` shard: `None` for another chain, or one not copied yet.
 async fn owner_of(env: &Env, chain: ChainId) -> Option<i64> {
     let (ChainId::Repo(repo) | ChainId::RepoMeta(repo)) = chain else { return None };
@@ -301,12 +323,17 @@ impl Puller {
                     Err(e) => json!(e),
                 };
             }
+            let mut scrubbed = Value::Null;
+            if pass::scrub_due(&st, now()) {
+                scrubbed = self.scrub_now(&live, &mut st).await;
+            }
             self.state.storage().put(STATE_KEY, st.encode()).await.map_err(err)?;
             let lag = LifeboatStatus::at(ReleaseId(rel_or_zero(&self.env)), st.current_at, now());
-            let line =
-                json!({ "lifeboat_pass": r, "lag_s": lag.header(), "decoder": decoder, "halted": st.puller.halted });
-            // A halted chain, the lag alarm, or a pack unserved on a live chain past `UNSERVED_ALARM_MS`.
-            if !st.puller.halted.is_empty() || lag.alarms() || r.unserved_alarm > 0 {
+            let line = json!({ "lifeboat_pass": r, "lag_s": lag.header(), "decoder": decoder, "halted": st.puller.halted,
+                "scrub": scrubbed, "scrub_lost": st.scrub_lost });
+            // A halted chain, the lag alarm, a pack unserved on a live chain past `UNSERVED_ALARM_MS`, or a key the
+            // last scrub could not repair.
+            if !st.puller.halted.is_empty() || lag.alarms() || r.unserved_alarm > 0 || !st.scrub_lost.is_empty() {
                 console_error!("{line}");
             } else {
                 console_log!("{line}");
@@ -316,6 +343,23 @@ impl Puller {
         .await;
         self.busy.replace(false);
         out
+    }
+}
+
+impl Puller {
+    /// A scrub now: its report, or why it did not answer, which tries again after `pass::SCRUB_RETRY_MS`.
+    async fn scrub_now(&self, live: &Live, st: &mut State) -> Value {
+        st.scrub_tried = now();
+        match scrub(live).await {
+            Ok(rep) => {
+                (st.scrub_at, st.scrub_lost) = (now(), rep.lost.clone());
+                json!(rep)
+            }
+            Err(e) => {
+                console_error!("lifeboat {e}");
+                json!(e)
+            }
+        }
     }
 }
 
@@ -349,12 +393,32 @@ impl DurableObject for Puller {
                     "pages": st.pages,
                     "objects": st.objects,
                     "decoder_at": st.decoder_at,
+                    "scrub_at": st.scrub_at,
+                    "scrub_lost": st.scrub_lost,
                 }))
             }
             (Method::Post, "/pass") => match self.run().await {
                 Ok(v) => Response::from_json(&v),
                 Err(e) => Response::error(e, 503),
             },
+            (Method::Post, "/scrub") => {
+                if self.busy.replace(true) {
+                    return Response::from_json(&json!({ "busy": true }));
+                }
+                let out = async {
+                    let live = Live::load(&self.env)?;
+                    let mut st = self.load().await;
+                    let v = self.scrub_now(&live, &mut st).await;
+                    self.state.storage().put(STATE_KEY, st.encode()).await.map_err(err)?;
+                    Ok::<Value, String>(json!({ "scrub": v, "scrub_lost": st.scrub_lost }))
+                }
+                .await;
+                self.busy.replace(false);
+                match out {
+                    Ok(v) => Response::from_json(&v),
+                    Err(e) => Response::error(e, 503),
+                }
+            }
             _ => Response::error("not found", 404),
         }
     }

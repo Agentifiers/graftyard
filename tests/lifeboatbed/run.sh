@@ -22,7 +22,9 @@
 #   5. the edge blocked: enrolled `gh pr list` and `gh api` read the pull request from the lifeboat, with the lag
 #      published in `X-Graftyard-Lifeboat-Lag` and `/api/v3/meta`;
 #   6. a planted undecodable row halts its chain, logged as an error, and the other chains stay current;
-#   and workerd logs no wasm trap on either side.
+#   7. the scrub: the puller's first pass ran one; a pack rotted on disk is reported lost with the repository copy to
+#      pull it from again, logged as an error, and a scrub after it is whole again clears it;
+#   and the state directory records the pinned workerd version, and workerd logs no wasm trap on either side.
 # Needs worker-build, tests/m0's wrangler and workerd, gh, openssl, python3 with cryptography, and `sudo -n` to add
 # two loopback names to /etc/hosts (removed on exit). PREBUILT=<dir> takes site/ and edge/ (test-faults) and
 # lifeboat/ builds from <dir>. KEEP=1 leaves both sides up. Run from the repository root.
@@ -199,7 +201,8 @@ openssl x509 -req -in "$K/tls.csr" -CA "$K/ca.pem" -CAkey "$K/ca.key" -CAcreates
 "$root/target/debug/graft-blob" --root "$B/blob" --listen 127.0.0.1:$BP >"$B/blob.log" 2>&1 & BLOBP=$!
 "$CLI" lifeboat bundle --dir "$B/boat" --builds "$B/builds" --release "$REL" --listen 127.0.0.1:$LP \
   --tls-key "$K/tls.key" --tls-chain "$K/tls.pem" --blob http://127.0.0.1:$BP --admin 127.0.0.1:$AP \
-  --state "$B/boat/state" --out "$B/boat/config.capnp" || exit 1
+  --state "$B/boat/state" --workerd "$WD" --out "$B/boat/config.capnp" || exit 1
+[ "$(cat "$B/boat/state/WORKERD_VERSION")" = "$("$WD" --version)" ] || { echo "FAIL: the state records no pinned workerd"; exit 1; }
 # Through the start script the bundle wrote, as an operator starts it: it raises the open-file limit or refuses.
 [ -x "$B/boat/start.sh" ] || { echo "FAIL: lifeboat bundle wrote no start.sh"; exit 1; }
 { WORKERD=$WD "$B/boat/start.sh" >"$B/workerd.log" 2>&1 & WDP=$!; }
@@ -364,6 +367,22 @@ grep -q "lifeboat halt $NAMES" "$B/workerd.log" && pass "the halt is logged as a
 sleep 12
 c=$(lb -o /dev/null -w '%{http_code}' -H @<(printf 'authorization: token %s\n' "$LBT") -H 'user-agent: lifeboatbed' "$L/api/v3/repos/$LOGIN/$REPO/pulls/1")
 [ "$c" = 200 ] && pass "the other chains still serve (pulls/1 200)" || fail "pulls/1 answered $c after the halt"
+
+echo "== 7. the scrub"
+status | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s["scrub_at"] > 0 and not s["scrub_lost"] else 1)' \
+  && pass "the puller's first pass scrubbed graft-blob, nothing lost" || fail "no first scrub: $(status)"
+P1=$(cd "$B/blob" && ls pack/$RID/* | grep -v '\.sha256$' | head -1)
+cp "$B/blob/$P1" "$B/good.pack"
+printf 'rot' | dd of="$B/blob/$P1" bs=1 seek=8 conv=notrunc 2>/dev/null
+v=$(admin /scrub -X POST)
+python3 -c 'import json,sys; v=json.loads(sys.argv[1]); sys.exit(0 if v["scrub_lost"] == [{"key": sys.argv[2], "outcome": "lost", "copy": sys.argv[3]}] else 1)' \
+  "$v" "$P1" "repo:$RID" && pass "the rotted $P1 is lost, with repo:$RID to pull it from" || fail "scrub: $v"
+grep -q "lifeboat scrub lost: $P1 is lost; no sibling holds it whole: pull it again from repo:$RID" "$B/workerd.log" \
+  && pass "the lost key is logged as an error" || fail "no scrub line in workerd's log"
+cp "$B/good.pack" "$B/blob/$P1"
+v=$(admin /scrub -X POST)
+python3 -c 'import json,sys; v=json.loads(sys.argv[1]); sys.exit(0 if v["scrub_lost"] == [] and v["scrub"]["ok"] >= 3 else 1)' "$v" \
+  && pass "whole again, the next scrub clears it" || fail "scrub after repair: $v"
 
 n=$(cat "$B/dev.log" "$B/workerd.log" | grep -c 'out of bounds\|RuntimeError'); echo "wasm traps: $n"; [ "$n" = 0 ] || ok=0
 grep -E "lifeboat_pass" "$B/workerd.log" | tail -2 | cut -c1-400 | sed 's/^/log: /'

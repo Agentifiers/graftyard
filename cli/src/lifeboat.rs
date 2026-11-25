@@ -209,6 +209,8 @@ pub struct BundleArgs<'a> {
     pub admin: Option<&'a str>,
     /// Where workerd keeps the copy: a directory created fresh for each workerd version.
     pub state: &'a Path,
+    /// The release's pinned workerd binary, which `start.sh` runs.
+    pub workerd: &'a str,
     pub out: &'a Path,
 }
 
@@ -254,6 +256,8 @@ pub fn bundle(a: BundleArgs) -> Res<()> {
         }
     }
     fs::create_dir_all(a.state).map_err(|e| format!("{}: {e}", a.state.display()))?;
+    let version = workerd_version(a.workerd)?;
+    pin_state(a.state, &version)?;
     let base = a.out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let embed = |p: &Path| relative(base, p).map(|r| format!("embed {}", capnp(&r)));
     let text = |name: &str, v: &str| format!("    (name = {}, text = {}),\n", capnp(name), capnp(v));
@@ -360,14 +364,47 @@ const puller :Workerd.Worker = (
         .truncate(true)
         .mode(0o700)
         .open(&start)
-        .and_then(|mut f| f.write_all(start_script(&name, &state, floor).as_bytes()))
+        .and_then(|mut f| f.write_all(start_script(&name, &state, floor, a.workerd, &version).as_bytes()))
         .map_err(|e| format!("{}: {e}", start.display()))?;
     println!(
-        "wrote {} (0600) and {}: start the bundle with it, which raises the open-file limit to at least {floor}",
+        "wrote {} (0600) and {}: start the bundle with it, which raises the open-file limit to at least {floor} and \
+         runs only {version}",
         a.out.display(),
         start.display()
     );
     Ok(())
+}
+
+/// The state directory's record of the workerd version whose copies it holds (`design/DESIGN.md`, "Install
+/// operations", Lifeboat: "A workerd version change rebuilds the lifeboat on a fresh directory").
+pub const WORKERD_VERSION_FILE: &str = "WORKERD_VERSION";
+
+/// `workerd --version`'s line, such as `workerd 2026-10-23`.
+fn workerd_version(workerd: &str) -> Res<String> {
+    let o = std::process::Command::new(workerd)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("{workerd} --version: {e} (--workerd names the release's pinned workerd)"))?;
+    let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    if !o.status.success() || v.is_empty() {
+        return Err(format!("{workerd} --version answered nothing"));
+    }
+    Ok(v)
+}
+
+/// Records `version` in `state`, or refuses a state another workerd version wrote: its copies are rebuilt on a fresh
+/// directory, never opened by another version. A state from before the record (no file) is taken as this version's.
+pub fn pin_state(state: &Path, version: &str) -> Res<()> {
+    let p = state.join(WORKERD_VERSION_FILE);
+    match fs::read_to_string(&p) {
+        Ok(had) if had.trim() == version => Ok(()),
+        Ok(had) => Err(format!(
+            "{} holds copies of {}, not {version}: give the new version a fresh --state, which rebuilds from the feed",
+            state.display(),
+            had.trim()
+        )),
+        Err(_) => fs::write(&p, format!("{version}\n")).map_err(|e| format!("{}: {e}", p.display())),
+    }
 }
 
 /// The fewest open files the bundle starts with: 4 for each chain the install's `export-state` names, at least
@@ -411,14 +448,28 @@ fn sh(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// `start.sh`: raises the open-file limit to the hard limit, refuses to start below `floor` or below 4 for each copy
-/// `state` holds, whichever is higher (a copy grows past the chains named at bundle time), and runs workerd
-/// (`$WORKERD`, else `workerd` on the path) on the config.
-fn start_script(config: &str, state: &str, floor: u64) -> String {
+/// `start.sh`: refuses a workerd (`$WORKERD`, else the `workerd` the bundle was written with) other than the pinned
+/// `version`, and a state directory another version wrote; raises the open-file limit to the hard limit, refuses to
+/// start below `floor` or below 4 for each copy `state` holds, whichever is higher (a copy grows past the chains named
+/// at bundle time); and runs workerd on the config.
+fn start_script(config: &str, state: &str, floor: u64, workerd: &str, version: &str) -> String {
     format!(
         r#"#!/bin/bash
-# Written by `graftyard lifeboat bundle`: starts the bundle with an open-file limit its copies fit in.
+# Written by `graftyard lifeboat bundle`: starts the bundle on its pinned workerd with an open-file limit its copies
+# fit in.
 cd "$(dirname "$0")" || exit 1
+wd=${{WORKERD:-{workerd}}}
+pin={version}
+have=$("$wd" --version 2>/dev/null)
+if [ "$have" != "$pin" ]; then
+  echo "lifeboat: $wd is ${{have:-no workerd}}, not the bundle's pinned $pin: start it with the release's workerd" >&2
+  exit 1
+fi
+held=$(cat {state}/{file} 2>/dev/null)
+if [ "$held" != "$pin" ]; then
+  echo "lifeboat: the state directory holds copies of ${{held:-an unknown workerd}}, not $pin: bundle the new version on a fresh --state, which rebuilds from the feed" >&2
+  exit 1
+fi
 floor={floor}
 copies=$(find {state} -name '*.sqlite' 2>/dev/null | wc -l)
 [ $((copies * {per})) -gt $floor ] && floor=$((copies * {per}))
@@ -430,11 +481,14 @@ if [ "$have" != unlimited ] && [ "$have" -lt "$floor" ]; then
   echo "lifeboat: the open-file limit is $have (hard $hard), under the bundle's floor of $floor: raise the hard limit (ulimit -Hn, LimitNOFILE= for systemd) and start again" >&2
   exit 1
 fi
-exec "${{WORKERD:-workerd}}" serve {config} --experimental
+exec "$wd" serve {config} --experimental
 "#,
         per = OPEN_FILES_PER_CHAIN,
         config = sh(config),
         state = sh(state),
+        workerd = sh(workerd),
+        version = sh(version),
+        file = WORKERD_VERSION_FILE,
     )
 }
 
@@ -442,28 +496,39 @@ exec "${{WORKERD:-workerd}}" serve {config} --experimental
 mod tests {
     use std::process::Command;
 
-    use super::{OPEN_FILES_MIN, open_files_floor, start_script};
+    use super::{OPEN_FILES_MIN, WORKERD_VERSION_FILE, open_files_floor, pin_state, start_script};
+
+    const PIN: &str = "workerd 2026-10-23";
 
     /// The start script refuses a hard limit under the floor, counting the copies the state holds as well as the
-    /// chains named at bundle time, and starts workerd with the limit raised to the hard limit when it fits.
+    /// chains named at bundle time, and starts workerd with the limit raised to the hard limit when it fits. It runs
+    /// only the pinned workerd, on a state directory that version wrote, and names both versions when it refuses.
     #[test]
-    fn start_script_refuses_an_open_file_limit_under_the_floor() {
+    fn start_script_refuses_an_open_file_limit_under_the_floor_and_another_workerd() {
         assert_eq!(open_files_floor(10), OPEN_FILES_MIN);
         assert_eq!(open_files_floor(20_000), 80_000);
         let d = std::env::temp_dir().join(format!("lbstart-{}", std::process::id()));
         let state = d.join("st ate");
         std::fs::create_dir_all(state.join("x")).unwrap();
+        pin_state(&state, PIN).unwrap();
         let copies = |n: usize| (0..n).for_each(|i| std::fs::write(state.join(format!("x/{i}.sqlite")), b"").unwrap());
         copies(5);
-        std::fs::write(d.join("start.sh"), start_script("config.capnp", &state.display().to_string(), 2_000)).unwrap();
-        // A stand-in workerd: prints the soft limit it was started with and its arguments.
-        std::fs::write(d.join("wd"), "#!/bin/bash\necho \"$(ulimit -n) $*\"\n").unwrap();
+        let wd = d.join("wd").display().to_string();
+        std::fs::write(d.join("start.sh"), start_script("config.capnp", &state.display().to_string(), 2_000, &wd, PIN))
+            .unwrap();
+        // A stand-in workerd of version `$V`: prints the soft limit it was started with and its arguments.
+        std::fs::write(
+            d.join("wd"),
+            "#!/bin/bash\n[ \"$1\" = --version ] && { echo \"workerd ${V:-2026-10-23}\"; exit 0; }\necho \"$(ulimit -n) $*\"\n",
+        )
+        .unwrap();
         std::fs::set_permissions(d.join("wd"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        let run = |hard: u64| {
+        let run = |hard: u64, v: &str| {
             let o = Command::new("bash")
                 .arg("-c")
                 .arg(format!("ulimit -Sn 1024 && ulimit -Hn {hard} && bash ./start.sh"))
-                .env("WORKERD", d.join("wd"))
+                .env("V", v)
+                .env_remove("WORKERD")
                 .current_dir(&d)
                 .output()
                 .unwrap();
@@ -473,16 +538,27 @@ mod tests {
                 String::from_utf8_lossy(&o.stderr).into_owned(),
             )
         };
-        let (ok, out, err) = run(4_096);
+        let (ok, out, err) = run(4_096, "2026-10-23");
         assert!(ok, "{err}");
         assert_eq!(out.trim(), "4096 serve config.capnp --experimental");
-        let (ok, out, err) = run(1_999);
+        let (ok, out, err) = run(1_999, "2026-10-23");
         assert!(!ok && out.is_empty());
         assert!(err.contains("under the bundle's floor of 2000"), "{err}");
         // 600 copies need 2,400, above the 2,000 named at bundle time.
         copies(600);
-        let (ok, _, err) = run(2_100);
+        let (ok, _, err) = run(2_100, "2026-10-23");
         assert!(!ok && err.contains("floor of 2400"), "{err}");
+        // Another workerd on the path: refused, naming both versions, and never started.
+        let (ok, out, err) = run(4_096, "2026-11-30");
+        assert!(!ok && out.is_empty(), "{out}");
+        assert!(err.contains("workerd 2026-11-30") && err.contains("pinned workerd 2026-10-23"), "{err}");
+        // A state another version wrote: refused by the script and by the next bundle, naming both versions.
+        std::fs::write(state.join(WORKERD_VERSION_FILE), "workerd 2026-09-01\n").unwrap();
+        let (ok, out, err) = run(4_096, "2026-10-23");
+        assert!(!ok && out.is_empty(), "{out}");
+        assert!(err.contains("copies of workerd 2026-09-01, not workerd 2026-10-23"), "{err}");
+        let e = pin_state(&state, PIN).unwrap_err();
+        assert!(e.contains("copies of workerd 2026-09-01, not workerd 2026-10-23"), "{e}");
         std::fs::remove_dir_all(&d).unwrap();
     }
 }
