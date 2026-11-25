@@ -597,14 +597,16 @@ pub fn steps_json(steps: &[crate::workflow::Step]) -> Value {
 }
 
 /// The `/runsvc` `create_run` call a trigger or the edge's dispatch sends: the jobs' declared permissions ride along
-/// only where job tokens are on (`tokens`) and a job declared some, and a `pull_request` run's base branch only where
-/// `actions-cache` is (`base`). Every other run's call is the one it was before either.
+/// only where job tokens are on (`tokens`) and a job declared some, a `pull_request` run's base branch only where
+/// `actions-cache` is (`base`), and a same-repository one's head branch only where `GRAFTYARD_OIDC_HEAD_REF` is and the
+/// base rides too (`head`). Every other run's call is the one it was before any of them.
 pub fn create_run_call(
     run: &crate::shard::WorkflowRun,
     jobs: &[crate::shard::JobSpec],
     permissions: &crate::specs::Declared,
     tokens: bool,
     base: Option<&str>,
+    head: Option<&str>,
 ) -> Value {
     let mut b = json!({ "op": "create_run", "run": run, "jobs": jobs });
     if tokens && !permissions.is_empty() {
@@ -612,20 +614,28 @@ pub fn create_run_call(
     }
     if let Some(base) = base {
         b["base_ref"] = json!(base);
+        if let Some(head) = head {
+            b["head_ref"] = json!(head);
+        }
     }
     b
 }
 
-/// The command a shard leader commits for a `create_run_call`, with the run's key: `CreateRunOn` for a `pull_request`
-/// run with a base, else `CreateRunWith` when the call carries permissions, else `CreateRun`.
+/// The command a shard leader commits for a `create_run_call`, with the run's key: `CreateRunFrom` for a `pull_request`
+/// run with a base and a head, `CreateRunOn` for one with a base alone, else `CreateRunWith` when the call carries permissions, else `CreateRun`.
 pub fn create_run_op(b: &Value) -> Result<(crate::shard::RunKey, crate::shard::ActionsOp), String> {
     use crate::shard::ActionsOp;
     let run: crate::shard::WorkflowRun = serde_json::from_value(b["run"].clone()).map_err(|e| e.to_string())?;
     let jobs: Vec<crate::shard::JobSpec> = serde_json::from_value(b["jobs"].clone()).map_err(|e| e.to_string())?;
     let permissions: crate::specs::Declared = serde_json::from_value(b["permissions"].clone()).unwrap_or_default();
     let key = run.key();
-    let op = match b["base_ref"].as_str() {
-        Some(base) if run.is_pull_request() => ActionsOp::CreateRunOn { run, jobs, permissions, base_ref: base.into() },
+    let op = match (b["base_ref"].as_str(), b["head_ref"].as_str()) {
+        (Some(base), Some(head)) if run.is_pull_request() => {
+            ActionsOp::CreateRunFrom { run, jobs, permissions, base_ref: base.into(), head_ref: head.into() }
+        }
+        (Some(base), _) if run.is_pull_request() => {
+            ActionsOp::CreateRunOn { run, jobs, permissions, base_ref: base.into() }
+        }
         _ if permissions.is_empty() => ActionsOp::CreateRun { run, jobs },
         _ => ActionsOp::CreateRunWith { run, jobs, permissions },
     };

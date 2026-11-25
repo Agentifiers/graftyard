@@ -127,12 +127,15 @@ pub struct Facts<'a> {
     /// A `pull_request` run's base branch as the shard recorded it (`ActionsEvent::RunBase`, `refs/heads/main`), which
     /// `base_ref` carries as GitHub does, without `refs/heads/` (F121).
     pub base_ref: Option<&'a str>,
+    /// A same-repository `pull_request` run's head branch (`ActionsEvent::RunHead`, `refs/heads/feature`), which
+    /// `head_ref` carries the same way (F121).
+    pub head_ref: Option<&'a str>,
 }
 
 /// The token's claims at `now_s` with id `jti`, for `audience` or, without one, the owner's URL, GHES's default
 /// ("the URL of the repository owner"). Every value GHES writes as a string is a string. The claims GHES has and this
-/// leaves empty or out are `decisions/OPEN-QUESTIONS.md` rows: `actor` and `actor_id`, `head_ref`, `base_ref` for a
-/// run with no recorded base, `run_number`, and a reusable workflow's `job_workflow_ref`.
+/// leaves empty or out are `decisions/OPEN-QUESTIONS.md` rows: `actor` and `actor_id`, `head_ref` and `base_ref` for
+/// a run with none recorded, `run_number`, and a reusable workflow's `job_workflow_ref`.
 pub fn claims(f: &Facts<'_>, audience: Option<&str>, now_s: u64, jti: &str) -> Value {
     let run = f.run;
     let owner = f.repository.split('/').next().unwrap_or("");
@@ -174,7 +177,7 @@ pub fn claims(f: &Facts<'_>, audience: Option<&str>, now_s: u64, jti: &str) -> V
         "job_workflow_ref": workflow_ref,
         "job_workflow_sha": sha,
         "runner_environment": if f.hosted { "github-hosted" } else { "self-hosted" },
-        "head_ref": "",
+        "head_ref": f.head_ref.map_or("", |h| h.strip_prefix("refs/heads/").unwrap_or(h)),
         "base_ref": f.base_ref.map_or("", |b| b.strip_prefix("refs/heads/").unwrap_or(b)),
     });
     if let Some(e) = environment {
@@ -457,6 +460,7 @@ mod tests {
             job: &j,
             hosted: true,
             base_ref: None,
+            head_ref: None,
         };
         let sha = "ab".repeat(20);
         let c = claims(&f, None, 1_000, "j-1");
@@ -513,17 +517,19 @@ mod tests {
             job: &j,
             hosted: false,
             base_ref: Some("refs/heads/rel"),
+            head_ref: Some("refs/heads/fix/a"),
         };
         let c = claims(&f, None, 7, "x");
         assert_eq!(c["sub"], json!("repo:octo/hello:pull_request"));
-        // `base_ref` is the target branch's short name, as in GitHub's pull_request tokens ("base_ref": "main"; F121).
-        assert_eq!(c["base_ref"], json!("rel"));
+        // `base_ref` and `head_ref` are the branches' short names, as in GitHub's pull_request tokens ("base_ref":
+        // "main", "head_ref": the source branch; F121), a slash in the name kept.
+        assert_eq!((c["base_ref"].as_str(), c["head_ref"].as_str()), (Some("rel"), Some("fix/a")));
         assert_eq!((c["ref"].as_str(), c["event_name"].as_str()), (Some("refs/pull/7/merge"), Some("pull_request")));
         assert_eq!(c["repository_visibility"], json!("internal"));
         let (r, j) = (run("push", "refs/tags/v1", false), row(Some("prod"), running()));
-        let c = claims(&Facts { run: &r, job: &j, base_ref: None, ..f }, None, 7, "x");
+        let c = claims(&Facts { run: &r, job: &j, base_ref: None, head_ref: None, ..f }, None, 7, "x");
         assert_eq!(c["sub"], json!("repo:octo/hello:environment:prod"));
-        assert_eq!(c["base_ref"], json!(""));
+        assert_eq!((c["base_ref"].as_str(), c["head_ref"].as_str()), (Some(""), Some("")));
         assert_eq!((c["environment"].as_str(), c["ref_type"].as_str()), (Some("prod"), Some("tag")));
     }
 

@@ -513,7 +513,7 @@ fn a_pull_request_runs_granted_job_gets_the_id_token_url_only_with_job_tokens_on
             pull_request_run(REPO, e.index, WF, OIDC, p.n, p.action, &v.base, m).unwrap().unwrap();
         // The site day's flags: `job_tokens` as given, `actions_cache` on (graft-m4a's), so the base rides along.
         let base = v.base.display();
-        let call = graftyard_actions::runsvc::create_run_call(&run, &jobs, &permissions, tokens, Some(&base));
+        let call = graftyard_actions::runsvc::create_run_call(&run, &jobs, &permissions, tokens, Some(&base), None);
         let (_, op) = graftyard_actions::runsvc::create_run_op(&call).unwrap();
         assert!(matches!(op, ActionsOp::CreateRunOn { .. }), "a pull_request run with its base: {op:?}");
         let (now, id) = (w.now, w.id());
@@ -545,4 +545,81 @@ fn a_pull_request_runs_granted_job_gets_the_id_token_url_only_with_job_tokens_on
         seen.sort();
         assert_eq!(seen, want, "job tokens {tokens}");
     }
+}
+
+/// F121's `head_ref` across a mixed release: a pull request's run, taken the way the site's `ActionsTrigger` takes it
+/// (`pr_head` with the site day's `GRAFTYARD_OIDC_HEAD_REF`, `create_run_call`, the leader's `create_run_op`). With
+/// the flag unset, the call is `CreateRunOn` and a shard that reads only up to 0x15.6 commits it with no `RunHead`.
+/// With it set (a later site day, once every member reads 0x15.7), the call is `CreateRunFrom` and the head is
+/// recorded; the same call to a member without 0x15.7 is refused, never committed, which is why the flag comes last.
+/// A fork's pull request carries no head even with the flag set, so its call stays `CreateRunOn`.
+#[test]
+fn head_ref_rides_only_with_the_flag_and_never_for_a_fork() {
+    use graftyard_actions::shard::{
+        ACTIONS_FORMAT_CACHE, ACTIONS_FORMAT_HEAD_REF, ACTIONS_FORMAT_TOKENS, ActionsEvent,
+    };
+    use graftyard_actions::trigger::pr_head;
+    let v6 = vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST, ACTIONS_FORMAT_TOKENS, ACTIONS_FORMAT_CACHE];
+    let v7 = [v6.clone(), vec![ACTIONS_FORMAT_HEAD_REF]].concat();
+    // (reader, flag): what the call decodes to, whether it commits, and the head the fold then holds.
+    for (reads, flag, from, commits) in
+        [(&v6, false, false, true), (&v7, false, false, true), (&v6, true, true, false), (&v7, true, true, true)]
+    {
+        let mut w = World::new(reads.clone());
+        let e = w.push_both(oid(121), oid(122));
+        w.test_merge(1, clean(1));
+        let p = w.events(&e).remove(0);
+        let v = w.view(p.n.0);
+        let PrTarget::Merge(m) = pr_target(&v) else { panic!("clean merge") };
+        let (run, jobs, permissions) =
+            pull_request_run(REPO, e.index, WF, SRC, p.n, p.action, &v.base, m).unwrap().unwrap();
+        let head = pr_head(&*w.repo.fold().core, REPO, p.n, flag).map(|h| h.display());
+        let base = v.base.display();
+        let call =
+            graftyard_actions::runsvc::create_run_call(&run, &jobs, &permissions, false, Some(&base), head.as_deref());
+        let (_, op) = graftyard_actions::runsvc::create_run_op(&call).unwrap();
+        assert_eq!(matches!(op, ActionsOp::CreateRunFrom { .. }), from, "flag {flag}: {op:?}");
+        assert!(from || matches!(op, ActionsOp::CreateRunOn { .. }), "without the flag, 0x15.6's call: {op:?}");
+        let before = w.shard.commit_index();
+        let (now, id) = (w.now, w.id());
+        let got = w.shard.commit(now, id, ActionsCmd { actor: ActionsActor::Operator, op });
+        assert_eq!(matches!(got, Some(Ok(_))), commits, "reads {:?} flag {flag}: {got:?}", reads.len());
+        let heads: Vec<_> = w
+            .shard
+            .committed_after(before)
+            .into_iter()
+            .flat_map(|(_, evs)| evs)
+            .filter_map(|e| match e {
+                ActionsEvent::RunHead { head_ref, .. } => Some(head_ref),
+                _ => None,
+            })
+            .collect();
+        let want: Vec<Box<str>> = if from && commits { vec!["refs/heads/a".into()] } else { Vec::new() };
+        assert_eq!(heads, want, "reads {} flag {flag}", reads.len());
+        let f = w.shard.fold();
+        assert_eq!(f.runs.keys().next().and_then(|r| f.run_head(*r)), want.first().map(|h| &**h));
+    }
+    // A fork's pull request: no head with the flag on, so its call is 0x15.6's.
+    let mut w = World::new(v7);
+    let issue = IssueCapture {
+        id: DbId((1 << 40) + 3),
+        author: None,
+        title: "t".into(),
+        body: "".into(),
+        labels: Default::default(),
+        assignees: Default::default(),
+    };
+    let capture = PrCapture {
+        head_sha: oid(13),
+        base_sha: oid(1),
+        state: PrState::Open { draft: false },
+        labels: Vec::new(),
+        issue,
+        changes_from: None,
+    };
+    let fork = HeadSpec { repo: RepoId(DbId(8)), branch: name("refs/heads/a") };
+    w.record(vec![RepoEvent::PrOpened { n: IssueNumber(3), head: fork, base: name("refs/heads/main"), capture }]);
+    assert!(!w.view(3).same_repo);
+    assert_eq!(pr_head(&*w.repo.fold().core, REPO, IssueNumber(3), true), None, "a fork's branch is the fork's");
+    assert_eq!(pr_head(&*w.repo.fold().core, REPO, IssueNumber(1), true), Some(name("refs/heads/a")));
 }

@@ -276,6 +276,13 @@ pub fn actions_cache(env: &worker::Env) -> bool {
     env.var("GRAFTYARD_ACTIONS_CACHE").is_ok_and(|v| v.to_string() == "1")
 }
 
+/// Whether a site day set `GRAFTYARD_OIDC_HEAD_REF` (F121): only then is 0x15.7 sent, by `CreateRunFrom`
+/// (`graftyard_actions::trigger::pr_head`). A site day sets it only once 0x15.7 was enabled, after the day that shipped
+/// its reader to every member, and only beside `GRAFTYARD_ACTIONS_CACHE`, since the head rides with the base.
+pub fn oidc_head_ref(env: &worker::Env) -> bool {
+    env.var("GRAFTYARD_OIDC_HEAD_REF").is_ok_and(|v| v.to_string() == "1")
+}
+
 /// `ActionsTrigger`'s `create_run` call: the jobs' declared permissions ride along only where `job_tokens`, and only
 /// when a job declared some, so every other run's call is the one it was.
 pub fn create_run_body(
@@ -284,9 +291,11 @@ pub fn create_run_body(
     jobs: &[act::JobSpec],
     permissions: &graftyard_actions::specs::Declared,
     base: Option<&str>,
+    head: Option<&str>,
 ) -> Value {
-    // `actions-cache`: a `pull_request` run's base branch, which its jobs read caches from (`CreateRunOn`).
-    runsvc::create_run_call(run, jobs, permissions, job_tokens(env), base.filter(|_| actions_cache(env)))
+    // `actions-cache`: a `pull_request` run's base branch, which its jobs read caches from (`CreateRunOn`); F121: a
+    // same-repository one's head branch beside it (`CreateRunFrom`), already gated by `pr_head`.
+    runsvc::create_run_call(run, jobs, permissions, job_tokens(env), base.filter(|_| actions_cache(env)), head)
 }
 
 /// The most stored log bytes one `RunOwner` round reads: a round past it stops at the entry before, and the next alarm

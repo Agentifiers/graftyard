@@ -811,7 +811,7 @@ fn dispatch_call(
         concurrency: None,
         fork,
     };
-    Ok((runsvc::create_run_call(&run, &jobs, &permissions, tokens, None), jobs.len()))
+    Ok((runsvc::create_run_call(&run, &jobs, &permissions, tokens, None, None), jobs.len()))
 }
 
 /// `/api/graftyard/v1/repos/{o}/{r}/actions/...`, or `None` for any other path under `/api/graftyard/v1`.

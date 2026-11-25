@@ -554,9 +554,10 @@ fn oidc_get(h: &Host, url: &str, path: &str, grant: Option<Grant>) -> Option<(u1
                 let row = f.job(job).cloned()?;
                 let run = f.run(row.run)?.run.clone();
                 let base = f.run_base(run.id).map(str::to_owned);
-                Some((row, run, f.more.tokens.get(&job).cloned(), base))
+                let head = f.run_head(run.id).map(str::to_owned);
+                Some((row, run, f.more.tokens.get(&job).cloned(), base, head))
             });
-            let (row, run, declared, base) = read?;
+            let (row, run, declared, base, head) = read?;
             let f = oidc::Facts {
                 server: &h.urls.server,
                 repository: "owner/repo",
@@ -568,6 +569,7 @@ fn oidc_get(h: &Host, url: &str, path: &str, grant: Option<Grant>) -> Option<(u1
                 job: &row,
                 hosted: false,
                 base_ref: base.as_deref(),
+                head_ref: head.as_deref(),
             };
             let slot = h.oidc.1.load(SeqCst);
             let n = h.mints.fetch_add(1, SeqCst) + 1;
