@@ -10,6 +10,8 @@ graftyard-raft = { path = "../../../../crates/raft" }
 graftyard-types = { path = "../../../../crates/types" }
 graftyard-release = { path = "../../../../crates/release" }
 serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
 graftyard-ops = { path = "../../../../workers/ops" }
 smallvec = { version = "1", features = ["serde"] }
 

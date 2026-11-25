@@ -1,0 +1,6 @@
+2026-11-25T00:09:45Z
+d4ed774a
+Current Version ID: 8c7a2d12-3691-4cfd-aded-b7a6fabaab62
+✨ Success! Uploaded secret FRONT_TOKEN
+{"script":"graft-agents-lf8-front","created_on":"2026-11-25T00:10:10.553264Z","versions":["14588085 100"]}
+front built from d4ed774a, workers/agents-front unchanged from origin/main: yes
