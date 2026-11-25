@@ -6,6 +6,8 @@
 use std::collections::{HashSet, VecDeque};
 
 #[cfg(target_arch = "wasm32")]
+mod taskbox;
+#[cfg(target_arch = "wasm32")]
 mod worker;
 
 /// How many recent delivery ids one isolate remembers [guess].

@@ -11350,6 +11350,35 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - A canary that needs cold-isolate traffic to judge N+1, such as a gate that counts too few webhooks at 1% without it.
 - OPEN-QUESTIONS A52's own `graft-agents-front` roll: a front split during a `ControllerRoll` changes which version carries the variable, so the default moves to a binding both front versions read.
 
+#### `controller-taskbox`: one `TaskBox` Durable Object per Graftyard-run task, not a Workflow (2026-11-25)
+
+**Status.** Built at $0 (AM3-WP1, step S2 of the lead's plan for LM-3's kill row; the lead approved the swap, 2026-11-25): the rules in `graftyard_git::taskbox`, native, and the Workers host in `workers/controller/src/taskbox.rs`, compiled for wasm32, not deployed. Its hosted proof is LM-3's "a Sandbox killed mid-task resumes" (S4, graft-m4a).
+
+**Decision.**
+- `graft-controller` runs one `TaskBox` Durable Object per task, named by the task's id, on one `durable_object`-policy container application. The object holds the `Task` in its storage, the task's one Sandbox in `ctx.container`, and one alarm every `HEARTBEAT` (30 s [guess]).
+- The alarm renews a running container's 6-hour inactivity timeout, and restarts a stopped one, or one silent for `SILENT_MAX` (10 min [guess]), under a new `SandboxId` (`<task>-<generation>`) from the last acked push. A push counts only on the host's `ok` in the receive-pack response the router forwards back (`acked_pushes`). Every outbound request and report from a `SandboxId` the task no longer holds is refused, counted in `late`, and logged.
+- **Versions.** A Durable Object runs the version its deployment assigned it, and a `ControllerPointer` deploys nothing, so a pointer alone leaves running boxes on N+1. Each alarm therefore reads `graft-agents-front`'s view over a `fetch()` binding whose `props` only `graft-controller` sets (`GET /_agents_front/pointer`). A caught-up view's `Pointers.controller` naming another version than the box runs holds the box: its Sandbox is destroyed and its traffic refused as late. The first alarm on the pointer's version, or with the pointer cleared, starts the next Sandbox from the last acked push. A box held for `HOLD_MAX` (60 min [guess]) fails its task. A failed read, or a view that is not caught up, changes no hold. An alarm on a version other than the one that started the Sandbox restarts it there, so a deployment, the roll's or `Abort`'s, moves running tasks' code by their next alarm.
+
+**Why.**
+- workers-rs 0.8.7 has no Workflow binding, and `worker-build` exports only `default` and wasm-bindgen classes. A JS Workflow would either decide nothing, wrapping calls into the Rust Worker, or duplicate `Task::step` in JS.
+- One object per task with one container makes "two live Sandboxes for one task" impossible by construction: a restart destroys the container before it starts the next. The alarm is the heartbeat the 6-hour stop needs (`research/agents.md` 6.6).
+- Durable Objects and Containers are GA in `research/cloudflare.md`'s first table, and the runner account already runs `RunnerBox`, the same shape (`r23-runnerbox`).
+
+**Beat.**
+- A Workflow per task (AGENT-LAYER's earlier Shape): no Rust binding, as above.
+- Pinning running boxes with the version override: Cloudflare documents overrides for requests to a Worker and `fetch()` service bindings only, never for a Durable Object stub, and a DO's version "will not change until you create a new deployment" [doc, https://developers.cloudflare.com/workers/versions-and-deployments/version-overrides/ and https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/with-durable-objects/, read 2026-11-25].
+- Having the agents `graft-ops` redeploy N on every pointer: that is a Cloudflare API call on the swap-back path, which the pointer exists to avoid (DESIGN, the November 2, 2023 class).
+
+**Evidence.**
+- `crates/git/tests/taskbox.rs`: the kill row's three kill points, late reports, the alarm's version and silence restarts, the hold under a pointer with its release, time limit, and failed read, and `acked_pushes` over plain and side-band report-status. `tests/m0carried/plant248.py`: 17 mutants, all caught.
+- Durable Objects under gradual deployments: each object is assigned a version by the deployment's percentages, "This version will not change until you create a new deployment", and "For a given deployment, requests to each Durable Object will always use the same Worker version" [doc, the page above].
+- Alarms run at least once and retry a thrown handler 6 times, so the host catches and re-arms [doc, https://developers.cloudflare.com/durable-objects/api/alarms/].
+- Cost: `scripts/cost_agents.py`, "Agents account: TaskBox Durable Objects", $0, $21, and $170 a month at 50, 300, and 2,000 developers, with duration priced as an upper bound for the whole task.
+
+**Flip.**
+- workers-rs gains a Workflow binding, or a task step needs more than an alarm and object storage give, such as a wait longer than an alarm can hold with retries.
+- Cloudflare documents that a Durable Object's version can be steered during a roll in a way that breaks the hold, for example an override that reaches a stub, which would let the pointer move running boxes instead of holding them; or documents that it cannot be steered at all in a way the hold depends on, such as a version reported to the object that is not the one it runs.
+
 #### `controller-errors`: a `ControllerRoll` is judged on `graft-agents-front`'s counts, stored by the install's edge (2026-11-25)
 
 **Status.** Built (OPEN-QUESTIONS A52 and R47, the lead's ruling (c) of 2026-11-25), native only. The hosted row is LM-3's "a bad controller at 1% swaps back" on graft-m4a.

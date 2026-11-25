@@ -25,4 +25,11 @@ graftyard-identity = { path = "../../crates/identity" }
 serde_json.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The `TaskBox` host (`src/taskbox.rs`): installation-token credentials as `Basic`, the pointer read's deadline, the
+# box's rules and the outbound router (no `worker` feature: the host here is this crate), and the App JWT.
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3", default-features = false }
+graftyard-git = { path = "../../crates/git" }
+graftyard-types.workspace = true
+serde.workspace = true
 worker.workspace = true

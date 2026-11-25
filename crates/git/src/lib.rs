@@ -52,6 +52,7 @@ pub mod standin;
 pub mod store;
 pub mod sweep;
 pub mod task;
+pub mod taskbox;
 pub mod tiers;
 pub mod transfer;
 pub mod watch;

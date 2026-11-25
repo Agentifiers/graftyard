@@ -767,7 +767,12 @@ dependencies = [
 name = "graftyard-controller"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "futures-util",
+ "graftyard-git",
  "graftyard-identity",
+ "graftyard-types",
+ "serde",
  "serde_json",
  "worker",
 ]

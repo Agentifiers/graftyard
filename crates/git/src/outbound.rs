@@ -25,6 +25,7 @@
 
 use std::io::Read;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::RefPattern;
@@ -33,7 +34,7 @@ use crate::pkt::{Pkt, Reader};
 use crate::task::run_refs;
 
 /// One way out of the Sandbox.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Allowed {
     /// Smart HTTP and REST on the task's base and its push target, on the install's host.
     GraftyardHost { host: Box<str>, base: RepoRef, fork: Option<RepoRef> },
@@ -45,7 +46,7 @@ pub enum Allowed {
 }
 
 /// A task's arms and the refs it may push.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Route {
     pub arms: Vec<Allowed>,
     pub refs: RefPattern,

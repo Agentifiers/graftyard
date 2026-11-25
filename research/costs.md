@@ -188,5 +188,5 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 | Developers | Cloudflare default | Agent layer added | Default with agents | Added share |
 | --- | --- | --- | --- | --- |
 | 50 | $238 | $22 | $259 | 9% |
-| 300 | $1,016 | $329 | $1,345 | 32% |
-| 2,000 | $9,335 | $2,939 | $12,274 | 31% |
+| 300 | $1,016 | $350 | $1,366 | 34% |
+| 2,000 | $9,335 | $3,101 | $12,436 | 33% |
