@@ -11245,7 +11245,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 **Decision.**
 - `graft-agents-front` counts each answer it forwards by the `x-graftyard-controller-version` it reports, a thrown call as one of N+1's 5xx, but only while its verified view shows a `ControllerRoll` (`Tally`, `gate::controller_judged`, `gate::count_answer`). It flushes every `FLUSH_MS` (30 s) or at `FLUSH_CALLS_MAX` (10,000 calls [guess]), beside a request, to the install's `POST /api/graftyard/v1/release/errors` under the `graftyard-agent` App JWT.
 - The edge checks the JWT (`ident::graftyard_agent`), then `gate::accept_flush` against its `Release` view, refreshed once before an unknown version is refused: every version must be a `graft-controller` version an upload committed, no count may hold more 5xx than answers, and the flush may hold at most `FLUSH_CALLS_MAX` calls. A refused flush stores nothing. An accepted one goes to the existing `errors` objects under key `controller`, at the script's home site as `graft-front`'s counts do.
-- The agents `graft-ops` reads `GET release/errors?since=` summed over the sites, for the step's window and from the intent's start, and judges with `judge_roll`. A `ControllerRoll`'s 100% step holds `STEP_DWELL` like an `McpRoll`'s. A breach commits the pre-signed `ControllerPointer` with no Cloudflare API call. No site answering is `Pending`.
+- The agents `graft-ops` reads `GET release/errors?since=` summed over the sites, for the step's window and from the intent's start, and judges with `judge_roll`. A `ControllerRoll`'s 100% step holds `STEP_DWELL` like an `McpRoll`'s. A breach commits the pre-signed `ControllerPointer` with no Cloudflare API call. No site answering is `Pending`. **The reads (2026-11-25, OPEN-QUESTIONS A57, the lead's ruling):** the edge asks the voter sites' `errors` objects at once, each within `VIEW_CALL_MS` (`gate::read_sites`), so a read takes one site's call; the agents gate waits `GATE_READ_MS` (5 s [guess]) for each, since its cron is not a request path; and every gate run logs one line, a missed read as `pending` with the read named (`gate::controller_gate`). LM-3 r2 took 6 min 32 s from roll to breach while the edge asked the sites in turn and reads of 0.79 to 1.55 s missed a 1 s deadline unlogged.
 
 **Why.**
 - The edge is the install's own gate store, already spread over every site with its failure rows; the counts reuse it and add no store or failure domain.
@@ -11256,6 +11256,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - (b) A Durable Object in the agents account: a new store, with a Failure modes row for each class, beside `errors` objects that already exist.
 
 **Evidence.**
+- `crates/release/src/tests/group/errors.rs`: `a57_the_errors_read_sums_the_sites_that_answered_and_a_missed_gate_read_logs_its_pending`; `tests/m0carried/plant239.py`: 5 mutants, all caught.
 - `crates/release/src/tests/group/run.rs`: `lm3_a_bad_controller_at_1pct_breaches_on_the_fronts_counts_and_commits_its_pointer_with_the_api_down`; `workers/agents-front/tests/front.rs`: `the_front_counts_the_controllers_answers_only_under_a_controller_roll_and_flushes_by_time_or_count`; `tests/edgeboot/run.sh`: the route answers 401 to no JWT and a bad one.
 - `tests/m0carried/plant233.py`: 8 mutants, all caught.
 

@@ -214,23 +214,20 @@ pub async fn errors(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
     if req.method() == Method::Get {
         let since = req.url()?.query_pairs().find(|(k, _)| k == "since").and_then(|(_, v)| v.parse::<u64>().ok());
         let Some(since) = since else { return answer(422, json!({ "message": "GET needs ?since=<ms>" })) };
-        let (mut sum, mut sites) = (ScriptErrors::default(), 0);
-        for site in &voters {
-            let Ok(stub) = b.registry(*site, "errors") else { continue };
-            let path = format!("https://registry/errors?key={key}&since={since}");
-            let Some(Ok(mut r)) = graftyard_lookup::within(deadline, stub.fetch_with_str(&path)).await else {
-                continue;
+        // Every voter site at once, each within VIEW_CALL_MS, so the read takes one site's call (OPEN-QUESTIONS A57).
+        let (b, path) = (&b, &format!("https://registry/errors?key={key}&since={since}"));
+        let read = |site| async move {
+            let stub = b.registry(site, "errors").ok()?;
+            let read = async {
+                let mut r = stub.fetch_with_str(path).await.ok()?;
+                (r.status_code() == 200).then_some(())?;
+                r.json::<ScriptErrors>().await.ok()
             };
-            if r.status_code() != 200 {
-                continue;
-            }
-            let Ok(e) = r.json::<ScriptErrors>().await else { continue };
-            sum.add(&e);
-            sites += 1;
-        }
-        if sites == 0 {
+            graftyard_lookup::within(deadline, read).await.flatten()
+        };
+        let Some((sum, sites)) = gate::read_sites(&voters, read).await else {
             return answer(503, json!({ "message": "no errors object answered" }));
-        }
+        };
         return answer(200, json!({ "counts": sum, "sites": sites, "of": voters.len() }));
     }
     let Some(anchor) = c.anchor else { return answer(503, json!({ "message": "this edge has no trust anchor" })) };

@@ -14,8 +14,8 @@
 //!   account's deploy token, through `exec::Api`; `RELEASES` is the agents account's release bucket.
 //! - **Gate.** A `ControllerRoll` is judged on `GATE_ERRORS` (`gate::judge_roll`) from `graft-agents-front`'s counts of
 //!   `graft-controller`'s answers, which the install's edge stored (`POST release/errors`, `gate::accept_flush`) and
-//!   answers summed over its sites (`GET release/errors?since=`), over the step's window and from the intent's start.
-//!   No site answering is `Pending`. A test install's `GATE` still forces `pass`, `pending`, or `breach:<why>`.
+//!   answers summed over its sites (`GET release/errors?since=`), over the step's window and from the intent's start,
+//!   each read within `gate::GATE_READ_MS`. A missed read is `Pending` and logs which read missed (OPEN-QUESTIONS A57). A test install's `GATE` still forces `pass`, `pending`, or `breach:<why>`.
 //! - **The front's default.** A `graft-controller` deploy whose split serves no version 100% first sets
 //!   `graft-agents-front`'s `CONTROLLER_DEFAULT` to N, and one that serves a version 100% clears it after; a controller
 //!   deployment read while the front's value differs sets it and fails the run (`agents::controller_default`).
@@ -132,23 +132,27 @@ impl<'a> AgentsLive<'a> {
     }
 
     /// The install's stored counts of `graft-controller`'s answers since `since`, summed over its sites
-    /// (`GET release/errors`); `None` when the edge did not answer 200 within `VIEW_CALL_MS`.
-    async fn counts(&self, jwt: &str, since: u64) -> Option<gate::ScriptErrors> {
+    /// (`GET release/errors`), within `gate::GATE_READ_MS`; `Err` says why not, for the gate's log line.
+    async fn counts(&self, jwt: &str, since: u64) -> std::result::Result<gate::ScriptErrors, String> {
         let url = format!("https://{}{ERRORS_PATH}?since={since}", self.anchor.host);
         let h = Headers::new();
-        h.set("authorization", &format!("Bearer {jwt}")).ok()?;
-        h.set("accept", "application/json").ok()?;
-        h.set("user-agent", "graft-agents-ops").ok()?;
+        h.set("authorization", &format!("Bearer {jwt}")).map_err(|e| e.to_string())?;
+        h.set("accept", "application/json").map_err(|e| e.to_string())?;
+        h.set("user-agent", "graft-agents-ops").map_err(|e| e.to_string())?;
         let mut init = RequestInit::new();
         init.with_method(Method::Get).with_headers(h);
-        let req = Request::new_with_init(&url, &init).ok()?;
+        let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
         let read = async {
-            let mut r = Fetch::Request(req).send().await.ok()?;
-            (r.status_code() == 200).then_some(())?;
-            let v: Value = r.json().await.ok()?;
-            serde_json::from_value::<gate::ScriptErrors>(v["counts"].clone()).ok()
+            let mut r = Fetch::Request(req).send().await.map_err(|e| e.to_string())?;
+            if r.status_code() != 200 {
+                return Err(format!("since={since}: {}", r.status_code()));
+            }
+            let v: Value = r.json().await.map_err(|e| e.to_string())?;
+            serde_json::from_value::<gate::ScriptErrors>(v["counts"].clone()).map_err(|e| e.to_string())
         };
-        within(Duration::from_millis(VIEW_CALL_MS), read).await.flatten()
+        within(Duration::from_millis(gate::GATE_READ_MS), read)
+            .await
+            .unwrap_or_else(|| Err(format!("since={since}: no answer within {} ms", gate::GATE_READ_MS)))
     }
 
     /// `graft-agents-front`'s name and the versions API's read of its deployed version.
@@ -255,26 +259,26 @@ impl Exec for AgentsLive<'_> {
         let (Some((_, n1, n)), Some(c)) = (gate::roll_versions(fold), fold.current.as_deref()) else {
             return Gate::Pending;
         };
-        let Ok(jwt) = self.jwt().await else { return Gate::Pending };
-        let (since, c_start) = (gate::window_start(fold, c).0, c.intent.issued_at.0);
-        let (Some(window), Some(whole)) = (self.counts(&jwt, since).await, self.counts(&jwt, c_start).await) else {
-            return Gate::Pending;
+        let jwt = match self.jwt().await {
+            Ok(j) => j,
+            Err(e) => {
+                console_log!("graft-agents-ops gate controller: pending, no App JWT: {e}");
+                return Gate::Pending;
+            }
         };
-        if window.unversioned.answers > 0 {
+        let (since, c_start) = (gate::window_start(fold, c).0, c.intent.issued_at.0);
+        let (window, whole) = (self.counts(&jwt, since).await, self.counts(&jwt, c_start).await);
+        if let Ok(w) = &window
+            && w.unversioned.answers > 0
+        {
             console_error!(
                 "ALARM graft-agents-ops gate controller: {} answers ({} 5xx) through graft-agents-front reported no version",
-                window.unversioned.answers,
-                window.unversioned.fivexx
+                w.unversioned.answers,
+                w.unversioned.fivexx
             );
         }
-        let g = gate::judge_roll(&window, &whole, n1, n);
-        console_log!(
-            "graft-agents-ops gate controller: N+1 {:?} thrown {} N {:?} (whole {:?}) -> {g:?}",
-            window.of(n1),
-            window.threw,
-            n.map(|n| window.of(n)),
-            n.map(|n| whole.of(n))
-        );
+        let (g, line) = gate::controller_gate(window, whole, n1, n);
+        console_log!("{line}");
         g
     }
 

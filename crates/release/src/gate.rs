@@ -544,6 +544,58 @@ pub fn accept_flush(fold: &ReleaseFold, counts: &ScriptErrors) -> Result<Option<
     Ok((!counts.is_empty()).then(|| serde_json::json!({ "key": errors_key(Script::Controller), "counts": counts })))
 }
 
+/// How long the agents `graft-ops` waits for each `GET release/errors` read of its gate [guess]: its cron is not a
+/// request path, so it need not hold to `VIEW_CALL_MS`. LM-3 r2 measured the read at 0.79 to 1.55 s from the agents
+/// account while the edge still asked the sites in turn (OPEN-QUESTIONS A57).
+pub const GATE_READ_MS: u64 = 5_000;
+
+/// The edge's answer to `GET release/errors`: every site in `sites` asked at once through `read` (each within
+/// `VIEW_CALL_MS` in the edge), so the read takes about one site's call, not one per site, then summed by `sum_sites`
+/// (A57).
+pub async fn read_sites<S: Copy, F: std::future::Future<Output = Option<ScriptErrors>>>(
+    sites: &[S],
+    read: impl Fn(S) -> F,
+) -> Option<(ScriptErrors, usize)> {
+    sum_sites(futures_util::future::join_all(sites.iter().map(|s| read(*s))).await)
+}
+
+/// The sum of the sites' `errors` objects that answered, with how many did, or `None` when none did.
+pub fn sum_sites(answers: impl IntoIterator<Item = Option<ScriptErrors>>) -> Option<(ScriptErrors, usize)> {
+    let mut sum = ScriptErrors::default();
+    let mut sites = 0;
+    for e in answers.into_iter().flatten() {
+        sum.add(&e);
+        sites += 1;
+    }
+    (sites > 0).then_some((sum, sites))
+}
+
+/// A `ControllerRoll`'s gate from the agents `graft-ops`' two reads of the stored counts, the step's window and the
+/// intent's whole (`Err` names the read that missed), and the line it logs. Every outcome logs one: a missed read is
+/// `Pending` with the read named, so a gate that waits is never silent (A57).
+pub fn controller_gate(
+    window: Result<ScriptErrors, String>,
+    whole: Result<ScriptErrors, String>,
+    n1: VersionId,
+    n: Option<VersionId>,
+) -> (Gate, String) {
+    let (window, whole) = match (window, whole) {
+        (Ok(w), Ok(a)) => (w, a),
+        (Err(e), _) | (_, Err(e)) => {
+            return (Gate::Pending, format!("graft-agents-ops gate controller: pending, release/errors {e}"));
+        }
+    };
+    let g = judge_roll(&window, &whole, n1, n);
+    let line = format!(
+        "graft-agents-ops gate controller: N+1 {:?} thrown {} N {:?} (whole {:?}) -> {g:?}",
+        window.of(n1),
+        window.threw,
+        n.map(|n| window.of(n)),
+        n.map(|n| whole.of(n))
+    );
+    (g, line)
+}
+
 /// Whether `graft-agents-front` sends its counts: only while its verified view shows a `ControllerRoll` judged on
 /// `GATE_ERRORS` (`roll_versions`), so a front adds no install traffic between rolls.
 pub fn controller_judged(fold: &ReleaseFold) -> bool {
