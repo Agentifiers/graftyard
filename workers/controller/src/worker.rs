@@ -120,6 +120,10 @@ async fn webhook(mut req: Request, env: &Env) -> Result<Response> {
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let front = req.headers().has(FRONT_HEADER)?;
     let version = env.get_binding::<WorkerVersionMetadata>("VERSION").map(|v| v.id()).ok();
+    #[cfg(feature = "test-faults")]
+    if let Some(r) = box_fault(&env, &req).await? {
+        return Ok(r);
+    }
     let mut resp = match req.method() {
         Method::Get if req.path() == STATUS_PATH => status(&env, &req, version.clone())?,
         Method::Post => webhook(req, &env).await?,
@@ -130,4 +134,31 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         resp.headers_mut().set(VERSION_HEADER, v)?;
     }
     Ok(resp)
+}
+
+/// LM-3's kill row, test installs only: `/_controller/box/{task}/{status|_kill|_late}` with `x-controller-token` goes
+/// to that task's `TaskBox` (`taskbox.rs`), so the row can read a box, destroy its Sandbox, and replay a killed
+/// Sandbox's traffic. `None` for any other path or without the token.
+#[cfg(feature = "test-faults")]
+async fn box_fault(env: &Env, req: &Request) -> Result<Option<Response>> {
+    let path = req.path();
+    let Some(rest) = path.strip_prefix("/_controller/box/") else { return Ok(None) };
+    let token = env.secret("STATUS_TOKEN").map(|s| s.to_string()).ok();
+    if token.is_none() || req.headers().get("x-controller-token")? != token {
+        return Ok(None);
+    }
+    let Some((task, what)) = rest.split_once('/') else { return Ok(None) };
+    let stub = env.durable_object("TASKBOX")?.get_by_name(task)?;
+    let mut init = RequestInit::new();
+    init.with_method(req.method());
+    if req.method() == Method::Post {
+        init.with_body(Some(req.clone()?.text().await?.into()));
+    }
+    let url = match what {
+        "status" => "https://taskbox/status",
+        "_kill" => "https://taskbox/_kill",
+        "_late" => "https://taskbox/_late",
+        _ => return Ok(None),
+    };
+    Ok(Some(stub.fetch_with_request(Request::new_with_init(url, &init)?).await?))
 }

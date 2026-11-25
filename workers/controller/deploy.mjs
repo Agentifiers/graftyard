@@ -1,14 +1,14 @@
 // Deploys `graft-controller` (`workers/controller`, `src/worker.rs` and `src/taskbox.rs`) to the agents account
 // (design/AGENT-LAYER.md, Shape, "Controller"; build/BUILD-PLAN.md, AM3-WP1). Usage:
-//   node workers/controller/deploy.mjs <name> --secret <store id>/<secret name> [--bad] [--upload-only]
-//     [--taskbox <taskbox.json>]
+//   node workers/controller/deploy.mjs <name> --secret <store id>/<secret name> [--bad] [--test-faults]
+//     [--upload-only] [--taskbox <taskbox.json>]
 // - `WEBHOOK_SECRET` is the Secrets Store binding of `--secret`, the `graftyard-agent` webhook secret.
 // - `VERSION` is the version metadata binding, the version report `graft-agents-front` checks against its
 //   `ControllerPointer` pin (`x-graftyard-controller-version`), and the version a `TaskBox` runs.
 // - No workers.dev route: only `graft-agents-front` reaches it, over its `fetch()` service binding.
 // - `--taskbox` adds the `TaskBox` Durable Object (DECISIONS "`controller-taskbox`"): the class, its one
 //   `durable_object`-policy container application, and from `<taskbox.json>` ({"agent_app_id", "workspace_app_id",
-//   "store", "image", "host", "harness", "route_others", "agents_front"}) the `sandbox` image (a registry image, or a Dockerfile path relative to the
+//   "store", "image", "host", "harness", "route_others", "agents_front", "secrets"}) the `sandbox` image (a registry image, or a Dockerfile path relative to the
 //   repository root, which wrangler builds), the two App ids, the Secrets Store bindings
 //   `AGENT_APP_KEY`, `WORKSPACE_APP_KEY`, and `MODEL_KEY` in `store`, and `AGENTS_FRONT`, the `fetch()` binding to
 //   `graft-agents-front` with `props` `{"pointer": true}`. `agents_front` is optional: the two scripts bind each other,
@@ -18,7 +18,7 @@
 //   registry arms, `[]` without).
 // `STATUS_TOKEN` (the `/_controller/status` secret) is set separately with `wrangler secret put STATUS_TOKEN`, its
 // value on stdin; no secret value passes through this script. `--bad` builds with the `test-bad` feature, LF-7's bad
-// N+1, for test installs only. `--upload-only` uploads a version without deploying it (`wrangler versions upload`), for
+// N+1, for test installs only. `--test-faults` builds with LM-3's kill-row routes (`Cargo.toml`), test installs only. `--upload-only` uploads a version without deploying it (`wrangler versions upload`), for
 // a `ControllerRoll`, which the agents `graft-ops` deploys by percentage. Needs CLOUDFLARE_API_TOKEN and
 // CLOUDFLARE_ACCOUNT_ID of the agents account (the runner account on test installs). This is the ops path: no request
 // path runs it.
@@ -32,11 +32,12 @@ const [name, ...flags] = process.argv.slice(2);
 const flag = (f) => { const i = flags.indexOf(f); return i >= 0 ? flags[i + 1] : undefined; };
 const [storeId, secretName] = flag("--secret")?.split("/") ?? [];
 if (!name || name.startsWith("--") || !storeId || !secretName) {
-  throw new Error("usage: node workers/controller/deploy.mjs <name> --secret <store id>/<secret name> [--bad] [--upload-only] [--taskbox <taskbox.json>]");
+  throw new Error("usage: node workers/controller/deploy.mjs <name> --secret <store id>/<secret name> [--bad] [--test-faults] [--upload-only] [--taskbox <taskbox.json>]");
 }
 
 const out = join(here, "build");
-const features = flags.includes("--bad") ? ["--features", "test-bad"] : [];
+const feats = [flags.includes("--bad") && "test-bad", flags.includes("--test-faults") && "test-faults"].filter(Boolean);
+const features = feats.length ? ["--features", feats.join(",")] : [];
 execFileSync("worker-build", ["--release", "--out-dir", out, ...features], { cwd: here, stdio: "inherit" });
 const gen = join(here, ".gen");
 mkdirSync(gen, { recursive: true });
@@ -57,7 +58,12 @@ const cfg = {
   version_metadata: { binding: "VERSION" },
   secrets_store_secrets: [
     { binding: "WEBHOOK_SECRET", store_id: storeId, secret_name: secretName },
-    ...(tb ? ["AGENT_APP_KEY", "WORKSPACE_APP_KEY", "MODEL_KEY"].map((n) => ({ binding: n, store_id: tb.store, secret_name: n })) : []),
+    // `secrets` maps a binding to its secret's name in `store` (`graftyard agents init` names them
+    // `<prefix>AGENTS_APP_KEY_A` and `<prefix>WORKSPACE_APP_KEY_A`, OPEN-QUESTIONS A58); a binding it leaves out keeps
+    // its own name, and one it maps to null is not bound (`MODEL_KEY` for a harness that calls no model).
+    ...(tb ? ["AGENT_APP_KEY", "WORKSPACE_APP_KEY", "MODEL_KEY"]
+      .map((n) => [n, tb.secrets && n in tb.secrets ? tb.secrets[n] : n]).filter(([, s]) => s)
+      .map(([n, s]) => ({ binding: n, store_id: tb.store, secret_name: s })) : []),
   ],
   ...(tb ? {
     vars: { AGENT_APP_ID: String(tb.agent_app_id), WORKSPACE_APP_ID: String(tb.workspace_app_id),

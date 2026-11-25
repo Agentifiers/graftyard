@@ -1,0 +1,14 @@
+2026-11-25T21:50:56Z
+cf6f54740
+2026-11-25T21:51:01.656Z delete m3org/kill-r1: 204
+objects deleted: 7
+{"delete":"graft-agents-m4a-releases","ok":true,"errors":[]}
+row token and secret files shredded
+runner scripts: ["graft-runners"]
+runner store secrets named graft-agents-m4a-: []
+runner buckets: []
+agents container applications: [{"app":"graft-agents-m4a-controller-taskbox","running":0}]
+{"delete_app":true,"errors":[]}
+{"torn_down": 1, "codes": {"200": 1}}
+sweep: no shard container running
+agents apps after: []

@@ -49,6 +49,8 @@
 #   probe            through it: GET release/errors, then a flush naming a version no upload committed and one over
 #                    FLUSH_CALLS_MAX, each followed by a read, so a refusal is seen to store nothing
 #   errors [since]   the install's stored controller counts since <ms> (default: the roll's start), through the probe
+# TB=1 (ROW=kill, LM-3's kill row, `tests/am3/hosted/kill-row.sh`): `controller` deploys the `TaskBox` build
+# (`--test-faults --taskbox $K/taskbox.json`) and `bundles` builds only c1, that build with `entry.mjs`.
 # The probes run after the verdict (the ControllerPointer committed): an over-cap flush the edge wrongly stored would
 # add 10,001 clean N+1 answers to the gate's input mid-row.
 set -uo pipefail
@@ -177,7 +179,7 @@ infra)
   { rapi "$RB/r2/buckets" -X POST -H 'content-type: application/json' --data "{\"name\": \"$BUCKET\"}" | jq -c '{bucket: .result.name, ok: .success, errors: [.errors[]?.code]}'
     ( umask 077
       jq -nc --arg a "com.cloudflare.api.account.$CLOUDFLARE_RUNNER_ACCOUNT_ID" --arg n "$P-deploy" \
-        '{name: $n, policies: [{effect: "allow", resources: {($a): "*"}, permission_groups: [{id: "e086da7e2179491d91ee5f35b3ca210a"}, {id: "adc8fa2bc6124928a8b3314dc63a1235"}]}]}' |
+        '{name: $n, policies: [{effect: "allow", resources: {($a): "*"}, permission_groups: [{id: "e086da7e2179491d91ee5f35b3ca210a"}, {id: "adc8fa2bc6124928a8b3314dc63a1235"}, {id: "bdbcd690c763475a985e8641dddc09f7"}]}]}' |
         rapi "$RB/tokens" -X POST -H 'content-type: application/json' --data-binary @- >"$K/deploy.json"
       jq -c '{value: .result.value}' "$K/deploy.json" >"$K/deploy.value"
       jq -c --arg n "$P-deploy-token" '[{name: $n, value: .result.value, comment: "LF-7 row", scopes: ["workers"]}]' "$K/deploy.json" >"$K/deploy.create" )
@@ -188,7 +190,8 @@ infra)
   } 2>&1 | log ;;
 controller)
   { (export PATH=$HOME/.cargo/bin:$PATH && unset CARGO_TARGET_DIR &&
-      runner node workers/controller/deploy.mjs $CTRL --secret $RSTORE/$P-AGENTS_WEBHOOK_SECRET_A 2>&1 | grep -E "Current Version|rror" | tail -2)
+      runner node workers/controller/deploy.mjs $CTRL --secret $RSTORE/$P-AGENTS_WEBHOOK_SECRET_A \
+        ${TB:+--test-faults --taskbox $K/taskbox.json} 2>&1 | grep -E "Current Version|Uploaded|rror|ERROR" | tail -4)
     ( umask 077; [ -s "$K/ctrl.token" ] || python3 -c 'import os; print(os.urandom(24).hex())' >"$K/ctrl.token" )
     runner npx --prefix tests/m0 wrangler secret put STATUS_TOKEN --name $CTRL <"$K/ctrl.token" 2>&1 | tail -1
     deployment $CTRL "$RB" rapi
@@ -222,12 +225,14 @@ ops)
 bundles)
   { put() { runner npx --prefix tests/m0 wrangler r2 object put "$BUCKET/$1" --file "$2" --remote 2>&1 | tail -1; }
     fmt=$W/wp3/formats.txt; echo "formats: $(wc -l <"$fmt") lines, AM2-WP3's FMT_FROM"
-    for l in c1 c2; do
-      f=; [ $l = c2 ] && f="--features test-bad"
+    ls="c1 c2"; [ -n "${TB:-}" ] && ls=c1
+    for l in $ls; do
+      f=; [ $l = c2 ] && f="--features test-bad"; [ -n "${TB:-}" ] && f="--features test-faults"
       (cd workers/controller && export PATH=$HOME/.cargo/bin:$PATH && unset CARGO_TARGET_DIR &&
         worker-build --release --out-dir "$K/build-$l" $f >/dev/null 2>&1) && echo "$l built ${f:-plain}"
       d=$K/rel/$l; rm -rf "$d"; p=$ROW$TAG-$l
-      python3 tests/am2/hosted/wp3-bundle.py "$d" "$p" --formats "$fmt" --controller "$K/build-$l" --marker | tee "$K/rel-$l.json"
+      python3 tests/am2/hosted/wp3-bundle.py "$d" "$p" --formats "$fmt" --controller "$K/build-$l" --marker \
+        ${TB:+--controller-entry workers/controller/entry.mjs} | tee "$K/rel-$l.json"
       openssl pkeyutl -sign -rawin -inkey "$W/release.key" -in "$d/release.json" -out "$d/release.sig"
       (cd "$d" && find . -type f | sed 's#^\./##') | while read -r f; do put "$p/$f" "$d/$f" >/dev/null; done
       echo "$l uploaded under $BUCKET/$p/"

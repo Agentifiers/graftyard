@@ -1,0 +1,7 @@
+2026-11-25T21:31:04Z
+cf6f54740
+    at genericNodeError (node:internal/errors:999:15)
+    at wrappedFn (node:internal/errors:544:14)
+    at checkExecSyncError (node:child_process:990:11)
+✨ Success! Uploaded secret STATUS_TOKEN
+{"script":"graft-agents-m4a-controller","created_on":"2026-11-25T21:32:30.295915Z","versions":["26057449 100"]}

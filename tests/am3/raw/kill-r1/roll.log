@@ -1,0 +1,6 @@
+2026-11-25T21:45:29Z
+cf6f54740
+controller at roll: [["bc8bee82-308d-4f84-b633-e6e527555770",100]]
+release roll: intent 01M8AAQHX0ED5DWBRRQDGQ48DA ControllerRoll { release: ReleaseId([230, 202, 195, 88, 21, 226, 118, 25, 244, 9, 229, 59, 82, 225, 205, 125, 249, 119, 188, 112, 248, 148, 55, 39, 158, 143, 102, 10, 12, 190, 242, 244]) }, 1 undo(s)
+{"answer":{"digest":"3794f8ec185092906d9c8310c97a5946859f8a94271beb206d10d490be51081a","index":1406,"status":201},"intent":"01M8AAQHX0ED5DWBRRQDGQ48DA"}
+{"count":579,"current":{"intent":"ControllerRoll { release: ReleaseId([230, 202, 195, 88, 21, 226, 118, 25, 244, 9, 229, 59, 82, 225, 205, 125, 249, 119, 188, 112, 248, 148, 55, 39, 158, 143, 102, 10, 12, 190, 242, 244]) }","next":0,"since":1795643144702,"state":"Running { step: 0 }"}}

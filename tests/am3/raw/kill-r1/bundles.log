@@ -1,0 +1,9 @@
+2026-11-25T21:41:58Z
+cf6f54740
+formats: 27 lines, AM2-WP3's FMT_FROM
+c1 built --features test-faults
+{"release": "e6cac35815e27619f409e53b52e1cd7df977bc70f89437279e8f660a0cbef2f4", "files": 5}
+c1 uploaded under graft-agents-m4a-releases/killr1-c1/
+1 built --features test-faults
+{"release": "e0e688b943af2f7438ea1d2a394469a486ab300f8e452a79b26c933248f13997", "files": 5}
+1 uploaded under graft-agents-m4a-releases/killr1-1/
