@@ -5,7 +5,7 @@ path, so `id-token: write` names `GenerateIdTokenUrl` (`crates/actions/src/runsv
 before F127), the call drops them with job tokens on, and the shard leader's decode drops them from a `pull_request`
 run's `CreateRunOn`. Run from the repository root:
 
-    python3 tests/m0carried/plant240.py          # every mutant
+    python3 tests/m0carried/plant242.py          # every mutant
 """
 import os
 import sys
