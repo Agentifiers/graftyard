@@ -91,6 +91,9 @@ pub struct PrEvent {
     pub n: IssueNumber,
     pub action: &'static str,
     pub after: Option<ObjectId>,
+    /// Who did it: the opener, the pusher of a `synchronize`, the one who reopened it (`Subject::Pull`'s actor), the
+    /// run's `github.actor` and the token's `actor` (F120).
+    pub actor: Option<graftyard_types::AccountId>,
 }
 
 /// The `pull_request` events of entry `e` that start runs, read as `Webhooks` reads them (`graftyard_git::hooks`),
@@ -103,8 +106,8 @@ pub fn pr_events(core: &dyn Read, repo: RepoId, e: &LogEntry<RepoEvent>, now: u6
         .into_iter()
         .filter(|w| w.event == "pull_request")
         .filter_map(|w| match (w.action, w.subject) {
-            (Some(a @ ("opened" | "synchronize" | "reopened")), Subject::Pull { n, after, .. }) => {
-                Some(PrEvent { n, action: a, after })
+            (Some(a @ ("opened" | "synchronize" | "reopened")), Subject::Pull { n, after, actor, .. }) => {
+                Some(PrEvent { n, action: a, after, actor })
             }
             _ => None,
         })

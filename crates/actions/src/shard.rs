@@ -56,6 +56,25 @@ pub const ACTIONS_FORMAT_CACHE: Format = Format { family: 0x15, version: 6 };
 /// `GRAFTYARD_OIDC_HEAD_REF` sends one, after 0x15.7 was enabled, and that day follows the one that shipped this reader
 /// to every member (`decisions/DECISIONS.md`, "`actions-oidc`").
 pub const ACTIONS_FORMAT_HEAD_REF: Format = Format { family: 0x15, version: 7 };
+/// BF-73's claims (F119, F120, F122): `CreateRunAs`, whose entry records the run's actor (`ActionsEvent::RunActor`) and
+/// its number (`ActionsEvent::RunNumber`) beside the run, and `SetSubTemplate`, the `sub` customization the mint reads.
+/// Only a site whose site day set `GRAFTYARD_OIDC_CLAIMS` sends `CreateRunAs`, and only an edge whose
+/// `FORMATS_ENABLED` holds 0x15.8 sends either, after the day that shipped this reader to every member
+/// (`decisions/DECISIONS.md`, "`actions-oidc`").
+pub const ACTIONS_FORMAT_CLAIMS: Format = Format { family: 0x15, version: 8 };
+/// Every Actions format this release reads, which a member's `reads()` is: a format a command can be sent as and a
+/// member does not list is refused `Unsupported` on every site, as 0x15.7 was on main 46ea4200
+/// (`every_command_format_is_read`).
+pub const ACTIONS_FORMATS: [Format; 8] = [
+    ACTIONS_FORMAT,
+    ACTIONS_FORMAT_MERGE_GROUP,
+    ACTIONS_FORMAT_OWNER_MATCH,
+    ACTIONS_FORMAT_PULL_REQUEST,
+    ACTIONS_FORMAT_TOKENS,
+    ACTIONS_FORMAT_CACHE,
+    ACTIONS_FORMAT_HEAD_REF,
+    ACTIONS_FORMAT_CLAIMS,
+];
 
 #[cfg(test)]
 const JOB_LEASE_MS: u64 = crate::job::JOB_LEASE.as_millis() as u64;
@@ -219,6 +238,23 @@ pub enum ActionsEvent {
         run: RunId,
         head_ref: Box<str>,
     },
+    /// The account that started the run and its login then, in its `RunCreated`'s entry (0x15.8, F120): the job
+    /// message's `github.actor` and the ID token's `actor` and `actor_id`.
+    RunActor {
+        run: RunId,
+        actor: AccountId,
+        login: Box<str>,
+    },
+    /// The run's number among its workflow's runs in its repository, in its `RunCreated`'s entry (0x15.8, F119).
+    RunNumber {
+        run: RunId,
+        number: u64,
+    },
+    /// The `sub` customization of the owner (`repo: None`, on shard 0) or of one repository (0x15.8, F122).
+    SubTemplateSet {
+        repo: Option<RepoId>,
+        sub: crate::oidc::RepoSub,
+    },
 }
 
 impl Record for ActionsEvent {
@@ -341,6 +377,12 @@ trait Tables {
     fn put_base(&mut self, _run: RunId, _base: &str) {}
     /// A `pull_request` run's head branch, likewise.
     fn put_head(&mut self, _run: RunId, _head: &str) {}
+    /// A run's actor and the `sub` customization, which `decide` never reads either.
+    fn put_actor(&mut self, _run: RunId, _actor: AccountId, _login: &str) {}
+    fn put_sub(&mut self, _repo: Option<RepoId>, _sub: &crate::oidc::RepoSub) {}
+    /// The last number given to a run of `(repo, workflow)`, which `decide` reads to number the next.
+    fn counter(&self, key: &(RepoId, Box<str>)) -> Option<u64>;
+    fn put_number(&mut self, run: RunId, number: u64);
 }
 
 fn is_queued(s: &JobState) -> bool {
@@ -414,6 +456,9 @@ fn apply_event(t: &mut impl Tables, ev: &ActionsEvent, at: Timestamp) {
         }
         ActionsEvent::RunBase { run, base_ref } => t.put_base(*run, base_ref),
         ActionsEvent::RunHead { run, head_ref } => t.put_head(*run, head_ref),
+        ActionsEvent::RunActor { run, actor, login } => t.put_actor(*run, *actor, login),
+        ActionsEvent::RunNumber { run, number } => t.put_number(*run, *number),
+        ActionsEvent::SubTemplateSet { repo, sub } => t.put_sub(*repo, sub),
     }
 }
 
@@ -498,6 +543,29 @@ impl Tables for ActionsFold {
     fn put_head(&mut self, run: RunId, head: &str) {
         self.more.more.more.heads.insert(run, head.into());
     }
+    fn put_actor(&mut self, run: RunId, actor: AccountId, login: &str) {
+        self.more.more.more.more.actors.insert(run, (actor, login.into()));
+    }
+    fn put_sub(&mut self, repo: Option<RepoId>, sub: &crate::oidc::RepoSub) {
+        let c = &mut self.more.more.more.more;
+        match repo {
+            Some(r) => {
+                c.repo_subs.insert(r, sub.clone());
+            }
+            None => c.org_sub = sub.keys.clone(),
+        }
+    }
+    fn counter(&self, key: &(RepoId, Box<str>)) -> Option<u64> {
+        self.more.more.more.more.counters.get(key).copied()
+    }
+    fn put_number(&mut self, run: RunId, number: u64) {
+        let Some(row) = self.runs.get(&run) else { return };
+        let key = (row.run.repo, row.run.workflow.clone());
+        let c = &mut self.more.more.more.more;
+        c.numbers.insert(run, number);
+        let n = c.counters.entry(key).or_insert(0);
+        *n = (*n).max(number);
+    }
 }
 
 impl ActionsFold {
@@ -549,6 +617,43 @@ impl ActionsFold {
     pub fn run_head(&self, r: RunId) -> Option<&str> {
         self.more.more.more.heads.get(&r).map(|h| &**h)
     }
+    /// The account that started the run and its login (`ActionsEvent::RunActor`, F120).
+    pub fn run_actor(&self, r: RunId) -> Option<(AccountId, &str)> {
+        self.more.more.more.more.actors.get(&r).map(|(a, l)| (*a, &**l))
+    }
+    /// The run's number among its workflow's runs (`ActionsEvent::RunNumber`, F119).
+    pub fn run_number(&self, r: RunId) -> Option<u64> {
+        self.more.more.more.more.numbers.get(&r).copied()
+    }
+    /// The `sub` template repository `repo`'s tokens use: its own setting over the owner's template, the owner's read
+    /// from shard 0 and passed in (`org`); `None` for the default `sub` (F122).
+    pub fn sub_template<'s>(&'s self, repo: RepoId, org: Option<&'s [Box<str>]>) -> Option<&'s [Box<str>]> {
+        crate::oidc::sub_template(self.more.more.more.more.repo_subs.get(&repo), org)
+    }
+    /// What this shard holds for an ID token of job `j` (`crate::oidc::Facts`), with the owner's template read from
+    /// shard 0 (`org`): the row, the run, the declared permissions, and the run's recorded claims. Both hosts read it.
+    pub fn claim_facts(&self, j: JobId, org: Option<&[Box<str>]>) -> Option<ClaimFacts> {
+        let row = self.job(j)?.clone();
+        let run = self.run(row.run)?.run.clone();
+        Some(ClaimFacts {
+            declared: self.more.tokens.get(&j).cloned(),
+            base: self.run_base(run.id).map(Into::into),
+            head: self.run_head(run.id).map(Into::into),
+            actor: self.run_actor(run.id).map(|(a, l)| (a, l.into())),
+            number: self.run_number(run.id),
+            sub: self.sub_template(run.repo, org).map(<[_]>::to_vec),
+            row,
+            run,
+        })
+    }
+    /// The owner's template, on shard 0.
+    pub fn org_sub(&self) -> Option<&[Box<str>]> {
+        self.more.more.more.more.org_sub.as_deref()
+    }
+    /// The repository's setting, the default (`use_default`) when none was put.
+    pub fn repo_sub(&self, repo: RepoId) -> crate::oidc::RepoSub {
+        self.more.more.more.more.repo_subs.get(&repo).cloned().unwrap_or_default()
+    }
     /// The run of a running job, which a cache call acts for.
     pub fn cache_run(&self, job: JobId) -> Result<&WorkflowRun, ActionsErr> {
         let j = self.job(job).ok_or(ActionsErr::NotFound)?;
@@ -560,6 +665,52 @@ impl ActionsFold {
     /// The earliest lease end or queue deadline, where the leader's alarm goes.
     pub fn next_deadline(&self) -> Option<Timestamp> {
         self.jobs.values().filter_map(|j| j.state.deadline()).min()
+    }
+}
+
+/// One job's token facts as the shard holds them (`ActionsFold::claim_facts`), owned so a host reads them out of its
+/// fold's borrow; `facts` lends them to `crate::oidc::Facts`.
+#[derive(Clone, Debug)]
+pub struct ClaimFacts {
+    pub row: JobRow,
+    pub run: WorkflowRun,
+    pub declared: Option<PermissionSet>,
+    pub base: Option<Box<str>>,
+    pub head: Option<Box<str>>,
+    pub actor: Option<(AccountId, Box<str>)>,
+    pub number: Option<u64>,
+    pub sub: Option<Vec<Box<str>>>,
+}
+
+impl ClaimFacts {
+    /// The token's facts with what the host read elsewhere: the repository's name and owner, its visibility and
+    /// enterprise, and whether the runner is hosted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn facts<'a>(
+        &'a self,
+        server: &'a str,
+        repository: &'a str,
+        owner_id: AccountId,
+        visibility: graftyard_identity::Visibility,
+        enterprise: Option<(&'a str, AccountId)>,
+        hosted: bool,
+    ) -> crate::oidc::Facts<'a> {
+        crate::oidc::Facts {
+            server,
+            repository,
+            repository_id: self.run.repo,
+            owner_id,
+            visibility,
+            enterprise,
+            run: &self.run,
+            job: &self.row,
+            hosted,
+            base_ref: self.base.as_deref(),
+            head_ref: self.head.as_deref(),
+            actor: self.actor.as_ref().map(|(a, l)| (*a, &**l)),
+            run_number: self.number,
+            sub_keys: self.sub.as_deref(),
+        }
     }
 }
 
@@ -577,6 +728,7 @@ pub struct ActionsScratch<'a> {
     owner_cursor: Index,
     cache: BTreeMap<CacheId, Option<CacheEntry>>,
     cache_next: u64,
+    counters: BTreeMap<(RepoId, Box<str>), u64>,
 }
 
 impl Tables for ActionsScratch<'_> {
@@ -620,6 +772,15 @@ impl Tables for ActionsScratch<'_> {
         }
         self.cache.insert(id, e);
     }
+    fn counter(&self, key: &(RepoId, Box<str>)) -> Option<u64> {
+        self.counters.get(key).or_else(|| self.base.more.more.more.more.counters.get(key)).copied()
+    }
+    fn put_number(&mut self, run: RunId, number: u64) {
+        let Some(row) = Tables::run(self, run) else { return };
+        let key = (row.run.repo, row.run.workflow.clone());
+        let n = Tables::counter(self, &key).unwrap_or(0).max(number);
+        self.counters.insert(key, n);
+    }
 }
 
 impl<'a> ActionsScratch<'a> {
@@ -636,7 +797,26 @@ impl<'a> ActionsScratch<'a> {
             owner_cursor: base.owner_cursor,
             cache: BTreeMap::new(),
             cache_next: base.more.more.next,
+            counters: BTreeMap::new(),
         }
+    }
+    /// The number the next run of `(repo, workflow)` takes (F119): one past the last numbered one, or, for a workflow
+    /// none of whose runs was numbered yet (runs created before 0x15.8), one past how many runs it has, so the count
+    /// includes them, as GitHub's `run_number` counts every run of the workflow.
+    pub fn next_number(&self, repo: RepoId, workflow: &str) -> u64 {
+        self.number_without(repo, workflow, None)
+    }
+    /// `next_number` as it was before run `not` was created, which a follower checks `RunNumber` against: the run is
+    /// in its scratch by then.
+    fn number_without(&self, repo: RepoId, workflow: &str, not: Option<RunId>) -> u64 {
+        let key = (repo, Box::<str>::from(workflow));
+        if let Some(n) = Tables::counter(self, &key) {
+            return n + 1;
+        }
+        let mine = |id: &RunId, r: &RunRow| r.run.repo == repo && &*r.run.workflow == workflow && Some(*id) != not;
+        let over = self.runs.iter().filter(|(k, r)| mine(k, r)).count();
+        let base = self.base.runs.iter().filter(|(k, r)| mine(k, r) && !self.runs.contains_key(k)).count();
+        (over + base) as u64 + 1
     }
     pub fn cache_entry(&self, id: CacheId) -> Option<&CacheEntry> {
         Tables::cache(self, id)
@@ -749,6 +929,16 @@ impl Scratch for ActionsScratch<'_> {
             ActionsEvent::RunHead { run, .. } if self.run(*run).is_none() => {
                 Err("a head branch for a run the entry did not create".into())
             }
+            ActionsEvent::RunActor { run, .. } if self.run(*run).is_none() => {
+                Err("an actor for a run the entry did not create".into())
+            }
+            ActionsEvent::RunNumber { run, number } => match self.run(*run) {
+                None => Err("a number for a run the entry did not create".into()),
+                Some(r) if *number != self.number_without(r.run.repo, &r.run.workflow, Some(*run)) => {
+                    Err(format!("run {} numbered {number}, not the next", run.0.0).into())
+                }
+                Some(_) => Ok(()),
+            },
             _ => Ok(()),
         }
     }
@@ -907,6 +1097,21 @@ pub enum ActionsOp {
         permissions: Vec<(u16, PermissionSet)>,
         base_ref: Box<str>,
         head_ref: Box<str>,
+    },
+    /// BF-73's run (0x15.8): `CreateRunWith`, with a `pull_request` run's base and head when given, the account that
+    /// started it (`ActionsEvent::RunActor`) when known, and always its number (`ActionsEvent::RunNumber`).
+    CreateRunAs {
+        run: WorkflowRun,
+        jobs: Vec<JobSpec>,
+        permissions: Vec<(u16, PermissionSet)>,
+        base_ref: Option<Box<str>>,
+        head_ref: Option<Box<str>>,
+        actor: Option<(AccountId, Box<str>)>,
+    },
+    /// An admin's `sub` customization (0x15.8, F122): the owner's (`repo: None`) or one repository's.
+    SetSubTemplate {
+        repo: Option<RepoId>,
+        sub: crate::oidc::RepoSub,
     },
 }
 
@@ -1205,6 +1410,7 @@ impl Command for ActionsCmd {
             | ActionsOp::CacheDropRepo { .. }
             | ActionsOp::CreateRunOn { .. } => ACTIONS_FORMAT_CACHE,
             ActionsOp::CreateRunFrom { .. } => ACTIONS_FORMAT_HEAD_REF,
+            ActionsOp::CreateRunAs { .. } | ActionsOp::SetSubTemplate { .. } => ACTIONS_FORMAT_CLAIMS,
             _ => ACTIONS_FORMAT,
         }
     }
@@ -1244,6 +1450,30 @@ impl Command for ActionsCmd {
                     evs.push(ActionsEvent::RunHead { run: id, head_ref: head_ref.clone() });
                 }
                 Ok((evs, out))
+            }
+            ActionsOp::CreateRunAs { run, jobs, permissions, base_ref, head_ref, actor } => {
+                only(operator)?;
+                let (mut evs, out) = self.create_run(s, run, jobs, permissions)?;
+                if let ActionsOut::Run(id) = out {
+                    // The base and head only for a `pull_request` run, as `CreateRunOn` and `CreateRunFrom` take them.
+                    let pr = run.is_pull_request();
+                    if let Some(base_ref) = base_ref.clone().filter(|_| pr) {
+                        evs.push(ActionsEvent::RunBase { run: id, base_ref });
+                    }
+                    if let Some(head_ref) = head_ref.clone().filter(|_| pr) {
+                        evs.push(ActionsEvent::RunHead { run: id, head_ref });
+                    }
+                    if let Some((actor, login)) = actor.clone() {
+                        evs.push(ActionsEvent::RunActor { run: id, actor, login });
+                    }
+                    evs.push(ActionsEvent::RunNumber { run: id, number: s.next_number(run.repo, &run.workflow) });
+                }
+                Ok((evs, out))
+            }
+            ActionsOp::SetSubTemplate { repo, sub } => {
+                only(admin)?;
+                crate::oidc::check_sub(sub).map_err(|e| ActionsErr::Illegal(e.into()))?;
+                Ok((smallvec![ActionsEvent::SubTemplateSet { repo: *repo, sub: sub.clone() }], ActionsOut::Done))
             }
             ActionsOp::CacheReserve { job, key, version, size, default_branch } => {
                 self.cache_reserve(s, *job, (key, version, *size), default_branch)
@@ -1791,6 +2021,9 @@ mod tests {
                 hosted: false,
                 base_ref: sh.f.run_base(r),
                 head_ref: None,
+                actor: None,
+                run_number: None,
+                sub_keys: None,
             };
             assert_eq!(crate::oidc::claims(&facts, None, 1, "j")["base_ref"], serde_json::json!("rel"));
             // The run's job reads `rel`'s entry over a newer one on `main`, then `main`'s once `rel` has none.
@@ -1868,6 +2101,9 @@ mod tests {
                 hosted: false,
                 base_ref: sh.f.run_base(r),
                 head_ref: sh.f.run_head(r),
+                actor: None,
+                run_number: None,
+                sub_keys: None,
             };
             let c = crate::oidc::claims(&facts, None, 1, "j");
             assert_eq!((c["base_ref"].as_str(), c["head_ref"].as_str()), (Some("main"), Some("fix/a")));
@@ -1876,6 +2112,157 @@ mod tests {
             let sc = sh.f.scratch_at(Timestamp(sh.at), TierSet::CORE);
             assert!(sc.check(&ActionsEvent::RunHead { run: RunId(DbId(1)), head_ref: "x".into() }).is_err());
         }
+
+        /// BF-73 (0x15.8): `CreateRunAs` numbers each run of a workflow in its repository, counting the runs created
+        /// before 0x15.8 (the fixture's two `ci.yml` runs of repository 7 before it); another workflow or repository
+        /// counts apart. The actor rides beside the run, and a token carries `actor`, `actor_id` and `run_number`.
+        /// A follower refuses a number that is not the next, and a fold with no claim row keeps 0x15.7's bytes.
+        #[test]
+        fn runs_are_numbered_per_workflow_and_carry_their_actor() {
+            let mut sh = Shard::new();
+            sh.f.ids.apply_block(IdBlock::new(DbId(500), 40).unwrap());
+            let v7 = postcard::to_allocvec(&sh.f).unwrap();
+            let rows = &sh.f.more.more.more;
+            assert_eq!(postcard::to_allocvec(rows).unwrap(), postcard::to_allocvec(&rows.heads).unwrap());
+            let l = LabelSet::parse(["linux"]).unwrap();
+            let make = |sh: &mut Shard, i: u64, repo: i64, wf: &str, event: &str, actor: Option<(i64, &str)>| {
+                let mut r = run(0, "refs/heads/main", event);
+                r.repo = RepoId(DbId(repo));
+                r.workflow = wf.into();
+                r.trigger.1 = Index(1_000 + i);
+                let op = ActionsOp::CreateRunAs {
+                    run: r,
+                    jobs: vec![job(0, &l)],
+                    permissions: Vec::new(),
+                    base_ref: Some("refs/heads/rel".into()),
+                    head_ref: Some("refs/heads/f".into()),
+                    actor: actor.map(|(a, l)| (AccountId(DbId(a)), l.into())),
+                };
+                assert_eq!(
+                    ActionsCmd { actor: ActionsActor::Operator, op: op.clone() }.format(),
+                    ACTIONS_FORMAT_CLAIMS
+                );
+                let ActionsOut::Run(id) = sh.run(ActionsActor::Operator, op).unwrap() else { panic!() };
+                id
+            };
+            // Three of the fixture's runs are `ci.yml` of repository 7, so its next is 4.
+            let a = make(&mut sh, 1, 7, "ci.yml", "workflow_dispatch", Some((41, "octocat")));
+            let b = make(&mut sh, 2, 7, "ci.yml", "pull_request", Some((42, "hubot")));
+            let c = make(&mut sh, 3, 7, "deploy.yml", "workflow_dispatch", None);
+            let d = make(&mut sh, 4, 8, "ci.yml", "workflow_dispatch", None);
+            let e = make(&mut sh, 5, 7, "ci.yml", "workflow_dispatch", None);
+            let n = |r| sh.f.run_number(r);
+            assert_eq!([n(a), n(b), n(c), n(d), n(e)], [Some(4), Some(5), Some(1), Some(1), Some(6)]);
+            assert_eq!((sh.f.run_actor(a), sh.f.run_actor(c)), (Some((AccountId(DbId(41)), "octocat")), None));
+            // The base and head only on the pull_request run.
+            assert_eq!((sh.f.run_base(a), sh.f.run_head(a)), (None, None));
+            assert_eq!((sh.f.run_base(b), sh.f.run_head(b)), (Some("refs/heads/rel"), Some("refs/heads/f")));
+            let cf = sh.f.claim_facts(sh.f.run_jobs(b)[0].spec.id, None).unwrap();
+            let f = cf.facts(
+                "https://g.example",
+                "octo/hello",
+                AccountId(DbId(1)),
+                graftyard_identity::Visibility::Private,
+                None,
+                false,
+            );
+            let c = crate::oidc::claims(&f, None, 1, "j");
+            assert_eq!(
+                (c["actor"].as_str(), c["actor_id"].as_str(), c["run_number"].as_str(), c["head_ref"].as_str()),
+                (Some("hubot"), Some("42"), Some("5"), Some("f"))
+            );
+            let sc = sh.f.scratch_at(Timestamp(sh.at), TierSet::CORE);
+            assert!(sc.check(&ActionsEvent::RunNumber { run: e, number: 6 }).is_err(), "6 is taken; 7 is next");
+            assert!(
+                sc.check(&ActionsEvent::RunActor { run: RunId(DbId(9)), actor: AccountId(DbId(1)), login: "x".into() })
+                    .is_err()
+            );
+            assert!(postcard::to_allocvec(&sh.f).unwrap().len() > v7.len());
+            let back: ActionsFold = postcard::from_bytes(&postcard::to_allocvec(&sh.f).unwrap()).unwrap();
+            assert_eq!(back, sh.f);
+        }
+
+        /// F122: a repository's `sub` setting over the owner's template, as GHES documents it: the default until the
+        /// repository opts out of it, its own keys over the owner's, and the owner's once it opts out with none.
+        /// `SetSubTemplate` takes an admin and refuses a key GHES refuses.
+        #[test]
+        fn a_sub_template_follows_the_repository_setting_over_the_owners() {
+            use crate::oidc::RepoSub;
+            let mut sh = Shard::new();
+            let repo = RepoId(DbId(7));
+            let org: Vec<Box<str>> = vec!["repository_owner".into()];
+            let own = RepoSub { use_default: false, keys: Some(vec!["repo".into(), "context".into(), "actor".into()]) };
+            let set =
+                |sh: &mut Shard, actor, repo, sub: RepoSub| sh.run(actor, ActionsOp::SetSubTemplate { repo, sub });
+            assert_eq!(sh.f.sub_template(repo, Some(&org)), None, "no setting: the default sub");
+            let admin = ActionsActor::Admin(AccountId(DbId(5)));
+            set(&mut sh, admin.clone(), None, RepoSub { use_default: false, keys: Some(org.clone()) }).unwrap();
+            assert_eq!(sh.f.org_sub(), Some(&org[..]));
+            assert_eq!(sh.f.sub_template(repo, sh.f.org_sub()), None, "the owner's template waits for the opt-in");
+            set(&mut sh, admin.clone(), Some(repo), RepoSub { use_default: false, keys: None }).unwrap();
+            assert_eq!(sh.f.sub_template(repo, Some(&org)), Some(&org[..]));
+            set(&mut sh, admin.clone(), Some(repo), own.clone()).unwrap();
+            assert_eq!(sh.f.sub_template(repo, Some(&org)), own.keys.as_deref());
+            assert_eq!(sh.f.repo_sub(RepoId(DbId(8))), RepoSub::default());
+            set(&mut sh, admin.clone(), Some(repo), RepoSub { use_default: true, keys: own.keys.clone() }).unwrap();
+            assert_eq!(sh.f.sub_template(repo, Some(&org)), None, "use_default ignores the keys");
+            let bad = |k: &str| RepoSub { use_default: false, keys: Some(vec!["repo".into(), k.into()]) };
+            for k in ["job-workflow", "", "repo"] {
+                assert!(
+                    matches!(set(&mut sh, admin.clone(), Some(repo), bad(k)), Err(ActionsErr::Illegal(_))),
+                    "{k:?}"
+                );
+            }
+            let runner = ActionsActor::Runner(RunnerId(DbId(1)));
+            assert_eq!(set(&mut sh, runner, Some(repo), own), Err(ActionsErr::Forbidden));
+        }
+    }
+
+    /// Every format a command can be sent as is one this release reads (`ACTIONS_FORMATS`, a site's `reads()`).
+    /// 0x15.7's `CreateRunFrom` was sent as a format the sites did not list, so every member refused it.
+    #[test]
+    fn every_command_format_is_read() {
+        let l = LabelSet::parse(["linux"]).unwrap();
+        let mut r = WorkflowRun {
+            id: RunId(DbId(1)),
+            repo: RepoId(DbId(7)),
+            workflow: "ci.yml".into(),
+            event: "push".into(),
+            head_sha: [1; 20],
+            head_ref: "refs/heads/main".into(),
+            trigger: (ChainId::Repo(RepoId(DbId(7))), Index(3)),
+            attempt: 1,
+            concurrency: None,
+            fork: false,
+        };
+        let mut ops = Vec::new();
+        for event in ["push", "merge_group", "pull_request"] {
+            r.event = event.into();
+            ops.push(ActionsOp::CreateRun { run: r.clone(), jobs: vec![job(0, &l)] });
+        }
+        let (j, p) = (vec![job(0, &l)], Vec::new());
+        ops.extend([
+            ActionsOp::CreateRunWith { run: r.clone(), jobs: j.clone(), permissions: p.clone() },
+            ActionsOp::CreateRunOn { run: r.clone(), jobs: j.clone(), permissions: p.clone(), base_ref: "b".into() },
+            ActionsOp::CreateRunFrom {
+                run: r.clone(),
+                jobs: j.clone(),
+                permissions: p.clone(),
+                base_ref: "b".into(),
+                head_ref: "h".into(),
+            },
+            ActionsOp::CreateRunAs { run: r, jobs: j, permissions: p, base_ref: None, head_ref: None, actor: None },
+            ActionsOp::SetSubTemplate { repo: None, sub: Default::default() },
+            ActionsOp::CacheSweep,
+            ActionsOp::ExpireLeases,
+            ActionsOp::AcquireToken { job: JobId(DbId(1)), version: 0 },
+            ActionsOp::CacheDropRepo { repo: RepoId(DbId(7)) },
+        ]);
+        for op in ops {
+            let f = ActionsCmd { actor: ActionsActor::Operator, op: op.clone() }.format();
+            assert!(ACTIONS_FORMATS.contains(&f), "{op:?} is sent as {f:?}, which no member reads");
+        }
+        assert_eq!(ACTIONS_FORMATS.len(), ACTIONS_FORMATS.iter().map(|f| f.version).max().unwrap() as usize);
     }
 
     /// A recorded stall moves a live lease and a queued job's `since` by exactly its length, through the fold and

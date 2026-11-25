@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use graftyard_actions::JobId;
-use graftyard_actions::oidc::{self, Facts, OidcKey};
+use graftyard_actions::oidc::{self, OidcKey};
 use graftyard_identity::Visibility;
 use graftyard_types::{AccountId, DbId};
 use serde_json::{Value, json};
@@ -73,33 +73,19 @@ pub async fn mint(h: &Rc<Host<Actions>>, b: &Value, owner: AccountId, job: JobId
         return refused(400, "repository and visibility");
     };
     let enterprise = b["enterprise"].as_array().and_then(|e| Some((e.first()?.as_str()?, e.get(1)?.as_i64()?)));
+    // F122: the owner's `sub` template, which the edge read from the owner's shard 0 (`orgSub`).
+    let org: Option<Vec<Box<str>>> = serde_json::from_value(b["org_sub"].clone()).unwrap_or_default();
     let read = {
         let core = h.core.borrow();
-        core.as_ref().and_then(|c| {
-            let f = &c.m.group_fold().fold;
-            let row = f.job(job)?.clone();
-            let run = f.run(row.run)?.run.clone();
-            let base = f.run_base(run.id).map(str::to_owned);
-            let head = f.run_head(run.id).map(str::to_owned);
-            Some((row, run, f.more.tokens.get(&job).cloned(), base, head))
-        })
+        core.as_ref().and_then(|c| c.m.group_fold().fold.claim_facts(job, org.as_deref()))
     };
-    let Some((row, run, declared, base, head)) = read else { return refused(404, "no job") };
-    let f = Facts {
-        server: &super::urls(&h.env).server,
-        repository,
-        repository_id: run.repo,
-        owner_id: owner,
-        visibility,
-        enterprise: enterprise.map(|(l, id)| (l, AccountId(DbId(id)))),
-        run: &run,
-        job: &row,
-        hosted: b["hosted"].as_bool() == Some(true),
-        base_ref: base.as_deref(),
-        head_ref: head.as_deref(),
-    };
+    let Some(cf) = read else { return refused(404, "no job") };
+    let server = super::urls(&h.env).server;
+    let enterprise = enterprise.map(|(l, id)| (l, AccountId(DbId(id))));
+    let f = cf.facts(&server, repository, owner, visibility, enterprise, b["hosted"].as_bool() == Some(true));
+    let (row, run, declared) = (&cf.row, &cf.run, &cf.declared);
     // Refused before the key is read, so a job with no grant never reaches the Secrets Store.
-    if let Err(e) = oidc::may_mint(&row, &run, attempt, declared.as_ref()) {
+    if let Err(e) = oidc::may_mint(row, run, attempt, declared.as_ref()) {
         return refused(403, e);
     }
     let key = match active_key(&h.env).await {

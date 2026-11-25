@@ -513,7 +513,8 @@ fn a_pull_request_runs_granted_job_gets_the_id_token_url_only_with_job_tokens_on
             pull_request_run(REPO, e.index, WF, OIDC, p.n, p.action, &v.base, m).unwrap().unwrap();
         // The site day's flags: `job_tokens` as given, `actions_cache` on (graft-m4a's), so the base rides along.
         let base = v.base.display();
-        let call = graftyard_actions::runsvc::create_run_call(&run, &jobs, &permissions, tokens, Some(&base), None);
+        let call =
+            graftyard_actions::runsvc::create_run_call(&run, &jobs, &permissions, tokens, Some(&base), None, None);
         let (_, op) = graftyard_actions::runsvc::create_run_op(&call).unwrap();
         assert!(matches!(op, ActionsOp::CreateRunOn { .. }), "a pull_request run with its base: {op:?}");
         let (now, id) = (w.now, w.id());
@@ -536,6 +537,8 @@ fn a_pull_request_runs_granted_job_gets_the_id_token_url_only_with_job_tokens_on
                     cache: true,
                     // As the shard leader reads it (`workers/site/src/actions.rs`, `acquire`).
                     id_token: graftyard_actions::oidc::id_token_granted(f.more.tokens.get(&j.spec.id), row.run.fork),
+                    actor: None,
+                    run_number: None,
                 };
                 let msg = graftyard_actions::runsvc::acquire_message(&urls, &row.run, j, &a);
                 let name: &str = if &*j.spec.name == "sts" { "sts" } else { "denied" };
@@ -575,8 +578,15 @@ fn head_ref_rides_only_with_the_flag_and_never_for_a_fork() {
             pull_request_run(REPO, e.index, WF, SRC, p.n, p.action, &v.base, m).unwrap().unwrap();
         let head = pr_head(&*w.repo.fold().core, REPO, p.n, flag).map(|h| h.display());
         let base = v.base.display();
-        let call =
-            graftyard_actions::runsvc::create_run_call(&run, &jobs, &permissions, false, Some(&base), head.as_deref());
+        let call = graftyard_actions::runsvc::create_run_call(
+            &run,
+            &jobs,
+            &permissions,
+            false,
+            Some(&base),
+            head.as_deref(),
+            None,
+        );
         let (_, op) = graftyard_actions::runsvc::create_run_op(&call).unwrap();
         assert_eq!(matches!(op, ActionsOp::CreateRunFrom { .. }), from, "flag {flag}: {op:?}");
         assert!(from || matches!(op, ActionsOp::CreateRunOn { .. }), "without the flag, 0x15.6's call: {op:?}");
@@ -622,4 +632,111 @@ fn head_ref_rides_only_with_the_flag_and_never_for_a_fork() {
     assert!(!w.view(3).same_repo);
     assert_eq!(pr_head(&*w.repo.fold().core, REPO, IssueNumber(3), true), None, "a fork's branch is the fork's");
     assert_eq!(pr_head(&*w.repo.fold().core, REPO, IssueNumber(1), true), Some(name("refs/heads/a")));
+}
+
+/// BF-73 (F119, F120) on real members, taken as the site's `ActionsTrigger` takes it: a push by account 55 moves
+/// pull request 1's head, and its `synchronize` names 55 as the actor (`PrEvent::actor`). With `GRAFTYARD_OIDC_CLAIMS`
+/// set the call carries the actor and its login and decodes to `CreateRunAs`. A member without 0x15.8 refuses it and
+/// commits nothing, so the flag waits for the reader. On a 0x15.8 member the run records 55 and number 1, a second
+/// push's run number 2, and the job message's `github.actor` and `github.run_number` and the token's `actor`,
+/// `actor_id` and `run_number` say so. With the flag unset, the call is the one before 0x15.8, and the message keeps the
+/// owner's login and number 1.
+#[test]
+fn a_pull_request_runs_actor_and_number_ride_with_the_claims_flag() {
+    use graftyard_actions::shard::{
+        ACTIONS_FORMAT_CACHE, ACTIONS_FORMAT_CLAIMS, ACTIONS_FORMAT_HEAD_REF, ACTIONS_FORMAT_TOKENS,
+    };
+    let v7 = vec![
+        ACTIONS_FORMAT,
+        ACTIONS_FORMAT_PULL_REQUEST,
+        ACTIONS_FORMAT_TOKENS,
+        ACTIONS_FORMAT_CACHE,
+        ACTIONS_FORMAT_HEAD_REF,
+    ];
+    let v8 = [v7.clone(), vec![ACTIONS_FORMAT_CLAIMS]].concat();
+    let pusher = AccountId(DbId(55));
+    let urls = graftyard_actions::runsvc::Urls::new("https://graft.example");
+    for (reads, flag, commits) in [(&v7, false, true), (&v7, true, false), (&v8, true, true), (&v8, false, true)] {
+        let mut w = World::new(reads.clone());
+        let mut seen = Vec::new();
+        for (i, head) in [(0u32, oid(131)), (1, oid(132))] {
+            let core = &w.repo.fold().core;
+            let tip =
+                graftyard_git::tiers::get_rec(&**core, "ref", &[graftyard_git::tiers::ref_key(&name("refs/heads/a"))]);
+            let e = w.record(vec![RepoEvent::Refs {
+                push: graftyard_raft::RequestId(graftyard_raft::Ulid(900 + u128::from(i))),
+                actor: Some(pusher),
+                updates: vec![RefUpdate { name: name("refs/heads/a"), expect: tip, new: Some(head) }],
+                pack: None,
+            }]);
+            w.test_merge(1, clean(140 + i));
+            let p = w.events(&e).remove(0);
+            assert_eq!((p.action, p.actor), ("synchronize", Some(pusher)), "the pusher is the event's actor");
+            let v = w.view(p.n.0);
+            let PrTarget::Merge(m) = pr_target(&v) else { panic!("clean merge") };
+            let (run, jobs, permissions) =
+                pull_request_run(REPO, e.index, WF, SRC, p.n, p.action, &v.base, m).unwrap().unwrap();
+            let base = v.base.display();
+            // The site's `run_actor`: the event's actor and its login, only with the flag.
+            let actor = p.actor.filter(|_| flag).map(|a| (a, "octocat"));
+            let call =
+                graftyard_actions::runsvc::create_run_call(&run, &jobs, &permissions, false, Some(&base), None, actor);
+            let (_, op) = graftyard_actions::runsvc::create_run_op(&call).unwrap();
+            assert_eq!(matches!(op, ActionsOp::CreateRunAs { .. }), flag, "{op:?}");
+            let (now, id) = (w.now, w.id());
+            let got = w.shard.commit(now, id, ActionsCmd { actor: ActionsActor::Operator, op });
+            assert_eq!(matches!(got, Some(Ok(_))), commits, "reads {} flag {flag}: {got:?}", reads.len());
+            let Some(Ok(a)) = got else { continue };
+            let ActionsOut::Run(r) = a.out else { panic!() };
+            let f = w.shard.fold();
+            let (row, j) = (f.run(r).unwrap(), f.run_jobs(r)[0]);
+            let actor = f.run_actor(r).map(|(_, l)| l.to_owned());
+            let acq = graftyard_actions::runsvc::Acquired {
+                repository: "m3org/bf73",
+                owner_login: "m3org",
+                relay_site: 0,
+                github_token: "",
+                job_token: "jt",
+                locked_until: Timestamp(9),
+                secrets: vec![],
+                variables: vec![],
+                cache: false,
+                id_token: false,
+                actor: actor.as_deref(),
+                run_number: f.run_number(r),
+            };
+            let msg = graftyard_actions::runsvc::acquire_message(&urls, &row.run, j, &acq);
+            let gh = |k: &str| {
+                let d = &msg["contextData"]["github"]["d"];
+                d.as_array().unwrap().iter().find(|e| e["k"] == k).map(|e| e["v"].clone()).unwrap()
+            };
+            let cf = f.claim_facts(j.spec.id, None).unwrap();
+            let facts = cf.facts(
+                "https://graft.example",
+                "m3org/bf73",
+                OWNER,
+                graftyard_identity::Visibility::Private,
+                None,
+                false,
+            );
+            let c = graftyard_actions::oidc::claims(&facts, None, 1, "j");
+            seen.push((
+                gh("actor"),
+                gh("run_number"),
+                c.get("actor").cloned(),
+                c.get("actor_id").cloned(),
+                c.get("run_number").cloned(),
+            ));
+        }
+        use serde_json::json;
+        let want: Vec<_> = match (flag, commits) {
+            (true, true) => vec![
+                (json!("octocat"), json!("1"), Some(json!("octocat")), Some(json!("55")), Some(json!("1"))),
+                (json!("octocat"), json!("2"), Some(json!("octocat")), Some(json!("55")), Some(json!("2"))),
+            ],
+            (false, _) => vec![(json!("m3org"), json!("1"), None, None, None); 2],
+            (true, false) => vec![],
+        };
+        assert_eq!(seen, want, "reads {} flag {flag}", reads.len());
+    }
 }
