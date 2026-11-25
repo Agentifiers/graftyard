@@ -27,7 +27,7 @@ O=tests/m5/results/raw/bf46r45/$TAG; mkdir -p "$O"
 W=$HOME/.graft-m4a; K=$W/r45; mkdir -p "$K"; chmod 700 "$K"
 STORE=bfaa0c1573de4775b1b92a12fb89acb4
 OPS=graft-m4a-ops; OPS_PARKED=${OPS_PARKED:-ac4cd9a5}
-EDGE_NAME=graft-m4a-edge MCP_NAME=graft-m4a-mcp AUX_NAME=graft-m4a-mcp-aux SINK=graft-m4a-r45-sink
+EDGE_NAME=graft-m4a-edge MCP_NAME=graft-m4a-mcp AUX_NAME=graft-m4a-mcp-aux SINK=graft-m4a-r45-sink J4SINK=graft-m4-hooksink
 MCPO=https://$MCP_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev
 B="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"; VAPI=$B
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$1" "${@:2}"; }
@@ -183,14 +183,20 @@ sink)
   # hook (HOOK_SECRET, from $K/sink.secret).
   { ( umask 077; [ -s "$K/sink.secret" ] || python3 -c 'import os; print(os.urandom(24).hex())' >"$K/sink.secret" )
     (cd tests/m5/bf46/r45-sink && npx --prefix ../../../m0 wrangler deploy --name $SINK 2>&1 | grep -E "Current Version|rror"
-     npx --prefix ../../../m0 wrangler secret put HOOK_SECRET --name $SINK <"$K/sink.secret" 2>&1 | tail -1)
+     npx --prefix ../../../m0 wrangler secret put HOOK_SECRET --name $SINK <"$K/sink.secret" 2>&1 | tail -1
+     # j4's existing hooks (slot 1 before the row) deliver to BF-57's receiver name; the same source checks BF-57's
+     # per-hook secrets there (BF57_J4).
+     npx --prefix ../../../m0 wrangler deploy --name $J4SINK --var BF57_J4:1 2>&1 | grep -E "Current Version|rror"
+     npx --prefix ../../../m0 wrangler secret put HOOK_SECRET --name $J4SINK <"$K/sink.secret" 2>&1 | tail -1)
   } 2>&1 | log ;;
 load)
   case ${3:?start|stop} in
     start) rm -f "$O/stop"
-      amp orb service start bf46-r45-load --command "cd $PWD && source tests/am1/lf13/env-m4a.sh && GRAFT_MCP=$MCPO GRAFT_AUX=https://$AUX_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev R45_SINK=https://$SINK.$CF_WORKERS_SUBDOMAIN.workers.dev R45_SINK_SECRET_FILE=$K/sink.secret exec node tests/m5/bf46/r45.mjs load $PWD/$O/load.jsonl $PWD/$O/stop" 2>&1 | head -1 | log ;;
+      amp orb service start bf46-r45-load --command "cd $PWD && source tests/am1/lf13/env-m4a.sh && GRAFT_MCP=$MCPO GRAFT_AUX=https://$AUX_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev R45_SINK=https://$SINK.$CF_WORKERS_SUBDOMAIN.workers.dev R45_J4_SINK=https://$J4SINK.$CF_WORKERS_SUBDOMAIN.workers.dev R45_SINK_SECRET_FILE=$K/sink.secret exec node tests/m5/bf46/r45.mjs load $PWD/$O/load.jsonl $PWD/$O/stop" 2>&1 | head -1 | log ;;
     stop) touch "$O/stop"; sleep 25; amp orb service stop bf46-r45-load 2>&1 | tail -1 | log ;;
   esac ;;
+wrapcheck)
+  { node tests/m5/bf46/r45.mjs wrapcheck m3org/j4,m3org/r45-hooks; } 2>&1 | log ;;
 slots)
   # Each hook left on the row's repository and its SecretsWrapKey slot (none while the load deletes as it goes).
   { node tests/m5/bf46/r45.mjs slots "${3:?repo chain}"; } 2>&1 | log ;;
@@ -215,6 +221,8 @@ logs)
 teardown)
   { touch "$O/stop"; amp orb service stop bf46-r45-load >/dev/null 2>&1
     R45_SINK=https://$SINK.$CF_WORKERS_SUBDOMAIN.workers.dev node tests/m5/bf46/r45.mjs unhook m3org/r45-hooks
+    # The lead's condition: no hook may stay on slot 0, the row's secret deleted below; stop here if one does.
+    node tests/m5/bf46/r45.mjs wrapcheck m3org/j4,m3org/r45-hooks || { echo "teardown stopped before parking graft-ops"; exit 1; }
     reset_cron $OPS
     echo "graft-ops parked as $OPS_PARKED"
     # `versions deploy` takes the full version id and `@100%` (m3fs2's teardown: a short id or `@100` exits 1).
@@ -222,7 +230,7 @@ teardown)
     npx --prefix tests/m0 wrangler versions deploy "$full@100%" --name $OPS -y 2>&1 | grep -E "Deployed|rror" | tail -2
     reset_cron $OPS
     deployment $OPS
-    for n in $MCP_NAME $AUX_NAME $SINK; do npx --prefix tests/m0 wrangler delete --name $n --force 2>&1 | tail -1; done
+    for n in $MCP_NAME $AUX_NAME $SINK $J4SINK; do npx --prefix tests/m0 wrangler delete --name $n --force 2>&1 | tail -1; done
     for n in graft-m4a-MCP_CLIENT_SECRET_A graft-m4a-MCP_CLIENT_SECRET_B graft-m4a-MCP_SEAL_KEY_A graft-m4a-r45-MCP_APP_KEY_A \
              graft-m4a-r45-MCP_APP_KEY_B graft-m4a-r45-INSIGHTS_APP_KEY_A graft-m4a-r45-INSIGHTS_APP_KEY_B graft-m4a-r45-secrets-wrap-key-a; do
       id=$(secret_id "$n"); [ -n "$id" ] && api "$B/secrets_store/stores/$STORE/secrets/$id" -X DELETE | jq -c --arg n "$n" '{delete: $n, ok: .success}'
@@ -233,5 +241,5 @@ teardown)
     rm -rf "$K/apps" "$K/apps-wd.json"; echo "row files shredded"
     node tests/m5/bf46/view.mjs slots
   } 2>&1 | log ;;
-*) echo "step: state secrets apps token ops cron mcp sink load slots counts rotate view versions logs teardown"; exit 2 ;;
+*) echo "step: state secrets apps token ops cron mcp sink load wrapcheck slots counts rotate view versions logs teardown"; exit 2 ;;
 esac

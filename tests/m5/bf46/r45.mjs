@@ -16,6 +16,7 @@
 //                                                  secret was wrapped under, and deletes it
 //   node tests/m5/bf46/r45.mjs slots <repo chain>  each hook's SecretsWrapKey slot, from the core `hook` rows
 //   node tests/m5/bf46/r45.mjs unhook <repo>       deletes every hook whose url is the row's receiver
+//   node tests/m5/bf46/r45.mjs wrapcheck <repo,...>  exits 1 when any hook there is wrapped under slot 0
 //   node tests/m5/bf46/r45.mjs counts <out> <since ms>  each kind's calls and failures since then
 import { readFileSync } from "node:fs";
 import { api, bed, commit, log, member, refusal, row, scan, secret, sleep, tokens, voterNames } from "../../am1/hosted/lib.mjs";
@@ -55,6 +56,21 @@ if (cmd === "commit") {
   console.log(JSON.stringify({ app: Number(a1), slug: v?.slug ?? null, callbacks: v?.callbacks ?? null, client_secrets: v?.client_secrets ?? null }));
 } else if (cmd === "slots") {
   console.log(JSON.stringify(await hookSlots(a1)));
+} else if (cmd === "wrapcheck") {
+  // Teardown's gate (the lead's condition): every hook on these repositories and the slot its secret is wrapped
+  // under. Exits 1 when any is on slot 0, the row's fresh secret that teardown deletes.
+  let bad = 0;
+  for (const name of a1.split(",")) {
+    const r = await api("GET", `/api/v3/repos/${name}`, tokens.admin);
+    if (r.status !== 200) { console.log(JSON.stringify({ repo: name, status: r.status })); bad++; continue; }
+    const s = await hookSlots(`repo:${r.body.id}`);
+    const by = {};
+    for (const h of s) by[h.slot ?? "none"] = (by[h.slot ?? "none"] ?? 0) + 1;
+    console.log(JSON.stringify({ repo: name, chain: `repo:${r.body.id}`, hooks: s.length, slots: by }));
+    bad += s.filter((h) => h.slot === 0).length;
+  }
+  console.log(bad ? `REFUSE: ${bad} hook(s) on slot 0 or unread` : "no hook on slot 0");
+  if (bad) process.exit(1);
 } else if (cmd === "unhook") {
   const SINK = process.env.R45_SINK;
   const have = await api("GET", `/api/v3/repos/${a1}/hooks`, tokens.admin);
@@ -68,7 +84,7 @@ if (cmd === "commit") {
   for (const r of rows) {
     const k = (by[r.kind] ??= { calls: 0, failed: 0, failures: [] });
     k.calls++;
-    if (r.kind === "hook") (k.slots ??= {})[r.slot ?? "none"] = ((k.slots ??= {})[r.slot ?? "none"] ?? 0) + 1;
+    if (r.kind === "hook" || r.kind === "j4_hook") (k.slots ??= {})[r.slot ?? "none"] = ((k.slots ??= {})[r.slot ?? "none"] ?? 0) + 1;
     if (!r.ok) { k.failed++; if (k.failures.length < 5) k.failures.push({ at: new Date(r.at).toISOString(), why: r.why }); }
   }
   console.log(JSON.stringify({ since: since ? new Date(since).toISOString() : null, rows: rows.length, by }));
@@ -84,6 +100,14 @@ if (cmd === "commit") {
   if (![200, 201].includes(repo.status)) throw new Error(`repo ${REPO}: ${repo.status}`);
   const CHAIN = `repo:${repo.body.id}`;
   log(`hooks on ${REPO} (${CHAIN})`);
+  // The customer case: j4's existing hooks, wrapped under slot 1 before the row, pinged one a round through the
+  // rotation (the lead's condition). Nothing on j4 is changed. Its receiver is graft-m4-hooksink (r45-sink, BF57_J4).
+  const J4SINK = process.env.R45_J4_SINK;
+  const j4 = await api("GET", "/api/v3/repos/m3org/j4", tokens.admin);
+  const j4Hooks = J4SINK ? ((await api("GET", "/api/v3/repos/m3org/j4/hooks", tokens.admin)).body ?? [])
+    .filter((h) => !h.config.url.includes("slow")).map((h) => ({ id: h.id, n: new URL(h.config.url).pathname.split("/")[2] })) : [];
+  if (J4SINK && (j4.status !== 200 || !j4Hooks.length)) throw new Error(`j4: ${j4.status}, ${j4Hooks.length} hooks`);
+  log(`j4 (repo:${j4.body?.id}): ${j4Hooks.length} hooks pinged in turn`);
   const out = a1, stop = a2;
   const exists = (p) => { try { readFileSync(p); return true; } catch { return false; } };
   const note = (kind, ok, extra = {}) => row(out, { at: Date.now(), kind, ok, ...extra });
@@ -123,6 +147,24 @@ if (cmd === "commit") {
       note("hook", got.sig_ok === true, { n, hook: id, slot, ms: Date.now() - t1, event: got.event, ...(got.sig_ok ? {} : { why: "bad signature" }) });
     } catch (e) {
       note("hook", false, { n, ms: Date.now() - t1, why: scan(String(e.message ?? e)).slice(0, 160) });
+    }
+    if (j4Hooks.length) {
+      const h = j4Hooks[n % j4Hooks.length], t2 = Date.now();
+      try {
+        const p = await api("POST", `/api/v3/repos/m3org/j4/hooks/${h.id}/pings`, tokens.admin);
+        if (p.status !== 204) throw new Error(`ping ${p.status} ${JSON.stringify(p.body).slice(0, 100)}`);
+        let got = null;
+        for (let i = 0; i < 15 && !got; i++) {
+          await sleep(1000);
+          const r = await fetch(`${J4SINK}/seen/${h.n}`, { headers: { authorization: `Bearer ${SINK_SECRET}` } });
+          if (r.status === 200) { const v = await r.json(); if (v.at >= t2) got = v; }
+        }
+        const slot = (await hookSlots(`repo:${j4.body.id}`).catch(() => [])).find((x) => x.hook === h.id)?.slot ?? null;
+        if (!got) throw new Error("no delivery at graft-m4-hooksink within 15 s");
+        note("j4_hook", got.sig_ok === true, { n, hook: h.id, slot, ms: Date.now() - t2, event: got.event, ...(got.sig_ok ? {} : { why: "bad signature" }) });
+      } catch (e) {
+        note("j4_hook", false, { n, hook: h.id, ms: Date.now() - t2, why: scan(String(e.message ?? e)).slice(0, 160) });
+      }
     }
     const wait = 20_000 - (Date.now() - t0);
     if (wait > 0) await sleep(wait);

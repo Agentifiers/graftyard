@@ -21,7 +21,10 @@ export default {
     let m = u.pathname.match(/^\/h\/(\d+)$/);
     if (m && req.method === "POST") {
       const body = new Uint8Array(await req.arrayBuffer());
-      const sig_ok = req.headers.get("x-hub-signature-256") === `sha256=${await hmac(env.HOOK_SECRET, body)}`;
+      // BF57_J4: deployed as graft-m4-hooksink for j4's existing hooks, whose secrets BF-57 gave as
+      // `bf57-j4-<i>-secret` for `/h/<100 + i>` (tests/m4/wp1/bf57.mjs).
+      const key = env.BF57_J4 ? `bf57-j4-${Number(m[1]) - 100}-secret` : env.HOOK_SECRET;
+      const sig_ok = req.headers.get("x-hub-signature-256") === `sha256=${await hmac(key, body)}`;
       await log.fetch(`https://s/${m[1]}`, { method: "PUT", body: JSON.stringify({ at: Date.now(), sig_ok, event: req.headers.get("x-github-event") }) });
       return new Response(sig_ok ? "ok" : "bad signature", { status: sig_ok ? 200 : 401 });
     }
