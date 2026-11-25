@@ -3,9 +3,10 @@
 // every byte comes in on a request from its object. It holds nothing canonical. Each network is a bare repository
 // with reftable at /data/<net>.git, rebuilt by its object's rehydrate.
 //
-//	GET  /health                     {"disk","git","region","location"}: disk is a random id written at first start,
+//	GET  /health                     {"disk","boot","git","region","location"}: disk is a random id written at first start,
 //	                                 so the object can tell a new disk (an emptied container) from the one its
-//	                                 IngestCursor describes; region is CLOUDFLARE_REGION, for the start-time check
+//	                                 IngestCursor describes; boot is new at each start; region is CLOUDFLARE_REGION,
+//	                                 for the start-time check
 //	POST /init?net=N[&fresh=1]       git init --bare --ref-format=reftable; fresh deletes the repository first
 //	POST /validate?net=N[&tips=a,b][&class=agent]
 //	                                 body: a pushed pack, possibly thin. index-pack --strict --fix-thin into a
@@ -3728,8 +3729,13 @@ func mux() *http.ServeMux {
 	m := http.NewServeMux()
 	disk := diskID()
 	version, _ := git(data, nil, nil, "version")
+	// boot is new each time the server starts: a lifeboat's puller checks each repository with /connected after a
+	// restart it did not see coming, before it serves it again (`lifeboat-clone`).
+	bootB := make([]byte, 8)
+	rand.Read(bootB)
+	boot := hex.EncodeToString(bootB)
 	m.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		jsonOut(w, map[string]any{"disk": disk, "git": strings.TrimSpace(string(version)),
+		jsonOut(w, map[string]any{"disk": disk, "boot": boot, "git": strings.TrimSpace(string(version)),
 			"region": os.Getenv("CLOUDFLARE_REGION"), "location": os.Getenv("CLOUDFLARE_LOCATION")})
 	})
 	m.HandleFunc("/init", handleInit)

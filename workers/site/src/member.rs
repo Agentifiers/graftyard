@@ -465,6 +465,10 @@ fn commit_hold(hold_ms: Option<u64>) -> Duration {
 struct RecordReq<F: Family> {
     rid: String,
     events: Vec<F::Ev>,
+    /// The entry's format, the family's first by default: lifeboatbed records promotions and a roll at 32.25, the
+    /// only format whose `Promoted` a roll may consume.
+    #[serde(default)]
+    format: Option<raft::Format>,
 }
 
 #[derive(Deserialize)]
@@ -1233,6 +1237,9 @@ fn lifeboat_route(path: &str) -> Lifeboat {
         | "/deps_log" | "/elections" | "/arrivals" | "/retire" | "/purge_retire" | "/reset" | "/abort" | "/view" => {
             Lifeboat::Pass
         }
+        // The lifeboat's git copy reads its committed entries with `local=1` (`decisions/DECISIONS.md`,
+        // "`lifeboat-clone`"), the same read a git cache shard makes on its own site's member.
+        "/entries" => Lifeboat::Pass,
         _ => Lifeboat::Refuse,
     }
 }
@@ -1898,7 +1905,10 @@ impl<F: Family> Routes<F> {
                 s.apply(ev);
             }
         }
-        let format = *F::reads().first().ok_or_else(|| err("the family reads no format"))?;
+        let format = match body.format {
+            Some(f) => f,
+            None => *F::reads().first().ok_or_else(|| err("the family reads no format"))?,
+        };
         let rx = self.host.wait_recorded(rid);
         let r = self.host.input(|m, t| m.record(t, rid, format, body.events))?;
         if let Err(e) = r {

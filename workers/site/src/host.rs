@@ -2820,9 +2820,15 @@ impl<F: Family> Host<F> {
     /// `to` (`design/DESIGN.md`, Shape, "Packs": "followers truncate only through a committed range whose key they
     /// can HEAD in two buckets"). The row at `to` stays as the stored log's base: its term and digest anchor the next
     /// entry, and restore starts above it. Entries through `to` are archived either way (`RepoFold::first_index`).
-    /// A key in fewer than two buckets truncates nothing and raises an alarm; re-putting the copy is not built.
+    /// A key in fewer than two buckets truncates nothing and raises an alarm; re-putting the copy is not built. A
+    /// lifeboat truncates nothing.
     /// Whether the log was truncated.
     async fn truncate(self: &Rc<Self>, key: &str, to: u64) -> bool {
+        // A lifeboat keeps its whole log: its git copy rebuilds from every entry's own packs, and it has no buckets
+        // to HEAD (`decisions/DECISIONS.md`, "`lifeboat-clone`"). Not an alarm: BF-53 logged 22 of them.
+        if crate::lifeboat::mode(&self.env) {
+            return false;
+        }
         self.settled().await;
         let Ok(site) = SiteEnv::read(&self.env) else { return false };
         let mut held = 0;
