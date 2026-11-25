@@ -34,6 +34,12 @@ pub type OidcKey = RsaPrivateKey;
 /// An ID token's life, `exp - iat` [doc: GitHub's example token in "OpenID Connect", `iat` 1632493567 and `exp`
 /// 1632493867, 300 s apart].
 pub const ID_TOKEN_TTL_S: u64 = 300;
+/// How far `nbf` sits before `iat`, so a relying party whose clock runs behind the edge's still takes a fresh token
+/// (F129). GitHub's tokens set `nbf` 600 s before `iat` [doc: GitHub's example token in "OpenID Connect", `nbf`
+/// 1632492967 and `iat` 1632493567; the same offset in decoded github.com tokens, such as `nbf` 1700879858 and `iat`
+/// 1700880458 (https://www.kenmuse.com/blog/understanding-oidc-and-identity-federation)]. It widens only the start of
+/// the window: `exp` stays `iat + ID_TOKEN_TTL_S`, so a token is never usable longer after its mint.
+pub const ID_TOKEN_NBF_SKEW_S: u64 = 600;
 /// The declared-permissions key that records `id-token: write` (`crate::token::parse`). No `GITHUB_TOKEN` carries it
 /// (`crate::token::job_permissions`).
 pub const ID_TOKEN_SCOPE: &str = "id_token";
@@ -145,7 +151,7 @@ pub fn claims(f: &Facts<'_>, audience: Option<&str>, now_s: u64, jti: &str) -> V
         "sub": subject(f.repository, environment, &run.event, r#ref),
         "jti": jti,
         "iat": now_s,
-        "nbf": now_s,
+        "nbf": now_s.saturating_sub(ID_TOKEN_NBF_SKEW_S),
         "exp": now_s + ID_TOKEN_TTL_S,
         "ref": r#ref,
         "ref_type": ref_type,
@@ -452,7 +458,7 @@ mod tests {
         let c = claims(&f, None, 1_000, "j-1");
         let want = json!({
             "iss": "https://graft.example/_services/token", "aud": "https://graft.example/octo",
-            "sub": "repo:octo/hello:ref:refs/heads/main", "jti": "j-1", "iat": 1_000, "nbf": 1_000, "exp": 1_300,
+            "sub": "repo:octo/hello:ref:refs/heads/main", "jti": "j-1", "iat": 1_000, "nbf": 400, "exp": 1_300,
             "ref": "refs/heads/main", "ref_type": "branch", "sha": sha, "repository": "octo/hello",
             "repository_id": "74", "repository_owner": "octo", "repository_owner_id": "65",
             "repository_visibility": "private", "run_id": "41", "run_attempt": "2", "event_name": "push",
@@ -463,6 +469,10 @@ mod tests {
             "enterprise": "acme", "enterprise_id": "3",
         });
         assert_eq!(c, want);
+        // GitHub's example token's times (GHES 3.22, "OpenID Connect"): `nbf` 600 s before `iat`, `exp` 300 s after, so a
+        // relying party whose clock lags the edge's still takes a token minted this second (F129).
+        let c = claims(&f, None, 1_632_493_567, "j-1");
+        assert_eq!((c["nbf"].as_u64(), c["exp"].as_u64()), (Some(1_632_492_967), Some(1_632_493_867)));
         // A custom audience replaces the owner URL; a customer's runner is self-hosted; no enterprise, no claim.
         let f = Facts { hosted: false, enterprise: None, visibility: Visibility::Public, ..f };
         let c = claims(&f, Some("sts.amazonaws.com"), 1_000, "j-2");
