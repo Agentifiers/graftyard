@@ -48,5 +48,5 @@
     "no_token_in_logs": true
   },
   "ok": false,
-  "dir": "/home/user/workspace/repo/tests/m4/raw/wp3/oidc-hosted/r1/job-before"
+  "dir": "<checkout>/tests/m4/raw/wp3/oidc-hosted/r1/job-before"
 }

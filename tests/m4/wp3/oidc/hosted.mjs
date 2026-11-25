@@ -105,7 +105,7 @@ if (phase === "action") {
   }
   checks.no_token_in_logs = !jwt;
   const ok = Object.entries(checks).every(([, x]) => x !== false);
-  result(`job-${tag}`, { tag, fork, run: last, conclusions: concl, checks, ok, dir });
+  result(`job-${tag}`, { tag, fork, run: last, conclusions: concl, checks, ok, dir: dir.replace(`${process.cwd()}/`, "") });
   log(`job ${tag}: ${ok ? "PASS" : "FAIL"} ${JSON.stringify(checks)}`);
   if (!ok) process.exit(1);
 } else {
