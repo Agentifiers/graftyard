@@ -1,0 +1,29 @@
+edge: graft-m2b-edge serves 31854782 at 100% (rev e77c3a08), as tests/am1/raw/runs/fanout-lv-edge.log deployed
+2026-11-25T00:53:12Z meter (account, run) 1.48 0.02 before b033, expected +$2.5, stop $170 account, $10 run
+2026-11-25T00:54:14Z meter (account, run) 1.53 0.02
+2026-11-25T00:55:17Z meter (account, run) 1.6 0.02
+2026-11-25T00:56:19Z meter (account, run) 1.7 0.04
+2026-11-25T00:57:21Z meter (account, run) 1.77 0.06
+2026-11-25T00:58:25Z meter (account, run) 1.87 0.11
+2026-11-25T00:59:28Z meter (account, run) 2.07 0.22
+2026-11-25T01:00:31Z meter (account, run) 2.24 0.33
+2026-11-25T01:01:34Z meter (account, run) 2.39 0.44
+2026-11-25T01:02:36Z meter (account, run) 2.75 0.78
+2026-11-25T01:03:38Z meter (account, run) 3.55 1.43
+2026-11-25T01:04:41Z meter (account, run) 4.03 1.89
+2026-11-25T01:05:44Z meter (account, run) 4.83 2.61
+2026-11-25T01:06:46Z meter (account, run) 5.37 3.05
+2026-11-25T01:07:48Z meter (account, run) 5.51 3.17
+2026-11-25T01:08:51Z meter (account, run) 5.62 3.21
+2026-11-25T01:09:53Z meter (account, run) 5.73 3.23
+2026-11-25T01:10:55Z meter (account, run) 5.74 3.23
+2026-11-25T01:11:58Z meter (account, run) 5.81 3.23
+2026-11-25T01:13:00Z meter (account, run) 5.89 3.23
+2026-11-25T01:14:04Z meter (account, run) 5.93 3.23
+2026-11-25T01:14:33Z b033 ended: leaderlogs: repo:131419#1#f0 on graft-m2b-site-a, 2026-11-25T00:59:54Z to 2026-11-25T01:06:54Z, in the background -> tests/fanout/raw/leaderlogs-lrA.json.xz
+site fault off: 200
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+2026-11-25T01:14:49Z sweep exit 0 (kept: none)
+2026-11-25T01:14:51Z meter (account, run) 5.98 3.23 after b033 and the sweep
+DONE
