@@ -1,0 +1,25 @@
+2026-11-25T23:38:00Z
+b31affddc
+kept as live: --var GRAFTYARD_REUSABLE=1
+2026-11-25T23:38:00Z
+b31affddc
+5
+1
+2026-11-25T23:38:00Z
+5c1737ba6
+before {"script":"graft-m4a-site-a","created_on":"2026-11-25T22:51:49.872429Z","versions":["f7704ee3 100"]}
+before {"script":"graft-m4a-site-b","created_on":"2026-11-25T22:51:57.694272Z","versions":["b6e66c3a 100"]}
+before {"script":"graft-m4a-site-c","created_on":"2026-11-25T22:52:06.132932Z","versions":["7bbf3cbd 100"]}
+deploy exit 0
+Current Version ID: 858f6666-5330-4ba4-bd98-250897e97910
+Current Version ID: ce32c93e-918e-4b9e-a029-f1ab245510d3
+Current Version ID: 9a0c2f09-b081-40b5-9a68-f85b4003c153
+Current Version ID: dbfd0143-1f0f-40ba-98c6-b1f2653e1459
+Current Version ID: be8958aa-04ca-4c1e-92a3-8f6c4935a2a6
+Current Version ID: 23529227-f715-4554-ac3c-88298eaa2dc2
+{"graft-m4a-site-a":[]}
+after {"script":"graft-m4a-site-a","created_on":"2026-11-25T23:38:36.749627Z","versions":["dbfd0143 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
+{"graft-m4a-site-b":[]}
+after {"script":"graft-m4a-site-b","created_on":"2026-11-25T23:38:44.421567Z","versions":["be8958aa 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
+{"graft-m4a-site-c":[]}
+after {"script":"graft-m4a-site-c","created_on":"2026-11-25T23:38:52.353795Z","versions":["23529227 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
