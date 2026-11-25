@@ -354,6 +354,47 @@ pub fn ssh_slot_ready(sites: &[(u8, Vec<SshHostPublic>)]) -> Result<Vec<String>,
     first.map(|(_, f)| f).ok_or_else(|| "no non-spare site to probe".into())
 }
 
+/// One site's `SshFront` as its Registry's `GET /ssh_front` answers it (workers/site/ssh.mjs, `status`). Other fields
+/// (`version_image`) are ignored.
+#[derive(Clone, Debug, Deserialize)]
+pub struct SshFrontStatus {
+    pub running: bool,
+    pub image: Option<String>,
+    pub banner: Option<String>,
+}
+
+/// The first `graft-sshd` generation that takes the active host-key slot from `keys.graft` (the `Release` view) and
+/// reads it again every minute: its banner is `SSH-2.0-graftyard_2` (containers/ssh/server/main.go, `serverVersion`).
+pub const SSHD_VIEW_GENERATION: u32 = 2;
+
+/// The `SshHostKeys` `Rotate`'s probe over each non-spare site's `SshFront`, by site id: a running front must announce
+/// `SSHD_VIEW_GENERATION` or later, or it would keep serving the slot it read at start after the switch (graft-m3f's
+/// sites a and b, m3fs1). A stopped front passes, because its next session starts this version's image.
+pub fn ssh_fronts_ready(fronts: &[(u8, SshFrontStatus)]) -> Result<(), String> {
+    if fronts.is_empty() {
+        return Err("no non-spare site's SSH front to probe".into());
+    }
+    for (site, f) in fronts {
+        if !f.running {
+            continue;
+        }
+        let generation = f
+            .banner
+            .as_deref()
+            .and_then(|b| b.trim().strip_prefix("SSH-2.0-graftyard_"))
+            .and_then(|n| n.parse::<u32>().ok());
+        if !generation.is_some_and(|n| n >= SSHD_VIEW_GENERATION) {
+            return Err(format!(
+                "site {site}'s running SSH front (image {}, banner {:?}) is below graft-sshd generation \
+                 {SSHD_VIEW_GENERATION}: restart that front on an image that reads the slot from the view",
+                f.image.as_deref().unwrap_or("unrecorded"),
+                f.banner.as_deref().unwrap_or("none"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_arch = "wasm32")]
 mod agents;
 #[cfg(target_arch = "wasm32")]
@@ -604,5 +645,33 @@ mod tests {
         differ[2].1 = slot("rsa2");
         assert!(ssh_slot_ready(&differ).unwrap_err().starts_with("site 2's new-slot fingerprints"));
         assert!(ssh_slot_ready(&[]).is_err());
+    }
+
+    fn front(running: bool, banner: Option<&str>) -> SshFrontStatus {
+        SshFrontStatus { running, image: Some("registry/sshfront:m3fs1".into()), banner: banner.map(Into::into) }
+    }
+
+    /// `SshHostKeys`' front probe: every running front must announce `graftyard_2` or later; a stopped front passes
+    /// whatever it last ran, and a failure names the site, its image and its banner.
+    #[test]
+    fn ssh_fronts_ready_wants_every_running_front_on_generation_2() {
+        let one = |f: SshFrontStatus| ssh_fronts_ready(&[(0, f)]);
+        assert_eq!(one(front(true, Some("SSH-2.0-graftyard_2"))), Ok(()));
+        assert_eq!(one(front(true, Some("SSH-2.0-graftyard_3"))), Ok(()));
+        assert_eq!(one(front(true, Some("SSH-2.0-graftyard_2\r\n"))), Ok(()));
+        assert_eq!(one(front(false, Some("SSH-2.0-graftyard"))), Ok(()));
+        assert_eq!(one(front(false, None)), Ok(()));
+        let old = one(front(true, Some("SSH-2.0-graftyard"))).unwrap_err();
+        assert!(old.contains("site 0") && old.contains("registry/sshfront:m3fs1") && old.contains("SSH-2.0-graftyard"));
+        assert!(old.contains("restart that front on an image that reads the slot from the view"), "{old}");
+        assert!(one(front(true, Some("SSH-2.0-graftyard_1"))).is_err());
+        assert!(one(front(true, None)).is_err());
+        assert!(ssh_fronts_ready(&[]).is_err());
+        let mix = [
+            (0, front(true, Some("SSH-2.0-graftyard_2"))),
+            (1, front(false, Some("SSH-2.0-graftyard"))),
+            (2, front(true, Some("SSH-2.0-graftyard"))),
+        ];
+        assert!(ssh_fronts_ready(&mix).unwrap_err().starts_with("site 2's running SSH front"));
     }
 }

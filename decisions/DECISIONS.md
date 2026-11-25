@@ -8391,6 +8391,44 @@ and two more. `workers/site`: the `/ssh_slots` parser's tests against an `ssh-ke
 - A client population that does not use `UpdateHostKeys`: the announce wait buys nothing for it, and the switch needs a
   customer notice instead.
 
+### `sshfront-image`: the SSH front restarts on its version's image; the SshHostKeys probe reads each front's generation, 2026-11-24
+
+**Status.** Code-only, not deployed ($0). Branch `sshfront-image`; it rides graft-m3f's next site day.
+
+**Decision.**
+- `SshFront` (`workers/site/ssh.mjs`, `up`) records the image it started in its storage (`image`). At a session, a
+  running container whose recorded image is not this version's `ssh` image, or that has none recorded (a container an
+  object from before this change started), is destroyed and started on this version's image, as `GitShard`'s
+  `restart_on_image` does. The restart lands at the first session on the new version, which is that site's site day.
+- `graft-sshd`'s banner is `SSH-2.0-graftyard_2`: generation 2 takes the active slot from `keys.graft` (the `Release`
+  view) and re-reads it every minute; the plain `graftyard` builds read it once at start.
+- The object answers `GET /status` (`{running, image, version_image, banner}`, reading the banner over one connection and
+  never starting the container), and each site's Registry serves it at `GET /ssh_front`. The `SshHostKeys` `Rotate`'s
+  probe reads every non-spare site's and refuses a running front below generation 2
+  (`workers/ops/src/lib.rs`, `ssh_fronts_ready`), before its slot check. A stopped front passes: its next session starts
+  this version's image.
+
+**Why.** A new site-script version restarts no running container, and `SshFront` started its container only when none
+ran. On graft-m3f's row m3fs1, sites a and b kept a `graft-sshd` from before R45, which read the slot once at start, so
+after the switch they served slot A and pinned clients failed on site c. DESIGN's front-door bad-deploy row already
+said the image changes when `SshFront` restarts the container; nothing did. A new version already resets the object,
+which ends its in-flight sessions, so restarting at its first session costs no extra session [inference].
+
+**What it beat.**
+- **A full `ContainerDay` for the ssh image** (an `ssh`/`ssh_prev` pair in the view, read by `SshFront`): larger, and
+  not needed for one container per site, which the site day already reaches one site at a time.
+- **A runbook line only** ("restart each front before rotating"): the next install with an old front would miss it,
+  and the probe would pass it as m3fs1's did.
+
+**Evidence.** m3fs1 (`tests/m5/results/m5-wp6.md`, "BF-46 hosted, `SshHostKeys` on graft-m3f, row m3fs1"): sites a and b
+ran image `…4ed05f64`, started before the site day, and served slot A after the switch [measured].
+`workers/site/tests/ssh.test.mjs`: the restart on another image, none under the same one, the restart of an unrecorded
+running container, and `status`. `workers/ops`: `ssh_fronts_ready_wants_every_running_front_on_generation_2`.
+`tests/m0carried/plant214.py`. No hosted row yet.
+
+**Flip.** An SSH front fleet larger than one container per site, or a need to roll the ssh image apart from site code:
+then the ssh image gets its own `ContainerDay` with `ssh` and `ssh_prev` in the view.
+
 ### `vault-roll`: `vault upgrade` is a step of `release roll` on the operator's machine, not a group intent, 2026-11-23
 
 **Decision.** Operator ruling, 2026-11-23, for BF-47. `release roll R` runs the vault step after `McpRoll` and before

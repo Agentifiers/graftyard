@@ -25,6 +25,7 @@ function socket(chunks) {
 function object({ coldTries = 2, image = "registry/sshfront@sha256:1" } = {}) {
   const intercepts = [];
   const starts = [];
+  const destroys = [];
   let tries = 0;
   const container = {
     running: false,
@@ -35,6 +36,10 @@ function object({ coldTries = 2, image = "registry/sshfront@sha256:1" } = {}) {
     start(o) {
       starts.push(o);
       this.running = true;
+    },
+    async destroy(reason) {
+      destroys.push(reason);
+      this.running = false;
     },
     timeout: 0,
     async setInactivityTimeout(ms) {
@@ -63,7 +68,7 @@ function object({ coldTries = 2, image = "registry/sshfront@sha256:1" } = {}) {
       this.slept += ms;
     },
   };
-  return { o, intercepts, starts, tries: () => tries, alarm: () => alarm };
+  return { o, intercepts, starts, destroys, tries: () => tries, alarm: () => alarm };
 }
 
 test("a cold front is retried until graft-sshd's banner, which reaches the client first, then the rest", async () => {
@@ -158,4 +163,49 @@ test("a front's container stops within IDLE_MS of its last session's end, with n
   assert.equal(f.starts.length, 1, "the second session reused the running container");
   assert.equal(f.o.ctx.container.timeout, ssh.IDLE_MS);
   assert.ok(stopsAfter(f, end) <= ssh.IDLE_MS, `stops ${stopsAfter(f, end) / 60_000} min after the session`);
+});
+
+test("a running front restarts once on a version that names another image, and on one no object recorded", async () => {
+  const f = object({ coldTries: 0, image: "registry/sshfront@sha256:X" });
+  const c = f.o.ctx.container;
+  const session = () => ssh.connect(f.o, socket(["SSH-2.0-OpenSSH_10.6\r\n"]));
+  await session();
+  await session();
+  assert.equal(f.starts.length, 1, "the same image keeps the running container");
+  assert.deepEqual(f.destroys, []);
+  assert.equal(await f.o.ctx.storage.get("image"), "registry/sshfront@sha256:X");
+  // A new version whose image map names another `ssh` image.
+  c.images = { ssh: "registry/sshfront@sha256:Y" };
+  await session();
+  await session();
+  assert.deepEqual(f.destroys, ["sshfront: this version names another image"]);
+  assert.deepEqual(f.starts.map((s) => s.image), ["registry/sshfront@sha256:X", "registry/sshfront@sha256:Y"]);
+  assert.equal(await f.o.ctx.storage.get("image"), "registry/sshfront@sha256:Y");
+  // The restart registers the intercepts again before its start.
+  assert.deepEqual(f.intercepts.slice(2).map((i) => [i.host, i.running]), [["keys.graft", false], ["git.graft", false]]);
+
+  // A container an object from before the `image` key started: running, nothing recorded.
+  const old = object({ coldTries: 0, image: "registry/sshfront@sha256:Y" });
+  old.o.ctx.container.running = true;
+  await ssh.connect(old.o, socket(["SSH-2.0-OpenSSH_10.6\r\n"]));
+  await ssh.connect(old.o, socket(["SSH-2.0-OpenSSH_10.6\r\n"]));
+  assert.equal(old.destroys.length, 1);
+  assert.deepEqual(old.starts.map((s) => s.image), ["registry/sshfront@sha256:Y"]);
+  assert.equal(await old.o.ctx.storage.get("image"), "registry/sshfront@sha256:Y");
+});
+
+test("status answers a running front's banner without CR/LF and never starts a stopped one", async () => {
+  const f = object({ coldTries: 0, image: "registry/sshfront@sha256:Y" });
+  assert.deepEqual(await ssh.status(f.o), { running: false, image: null, version_image: "registry/sshfront@sha256:Y", banner: null });
+  assert.equal(f.starts.length, 0);
+  assert.equal(f.tries(), 0, "a stopped front is not dialled");
+  await ssh.connect(f.o, socket(["SSH-2.0-OpenSSH_10.6\r\n"]));
+  assert.deepEqual(await ssh.status(f.o), {
+    running: true,
+    image: "registry/sshfront@sha256:Y",
+    version_image: "registry/sshfront@sha256:Y",
+    banner: "SSH-2.0-graftyard",
+  });
+  assert.equal(f.starts.length, 1, "status started nothing");
+  assert.deepEqual(f.destroys, []);
 });
