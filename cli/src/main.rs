@@ -10,6 +10,7 @@ mod cf;
 mod config;
 mod genesis;
 mod lifeboat;
+mod oidc;
 mod placement;
 mod release;
 mod runners;
@@ -115,6 +116,11 @@ enum Cmd {
     Runners {
         #[command(subcommand)]
         cmd: RunnersCmd,
+    },
+    /// The Actions OIDC issuer as relying parties reach it (`cli/src/oidc.rs`).
+    Oidc {
+        #[command(subcommand)]
+        cmd: OidcCmd,
     },
     /// Native git over SSH (`cli/src/ssh.rs`).
     Ssh {
@@ -298,6 +304,25 @@ struct BundleGit {
     /// graft-blob's --root, whose packs the git directory's free-disk floor counts.
     #[arg(long)]
     blob_root: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum OidcCmd {
+    /// Puts (or keeps) the zone's configuration rule that turns Browser Integrity Check off for the issuer's path
+    /// `/_services/token/*` on the install's host only, and reads it back. Needs a token with zone Config Rules edit.
+    BicRule {
+        #[arg(long)]
+        zone: String,
+        /// The install's host, such as git.example.com.
+        #[arg(long)]
+        host: String,
+    },
+    /// Fetches the issuer's JWKS as a stock Python client (`Python-urllib`); fails on anything but 200.
+    Check {
+        /// The edge's base URL, such as https://git.example.com.
+        #[arg(long)]
+        edge: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -764,6 +789,16 @@ fn run(cli: Cli) -> Res<()> {
         }
         Cmd::Vault { cmd: VaultCmd::Token { key, scope, holder, days, out } } => {
             vault::token(config, &vault::TokenArgs { key: &key, scope: &scope, holder: &holder, days, out: &out })
+        }
+        Cmd::Oidc { cmd: OidcCmd::BicRule { zone, host } } => {
+            let done = oidc::bic_rule(&cf::Cf::from_env("")?, &zone, &host)?;
+            println!("{done:?}");
+            Ok(())
+        }
+        Cmd::Oidc { cmd: OidcCmd::Check { edge } } => {
+            let keys = oidc::check(&edge)?;
+            println!("JWKS as {}: 200, {keys} keys", oidc::CHECK_AGENT);
+            Ok(())
         }
         Cmd::Ssh { cmd: SshCmd::Spectrum { account, zone, hostname, edge, delete } } => {
             let done = ssh::spectrum(&cf::Cf::from_env(&account)?, &zone, &hostname, &edge, delete)?;
