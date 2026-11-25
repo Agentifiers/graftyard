@@ -37,6 +37,21 @@ class Outages(unittest.TestCase):
         s = arrivals.summary(arrivals.outages(busy), T, T + 60_000, busy)
         self.assertEqual((s["outageSeconds"], s["valid"]), (10.0, False))
 
+    def test_edge_invocations_count_in_the_second_they_started(self):
+        # mt26's shape (G43): Workers Logs stamps an invocation at its end. The load's first second starts 181 edge
+        # invocations on cold isolates that end 3 s later, so by end second 0 has edge 0 while the sites serve; by start
+        # it has 181. Pairs are (end ms, wallTimeMs).
+        ends = [(T + i * 5 + 3000, 3000) for i in range(181)]  # start in second 0, end in seconds 3-3.9
+        ends += [(T + 1000 + i * 3, 0) for i in range(100)]  # second 1, wall under 1 ms
+        ends += [(T + 2500 + i, 400) for i in range(50)]  # start in second 2, end in 2
+        ends += [(T + 900, 1500), (T + 6100, 1000)]  # started before FROM, and at or after TO: not counted
+        edge = arrivals.by_start(ends, T, T + 5000)
+        self.assertEqual(edge, {T: 181, T + 1000: 100, T + 2000: 50})
+        sites = {T + i * 1000: {"graft-m1-site-a": 50} for i in range(5)}
+        r = arrivals.series("graft-m1", sites, edge, T, T + 5000)
+        self.assertEqual([x["edge"] for x in r], [181, 100, 50, 0, 0])
+        self.assertEqual(arrivals.outages(r), [(T + 3000, T + 5000)], "only the seconds no invocation started in")
+
     def test_the_window_opens_at_the_first_request_not_the_announced_start(self):
         # m3fwi3's shape: the driver announced at T, its first request left 13.5 s later, and the edge was idle until
         # then while the sites served. From T the idle seconds read as outages (over 5%); from the first request the

@@ -6979,6 +6979,8 @@ Branch `write-identity`, code only, no hosted row (second-opinion review T-01a1f
 
 **Flip.** A row whose driver sends requests before its announced start (the window would then cut real seconds), or one where a dropped host is seen in the setup seconds and lost from the record: then the window should open at the announced start again and the setup seconds be judged by rule 5 alone.
 
+**Amended 2026-11-25 (G43): the edge is counted by start.** `arrivals.py` counts the edge's invocations in the second they started (the events view's `timestamp` less `$workers.wallTimeMs`, log-only events left out), and the sites by end as before. Workers Logs stamps an invocation at its end, so a load's first second on cold isolates read as edge 0: recounted by start, the first-second windows of B0-34 mt10 to mt26 have 178 to 471 edge starts and no edge-0 second, and mt9's has one at +1, after 452 starts, while its closed-loop clients waited on their first answers [measured, Workers Logs events]. `test_outages.py`, `test_edge_invocations_count_in_the_second_they_started`, fails on counting by end. Earlier results keep their windows as written.
+
 ### `agent-stage-first`: an Agent push whose inline pack is over `AGENT_INLINE_ENTRY` stages it before its first commit on any group, 2026-11-20 (reverted 2026-11-20: its flip fired on m3fgt1)
 
 **Decision.** In `receive_pack`, a push that the edge's `admission` classes Agent and whose inline pack is over `AGENT_INLINE_ENTRY` (128 KiB) places its pack in the buckets before its first commit, and commits a `Stored` pack (`workers/edge/src/lib.rs`, `hot::stage_first`). Before this change, a push staged first only on a group whose leader had answered this isolate `Stage` within `HOT_WINDOW` (`push-reads`, item 4). That rule stays for every other push, and so does placement: while placement fails nothing stages first. The leader is unchanged. Its `agent_stage` rule (`crates/raft/src/member/leader.rs`, `admission_check`) still decides, and a pack staged early is a `Stored` pack it takes as it does any other (`design/DESIGN.md`, journey 1, step 1).
@@ -9946,7 +9948,7 @@ restarted home a 19-part chain, and its first step built the fold from scratch b
 additions: a restarted container deletes a kept fold, the swap checks that the chain still extends the fold's, and the
 settling row reads `chain_head` against `chain_chk` and hits p99 past 20 packs. Built on branch `fold-aside` from main
 `9568234e`, not yet measured hosted. Container only (`containers/git/server/compose.go`), so it ships with a new shard
-image on a site day, with no edge day.
+image on a site day, with no edge day. **Measured hosted on B0-34 mt26 (2026-11-25), and G37 closed on it** (the lead's ruling).
 
 **Decision.**
 - A step that leaves the chain at `foldStart` parts (12 [guess]) or more starts one fold for the network, unless one
@@ -10004,6 +10006,14 @@ behind it, and a restart steps a part first.
   - 168: no ceiling at `partsMax`;
   - a restarted container keeps a fold its disk held.
 - `tests/composed/plant.py`'s "no fold" mutant now plants no fold start, and is caught.
+- **Hosted, B0-34 mt26 (2026-11-25, `tests/am1/results/b034-mt26.md`), settling G37:** the only gap between part puts
+  over 60 s was 109 s across the kill and the home's rehydrate, 54 s at most outside it; every clone 99.2% in kill and
+  100% in second; the moved-load site's one composed miss while held 1,853 ms [measured].
+- **The flip's baseline (mt26).** While the chain was past 20 packs (05:21:35 to 05:26:07, up to 27 parts), hits read
+  `chain_chk` 0 at p50 and p99, `chain_head` p99 11 to 17 ms, `chain_open` p99 226 to 336 ms, and hits p99 727 to 759 ms
+  by phase (n 172), against j9's 652 ms with outages removed [measured, `server-timing` on a1's hits]. Whether any head
+  in that window was put without its pack records (past `HEAD_MAX`) is [unverified]: `chain_chk` 0 says the data
+  center's sets or the records covered every pack. The flip compares later rows against these numbers.
 
 **What it costs** [inference]. Folds start at 12 parts, not 20, so there are about 1.5 times as many base builds and
 puts (about 258 MB to each warm bucket for the mono). Under load, a fold that takes over 120 s, as on mt25, lets the
@@ -10581,6 +10591,15 @@ and refuses a state another version wrote; `start.sh` refuses any other workerd 
 both. Evidence: `the_scrub_is_weekly_and_a_lost_key_names_its_copy` (`lifeboat/tests/pass.rs`),
 `start_script_refuses_an_open_file_limit_under_the_floor_and_another_workerd` (CLI), lifeboatbed's check 7 against the
 real `graft-blob` (a pack rotted on disk is lost with its copy named, then cleared), and `tests/m0carried/plant232.py`.
+
+**Both legs of a push refused, 2026-11-25 (lead's ruling on R58).** `lifeboat::serves` passed every GET, so the
+push's advertisement, `GET info/refs?service=git-receive-pack`, reached `receive_pack_stream` [measured, lifeboatbed
+on main `271fedba`]: 401 anonymous, and with the lifeboat token 200 with the copy's refs as a receive-pack
+advertisement, so git went on to a POST the front then refused. The POST was already refused by `serves`. Now an
+`info/refs` whose query names `service=git-receive-pack` is refused too, and both legs answer 503 "the lifeboat is
+read-only" with no `Retry-After`, so git stops instead of retrying. Evidence: lifeboatbed check 2, both legs
+anonymous and with the token; `the_lifeboat_front_serves_reads_and_fetches_and_nothing_else` (edge);
+`tests/m0carried/plant235.py`, 3 of 3.
 
 **Flip.**
 - **A host-process puller** if a workerd version drops `localDisk` alarms, or the bundle's alarm misses a pass by
@@ -11192,13 +11211,15 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 #### `controller-default`: while a `ControllerRoll`'s split is deployed, `graft-agents-front` pins N unless its view shows the roll (2026-11-24)
 
-**Status.** Built (OPEN-QUESTIONS A53's fix, the lead's ruling (c)); LF-7 r2 passed it hosted on graft-m4a, 2026-11-24 (`tests/am3/results/lf7.md`).
+**Status.** Built (OPEN-QUESTIONS A53's fix, the lead's ruling (c)); LF-7 r2 passed it hosted on graft-m4a, 2026-11-24 (`tests/am3/results/lf7.md`). The caught-up rule (A56) is built and passes native; its hosted proof is LM-3 r2.
 
 **Decision.**
 - The agents `graft-ops` sets `graft-agents-front`'s `CONTROLLER_DEFAULT` variable to N before it deploys a `graft-controller` split that serves no version 100%, and removes it after the deploy that serves one version 100%: the roll's 100% step, IntentDone's, and an undo's or `Abort`'s return (`agents::controller_default`). It sets it with the settings call, which deploys a front version that carries the deployed version's bindings and that one change. A controller deployment read while the front's value differs sets it and fails the run, so no step commits before the front carries what the deployment needs.
 - `graft-agents-front` pins `Pointers.controller` while it is set; else nothing while its verified view shows a `ControllerRoll` running or halted, whose split is the canary; else `CONTROLLER_DEFAULT` (`agents::controller_pin`). An isolate that has never read a view, or read one from before the roll, pins N and never follows the split to N+1.
+- **Caught up first (2026-11-25, OPEN-QUESTIONS A56, the lead's ruling (1)).** Both of those read the view only once it is `caught_up`: its last refresh took the edge's last page, one shorter than `ENTRIES_PER_PAGE`. A view that is a prefix of the history, such as a cold isolate's first read that ran out of `ABANDON_MS` after its full pages, pins `CONTROLLER_DEFAULT`, whatever pointer or roll the prefix holds. `Reader::take` still keeps the verified pages, so the next refresh reads on from them.
 
 **Why.**
+- LM-3 r1 failed on a partial cold read: a cold isolate kept 5 of the history's 6 pages, which hold LF-7 r2's pointer `d8b368a1` (entry 486) but not the roll at 524 that cleared it. Its override named a version the new controller script lacked, so it fell through to the 1/99 split, and 2 of 50,890 webhooks after the row's pointer reached c2 (`tests/am3/results/lm3.md`). A prefix of the history is no state the group ever had, so nothing routes from it. Refusing a pin the deployment lacks was rejected: the front cannot read the deployment without the Cloudflare API on the request path, and a stale pin to a version that still exists would pass it.
 - LF-7 r1 failed on the cold isolate: with `GET release/entries` blackholed for 10 minutes, isolates that started in the window read no view, set no override, and sent 313 of 31,580 webhooks to the bad c2 at 1% (`tests/am3/results/lf7.md`). The default needs no new store or failure domain, and a fault in the install cannot reach N+1 through it.
 - Cost, accepted by the lead: during a healthy roll, a cold isolate's first 4 to 8 s go to N, not the split, which dilutes the canary slightly.
 
@@ -11207,6 +11228,7 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - (b) A cold isolate with no view refusing or holding webhooks. GitHub does not redeliver a failed webhook by itself; redelivery is manual or through the API, so a refused delivery is lost without a redelivery loop.
 
 **Evidence.**
+- `workers/agents-front/tests/front.rs`: `a56_a_cold_reader_stopped_between_an_old_pointer_and_the_roll_that_cleared_it_pins_the_default`, `a56_a_reader_stopped_mid_history_under_a_running_roll_pins_the_default_and_a_whole_read_pins_the_pointer`; both fail without `caught_up`. `tests/m0carried/plant237.py`: 3 mutants, all caught.
 - `workers/agents-front/tests/front.rs`: `an_isolate_with_no_view_under_a_controller_roll_pins_the_default_until_a_view_lands`; `crates/release/src/tests/group/agents.rs`: `the_front_default_is_n_only_while_a_split_is_deployed_and_keeps_the_fronts_other_bindings`.
 - `tests/m0carried/plant227.py`: 5 mutants, all caught.
 - The settings call [measured, the runner account, 2026-11-24, throwaway scripts]: `PATCH /workers/scripts/{name}/settings` with `bindings` deploys a new version at 100%, keeps a `secret_text` binding sent as read, and is refused with error 10214 while a newer uploaded version is not deployed. The settings read answers the newest version's bindings, so `graft-ops` reads the deployed version's.

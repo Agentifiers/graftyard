@@ -1,0 +1,23 @@
+{"at":"2026-11-25T00:23:40Z","phase":"create","a":24}
+{"at":"2026-11-25T00:23:42Z","phase":"create","b":8}
+{"at":"2026-11-25T00:24:11Z","phase":"create","solo":0}
+{"at":"2026-11-25T00:26:50Z","phase":"create","controls":4,"note":"Tri on [1,2,3] in place of Solo, which does not elect without an evaluation genesis"}
+{"at":"2026-11-25T00:29:03Z","phase":"load","load":{"ok":95,"bad":230,"chains":12,"errs":[["200 {\"error\":{\"notLeader\":{\"config\":{\"config\":{\"normal\":{\"genera",197],["200 {\"error\":{\"notLeader\":{\"config\":null,\"leader\":null,\"term\":1}",33]]}}
+{"at":"2026-11-25T00:33:02Z","phase":"load","load":{"ok":341,"bad":55,"chains":37,"errs":[["200 {\"error\":{\"notLeader\":{\"config\":{\"config\":{\"normal\":{\"genera",25],["200 {\"error\":{\"notLeader\":{\"config\":null,\"leader\":null,\"term\":1}",30]]}}
+{"at":"2026-11-25T00:45:44Z","phase":"before","rows":9355,"chains":3118,"unread":27}
+{"at":"2026-11-25T00:45:48Z","phase":"before","view_from":2,"held_A":3087}
+{"at": "2026-11-25T00:47:34Z", "phase": "before", "reread": true, "chains": 3118, "excluded": 19, "judged": 3099, "held_A": 3095, "controls": 4, "unread": 0}
+{"at":"2026-11-25T00:47:49Z","phase":"fault","fault":{"plan":{"site":0,"from":1795567676289,"until":1795654076289},"put":[{"site":0,"status":200},{"site":1,"status":200},{"site":2,"status":200},{"site":3,"status":200}]}}
+{"at":"2026-11-25T00:48:06Z","phase":"sitelost","sitelost":"sitelost: {\"digest\":\"5661d1b9b59b1605db4e2dbe3d2e03a5f66458835c85c121524620ea07b5e5f2\",\"index\":10,\"status\":201} \n"}
+{"at":"2026-11-25T00:49:02Z","phase":"restore1","restore":"restore1: {\"message\":\"intent IntentId(Ulid(2170708191801598685549339649654128640)) is current; only a ReplaceMember commits over it\",\"refusal\":\"IntentCurrent\",\"status\":422} \n"}
+{"at":"2026-11-25T00:49:23Z","phase":"watch","view":{"count":5,"current":{"intent":"ReplaceMember { lost: SiteId(0), spare: SiteId(3) }","next":0,"since":1795567733840,"state":"Running { step: 0 }"},"drained":[0]}}
+{"at":"2026-11-25T00:49:31Z","phase":"watch","view":{"count":5,"current":{"intent":"ReplaceMember { lost: SiteId(0), spare: SiteId(3) }","next":0,"since":1795567733840,"state":"Running { step: 0 }"},"drained":[0]}}
+{"at":"2026-11-25T00:50:24Z","phase":"watch","view":{"count":5,"current":{"intent":"ReplaceMember { lost: SiteId(0), spare: SiteId(3) }","next":0,"since":1795567733840,"state":"Running { step: 0 }"},"drained":[0]}}
+{"at":"2026-11-25T01:39:30Z","phase":"after","rows":9349,"chains":3118,"unread":2}
+{"at":"2026-11-25T03:18:45Z","phase":"after","rows":9352,"chains":3118,"unread":1}
+{"at":"2026-11-25T03:24:48Z","phase":"after","versions_same":false}
+{"at":"2026-11-25T03:25:49Z","phase":"lift","lift":[{"site":0,"status":200},{"site":1,"status":200},{"site":2,"status":200},{"site":3,"status":200}]}
+{"at":"2026-11-25T03:57:56Z","phase":"restore2","restore":"restore2: {\"digest\":\"fc5a7ce71030a7b10726f9059689f070e3dda4e26abfa302a52faf21afc241c1\",\"index\":24,\"status\":201} \n"}
+{"at":"2026-11-25T03:58:41Z","phase":"watch","view":{"count":9,"current":{"intent":"RestorePlacement { site: SiteId(0) }","next":0,"since":1795579084587,"state":"Running { step: 0 }"},"drained":[]}}
+{"at":"2026-11-25T04:53:31Z","phase":"home","rows":12470,"chains":3118,"unread":1}
+{"at":"2026-11-25T04:53:36Z","phase":"home","versions_same":false}

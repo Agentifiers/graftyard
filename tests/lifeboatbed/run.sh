@@ -277,8 +277,18 @@ c=$(lb -o /dev/null -w '%{http_code}' -X POST -H @<(printf 'authorization: token
 c=$(lb -H @<(printf 'authorization: token %s\n' "$LBT") -H 'user-agent: lifeboatbed' -X POST "$L/api/graphql" \
   -d '{"query": "mutation { addComment(input: {subjectId: \"x\", body: \"no\"}) { clientMutationId } }"}' -w ' %{http_code}')
 case "$c" in *" 503") pass "a GraphQL mutation on the lifeboat answers 503";; *) fail "a GraphQL mutation answered: $c";; esac
-c=$(lb -o /dev/null -w '%{http_code}' -X POST -H 'user-agent: git/2.50' "$L/$LOGIN/$REPO.git/git-receive-pack")
-[ "$c" = 503 ] && pass "git-receive-pack on the lifeboat answers 503" || fail "git-receive-pack answered $c"
+# Receive-pack, both legs, anonymous and with the lifeboat token as git sends it: 503 "read-only", no Retry-After, so
+# git stops rather than retrying, and nothing reaches `receive_pack_stream`.
+for leg in "GET info/refs?service=git-receive-pack" "POST git-receive-pack"; do
+  for who in anonymous token; do
+    a=(); [ $who = token ] && a=(-u "$LOGIN:$LBT")
+    h=$(lb -D - -o "$B/rp.body" -X "${leg%% *}" "${a[@]}" -H 'user-agent: git/2.50' "$L/$LOGIN/$REPO.git/${leg#* }" | tr -d '\r')
+    c=$(echo "$h" | head -1 | cut -d' ' -f2)
+    if [ "$c" = 503 ] && ! echo "$h" | grep -qi '^retry-after:' && grep -q "read-only" "$B/rp.body"; then
+      pass "$leg ($who) on the lifeboat answers 503 read-only, no Retry-After"
+    else fail "$leg ($who) answered $c: $(head -c 120 "$B/rp.body")"; fi
+  done
+done
 
 echo "== 3. the decoder"
 if until_status "s['decoder_at'] > 0" 60; then

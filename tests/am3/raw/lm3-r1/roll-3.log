@@ -1,0 +1,7 @@
+2026-11-25T06:26:44Z
+3d5ada33
+Terminated                 curl -s -H "Authorization: Bearer $CLOUDFLARE_RUNNER_API_TOKEN" "$1" "${@:2}"
+controller at roll: 
+release roll: intent 01M88PA58NMA31NDB9WF9BM30J ControllerRoll { release: ReleaseId([65, 109, 181, 126, 46, 234, 221, 3, 115, 107, 68, 209, 91, 237, 14, 89, 59, 19, 173, 67, 171, 134, 255, 159, 69, 6, 28, 154, 165, 234, 216, 116]) }, 1 undo(s)
+{"answer":{"digest":"3367c9939f5cde4b9a861452ca08f9b2eed06c822add9e2a4f5ca3df0e0f0b8a","index":1336,"status":201},"intent":"01M88PA58NMA31NDB9WF9BM30J"}
+{"count":529,"current":{"intent":"ControllerRoll { release: ReleaseId([65, 109, 181, 126, 46, 234, 221, 3, 115, 107, 68, 209, 91, 237, 14, 89, 59, 19, 173, 67, 171, 134, 255, 159, 69, 6, 28, 154, 165, 234, 216, 116]) }","next":0,"since":1795588177798,"state":"Running { step: 0 }"}}
