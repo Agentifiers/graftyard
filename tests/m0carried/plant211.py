@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BM-5 clause 3: planted bugs in `MINT_ERROR_RATIO` (`crates/release/src/gate.rs`, `count_mint` and `MintWatch`;
+"""BM-5 clause 3: planted bugs in `MINT_ERROR_RATIO` (`crates/release/src/gate.rs`, `count_answer` and `MintWatch`;
 `decisions/DECISIONS.md`, "`mint-ratio`"). Plants one mutant at a time, runs the release crate's swap-back test, and
 restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the repository root:
 
@@ -20,7 +20,7 @@ MUTANTS = [
      'let fivexx = u64::from(status.is_none_or(|s| s >= 500));\n    let a = match (status, ran) {',
      'let fivexx = u64::from(status.is_none_or(|s| s >= 400));\n    let a = match (status, ran) {', REL),
     ("a thrown mint is not counted", GATE,
-     '            mints.threw += 1;\n            return;', '            return;', REL),
+     '            counts.threw += 1;\n            return;', '            return;', REL),
     ("N's errors count too: every version's mints are summed", GATE,
      '        let n1 = self.mints.of(n1);',
      '        let _ = n1;\n        let n1 = self.mints.versions.values().fold(Answers::default(), |mut s, x| {\n            s.add(x);\n            s\n        });',

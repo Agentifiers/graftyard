@@ -6,6 +6,9 @@
 //! - **A new task** (`Task::new`) is `Queued`, on a `SessionId::Run`, with its refs under the host's prefix
 //!   (`task::run_prefix`) and its `Workspace` from the org's `agents_workspace`: `Fork(<org>-agents/<repo>)` or
 //!   `InRepo` (`workspace`).
+//! - **A lost Sandbox** (`TaskEvent::Lost`) moves a running task onto a new Sandbox and keeps `last_push`, so the new
+//!   one starts from that push, or from the base with none (`Task::resume`): at most the work since the last push is
+//!   lost (`design/AGENT-LAYER.md`, Failure modes, controller instance).
 //! - **Steps** (`Task::step`): a Sandbox starts it, pushes record `last_push`, a draft PR or a clean end finishes it, a
 //!   failure, a budget over any limit (`TaskBudget::over`), or the cancel delivery ends it. A title or body edit by a
 //!   non-writer after the snapshot pauses it, as the host's pause does (`waiting_for_user`), and only a writer's
@@ -138,6 +141,11 @@ pub enum TaskEvent {
     Started {
         sandbox: SandboxId,
     },
+    /// The Sandbox `lost` stopped or was killed mid-task, and `sandbox` started in its place.
+    Lost {
+        lost: SandboxId,
+        sandbox: SandboxId,
+    },
     /// The agent pushed under the task's prefix.
     Pushed {
         head: ObjectId,
@@ -164,6 +172,13 @@ pub enum TaskEvent {
     },
     /// The first-party delivery's `cancelled`.
     Cancelled,
+}
+
+/// Where a running task's Sandbox starts its work: the task's last push, or the base when it has none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resume {
+    Base,
+    Push(ObjectId),
 }
 
 /// Why a step is refused.
@@ -208,6 +223,15 @@ impl Task {
         Some(Task { id, issue, snapshot, requester, base, workspace, branch, budget, state: TaskState::Queued })
     }
 
+    /// Where the task's current Sandbox starts: `None` unless the task is running.
+    pub fn resume(&self) -> Option<Resume> {
+        match &self.state {
+            TaskState::Running { last_push: Some(h), .. } => Some(Resume::Push(*h)),
+            TaskState::Running { last_push: None, .. } => Some(Resume::Base),
+            _ => None,
+        }
+    }
+
     /// Moves the task by `ev`. Refused on a final task, and for an event its state does not take; a refused step
     /// changes nothing.
     pub fn step(&mut self, ev: TaskEvent) -> Result<(), StepErr> {
@@ -231,6 +255,11 @@ impl Task {
             }
             (_, TaskEvent::Reassigned { .. }) => return Ok(()),
             (S::Queued, TaskEvent::Started { sandbox }) => S::Running { sandbox, last_push: None },
+            (S::Running { sandbox, last_push }, TaskEvent::Lost { lost, sandbox: new })
+                if *sandbox == lost && new != lost =>
+            {
+                S::Running { sandbox: new, last_push: *last_push }
+            }
             (S::Running { sandbox, .. }, TaskEvent::Pushed { head }) => {
                 S::Running { sandbox: sandbox.clone(), last_push: Some(head) }
             }

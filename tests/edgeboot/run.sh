@@ -47,6 +47,17 @@ for p in "/api/v3/repos/o/r" "/api/graftyard/v1/release/entries?after=0" "/o/r.g
       || { echo "  FAIL: no cold-guess path (resolve_guess 2 and beside_rows)"; ok=0; }
   fi
 done
+# LM-3: the controller-count route stores nothing without a graftyard-agent App JWT: no token, or one that names no
+# App, is 401 before any read (`release::errors`, `ident::graftyard_agent`).
+for auth in "" "Bearer not.a.jwt"; do
+  for m in POST GET; do
+    c=$(curl -s -m 30 -X $m -o /dev/null -w '%{http_code}' ${auth:+-H "authorization: $auth"} \
+      -H 'content-type: application/json' --data-binary '{"counts":{"versions":{},"threw":0,"unversioned":{"answers":0,"fivexx":0}}}' \
+      "http://127.0.0.1:$P/api/graftyard/v1/release/errors?since=0")
+    echo "$m /api/graftyard/v1/release/errors (${auth:-no token}): $c"
+    [ "$c" = 401 ] || { echo "  FAIL: want 401"; ok=0; }
+  done
+done
 sleep 1
 n=$(grep -c 'out of bounds\|RuntimeError' "$B/dev.log")
 echo "wasm traps: $n"; [ "$n" = 0 ] || ok=0

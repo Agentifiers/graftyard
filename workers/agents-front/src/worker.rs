@@ -18,7 +18,9 @@
 //! per isolate. Each forwarded request carries `x-graftyard-agents-front`, `graft-controller` answers it with
 //! `x-graftyard-controller-version`, and a pinned request answered from another version, or none, is a mismatch,
 //! logged as an alarm and counted. The header is taken off the client's response unless the client sent
-//! `x-graftyard-report-version`. No request path calls the Cloudflare API, and nothing logs a body, a JWT, or a key.
+//! `x-graftyard-report-version`. While the view shows a `ControllerRoll`, each answer is counted by that version
+//! (`Tally`) and sent to the install's `POST /api/graftyard/v1/release/errors` beside a request. No request path calls
+//! the Cloudflare API, and nothing logs a body, a JWT, or a key.
 
 use std::cell::RefCell;
 use std::future::Future;
@@ -34,7 +36,7 @@ use graftyard_types::{DbId, Index, Timestamp};
 use serde_json::json;
 use worker::*;
 
-use crate::{PAGES, Page, Reader, next_after, plan};
+use crate::{PAGES, Page, Reader, Tally, next_after, plan};
 
 /// The header each forwarded request carries, and the version report `graft-controller` answers it with.
 const FRONT_HEADER: &str = "x-graftyard-agents-front";
@@ -44,6 +46,7 @@ const REPORT_HEADER: &str = "x-graftyard-report-version";
 const OVERRIDE_HEADER: &str = "cloudflare-workers-version-overrides";
 const STATUS_PATH: &str = "/_agents_front/status";
 const ENTRIES_PATH: &str = "/api/graftyard/v1/release/entries";
+const ERRORS_PATH: &str = "/api/graftyard/v1/release/errors";
 /// How long an App JWT is reused: well inside the 9 minutes `sign_app_jwt` gives it [inference].
 const JWT_REUSE_MS: u64 = 300_000;
 
@@ -56,6 +59,10 @@ struct Counts {
     mismatches: u64,
     first_mismatch: Option<u64>,
     last_mismatch: Option<u64>,
+    /// Flushes of the controller's counts the edge answered 204, and the others with their last status.
+    flushes: u64,
+    flush_fails: u64,
+    last_flush_error: Option<String>,
 }
 
 /// The `graftyard-agent` key, read from the Secrets Store once per isolate, and the last JWT signed with it.
@@ -69,6 +76,7 @@ thread_local! {
     static READER: RefCell<Reader> = RefCell::new(Reader::default());
     static KEY: RefCell<Key> = RefCell::new(Key::default());
     static COUNTS: RefCell<Counts> = RefCell::new(Counts::default());
+    static TALLY: RefCell<Tally> = RefCell::new(Tally::default());
 }
 
 fn now_ms() -> u64 {
@@ -181,6 +189,41 @@ async fn refresh(env: Env, anchor: AgentsAnchor, start: u64) {
     });
 }
 
+/// One flush of the controller's counts to the install's edge, beside a request, within `VIEW_CALL_MS`. The edge stores
+/// it only when every version it names is a `Controller` version the group uploaded (`gate::accept_flush`).
+async fn flush(env: Env, host: String, counts: graftyard_release::gate::ScriptErrors) {
+    let sent = async {
+        let jwt = jwt(&env, now_ms()).await?;
+        let headers = Headers::new();
+        let set = |k, v: &str| headers.set(k, v).map_err(|e| e.to_string());
+        set("authorization", &format!("Bearer {jwt}"))?;
+        set("content-type", "application/json")?;
+        set("user-agent", "graft-agents-front")?;
+        let body = json!({ "counts": counts }).to_string();
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_headers(headers.clone()).with_body(Some(body.into()));
+        let req = Request::new_with_init(&format!("https://{host}{ERRORS_PATH}"), &init).map_err(|e| e.to_string())?;
+        let r = Fetch::Request(req).send().await.map_err(|e| e.to_string())?;
+        match r.status_code() {
+            204 => Ok(()),
+            s => Err(format!("{ERRORS_PATH}: {s}")),
+        }
+    };
+    let out = within(Duration::from_millis(VIEW_CALL_MS), sent)
+        .await
+        .unwrap_or_else(|| Err(format!("{ERRORS_PATH}: no answer within {VIEW_CALL_MS} ms")));
+    COUNTS.with(|c| {
+        let mut c = c.borrow_mut();
+        match out {
+            Ok(()) => c.flushes += 1,
+            Err(e) => {
+                c.flush_fails += 1;
+                c.last_flush_error = Some(e);
+            }
+        }
+    });
+}
+
 /// Brings the view up to `Reader::need` before the request is forwarded.
 async fn ensure(env: &Env, ctx: &Context, anchor: &AgentsAnchor) {
     let now = now_ms();
@@ -239,6 +282,16 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         c.pinned += u64::from(pin.is_some());
         c.thrown += u64::from(answered.is_err());
     });
+    let ran = match &answered {
+        Ok(r) => r.headers().get(VERSION_HEADER)?,
+        Err(_) => None,
+    };
+    let status = answered.as_ref().ok().map(|r| r.status_code());
+    let due =
+        READER.with(|r| TALLY.with(|t| t.borrow_mut().record(r.borrow().view(), ran.as_deref(), status, now_ms())));
+    if let (Some(counts), Some(a)) = (due, anchor(&env)) {
+        ctx.wait_until(flush(env.clone(), a.host.to_string(), counts));
+    }
     let res = match answered {
         Ok(r) => r,
         Err(_) => {
@@ -246,7 +299,6 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             return Ok(Response::from_json(&json!({ "message": "graft-controller did not answer" }))?.with_status(502));
         }
     };
-    let ran = res.headers().get(VERSION_HEADER)?;
     let bad = mismatch(pin, ran.as_deref());
     if bad {
         let now = now_ms();
@@ -272,8 +324,8 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         // The controller's own headers pass through as they are; only the version report is taken off.
         let _ = headers.delete(VERSION_HEADER);
     }
-    let status = res.status_code();
-    Ok(Response::from_body(res.body().clone())?.with_status(status).with_headers(headers))
+    let code = res.status_code();
+    Ok(Response::from_body(res.body().clone())?.with_status(code).with_headers(headers))
 }
 
 fn status(env: &Env, req: &Request) -> Result<Response> {
@@ -300,7 +352,8 @@ fn status(env: &Env, req: &Request) -> Result<Response> {
     let counts = COUNTS.with(|c| {
         let c = c.borrow();
         json!({ "requests": c.requests, "pinned": c.pinned, "thrown": c.thrown, "mismatches": c.mismatches,
-                "firstMismatch": c.first_mismatch, "lastMismatch": c.last_mismatch })
+                "firstMismatch": c.first_mismatch, "lastMismatch": c.last_mismatch, "flushes": c.flushes,
+                "flushFails": c.flush_fails, "lastFlushError": c.last_flush_error })
     });
     let default = var(env, "CONTROLLER_DEFAULT");
     Response::from_json(

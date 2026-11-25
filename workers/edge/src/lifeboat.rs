@@ -76,7 +76,13 @@ pub fn mode(env: &Env) -> bool {
 /// is refused once parsed, `refuses_graphql`). Never a write, the export endpoints, the release endpoint, a token
 /// mint, or a test route: the lifeboat is read-only, and it is no export source.
 pub fn serves(method: &str, path: &str) -> bool {
-    let off = [graftyard_git::export::EXPORT_PREFIX, crate::release::ENTRIES_PATH, TOKENS_PATH, "/_bed/"];
+    let off = [
+        graftyard_git::export::EXPORT_PREFIX,
+        crate::release::ENTRIES_PATH,
+        crate::release::ERRORS_PATH,
+        TOKENS_PATH,
+        "/_bed/",
+    ];
     if off.iter().any(|p| path.starts_with(p)) {
         return false;
     }

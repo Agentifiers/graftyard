@@ -11125,6 +11125,31 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 - A canary that needs cold-isolate traffic to judge N+1, such as a gate that counts too few webhooks at 1% without it.
 - OPEN-QUESTIONS A52's own `graft-agents-front` roll: a front split during a `ControllerRoll` changes which version carries the variable, so the default moves to a binding both front versions read.
 
+#### `controller-errors`: a `ControllerRoll` is judged on `graft-agents-front`'s counts, stored by the install's edge (2026-11-25)
+
+**Status.** Built (OPEN-QUESTIONS A52 and R47, the lead's ruling (c) of 2026-11-25), native only. The hosted row is LM-3's "a bad controller at 1% swaps back" on graft-m4a.
+
+**Decision.**
+- `graft-agents-front` counts each answer it forwards by the `x-graftyard-controller-version` it reports, a thrown call as one of N+1's 5xx, but only while its verified view shows a `ControllerRoll` (`Tally`, `gate::controller_judged`, `gate::count_answer`). It flushes every `FLUSH_MS` (30 s) or at `FLUSH_CALLS_MAX` (10,000 calls [guess]), beside a request, to the install's `POST /api/graftyard/v1/release/errors` under the `graftyard-agent` App JWT.
+- The edge checks the JWT (`ident::graftyard_agent`), then `gate::accept_flush` against its `Release` view, refreshed once before an unknown version is refused: every version must be a `graft-controller` version an upload committed, no count may hold more 5xx than answers, and the flush may hold at most `FLUSH_CALLS_MAX` calls. A refused flush stores nothing. An accepted one goes to the existing `errors` objects under key `controller`, at the script's home site as `graft-front`'s counts do.
+- The agents `graft-ops` reads `GET release/errors?since=` summed over the sites, for the step's window and from the intent's start, and judges with `judge_roll`. A `ControllerRoll`'s 100% step holds `STEP_DWELL` like an `McpRoll`'s. A breach commits the pre-signed `ControllerPointer` with no Cloudflare API call. No site answering is `Pending`.
+
+**Why.**
+- The edge is the install's own gate store, already spread over every site with its failure rows; the counts reuse it and add no store or failure domain.
+- The cap and the version check keep one front, or a leaked App key, from moving the gate for a version no release holds or swamping the object in one request.
+
+**Beat.**
+- (a) Workers Analytics Engine or Workers Logs in the agents account: a Cloudflare API read on the gate's path and a new failure domain.
+- (b) A Durable Object in the agents account: a new store, with a Failure modes row for each class, beside `errors` objects that already exist.
+
+**Evidence.**
+- `crates/release/src/tests/group/run.rs`: `lm3_a_bad_controller_at_1pct_breaches_on_the_fronts_counts_and_commits_its_pointer_with_the_api_down`; `workers/agents-front/tests/front.rs`: `the_front_counts_the_controllers_answers_only_under_a_controller_roll_and_flushes_by_time_or_count`; `tests/edgeboot/run.sh`: the route answers 401 to no JWT and a bad one.
+- `tests/m0carried/plant233.py`: 8 mutants, all caught.
+
+**Flip.**
+- A front that cannot reach the install for long stretches, so the 1% step starves: then the counts need a buffer in the agents account.
+- `FLUSH_CALLS_MAX` refusing real flushes from a busy isolate: raise it from the measured peak.
+
 #### `agents-equivocation`: the agents view compares an answer at a held index with the entry it applied there (2026-11-25)
 
 **Status.** Built (OPEN-QUESTIONS A55's fix, the lead's ruling of 2026-11-25); native only. The hosted re-read waits for a later row.

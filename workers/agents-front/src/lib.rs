@@ -14,11 +14,16 @@
 //! - **Fail static.** A refresh that fails, or that answers an entry the view refuses, keeps the last view and its pin
 //!   and counts as failed on `Freshness`, so the next request refreshes beside itself and none waits on a failing
 //!   install (`design/AGENT-LAYER.md`, "Failure modes", the controller's control-plane row).
+//! - **The controller's counts.** While the view shows a `ControllerRoll` judged on `GATE_ERRORS`, `Tally` counts
+//!   each answer by the `x-graftyard-controller-version` it reported (`gate::count_answer`), and the host sends them
+//!   every `FLUSH_MS`, or at `FLUSH_CALLS_MAX` calls, to the install's `POST /api/graftyard/v1/release/errors` under
+//!   the App JWT, beside a request, so the agents `graft-ops` judges the roll (OPEN-QUESTIONS A52, R47).
 //! - **Pure here, HTTP in the host.** This file decides; `worker` (wasm32 only) reads the pages, signs the JWT, and
 //!   forwards. No path here calls the Cloudflare API.
 
 use graftyard_release::VersionId;
 use graftyard_release::agents::{AgentsAnchor, AgentsReleaseView, ENTRIES_PER_PAGE, controller_pin};
+use graftyard_release::gate::{self, FLUSH_CALLS_MAX, FLUSH_MS, ScriptErrors};
 use graftyard_release::view::version_override;
 use graftyard_release::view::{Freshness, Need};
 use graftyard_types::{Index, Timestamp};
@@ -117,6 +122,38 @@ impl Reader {
                 self.last_error = Some(e);
             }
         }
+    }
+}
+
+/// What this isolate counted of `graft-controller`'s answers since its last flush.
+#[derive(Clone, Debug, Default)]
+pub struct Tally {
+    pending: ScriptErrors,
+    flushed: u64,
+}
+
+impl Tally {
+    /// Counts one forwarded request at `now`: the version its answer reported, and its status, `None` when the binding
+    /// threw. Counts only while `view` shows a `ControllerRoll` judged on `GATE_ERRORS` (`gate::controller_judged`),
+    /// and drops what it held otherwise. Answers the counts to send once `FLUSH_MS` passed since the last flush, or
+    /// once they hold `FLUSH_CALLS_MAX` calls, which the edge takes in one flush.
+    pub fn record(
+        &mut self,
+        view: &AgentsReleaseView,
+        ran: Option<&str>,
+        status: Option<u16>,
+        now: u64,
+    ) -> Option<ScriptErrors> {
+        if !gate::controller_judged(view.fold()) {
+            self.pending = ScriptErrors::default();
+            return None;
+        }
+        gate::count_answer(&mut self.pending, ran, status);
+        if now < self.flushed + FLUSH_MS && gate::calls(&self.pending) < FLUSH_CALLS_MAX {
+            return None;
+        }
+        self.flushed = now;
+        Some(std::mem::take(&mut self.pending))
     }
 }
 

@@ -22,8 +22,8 @@ MUTANTS = [
      '    judge_errors(window.of(n1), window.threw, n_side)',
      '    judge_errors(window.of(n1), window.threw + window.unversioned.fivexx, n_side)', REL),
     ("an McpRoll's gate stays pending", GATE,
-     '    let (Intent::EdgeRoll { .. } | Intent::FrontRoll { .. } | Intent::McpRoll { .. }) = c.intent.intent else {',
-     '    let (Intent::EdgeRoll { .. } | Intent::FrontRoll { .. }) = c.intent.intent else {', REL),
+     '    let (Intent::EdgeRoll { .. } | Intent::FrontRoll { .. } | Intent::McpRoll { .. } | Intent::ControllerRoll { .. }) =',
+     '    let (Intent::EdgeRoll { .. } | Intent::FrontRoll { .. } | Intent::ControllerRoll { .. }) =', REL),
 ]
 
 if __name__ == '__main__':

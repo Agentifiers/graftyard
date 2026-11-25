@@ -1033,3 +1033,89 @@ fn lf7_a_controller_breach_with_the_api_down_commits_the_pointer_and_deploys_lat
     assert_eq!(f.deps[&Script::Controller].split, vec![(c1, 100), (c2, 0)]);
     assert!(f.pages.is_empty(), "{:?}", f.pages);
 }
+
+/// LM-3's "a bad controller at 1% swaps back" in memory, with no forced `GATE` (OPEN-QUESTIONS A52, R47): a `test-bad`
+/// c2 at 1% answers 5xx, `graft-agents-front` counts each answer by `x-graftyard-controller-version`
+/// (`gate::count_answer`), the edge takes the flush only because c2 and c1 are versions the group uploaded
+/// (`gate::accept_flush`), and the agents `graft-ops` judges the `ControllerRoll` on the sum (`gate::judge_roll`). The
+/// breach commits the `ControllerPointer` to c1 with the API down. A flush naming a version no release uploaded, or
+/// over `FLUSH_CALLS_MAX` calls, stores nothing; a healthy c3's 100% step holds `STEP_DWELL` before it commits.
+#[test]
+fn lm3_a_bad_controller_at_1pct_breaches_on_the_fronts_counts_and_commits_its_pointer_with_the_api_down() {
+    use crate::gate::{self, FlushRefused, ScriptErrors};
+    let mut f = Fake::new(G::new());
+    f.account = ops::Account::Agents;
+    let (b1, b2) = (agents_raw("c1"), agents_raw("c2"));
+    let (r1, r2) = (release_of(&b1), release_of(&b2));
+    f.bucket.push(b1);
+    f.cron(5);
+    assert!(roll(&mut f, r1, 40));
+    f.cron(10);
+    f.bucket.push(b2);
+    f.cron(5);
+    assert!(roll(&mut f, r2, 41));
+    let dwell = Dwell { step: HOUR, first_day: HOUR, ..Dwell::default() };
+    f.gate = Gate::Pending;
+    block_on(ops::run(&mut f, dwell));
+    let (c1, c2) = (
+        ops::version(&f.g.f, &r1, Script::Controller).unwrap(),
+        ops::version(&f.g.f, &r2, Script::Controller).unwrap(),
+    );
+    assert_eq!(f.deps[&Script::Controller].split, vec![(c2, 1), (c1, 99)]);
+    assert_eq!(gate::roll_versions(&f.g.f), Some((Script::Controller, c2, Some(c1))), "a ControllerRoll is judged");
+    // One front isolate's first minute: c2 answered its 6 webhooks 500, c1 its 600 with 202.
+    let mut flush = ScriptErrors::default();
+    for i in 0..606u32 {
+        let (ran, status) = if i < 6 { (c2, 500) } else { (c1, 202) };
+        gate::count_answer(&mut flush, Some(&ran.to_string()), Some(status));
+    }
+    let put = gate::accept_flush(&f.g.f, &flush).unwrap().expect("a flush with counts is stored");
+    assert_eq!((put["key"].as_str(), gate::controller_judged(&f.g.f)), (Some("controller"), true));
+    assert_eq!(gate::accept_flush(&f.g.f, &ScriptErrors::default()), Ok(None), "an empty flush stores nothing");
+    // A flush that names a version no release uploaded, or counts past the cap, is refused whole.
+    let mut forged = flush.clone();
+    gate::count_answer(&mut forged, Some(&VersionId([0x5a; 16]).to_string()), Some(200));
+    assert!(matches!(gate::accept_flush(&f.g.f, &forged), Err(FlushRefused::UnknownVersion(_))));
+    let mut flood = ScriptErrors::default();
+    flood.versions.insert(c1.to_string(), gate::Answers { answers: gate::FLUSH_CALLS_MAX + 1, fivexx: 0 });
+    assert!(matches!(gate::accept_flush(&f.g.f, &flood), Err(FlushRefused::TooMany(_))));
+    let mut liar = ScriptErrors::default();
+    liar.versions.insert(c2.to_string(), gate::Answers { answers: 1, fivexx: 2 });
+    assert_eq!(gate::accept_flush(&f.g.f, &liar), Err(FlushRefused::Malformed));
+    // The agents `graft-ops` reads the stored sum: the breach, with the API down, commits the pointer itself.
+    f.gate = gate::judge_roll(&flush, &flush, c2, Some(c1));
+    assert!(matches!(f.gate, Gate::Breach(_)), "{:?}", f.gate);
+    f.api_down = true;
+    let deploys = f.deploys.len();
+    let log = block_on(ops::run(&mut f, dwell));
+    assert!(log.contains(&Ran::Committed("ControllerPointer")), "{log:?}");
+    assert_eq!(f.g.f.pointers.get(Script::Controller), Some(c1), "pinned to N with the API down");
+    assert_eq!(f.deploys.len(), deploys);
+    f.api_down = false;
+    f.gate = Gate::Pass;
+    f.cron(10);
+    assert_eq!(f.deps[&Script::Controller].split, vec![(c1, 100), (c2, 0)]);
+
+    // A healthy c3: its 1% step commits after FIRST_DAY, and its 100% step holds STEP_DWELL before IntentStep.
+    let b3 = agents_raw("c3");
+    let r3 = release_of(&b3);
+    f.bucket.push(b3);
+    f.cron(5);
+    assert!(roll(&mut f, r3, 42));
+    let c3 = ops::version(&f.g.f, &r3, Script::Controller).unwrap();
+    f.gate = Gate::Starved(40);
+    block_on(ops::run(&mut f, dwell));
+    f.g.at = Timestamp(f.g.at.0 + HOUR);
+    block_on(ops::run(&mut f, dwell));
+    block_on(ops::run(&mut f, dwell));
+    assert_eq!(f.deps[&Script::Controller].split, vec![(c3, 100), (c1, 0)]);
+    f.gate = Gate::Pass;
+    let held = f.g.f.current.as_deref().unwrap().next;
+    block_on(ops::run(&mut f, dwell));
+    assert_eq!(f.g.f.current.as_deref().unwrap().next, held, "the 100% step holds STEP_DWELL");
+    f.g.at = Timestamp(f.g.at.0 + HOUR);
+    f.cron(5);
+    assert!(f.g.f.current.is_none());
+    assert_eq!(f.g.f.rolled.get(&Script::Controller), Some(&r3));
+    assert!(f.pages.is_empty(), "{:?}", f.pages);
+}
