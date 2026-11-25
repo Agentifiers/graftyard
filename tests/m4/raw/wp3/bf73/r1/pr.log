@@ -1,0 +1,4 @@
+2026-11-25T17:25:56Z
+e0cb27246
+2026-11-25T17:27:03.180Z pr: PASS {"job_succeeded":true,"token_file":true,"no_token_in_logs":true,"context_line":true,"policy_accepts":true,"other_actor_refused":true,"other_branch_refused":true,"run_listed":true} mismatch {}
+pr exit 0

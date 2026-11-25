@@ -17,6 +17,9 @@
 #
 # Needs what BF-74's row needs, RUNNER (an unpacked actions/runner 2.338.2) and target/release/examples/jitconfig.
 set -uo pipefail
+# No proxy: the orb's proxy answers CONNECT to a new hostname 502 (BF-74 r1, m4a.graftyard.dev), and Python's
+# urllib, the runner and ureq would all take it; BF-70's row ran its runner the same way.
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
 TAG=${1:?tag}; STEP=${2:?step}
 REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
 O=$REPO/tests/m4/raw/wp3/bf73/$TAG; mkdir -p "$O"

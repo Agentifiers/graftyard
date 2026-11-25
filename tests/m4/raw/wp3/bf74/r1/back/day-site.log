@@ -1,0 +1,18 @@
+2026-11-25T17:29:19Z
+23de37af1
+before {"script":"graft-m4a-site-a","created_on":"2026-11-25T17:16:45.827588Z","versions":["58e814b5 100"]}
+before {"script":"graft-m4a-site-b","created_on":"2026-11-25T17:16:54.44025Z","versions":["60fe0cd8 100"]}
+before {"script":"graft-m4a-site-c","created_on":"2026-11-25T17:17:04.919586Z","versions":["3e293af0 100"]}
+deploy exit 0
+Current Version ID: 5b8008b2-07b5-448a-98ec-b16916f4b55e
+Current Version ID: 28498a88-1717-424b-8995-e663f21d4517
+Current Version ID: 1854ba36-3467-4e32-857d-dac8a19e428c
+Current Version ID: 304052f8-847a-41cf-87c0-729c9cdbca77
+Current Version ID: d802c6e4-9e0f-4444-abcf-63e26a49fc49
+Current Version ID: 655e6de9-cc93-4eb9-90f8-570537cf5d50
+{"graft-m4a-site-a":[]}
+after {"script":"graft-m4a-site-a","created_on":"2026-11-25T17:30:00.603407Z","versions":["304052f8 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1"]
+{"graft-m4a-site-b":[]}
+after {"script":"graft-m4a-site-b","created_on":"2026-11-25T17:30:15.494968Z","versions":["d802c6e4 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1"]
+{"graft-m4a-site-c":[]}
+after {"script":"graft-m4a-site-c","created_on":"2026-11-25T17:30:25.761871Z","versions":["655e6de9 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1"]

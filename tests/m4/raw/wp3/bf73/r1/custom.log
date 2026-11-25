@@ -1,0 +1,5 @@
+2026-11-25T17:28:32Z
+e0cb27246
+2026-11-25T17:28:35.238Z PUT sub 201; GET 200 {"include_claim_keys":["repo","context","actor","run_number"],"use_default":false}
+2026-11-25T17:29:05.952Z custom: PASS {"put_201":true,"read_back":true,"job_succeeded":true,"token_file":true,"no_token_in_logs":true,"context_line":true,"policy_accepts":true,"other_actor_refused":true,"other_branch_refused":true,"run_listed":true} mismatch {}
+custom exit 0

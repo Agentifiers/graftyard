@@ -1,0 +1,8 @@
+2026-11-25T17:23:22Z
+e0cb27246
+rules before: {"rules":[],"errors":[10003]}
+Created
+bic-rule exit 0
+Kept
+again exit 0 (no write)
+rules after: {"rules":[{"ref":"graftyard-oidc-bic","expression":"(http.host eq \"m4a.graftyard.dev\" and starts_with(http.request.uri.path, \"/_services/token/\"))","action_parameters":{"bic":false}}],"errors":[]}

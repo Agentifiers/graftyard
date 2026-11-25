@@ -1,0 +1,11 @@
+2026-11-25T17:31:32Z
+e0cb27246
+before {"script":"graft-m4a-edge","created_on":"2026-11-25T17:14:02.268325Z","versions":["73e9a637 100"]}
+deploy exit 0
+Current Version ID: d4173e47-cbd7-46f0-8694-891a1038da8f
+binding diff (plain text; only HOST and FORMATS_ENABLED by ADDFMT may change):
+<   "HOST": "m4a.graftyard.dev",
+>   "HOST": "graft-m4a-edge.<sub>.workers.dev",
+after {"script":"graft-m4a-edge","created_on":"2026-11-25T17:32:17.770773Z","versions":["d4173e47 100"]}
+edge: graft-m4a-edge serves d4173e47 at 100% (rev [INFO]: 🌀  Compiling to Wasm...), as ~/workspace/repo/tests/m4/raw/wp3/bf74/r1/back/edge-deploy.raw deployed
+edgever exit 0

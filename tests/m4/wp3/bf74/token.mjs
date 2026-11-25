@@ -45,7 +45,8 @@ if (arg === "--delete") {
       await sleep(5000);
     }
   }
-  const said = text.split("\n").find((l) => l.includes("token written,") && !l.includes("##[group]")) ?? "";
+  // Output lines only: the runner also echoes the step's script in cyan (`[36;1m`), which holds the same words.
+  const said = text.split("\n").find((l) => /token written, \d+ bytes/.test(l) && !l.includes("\u001b[36;1m")) ?? "";
   const checks = {
     succeeded: last.jobs.every((j) => j.s.Completed?.conclusion === "Success"),
     file_is_jwt: existsSync(file) && jwt.test(readFileSync(file, "utf8")),

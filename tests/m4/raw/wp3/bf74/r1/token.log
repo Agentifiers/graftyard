@@ -1,0 +1,5 @@
+2026-11-25T17:23:54Z
+e0cb27246
+2026-11-25T17:25:14.288Z token: {"succeeded":true,"file_is_jwt":true,"iss_from_job":"2026-11-25T17:24:58.1188142Z \u001b[36;1mprint(\"token written,\", len(\".\".join(t)), \"bytes, iss\", c[\"iss\"])' \"$BF74_TOKEN_OUT\"\u001b[0m","no_token_in_logs":true}
+token exit 0
+token written to ~/.graft-m4a/bf74/token.jwt (1705 bytes)
