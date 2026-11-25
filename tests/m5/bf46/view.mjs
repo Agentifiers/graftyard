@@ -9,7 +9,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { member } from "../../am1/hosted/lib.mjs";
 
-const toml = readFileSync(`${process.env.HOME}/.graft-m4a/install.toml`, "utf8");
+// BF46_HOME names another install's state (the SshHostKeys row on graft-m3f, `ssh-row.sh`).
+const toml = readFileSync(`${process.env.BF46_HOME ?? `${process.env.HOME}/.graft-m4a`}/install.toml`, "utf8");
 const field = (k) => toml.match(new RegExp(`^${k}\\s*=\\s*"([^"]*)"`, "m"))[1];
 const [cmd, arg] = process.argv.slice(2);
 

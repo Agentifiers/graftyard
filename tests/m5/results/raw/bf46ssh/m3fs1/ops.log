@@ -1,0 +1,7 @@
+2026-11-24T23:19:07Z
+b9dd485f
+{"test_faults":true,"gate":"pending","cron":"* * * * *","ssh_announce_ms":300000,"scripts":["edge","site/0","site/1","site/2"]}
+Deployed graft-m3f-ops triggers (0.92 sec)
+Current Version ID: c726123b-ce04-48d4-a124-d00e0d025719
+graft-m3f-ops ["2026-11-24T23:20:17.850544Z",["c726123b 100"]] crons ["* * * * *"]
+2026-11-24T23:19:51Z

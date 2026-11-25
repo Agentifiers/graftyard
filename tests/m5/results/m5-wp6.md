@@ -408,3 +408,105 @@ ended the intent. Driver: `tests/m5/bm5/mint.sh`; raw logs in `tests/m5/results/
   edge upload carried clause 1's `FORCE_FORMAT` and `FORCE_FORMAT_SITE`. `upload-edge.mjs` now copies eef95142's
   plain-text vars itself; 691d05c1 and 2f0a107d, the two wrong uploads, ran about 1 minute each before 06329970.
 - `watch` read `current` with jq's `?`, so it missed `IntentDone`; fixed.
+
+## BF-46 hosted, `SshHostKeys` on graft-m3f (2026-11-24 to 25): pass on m3fs2, after m3fs1 failed on deployment state
+
+Gate line (`build/BUILD-PLAN.md`, M5-WP6) as the lead set it for this row: no new script version across the rotation;
+zero failed sessions; the host key is the old slot's before the switch and the new slot's after. Driver
+`tests/m5/bf46/ssh-row.sh` (steps) and `tests/m5/bf46/ssh-probe.sh` (sessions); logs `raw/bf46ssh/m3fs1/` and
+`raw/bf46ssh/m3fs2/`. Spend on the graft-m3f prefix from 23:00Z to the end sweep: $0.73, both tries, under the $3
+stop. graft-m3f's day 2026-11-24 closed at $1.90, and 2026-11-25 to the sweep is $0.43.
+
+**Result: pass (m3fs2, done line 00:56:30.497Z, the `IntentDone`).** m3fs1, the first try, failed with a known cause:
+two of three sites ran an old `graft-sshd`. The rerun on fronts that all ran the new image had 0 failed sessions.
+
+### m3fs1: fail, deployment state
+
+**Setup** (a site day was approved for this row):
+- sshfront image `graft-m3f-sshfront@sha256:6085be00…` built from main `b9dd485f`; shard image reused (`7d5c7540…`).
+- Site day, test-faults with `--ssh`: a `5b742740`, b `41a4dc72`, c `6d7a5008`, done 23:14:11Z. Edge `2bf87f77` at
+  23:17:53Z. Every site and edge schedule `[]`.
+- `graft-m3f-ops` `c726123b`: test-faults, `GATE=pending`, 1-minute cron, `ssh_announce_ms` 300,000 (5 min for
+  `SSH_ANNOUNCE_FOR`'s 30 days). The cron fired only after a re-PUT at 23:28Z (R52).
+- New slot B written to `SSH_HOST_KEY_B` at about 23:23Z (`deploy/ssh-front/hostkeys.mjs`; R60's guard passed).
+
+| UTC | |
+| --- | --- |
+| 23:24:32 | `Rotate { SshHostKeys, 1 }` committed at index 715 |
+| 23:29:28 | probe: "every site holds" the new slot's three fingerprints (`34javTLN…`, `Rh8cnvVq…`, `xSxG/fOt…`) |
+| about 23:35:28 | the switch: view slots `SshHostKeys: 1`; meta/ssh `active: B` |
+| 23:47:42 | probe stopped |
+
+**Sessions** (stock OpenSSH and git through `ssh.graftyard.dev`, every 20 s):
+- Before the switch: 38 rounds, 0 failed; every key scan served slot A's ed25519 `TMEOnXhy`.
+- After the switch: 37 rounds. The pinned session (known_hosts from the run's start, `UpdateHostKeys=yes`) failed in
+  8, rc 128 (rounds 47, 49, 50, 61, 65, 70, 71, 75). Fresh key scans mixed slot B's ed25519 (13 of 37) with slot A's
+  (24 of 37).
+- No new script version from 23:14Z to the stop.
+
+**Cause (verified from the Containers API at 23:44Z).**
+- Sites a and b's `sshfront` instances ran image `…4ed05f64`, started 22:42Z and 22:50Z, before the site day. Only
+  site c ran `6085be00`, started 23:15:31Z.
+- A new site version restarts no running container, and `SshFront` (`workers/site/ssh.mjs` `up`) started its
+  container only when none ran. So a and b kept the pre-R45 `graft-sshd`, which reads the active slot once at start,
+  and they served slot A after the switch.
+- The edge spreads sessions over the sites, so a pinned client that learned keys from a or b never saw the new B
+  announced, and failed on c.
+- DESIGN's front-door bad-deploy row already said a `graft-sshd` image changes when its `SshFront` restarts the
+  container. Only `GitShard` did that (`workers/site/src/shard.rs` `restart_on_image`).
+
+**Fix, branch `sshfront-image`, $0, not deployed** (it rides graft-m3f's next site day; `decisions/DECISIONS.md`,
+"`sshfront-image`"):
+- `SshFront` records the image it started and restarts on a version whose image map names another `sshfront` image.
+- `graft-sshd`'s banner is `SSH-2.0-graftyard_2`.
+- The `SshHostKeys` probe reads each running front's banner through the Registry (`/ssh_front`) and refuses one below
+  generation 2. The runbook line ("restart each front before rotating") alone would not have stopped the next
+  install with an old front from repeating this.
+- plant214: 7 of 7 caught.
+
+### m3fs2: pass, back to slot A on all-new fronts
+
+**Fronts before the Rotate** (Containers API, 00:47:06Z, `raw/bf46ssh/m3fs2/fronts-before.log`): `ssh#0`, `ssh#1`
+and `ssh#2` all running `sha256:6085be00…`, started 00:41:23Z, 00:20:07Z and 23:15:32Z. The idle stop
+(`IDLE_MS`) cycled a and b after m3fs1's probe stopped, and their next sessions started the version's image.
+Versions unchanged since the site day: sites a `5b742740`, b `41a4dc72`, c `6d7a5008`, edge `2bf87f77`, ops `c726123b`.
+
+| UTC | |
+| --- | --- |
+| 00:47:15 | probe started (fresh known_hosts pinned at round 1, slot B's keys) |
+| 00:49:51.8 | `Rotate { SshHostKeys, 0 }` committed at index 11 of the row's view (`release post` index 722) |
+| 00:50:27.8 | probe step: "every site holds" slot A's `TMEOnXhy…`, `XEJXBQhW…`, `qgOnPPlr…`; `IntentStep` 0 |
+| 00:56:26.8 | the 5-minute announce ends; `IntentStep` 1 |
+| 00:56:28.6 | the switch, `IntentStep` 2: view slots `SshHostKeys: 0` |
+| 00:56:30.5 | `IntentDone` (the done line) |
+| 01:03:10 | probe stopped; its user key deleted (204) |
+
+**Sessions:**
+- Before the switch: 27 rounds, 0 failed; every key scan served slot B's ed25519 `34javTLN`; 5 clone-and-push
+  rounds, each read back over HTTPS.
+- After the switch: 20 rounds, 0 failed, the pinned session included; 3 clone-and-push rounds, each matched over
+  HTTPS. Key scans: 19 of 20 served slot A's `TMEOnXhy`. The first came at 00:56:41Z, 13 s after the switch, and the
+  last slot-B scan at 00:56:59Z, inside one `graft-sshd` refresh (60 s).
+- No new script version: every deployment and version count is the same at 01:03:12Z as at 00:47:08Z
+  (`raw/bf46ssh/m3fs2/versions.log`).
+- The probe's `ls.fp` and `pinned.fp` fields read the run's first key exchange in every round, because `ssh -E`
+  appends. They are not evidence in either try; the key scans and exit codes are. The driver now empties the logs
+  each round.
+
+**Slot B's original key is not restored.** The original slot B (`CTNCAohl…`, `VTDCSGU6…`, `aMp29mjt…`) had no
+private half by the time of this row, so slot B now holds the row's keys (`34javTLN…`, `Rh8cnvVq…`, `xSxG/fOt…`). Slot
+A, the starting slot, is active again.
+
+**A17, half answered.** A new value written under a bound, running script reached it with no new version. The
+edge's `/meta/ssh` listed slot B's new public keys within seconds of the 23:23Z Secrets Store write. It reads
+`SSH_HOST_KEY_B` through the site Registry's `/ssh_slots` and caches it 60 s per isolate. The other half, the time
+from a put to the first read in a running isolate, is the HostedRunnersAppKey timing row's.
+
+**Teardown** (01:03:54Z to 01:07Z):
+- `graft-m3f-ops` back to `3ed6e453` at 100%. The driver's `versions deploy` with a short id exited 1; the
+  full id worked, and the driver now resolves it.
+- Every graft-m3f schedule `[]`.
+- Token `graft-m3f-bf46-deploy` revoked; `graft-m3f-bf46-deploy-token`, `-executor-key` and `-drain-key` deleted.
+- End sweep: 3 shards of the probe's repository (net 3932163) torn down, then no shard container running.
+- Kept as asked: the `Keys` at Release index 694 and the `graft-m3f-export` bucket.
+- Left running: the three `sshfront` containers on `6085be00`, which stop after `IDLE_MS`.

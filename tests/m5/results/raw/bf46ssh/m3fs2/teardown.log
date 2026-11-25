@@ -1,0 +1,10 @@
+2026-11-25T01:03:54Z
+b9dd485f
+graft-m3f-ops ["2026-11-24T23:20:17.850544Z",["c726123b 100"]] crons []
+{"revoke":"graft-m3f-bf46-deploy","ok":true}
+{"delete":"graft-m3f-bf46-deploy-token","ok":true}
+{"delete":"graft-m3f-bf46-executor-key","ok":true}
+{"delete":"graft-m3f-bf46-drain-key","ok":true}
+{"count":16,"current":null,"slots":{"SshHostKeys":{"slot":0,"switched":1795568188637}}}
+meta/ssh {"active":"A","A":["SHA256:TMEOnXhyIwFeNgR39+c4dKwYPTRbXGjPtP2AM3twOoU","SHA256:XEJXBQhWR7JnZrQ0K8JvhuazZ7BMsMec7l5DuWaTGic","SHA256:qgOnPPlr4FnCbHdtT/gSRHICS06iqIZHIalt6zvxvHI"],"B":["SHA256:34javTLNlyI8cGR4/i1xcEpfGYq7Mu5FK25bJqyTstI","SHA256:Rh8cnvVqzZSAgrxAr/z9BUI4+KcqjKjtfsGRrScY260","SHA256:xSxG/fOt+ddiDjZyN1tfYfu/YpxMGuBSBhrau7exnN4"]}
+2026-11-25T01:04:11Z
