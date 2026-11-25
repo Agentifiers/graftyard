@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """OPEN-QUESTIONS F130: `graftyard oidc` (`cli/src/oidc.rs`). The configuration rule turns Browser Integrity Check off
 for the issuer's path on the install's host only, keeps every other rule in the zone's entrypoint, and is written once;
-the check fails on BIC's 403. The mutants: the rule covers the whole host, the customer's rules are dropped, a second
-run writes again, and the check sends no Python agent. Run from the repository root:
+the check fails on BIC's 403; a workers.dev host, whose BIC cannot be turned off, is refused by the rule and named by the
+check. The mutants: the rule covers the whole host, the customer's rules are dropped, a second run writes again, the
+check sends no Python agent, a workers.dev host is not refused, and a suffix match takes any host ending "workers.dev". Run from the repository root:
 
     python3 tests/m0carried/plant244.py          # every mutant
 """
@@ -25,6 +26,10 @@ MUTANTS = [
      'Some(i) if same(&rules[i], &want) =>', 'Some(i) if false && same(&rules[i], &want) =>', T),
     ("the check sends no Python agent", O,
      'ureq::get(&url).set("user-agent", CHECK_AGENT).call()', 'ureq::get(&url).call()', T),
+    ("a workers.dev host is not refused", O,
+     '    if on_workers_dev(host) {\n        return Err(format!("refused for {host}: {WORKERS_DEV}"));\n    }\n', '', T),
+    ("any host ending workers.dev counts", O,
+     'h == "workers.dev" || h.ends_with(".workers.dev")', 'h.ends_with("workers.dev")', T),
 ]
 
 if __name__ == '__main__':
