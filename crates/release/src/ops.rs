@@ -143,6 +143,19 @@ pub struct World {
     pub health: BTreeMap<u8, Verdict>,
     /// The current `ReplaceMember` or `RestorePlacement`'s Workflow instance, by the intent's id (`Exec::move_run`).
     pub moves: MoveRun,
+    /// `SecretsWrapKey`'s slot from `SECRETS_WRAP_KEY_CURRENT` (`Exec::wrap_var`), its active slot until a `Rotate` of
+    /// it switches (`active_slot`).
+    pub wrap_var: u8,
+}
+
+/// `secret`'s active slot as `graft-ops` uses it: the fold's, except that `SecretsWrapKey` with no committed switch is
+/// `SECRETS_WRAP_KEY_CURRENT`'s, the slot `/wrap` wraps under (`workers/ops`, `wrap_keys`). Reading 0 there, a first
+/// `Rotate` to 0 on an install whose variable names 1 was refused as "the active slot" (BF-46, graft-m4a).
+pub fn active_slot(fold: &ReleaseFold, secret: SecretName, w: &World) -> u8 {
+    match (secret, fold.slots.get(&secret)) {
+        (SecretName::SecretsWrapKey, None) => w.wrap_var,
+        _ => fold.slot(secret),
+    }
 }
 
 /// A `ReplaceMember` or `RestorePlacement`'s coordinator Workflow instance, named by the intent's id, as the host
@@ -223,7 +236,7 @@ fn rotate_next(fold: &ReleaseFold, c: &Current, secret: SecretName, slot: u8, w:
         Ok(s) => s,
         Err(why) => return Action::Page(format!("intent {}: graft-ops refuses Rotate {secret:?}: {why}", id.0).into()),
     };
-    if c.next == 0 && fold.slot(secret) == slot {
+    if c.next == 0 && active_slot(fold, secret, w) == slot {
         return Action::Page(
             format!("intent {}: graft-ops refuses Rotate {secret:?} to slot {slot}, the active slot", id.0).into(),
         );
@@ -1141,6 +1154,10 @@ pub trait Exec {
         Account::Install
     }
     fn now(&self) -> Timestamp;
+    /// `SECRETS_WRAP_KEY_CURRENT`, the slot `SecretsWrapKey` wraps under before its first `Rotate` (`World::wrap_var`).
+    fn wrap_var(&self) -> u8 {
+        0
+    }
     /// The non-site scripts this `graft-ops` deploys (`check_bundle`'s `scripts`).
     fn scripts(&self) -> Vec<Script>;
     /// The group's view, refreshed from a member this run.
@@ -1265,7 +1282,7 @@ pub async fn run<E: Exec>(e: &mut E, dwell: Dwell) -> Vec<Ran> {
             }
             _ => MoveRun::Absent,
         };
-        let w = World { account, now: e.now(), deployments, gate, health, moves };
+        let w = World { account, now: e.now(), deployments, gate, health, moves, wrap_var: e.wrap_var() };
         let (bytes, kind) = match next(&fold, &w, dwell) {
             Action::Idle => {
                 log.push(Ran::Idle);

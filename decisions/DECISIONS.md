@@ -8354,7 +8354,11 @@ carries `location` (https://developers.cloudflare.com/api/resources/r2/subresour
 - **`SecretsWrapKey`: probe, switch.** The switch names the slot new values wrap under, which `graft-ops` read from the
   `SECRETS_WRAP_KEY_CURRENT` variable, a redeploy. The probe parses the new slot's key and its slot number. Both slots
   still unwrap; each owner admin's `rewrap-secrets` moves the old values, and only then is the old slot cleared. Until a
-  first `Rotate` commits, the variable stands, so an install that set it keeps its slot.
+  first `Rotate` commits, the variable stands, so an install that set it keeps its slot. The `Rotate`'s own check
+  reads the same slot: with no switch committed, `graftyard_release::ops::active_slot` takes the variable, not the
+  fold's default 0. Reading 0, graft-m4a's `graft-ops`, whose variable names 1 since BF-59, would have refused the real
+  switch to slot 0 as "the active slot" and run a `Rotate` to 1 that moved nothing (found preparing BF-46's hosted
+  rows, 2026-11-24; `a_first_secrets_wrap_key_rotate_reads_the_variable_s_slot` fails on the fold's slot).
 - **`HostedRunnersAppKey`: no `Rotate`.** `graft-runners` lives in the runner account, which holds no `Release` view
   and no install token. The customer adds a new key to the `graftyard-hosted-runners` App, writes it over the one slot
   in the runner account's store, which every sweep re-reads, and removes the old key from the App after 24 h.

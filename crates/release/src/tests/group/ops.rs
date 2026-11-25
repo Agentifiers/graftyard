@@ -65,6 +65,7 @@ impl Ops {
             gate: self.gate.clone(),
             health: self.health.clone(),
             moves: self.moves.clone(),
+            wrap_var: 0,
         }
     }
 

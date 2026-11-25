@@ -472,6 +472,10 @@ impl Exec for Live<'_> {
         Timestamp(now_ms())
     }
 
+    fn wrap_var(&self) -> u8 {
+        wrap_var(self.env)
+    }
+
     fn scripts(&self) -> Vec<Script> {
         let mut out = Vec::new();
         for k in self.api.scripts.keys() {
@@ -923,4 +927,9 @@ pub async fn run(env: &Env) -> Vec<Ran> {
         console_log!("graft-ops {r:?}");
     }
     log
+}
+
+/// `SECRETS_WRAP_KEY_CURRENT`: the slot `SecretsWrapKey` wraps under until a `Rotate` of it switches (default 0).
+pub(crate) fn wrap_var(env: &Env) -> u8 {
+    env.var("SECRETS_WRAP_KEY_CURRENT").ok().and_then(|v| v.to_string().parse().ok()).unwrap_or(0)
 }
