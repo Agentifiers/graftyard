@@ -10482,6 +10482,16 @@ copy through tail and pack pulls, and no leader of any copied chain took a `/log
 Natively: `a_stored_tokens_hash_is_no_lifeboat_credential` (site), `the_lifeboat_front_serves_reads_and_fetches_and_nothing_else`
 (edge), `lifeboat/tests/pass.rs`, and the SigV4 signature against an independent Python vector.
 
+**The weekly scrub and the workerd pin, 2026-11-25 (lead's ruling A).** The puller asks `graft-blob` for `POST /_scrub`
+a week after the last scrub that answered (`pass::scrub_due`; an hour after one that did not), and on `POST /scrub` to
+its admin socket. A key no sibling repairs (`lost`, or `error`) is kept in `State::scrub_lost` with the copy whose entry
+named it (`pack/{network}/{id}` came from `repo:{network}`), logged as an error, and alarms on every pass line until a
+later scrub finds it whole. `lifeboat bundle --workerd` records `workerd --version` in the state's `WORKERD_VERSION`
+and refuses a state another version wrote; `start.sh` refuses any other workerd and any other version's state, naming
+both. Evidence: `the_scrub_is_weekly_and_a_lost_key_names_its_copy` (`lifeboat/tests/pass.rs`),
+`start_script_refuses_an_open_file_limit_under_the_floor_and_another_workerd` (CLI), lifeboatbed's check 7 against the
+real `graft-blob` (a pack rotted on disk is lost with its copy named, then cleared), and `tests/m0carried/plant232.py`.
+
 **Flip.**
 - **A host-process puller** if a workerd version drops `localDisk` alarms, or the bundle's alarm misses a pass by
   more than `FEED_STALE_MS` under load.

@@ -31,7 +31,7 @@ use graftyard_git::export::{self, ExportObject};
 use graftyard_git::pack::PackId;
 use graftyard_git::repo::{REPO_FORMAT_V1, RepoEvent, stored_packs};
 use graftyard_raft::{EntryBody, LogEntry, codec};
-use graftyard_types::{ChainId, Digest, Index, NetworkId, RepoId};
+use graftyard_types::{ChainId, DbId, Digest, Index, NetworkId, RepoId};
 use serde::{Deserialize, Serialize};
 
 use crate::puller::{Puller, Rows};
@@ -81,6 +81,14 @@ pub struct State {
     /// Owed packs the install answered 404 while their repository chain is live, and when it first did.
     #[serde(default)]
     pub unserved: BTreeMap<PackId, u64>,
+    /// The last `graft-blob` scrub that answered, the last one tried, and the keys it could not repair
+    /// (`scrub_due`, `scrubbed`).
+    #[serde(default)]
+    pub scrub_at: u64,
+    #[serde(default)]
+    pub scrub_tried: u64,
+    #[serde(default)]
+    pub scrub_lost: Vec<Lost>,
 }
 
 /// What an import answered: the last index the copy holds, and the halt if the copy stopped.
@@ -399,6 +407,55 @@ pub const DECODER_EVERY_MS: u64 = 23 * 3_600_000;
 /// last one committed, or the last one `DECODER_EVERY_MS` old.
 pub fn decoder_due(st: &State, release: [u8; 32], now: u64) -> bool {
     st.decoder_sent != Some(release) || now.saturating_sub(st.decoder_at) >= DECODER_EVERY_MS
+}
+
+/// How often the puller asks `graft-blob` to scrub (`design/DESIGN.md`, "Install operations", Lifeboat: "a weekly
+/// scrub"), and how soon it tries again after a scrub that did not answer [guess].
+pub const SCRUB_EVERY_MS: u64 = 7 * 24 * 3_600_000;
+pub const SCRUB_RETRY_MS: u64 = 3_600_000;
+
+/// Whether the puller scrubs at `now`: a week since the last scrub that answered, and an hour since the last try.
+pub fn scrub_due(st: &State, now: u64) -> bool {
+    now.saturating_sub(st.scrub_at) >= SCRUB_EVERY_MS && now.saturating_sub(st.scrub_tried) >= SCRUB_RETRY_MS
+}
+
+/// A key the scrub could not repair: its outcome (`lost`, or `error` if graft-blob could not check it), and the copy
+/// whose entry named it, so an operator can pull it again: a pack `pack/{network}/{id}` came from `repo:{network}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lost {
+    pub key: String,
+    pub outcome: String,
+    pub copy: Option<ChainId>,
+}
+
+/// What one scrub found, from `graft-blob`'s `POST /_scrub` answer (a `{key} {outcome}` line a key).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ScrubReport {
+    pub ok: usize,
+    pub repaired: usize,
+    pub restored: usize,
+    pub lost: Vec<Lost>,
+}
+
+pub fn scrubbed(answer: &str) -> ScrubReport {
+    let mut r = ScrubReport::default();
+    for line in answer.lines() {
+        let Some((key, outcome)) = line.trim().rsplit_once(' ') else { continue };
+        match outcome {
+            "ok" => r.ok += 1,
+            "repaired" => r.repaired += 1,
+            "restored" => r.restored += 1,
+            _ => {
+                let copy = key
+                    .strip_prefix("pack/")
+                    .and_then(|k| k.split_once('/'))
+                    .and_then(|(n, _)| n.parse().ok())
+                    .map(|n| ChainId::Repo(RepoId(DbId(n))));
+                r.lost.push(Lost { key: key.to_string(), outcome: outcome.to_string(), copy });
+            }
+        }
+    }
+    r
 }
 
 impl State {

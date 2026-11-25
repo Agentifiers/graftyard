@@ -263,6 +263,9 @@ enum LifeboatCmd {
         /// The copy's directory, fresh for each workerd version.
         #[arg(long)]
         state: PathBuf,
+        /// The release's pinned workerd binary: the bundle records its version in --state, and start.sh runs only it.
+        #[arg(long, default_value = "workerd")]
+        workerd: String,
         #[arg(long)]
         out: PathBuf,
     },
@@ -706,7 +709,8 @@ fn run(cli: Cli) -> Res<()> {
             })
         }
         Cmd::Lifeboat {
-            cmd: LifeboatCmd::Bundle { dir, builds, release, listen, tls_key, tls_chain, blob, admin, state, out },
+            cmd:
+                LifeboatCmd::Bundle { dir, builds, release, listen, tls_key, tls_chain, blob, admin, state, workerd, out },
         } => lifeboat::bundle(lifeboat::BundleArgs {
             dir: &dir,
             builds: &builds,
@@ -716,6 +720,7 @@ fn run(cli: Cli) -> Res<()> {
             blob: &blob,
             admin: admin.as_deref(),
             state: &state,
+            workerd: &workerd,
             out: &out,
         }),
         Cmd::Lifeboat { cmd: LifeboatCmd::Remove { host, key, edge } } => {

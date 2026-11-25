@@ -377,3 +377,35 @@ fn owed_packs_go_round_by_network_and_a_gone_networks_are_dropped() {
     assert_eq!((r.unserved, r.unserved_alarm), (1, 1), "unserved for an hour on a live chain alarms");
     assert_eq!(State::decode(&st.encode()).unwrap(), st);
 }
+
+/// The weekly scrub: due with none run, not again for a week after one answered, an hour after one that did not;
+/// and graft-blob's answer read so a key no sibling can repair names the copy to pull it from again.
+#[test]
+fn the_scrub_is_weekly_and_a_lost_key_names_its_copy() {
+    let mut st = State::default();
+    let t = 10 * pass::SCRUB_EVERY_MS;
+    assert!(pass::scrub_due(&st, t), "never scrubbed");
+    // Tried, no answer: again an hour later, not before.
+    st.scrub_tried = t;
+    assert!(!pass::scrub_due(&st, t + pass::SCRUB_RETRY_MS - 1));
+    assert!(pass::scrub_due(&st, t + pass::SCRUB_RETRY_MS));
+    // Answered: a week later, not after the hour.
+    st.scrub_at = t;
+    assert!(!pass::scrub_due(&st, t + pass::SCRUB_RETRY_MS));
+    assert!(!pass::scrub_due(&st, t + pass::SCRUB_EVERY_MS - 1));
+    assert!(pass::scrub_due(&st, t + pass::SCRUB_EVERY_MS));
+
+    let r = pass::scrubbed(
+        "pack/12/01JAAAAAAAAAAAAAAAAAAAAAAA ok\npack/34/01JBBBBBBBBBBBBBBBBBBBBBBB lost\npack/12/01JC repaired\n\
+         pack/5/01JD restored\nother/x error\n",
+    );
+    assert_eq!((r.ok, r.repaired, r.restored), (1, 1, 1));
+    let lost: Vec<_> = r.lost.iter().map(|l| (l.key.as_str(), l.outcome.as_str(), l.copy)).collect();
+    assert_eq!(
+        lost,
+        [
+            ("pack/34/01JBBBBBBBBBBBBBBBBBBBBBBB", "lost", Some(ChainId::Repo(RepoId(DbId(34))))),
+            ("other/x", "error", None)
+        ]
+    );
+}

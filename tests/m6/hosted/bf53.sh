@@ -128,7 +128,7 @@ init)
     fi
     "$CLI" lifeboat bundle --dir "$K/boat" --builds "$B" --release "$(cat "$K/release.id")" --listen 127.0.0.1:$LP \
       --tls-key "$K/tls.key" --tls-chain "$K/tls.pem" --blob http://127.0.0.1:$BP --admin 127.0.0.1:$AP \
-      --state "$K/boat/state" --out "$K/boat/config.capnp"
+      --state "$K/boat/state" --workerd "$PWD/tests/m0/node_modules/.bin/workerd" --out "$K/boat/config.capnp"
     echo "trustBrowserCas lines: $(grep -c trustBrowserCas "$K/boat/config.capnp")"
   } 2>&1 | log ;;
 up)
