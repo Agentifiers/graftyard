@@ -65,13 +65,24 @@ async function startRunner() {
 await startRunner();
 // `HOSTED_RUN_FORK=1` marks the run as a fork pull request's (BF-59's fork-PR job: no fork route exists yet).
 const fork = process.env.HOSTED_RUN_FORK === "1";
-const d = must("dispatch", await api("POST", `${A}/dispatch`, admin, { workflow: path, ref: "main", ...(fork ? { fork: true } : {}) }), 201, 200);
+// A new repository's chain may answer 503 ("tierOff") for its first minutes (B0-02, repo:65596, about 4 min): retried
+// every 2 s for up to 10 min, each answer recorded in `<out>/retries.jsonl`, and not counted against a row.
+async function retry503(what, call) {
+  const t0 = Date.now();
+  for (;;) {
+    const r = await call();
+    if (r.status !== 503 || Date.now() - t0 > 600_000) return r;
+    row(join(out, "retries.jsonl"), { what, t: Date.now() - t0, status: r.status, body: JSON.stringify(r.body).slice(0, 200) });
+    await sleep(2000);
+  }
+}
+const d = must("dispatch", await retry503("dispatch", () => api("POST", `${A}/dispatch`, admin, { workflow: path, ref: "main", ...(fork ? { fork: true } : {}) })), 201, 200);
 const run = d.run;
 log(`run ${run} created on ${d.shard} with ${d.jobs} jobs`);
 const t0 = Date.now();
 let killed = null;
 for (;;) {
-  const v = must("run", await api("GET", `${A}/runs/${run}`, admin)).value;
+  const v = must("run", await retry503("run", () => api("GET", `${A}/runs/${run}`, admin))).value;
   const jobs = v.jobs.map((j) => ({ id: j.spec.id, name: j.spec.name, state: Object.keys(j.state)[0], s: j.state }));
   row(join(out, "run.jsonl"), { t: Date.now() - t0, status: v.run.status, jobs });
   const running = jobs.find((j) => j.state === "InProgress");

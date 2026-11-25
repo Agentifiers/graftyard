@@ -1,0 +1,76 @@
+name: bf70
+# BF-70 on graft-m4a (`tests/m4/wp3/oidc/hosted-row.sh`): the job granted `id-token: write` takes its ID token to
+# configure-aws-credentials v6.2.0 against a MinIO STS on the runner's host, which verifies it against the install's
+# published JWKS, then reads a bucket with the credentials; a second token is checked against the JWKS here and taken
+# by MinIO too, and its kid is printed. The job without the grant gets no token URL, and its own token is refused.
+# The install resolves `uses:` only in its own repositories (`decisions/OPEN-QUESTIONS.md`, F90), so the action runs
+# from `m3org/bf70-cac`, a public repository holding v6.2.0's tree (`hosted.mjs setup` records its tree hash).
+on: workflow_dispatch
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  sts:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: test -n "$ACTIONS_ID_TOKEN_REQUEST_URL" && test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" && echo "the runner exported both"
+      # v6.2.1 and later call GetCallerIdentity, which MinIO answers "Unsupported action"; MinIO in claim mode maps
+      # `repository_owner` to the policy of that name and ignores the ARN, which the action needs to start `arn:aws`.
+      - name: Assume a role with the job's ID token
+        id: aws
+        uses: m3org/bf70-cac@v6.2.0
+        with:
+          role-to-assume: arn:aws:iam::000000000000:role/graftyard
+          aws-region: us-east-1
+          sts-endpoint: http://127.0.0.1:9000
+          output-credentials: true
+          output-env-credentials: false
+      - name: Read the bucket with the issued credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
+        run: aws --endpoint-url http://127.0.0.1:9000 --region us-east-1 s3 ls s3://probe/ && echo "s3 read ok"
+      # A second token, verified here against the JWKS its issuer publishes (the token itself is never printed), then
+      # taken to MinIO's STS. The kid tells the driver which slot signed it.
+      - name: Verify a token against the published JWKS
+        run: |
+          t=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          echo "$t" | python3 -c '
+          import base64, json, sys, time, urllib.request
+          from cryptography.hazmat.primitives import hashes
+          from cryptography.hazmat.primitives.asymmetric import padding, rsa
+          b = lambda s: base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+          h, p, s = sys.stdin.read().strip().split(".")
+          head, claims = json.loads(b(h)), json.loads(b(p))
+          disc = json.load(urllib.request.urlopen(claims["iss"] + "/.well-known/openid-configuration", timeout=20))
+          assert disc["issuer"] == claims["iss"], "issuer"
+          keys = {k["kid"]: k for k in json.load(urllib.request.urlopen(disc["jwks_uri"], timeout=20))["keys"]}
+          k = keys[head["kid"]]
+          pub = rsa.RSAPublicNumbers(int.from_bytes(b(k["e"]), "big"), int.from_bytes(b(k["n"]), "big")).public_key()
+          pub.verify(b(s), (h + "." + p).encode(), padding.PKCS1v15(), hashes.SHA256())
+          assert head["alg"] == "RS256" and claims["aud"] == "sts.amazonaws.com" and claims["exp"] > time.time()
+          keep = ("iss", "aud", "sub", "repository", "repository_owner", "ref", "workflow_ref", "job_workflow_ref",
+                  "runner_environment", "event_name", "repository_visibility", "run_id", "run_attempt")
+          print("verified kid=" + head["kid"], "published", sorted(keys), json.dumps({c: claims.get(c) for c in keep}))
+          '
+          curl -sf -X POST http://127.0.0.1:9000/ -d Action=AssumeRoleWithWebIdentity -d Version=2011-06-15 \
+            --data-urlencode RoleArn=arn:aws:iam::000000000000:role/graftyard --data-urlencode "WebIdentityToken=$t" \
+            | grep -q '<AccessKeyId>' && echo "second token ok"
+  denied:
+    runs-on: [self-hosted, linux]
+    permissions:
+      contents: read
+    steps:
+      - run: test -z "$ACTIONS_ID_TOKEN_REQUEST_URL" && echo "no id-token grant, no URL"
+      # The job's own token asks for an ID token anyway, at the URL a granted job would get: refused 403.
+      - run: |
+          mkdir -p probe && cat > probe/action.yml <<'EOF'
+          runs: {using: node24, main: index.js}
+          EOF
+          cat > probe/index.js <<'EOF'
+          const u = `${process.env.ACTIONS_RUNTIME_URL}idtoken?api-version=2.0&audience=sts.amazonaws.com`;
+          fetch(u, { headers: { authorization: `Bearer ${process.env.ACTIONS_RUNTIME_TOKEN}` } })
+            .then(async (r) => console.log(`idtoken without the grant: ${r.status} ${(await r.text()).slice(0, 200)}`));
+          EOF
+      - uses: ./probe

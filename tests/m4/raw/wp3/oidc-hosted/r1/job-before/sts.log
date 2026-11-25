@@ -1,0 +1,14 @@
+2026-11-25T07:59:24.7276535Z Current runner version: '2.338.2'
+2026-11-25T07:59:24.7281129Z Runner name: 'bf70-3'
+2026-11-25T07:59:24.7281475Z Machine name: '172'
+2026-11-25T07:59:24.7283408Z Prepare workflow directory
+2026-11-25T07:59:24.7626867Z Prepare all required actions
+2026-11-25T07:59:24.7669594Z Getting action download info
+2026-11-25T07:59:25.9440422Z Download action repository 'm3org/bf70-cac@v6.2.0' (SHA:2a183bb2689ecb8ec87670bbecac42adadf45906)
+2026-11-25T07:59:27.4726978Z Complete job name: sts
+2026-11-25T07:59:27.5269606Z ##[group]Run test -n "$ACTIONS_ID_TOKEN_REQUEST_URL" && test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" && echo "the runner exported both"
+2026-11-25T07:59:27.5269759Z [36;1mtest -n "$ACTIONS_ID_TOKEN_REQUEST_URL" && test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" && echo "the runner exported both"[0m
+2026-11-25T07:59:27.5285415Z shell: /usr/sbin/bash -e {0}
+2026-11-25T07:59:27.5285851Z ##[endgroup]
+2026-11-25T07:59:27.5403982Z ##[error]Process completed with exit code 1.
+2026-11-25T07:59:27.5615030Z Cleaning up orphan processes

@@ -1,0 +1,22 @@
+name: bf70-fork
+# BF-70's fork-PR job (`tests/m4/wp3/oidc/hosted-row.sh fork`): dispatched as a fork pull request's run
+# (`HOSTED_RUN_FORK=1`), it declares `id-token: write` and still gets no token URL, and its own token is refused 403.
+on: workflow_dispatch
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  fork:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: test -z "$ACTIONS_ID_TOKEN_REQUEST_URL" && echo "fork, no URL"
+      - run: |
+          mkdir -p probe && cat > probe/action.yml <<'EOF'
+          runs: {using: node24, main: index.js}
+          EOF
+          cat > probe/index.js <<'EOF'
+          const u = `${process.env.ACTIONS_RUNTIME_URL}idtoken?api-version=2.0&audience=sts.amazonaws.com`;
+          fetch(u, { headers: { authorization: `Bearer ${process.env.ACTIONS_RUNTIME_TOKEN}` } })
+            .then(async (r) => console.log(`idtoken for a fork: ${r.status} ${(await r.text()).slice(0, 200)}`));
+          EOF
+      - uses: ./probe
