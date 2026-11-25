@@ -323,7 +323,7 @@ async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
             let t0 = crate::now_ms();
             let make = |path: &str, src: &str| merge_group_run(f.repo, c.index, path, src, q);
             let mut times = Times::default();
-            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, &mut times).await {
+            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, None, &mut times).await {
                 Ok(n) => {
                     let ms = crate::now_ms() - t0;
                     console_log!(
@@ -415,7 +415,8 @@ async fn pull_request_try(
     let n = match pr_target(&v) {
         PrTarget::Merge(merge) => {
             let make = |path: &str, src: &str| pull_request_run(repo, index, path, src, p.n, p.action, &v.base, merge);
-            runs_on(&h.env, site, b, repo, owner, record, merge, make, &mut times).await?
+            let base = v.base.display();
+            runs_on(&h.env, site, b, repo, owner, record, merge, make, Some(&base), &mut times).await?
         }
         PrTarget::Pending | PrTarget::Conflict | PrTarget::None => 0,
     };
@@ -454,6 +455,7 @@ async fn runs_on(
     record: &PlacementRecord,
     tip: git::refs::ObjectId,
     make: impl Fn(&str, &str) -> std::result::Result<Option<(WorkflowRun, Vec<JobSpec>, Declared)>, String>,
+    base: Option<&str>,
     times: &mut Times,
 ) -> std::result::Result<usize, String> {
     let commit = tip.hex();
@@ -498,7 +500,7 @@ async fn runs_on(
                 chain,
                 record,
                 "/runsvc",
-                &crate::actions::create_run_body(env, &run, &jobs, &permissions),
+                &crate::actions::create_run_body(env, &run, &jobs, &permissions, base),
             )
             .await
         }

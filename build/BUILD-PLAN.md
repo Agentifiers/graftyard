@@ -1276,6 +1276,7 @@ Not built: the `Inbox` and `SearchShard` site classes and their migration, the c
 | BF-55 | Kill the leader site of an `Owner` scope's registration shard during a 256-job matrix | Polls reach a broker on the new leader site within 15 s; every job runs once; zero jobs assigned twice | A job assigned twice, or dispatch stalled over 60 s |
 | BF-56 | Kill the repository's commit path (and, separately, `RunOwner`) between `RunCreated` and the `RequiredCheck` writes, then finish or cancel every job | Every `RequiredCheck` on an open PR head has a conclusion within 60 s of its job's `Completed` | Any `RequiredCheck` with `conclusion: None` after its job completed |
 | BF-59 | `gh secret set` for a repository, an environment, and an org, then a job reading all three; then rotate the `SealKey` and the wrapping key | The job sees all three values before and after both rotations, and a fork-PR job sees none | A wrong value, a value shown to a fork PR, or a plaintext secret found in any entry or log |
+| BF-69 | `actions-cache` on a GHES-classified install: an unmodified `actions/runner` 2.338.2 runs one workflow with `actions/cache@v4` and one with `@v5`, each saving 200 MiB of random bytes (7 chunks) on `main`, then restoring by exact key on `main`; on branch `f`, restoring through a restore-keys prefix that falls back to `main`, then saving, after which `main` does not see `f`'s entry; two parallel saves of one key; a pull request into `rel`, which holds an entry `main` lacks, restoring `rel`'s entry; a pull request into `main` restoring from `main`; then LRU with the test install's limit lowered to 1 GiB (`decisions/DECISIONS.md`, "`actions-cache`"). Estimate $3 to $5 on graft-m4a, stop $6 | Every hit and miss as listed; restored files SHA-256 identical; one of the parallel saves commits and both jobs succeed; the least recently used entry evicted and its chunks gone after the sweep; no job fails | A hit from the wrong scope, a corrupted restore, an entry left over the limit after a commit, or a failed job |
 
 BF-54 settles the runner's backoff on 503 (`decisions/OPEN-QUESTIONS.md`, F26).
 
@@ -2051,6 +2052,7 @@ Every gate row in `design/DESIGN.md`, "Build order from zero", and `design/AGENT
 | BF-66 | DESIGN, after the final pass (M7) | `RateCounter` error bound with 20 isolates and a killed counter | M7-WP3 |
 | BF-67 | DESIGN, after the final pass (M4) | `Inbox` rebuild from `sources`, 10,000 stars and a refold | M4-WP2 |
 | BF-68 | DESIGN, after the final pass (M4) | EU search residency and a killed `SearchShard` | M4-WP2 |
+| BF-69 | M4-WP3, `actions-cache` (FRAME, operator decision 2026-11-24) | `actions/cache@v4` and `@v5` save, restore, scopes, and LRU | M4-WP3 |
 | L0-01 | AGENT-LAYER, Milestone 0 rows | Gray enam during the A1 replay | M0-WP12 |
 | L0-02 | AGENT-LAYER, Milestone 0 rows | Sandbox containment | M0-WP14 |
 | L0-03 | AGENT-LAYER, Milestone 0 rows | Token ceilings with raw tokens | M0-WP13 |

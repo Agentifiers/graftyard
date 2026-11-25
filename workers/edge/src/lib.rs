@@ -53,6 +53,7 @@ mod agents;
 mod api;
 #[cfg(feature = "test-faults")]
 mod bed_rows;
+mod cache;
 mod collab;
 mod colo;
 mod export;
@@ -3613,7 +3614,7 @@ async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service, si
 
 /// A repository by id, as an LFS transfer path and the test driver name it: its owner from `RepoOwner` on `Names`,
 /// and the owner's record.
-async fn repo_by_id(c: &Ctx<'_>, id: RepoId) -> std::result::Result<Repo, String> {
+pub(crate) async fn repo_by_id(c: &Ctx<'_>, id: RepoId) -> std::result::Result<Repo, String> {
     let v = system_read(c, ChainId::Names(name_shard(&NameKey::Repo(id))), json!({ "repoOwner": id.0.0 })).await?;
     let owner: AccountId = serde_json::from_value::<Option<AccountId>>(v["repoOwner"].clone())
         .map_err(|e| e.to_string())?

@@ -753,6 +753,11 @@ actions::shard::ActionsEvent 4 Session 040200
 actions::shard::ActionsEvent 5 OwnerCursor 0501
 actions::shard::ActionsEvent 6 JobTokens 0600
 actions::shard::ActionsEvent 7 TokenIssued 0702
+actions::shard::ActionsEvent 8 CacheReserved 0801020161016101610101010002
+actions::shard::ActionsEvent 9 CacheCommitted 0901
+actions::shard::ActionsEvent 10 CacheUsed 0a01
+actions::shard::ActionsEvent 11 CacheEvicted 0b00
+actions::shard::ActionsEvent 12 RunBase 0c020161
 actions::shard::ActionsOp 0 CreateRun 0002020161016101010101010101010101010101010101010101010161067265706f3a310101000000
 actions::shard::ActionsOp 1 Job 01020100
 actions::shard::ActionsOp 2 ExpireLeases 02
@@ -766,6 +771,11 @@ actions::shard::ActionsOp 9 OwnerCursor 0901
 actions::shard::ActionsOp 10 MatchOwner 0a02010200
 actions::shard::ActionsOp 11 CreateRunWith 0b02020161016101010101010101010101010101010101010101010161067265706f3a31010100000000
 actions::shard::ActionsOp 12 AcquireToken 0c0201
+actions::shard::ActionsOp 13 CacheReserve 0d0201610161010161
+actions::shard::ActionsOp 14 CacheCommit 0e0201010001
+actions::shard::ActionsOp 15 CacheUse 0f01
+actions::shard::ActionsOp 16 CacheSweep 10
+actions::shard::ActionsOp 17 CreateRunOn 1102020161016101010101010101010101010101010101010101010161067265706f3a310101000000000161
 actions::shard::ActionsActor 0 Operator 00
 actions::shard::ActionsActor 1 Admin 0102
 actions::shard::ActionsActor 2 Runner 0202
@@ -774,6 +784,7 @@ actions::shard::ActionsOut 0 Run 0002
 actions::shard::ActionsOut 1 Job 010000
 actions::shard::ActionsOut 2 Runner 0202
 actions::shard::ActionsOut 3 Done 03
+actions::shard::ActionsOut 4 Cache 0401
 actions::shard::ActionsErr 0 Forbidden 00
 actions::shard::ActionsErr 1 NotFound 01
 actions::shard::ActionsErr 2 Duplicate 02
@@ -782,6 +793,8 @@ actions::shard::ActionsErr 4 Illegal 040161
 actions::shard::ActionsErr 5 TooMany 05
 actions::shard::ActionsErr 6 NeedIdBlock 06
 actions::shard::ActionsErr 7 BadNeeds 07
+actions::shard::ActionsErr 8 CacheExists 08
+actions::shard::ActionsErr 9 CacheRefused 090161
 actions::shard::RunnerScope 0 Owner 00
 actions::shard::RunnerScope 1 Repo 0102
 actions::Conclusion 0 Success 00
@@ -810,6 +823,9 @@ actions::RunStatus 2 Completed 0200
 git::run_checks::RunChecksOut 0 Applied 0001
 git::run_checks::RunChecksOut 1 Gone 01
 git::run_checks::RunChecksOut 2 Unavailable 02
+# actions-cache: inside ActionsEvent::CacheReserved (0x15.6).
+actions::cache::CacheState 0 Reserved 0002
+actions::cache::CacheState 1 Committed 01
 # M4-WP3: inside RepoEvent::ActionsSecret and ActionsVariable (32.23). RepoEvent 43 holds b030-split's Split.
 id::sealed::SecretScope 0 Repo 00
 id::sealed::SecretScope 1 Env 010161
