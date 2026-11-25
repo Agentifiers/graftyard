@@ -460,7 +460,7 @@ Both rows ran on graft-m4a from merged main `dc880f1d`, which carries `gate-pool
 
 ### Row B: B0-07 hosted, a gray site during another site's day
 
-**Result: the drain half passed; the automatic undrain could not happen during the day, so c was undrained by hand on the lead's ruling.** After the hand undrain the day resumed and ran to `IntentDone`, with no breach. The done line was 07:27Z. The row cost $5.27, against a $6 stop; graft-m4a's UTC day stood at $16.85.
+**Result: the drain half passed; the automatic undrain could not happen during the day, so c was undrained by hand on the lead's ruling.** After the hand undrain the day resumed and ran to `IntentDone`, with no breach. **B0-07's per-group 20 s line is unproven hosted, not met** (corrected 2026-11-25): `leaders.txt` polled every 12 s, and no chain's activity before the drain was recorded, so the row cannot tell which chains the line judges or when each moved. On Cloudflare time c led 14 chains 3.3 s after the drain, 2 at 15.4 s and 0 at 27.4 s, so those 2 moved between 15.4 and 27.4 s. B0-07 r2 (`tests/m5/b07r2/`) times each chain from its members' election traces. The done line was 07:27Z. The row cost $5.27, against a $6 stop; graft-m4a's UTC day stood at $16.85.
 
 **Setup.**
 - `graft-m4a-ops` was `9249fa8b`, the same `dc880f1d` build, deployed with `exec-ckB.json`: `OPS_STEP_MIN_ENTRIES` 50 (b's own gate is not under test), `STEP_DWELL_MS` 300000, `FIRST_DAY_MS` 60000, and a 1-minute cron. This time the cron fired without a re-add; the first run was at 06:25:08Z.
@@ -505,3 +505,49 @@ Raw records in `raw/ckA/` and `raw/ckB/`:
 - `gate.txt` and `gate-b.txt`: the scratch mirror. Their `judge(...)` lines are not verdicts.
 - `health.txt`: every voter's `site_health` each minute.
 - `leaders.txt` (row B): the leader site of the 160 c-homed chains every 10 s.
+
+## B0-07 r2: the plan (2026-11-25, driver `tests/m5/b07r2/`, not yet run)
+
+Row B's shape on graft-m4a, with `graft-ops` from merged main so `calm-one` (R53's fix) is in, and the per-group line
+measured from each chain's own members. The lead approved the driver at $0 on 2026-11-25; it runs only after the lead
+has the head and this plan, after BF-71, and before or after AM2's Sandbox kill row by agreement with AM2.
+
+**Pass lines**, every one on Cloudflare time (the group's entry times, the members' clocks, and the scratch Worker's
+`Date.now()`; the orb's clock is only offset-checked against Cloudflare's `Date` header at the start):
+- never two sites drained, and `graft-ops` undrains b under the lead limit, then drains c;
+- c undrains with no hand `Normal`: the driver posts no `SiteMode`, and `graft-ops` logs `Committed("SiteMode")` for
+  c's `Normal` in the run that committed it;
+- the day (`SiteDay{b, N+1}`, undo `Rollback{b, N}`) reaches `IntentDone`;
+- every c-homed chain's leader at the drain is known (a baseline `/status` before the fault, moved by the election
+  trace's role rows);
+- the result names how many c-led chains were active (a bench write served or committed) in the 50 s before the drain,
+  and at least one was: both c-benches write every c-homed chain through the drain, so the 20 s line is exercised;
+- every chain led on c at the drain moves within 20 s: an active one of the drain, an idle one of its next request.
+  The move is the first role row in which a member on a or b becomes leader, read from each member's `/elections`
+  (test-faults; `[at, kind, term, peer, index, extra]` on the member's clock), every 20 s through the row, so no poll
+  interval bounds it.
+
+`judge.py` computes every line from the raw records alone. Checked at $0: on a synthetic record with an active chain
+at 5 s, an idle one at 5 s after its next request and an active one at 25 s it fails the last line naming that chain,
+and passes once that chain moves at 15 s; on row B's own `Release` entries and `graft-ops` lines it fails "no hand
+Normal" (entry 370 was signed by hand), and the two per-chain lines for want of traces.
+
+**Steps**, each a phase of `row.sh`:
+1. `state`: the group, every deployment and schedule, the day's spend, and the clock offset.
+2. `build` and `siteday`: the site from merged main at run time, test-faults, with BF-70 r2's flags; crons `[]`;
+   reretire. One site day.
+3. `bundles`, `setup`: N and N+1 are that build plus a marker each, with the group's last `formats.txt`; the deploy
+   token `graft-m4a-b07r2-deploy`; the scratch Worker `graft-m4a-b07r2-edge`; 160 c-homed and 40 a-homed chains.
+4. `ops 60000`, `roll`: `graft-ops` from main with 60 s dwells; `SiteDay{b, N}` with no undo, so N is b's record.
+5. `ops 420000`, `run` (supervised): 7-minute dwells so c drains inside b's 10% step (row B drained 286.7 s after the
+   fault); `SiteDay{b, N+1}` undo `Rollback{b, N}`; load as row B's 1x; the fault (rate 0.3, 3 s hangs) once b is
+   drained at 10%; the lift 60 s after c's drain; load halved for c's 15-minute calm; the day to `IntentDone`.
+6. `judge`, then `teardown`: load and loggers off, the fault off; `graft-ops`' cron reset, parked on `ac4cd9a5` by
+   version id, cron `[]` again; the deploy token revoked and shredded; the scratch Worker deleted. `lists` checks it.
+
+**Cost and stop.** Row B cost $5.27 for the same load over about an hour. The stop is $6 from `setup`, checked every
+minute by `roll` and `run`; at it the load and fault go off and the row is held for the lead. One site day; no edge day.
+
+**Not covered.** The election trace lives in each member's memory (`ELECT_MAX` 2,000 rows), so an isolate reset between
+polls loses rows; the 20 s poll keeps the loss to rows written in the 20 s before a reset, and `judge.py` counts each
+member it could not read (`members_missed`).

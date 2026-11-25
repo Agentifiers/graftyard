@@ -43,6 +43,9 @@ fn main() {
             let short = match &e.body {
                 ReleaseEntry::Intent(i) => format!("{:?} id {}", i.intent, i.id.0),
                 ReleaseEntry::IntentStep { step, .. } => format!("step {step}"),
+                // B0-07 r2's judge (`tests/m5/b07r2/judge.py`) reads which site each mode names and which intent ended.
+                ReleaseEntry::SiteMode(m) => format!("{m:?}"),
+                ReleaseEntry::IntentDone { intent } => format!("IntentDone id {}", intent.0),
                 b => b.kind().to_string(),
             };
             json!({ "index": i, "at": at.0, "kind": e.body.kind(), "sigs": e.sigs.iter().map(|(k, _)| k.hex()[..6].to_string()).collect::<Vec<_>>(), "entry": short })

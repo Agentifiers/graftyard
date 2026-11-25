@@ -1,0 +1,17 @@
+{
+  // B0-07 r2's scratch Worker on graft-m4a (edge.ts). A separate script: deploying it creates no site version.
+  "name": "graft-m4a-b07r2-edge",
+  "main": "edge.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [
+    { "name": "MEMBER_0", "class_name": "Member", "script_name": "graft-m4a-site-a" },
+    { "name": "MEMBER_1", "class_name": "Member", "script_name": "graft-m4a-site-b" },
+    { "name": "MEMBER_2", "class_name": "Member", "script_name": "graft-m4a-site-c" },
+    { "name": "REGISTRY_0", "class_name": "Registry", "script_name": "graft-m4a-site-a" },
+    { "name": "REGISTRY_1", "class_name": "Registry", "script_name": "graft-m4a-site-b" },
+    { "name": "REGISTRY_2", "class_name": "Registry", "script_name": "graft-m4a-site-c" }
+  ] },
+  "observability": { "enabled": true }
+}
