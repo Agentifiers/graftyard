@@ -24,7 +24,7 @@ pub struct Signature<'a> {
     pub at: Timestamp,
 }
 
-fn object_id(kind: &str, body: &[u8]) -> ObjectId {
+pub(crate) fn object_id(kind: &str, body: &[u8]) -> ObjectId {
     let mut h = Sha1::new();
     h.update(format!("{kind} {}\0", body.len()).as_bytes());
     h.update(body);
@@ -32,7 +32,7 @@ fn object_id(kind: &str, body: &[u8]) -> ObjectId {
 }
 
 /// A pack entry's header: type in bits 4-6 of the first byte, then the size as a little-endian base-128 varint.
-fn entry(out: &mut Vec<u8>, ty: u8, body: &[u8]) {
+pub(crate) fn entry(out: &mut Vec<u8>, ty: u8, body: &[u8]) {
     let mut size = body.len();
     let mut b = (ty << 4) | (size & 0x0f) as u8;
     size >>= 4;

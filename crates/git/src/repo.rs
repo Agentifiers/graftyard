@@ -438,6 +438,17 @@ pub enum RepoEvent {
         session: SessionId,
         snapshot: graftyard_types::Index,
     },
+    // AM3-WP2a, format 32.31 (`crate::issue_ops::call::REPO_FORMAT_FORKS`): tag 50.
+    /// Core. SHARED's `Genesis { owner, network, name, fork_of }`: the chain's first event for a fork, appended by
+    /// whoever first touches it after `ForkAdded` (`design/SHARED.md`, "Multi-chain operations", Fork). `fork_of` is
+    /// the repository forked and the index of its chain the fork was cut at. A root's chain is created by `InitRepo`
+    /// and holds no `Genesis` row; a `Genesis` whose network is the chain's own id writes nothing.
+    Genesis {
+        owner: AccountId,
+        network: graftyard_types::NetworkId,
+        name: graftyard_identity::RepoName,
+        fork_of: Option<(RepoId, Index)>,
+    },
 }
 
 impl RepoEvent {
@@ -2029,6 +2040,10 @@ impl Record for RepoEvent {
             RepoEvent::Assigned { n, add, remove, actor } => return tagged(out, 48, &(n, add, remove, actor)),
             // AM3-WP3's host pause, 32.33: tag 49.
             RepoEvent::TaskResumed { session, snapshot } => return tagged(out, 49, &(session, snapshot)),
+            // AM3-WP2a, 32.31: tag 50.
+            RepoEvent::Genesis { owner, network, name, fork_of } => {
+                return tagged(out, 50, &(owner, network, name, fork_of));
+            }
         };
         e.u8(0);
         e.u128(push.0.0);

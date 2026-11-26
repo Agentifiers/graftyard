@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """F137's REST issue writes (`crates/git/src/issue_ops.rs`, `IssueOp::Edit`; `crates/git/src/issue_ops/call.rs`,
-format 32.34; `crates/api/src/rest.rs`, `plan_issue_edit`, `plan_issue_lock`, `plan_edit_issue_comment`,
+format 32.34; `crates/api/src/rest.rs`, `plan_issue_update`, `plan_issue_lock`, `plan_edit_issue_comment`,
 `plan_delete_issue_comment`, `check_assignee`; `crates/api/src/hosted.rs`, the three new `What`s). The edge's arms
 are checked by both edgeboots and plaindiff. Run from the repository root:
 

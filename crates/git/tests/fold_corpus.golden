@@ -4,7 +4,8 @@
 # of design/SHARED.md, "Schema change is a refold, never a migration". Versions 26 to 30 folded on
 # am3-rest over main d301d866 (F20's 32.30), with every earlier row unchanged. Versions 31 to 33
 # folded on am3-rest over main 4a30d12d (the host pause's 32.33), with every earlier row unchanged. Version 34
-# folded on issue-writes over main afef63e2 (F137's REST edits, 32.34), with every earlier row unchanged.
+# folded on issue-writes over main afef63e2 (F137's REST edits, 32.34), with every earlier row unchanged; Genesis 34
+# on its merge of AM3-WP2a's forks (Genesis, tag 50, at 31 to 33), with every earlier row unchanged.
 Refs 1 d7fb5caf406e6183f23ec3740ae57a8aed10d54de923d97cea9c5ed300190f7b 750ca47d0d043ef0614c43d05a567e3fa583a788c0e12b0cbbb500ce7cfd5909
 Refs 2 47c5d694754cdb9c18fdba2ecbf8542dccb2db17fe8ee8456de4e4d17571f379 28d7399b666fe2a77be7b6d5e42f380c6329fac9f9f6acbf4c7038c7e0622e8c
 Refs 3 2bba1476c39fab3a9a60700d1cd2134764d2733635665179eca3cd3781830bdc 40d9792bba3761a94a34d817f68b7b7dc2e525b7b74a86711a14f4d6e4483d09
@@ -1346,3 +1347,7 @@ Assigned 33 4c0ae51fe64aa056c7283641637c9a4b9ddec84fc86c4614478c837eda2d111f 1e0
 Assigned 34 b1cbcda963934b5dfcb0e845e48741b482b8147af75a280ede6f9d43dcb66846 0e67d38891c521173165f80fb0faa2110d587f7dae0d37e8f86abe09e1840217
 TaskResumed 33 d9f72cdec961653e2769628f41ef8ec1488513e44cdcd746c142b167581cabcc e959bef41e4cec444eb56b6164a500b720e1a9d4123ea33799678d998356c0cc
 TaskResumed 34 024c5f17adac939ef8f5ad627460ffeececfc238430fe78be15f254de66ec84b ef7f9c6493c51fe1388edc8be770e2b5eb8ca03dca5f30b703e1bb58377f34af
+Genesis 31 e16323dff4a14f0505be8b4e191e2f5a0a230e8b45f5fa30dd6ab23fd5b30ec3 c4e40ee287310755d1e1638dbfecc0cfd5f3429d1f43a35b413f9f796a109bde
+Genesis 32 92fdfcc5db5c72e54e9211f48524106c01db04fc9fa84c8be9011ca4ec5f89fb 5d049a4d8118bc52d367a7ff635e74c99fd4c64ac4c94053c40cfd4a0a5cbb4f
+Genesis 33 031a7b347c4b86d9231bc404ad2ad768b115ecfdf7e2bafc37cccaea02a5aed7 39abd75b26b092c6b10f439613688f0c8b1d58a26414e08ea170fc5c9358b373
+Genesis 34 c6fb9d0d44a90bfa4cce82bab7dc51532434b655cee0ce3ec95fb95b7c46a2e8 bb0bcd6e71d3287ee60911453b3ee2ebfddaecdb1991cd48b24349089fe95d92

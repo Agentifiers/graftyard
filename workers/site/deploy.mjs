@@ -8,7 +8,8 @@
 //                                [--audit-stream <Basin Pipelines stream id>] [--run-key <store id>/<secret name>]
 //                                [--ssh <store id> --ssh-image <digest-pinned image> --edge <edge script>] [--ssh-off]
 //                                [--export-bucket <bucket>]
-// `--test-faults` builds with the `test-faults` feature, for test installs only; `--vars` adds variables to every site
+// `--test-faults` builds with the `test-faults` feature, for test installs only, and with `--ssh` sets `SSH_KILL=1`,
+// which lets the SSH front answer B0-24a's `POST /kill` (`ssh.mjs`, `kill`); `--vars` adds variables to every site
 // (the 24-hour run's GRAFTYARD_FAULTS and GRAFTYARD_REQUEST_RETENTION_S, and `GRAFTYARD_HOST`, the API host webhook
 // payloads name). `--ops` binds the install's `graft-ops` as `OPS`, which `HookSequencer` unwraps hook secrets with.
 // `--audit-stream <id>` binds that Basin Pipelines stream as `AUDIT_STREAM`, which the `Audit` consumer sends each
@@ -95,6 +96,7 @@ const anchor = ai >= 0 ? Object.fromEntries(
   readFileSync(flags[ai + 1], "utf8").split("\n").map((l) => l.match(/^(install|customer_key)\s*=\s*"([^"]*)"/)).filter(Boolean).map((m) => [m[1], m[2]]),
 ) : null;
 if (genesis && !flags.includes("--test-faults")) throw new Error("--genesis is a test-faults shortcut; a product install reads the Release view");
+if ("SSH_KILL" in extraVars) throw new Error("SSH_KILL is set by --test-faults with --ssh only");
 const COMPAT_DATE = "2026-10-01";
 // The sweeper's Cron Trigger [guess]: deletes wait 24 h (ORPHAN_AFTER), so a quarter-hour cadence only bounds how late
 // a missing `Committed` marker or third-bucket copy is repaired.
@@ -148,6 +150,8 @@ function config(site, targets, own = true, phase1 = false) {
       ...Object.fromEntries(Object.entries(extraVars).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])),
       ...(site.id === down ? { GRAFTYARD_SITE_DOWN: "1" } : {}),
       ...(exportBucket ? { GRAFTYARD_EXPORT: "1" } : {}),
+      // B0-24a's front kill (`ssh.mjs`, `kill`): a test install's SSH fronts only.
+      ...(sshStore && flags.includes("--test-faults") ? { SSH_KILL: "1" } : {}),
     },
     durable_objects: { bindings: bindings(site, targets, phase1) },
     // The version id each member's gate counters are kept under (M5-WP4, `src/gatecount.rs`).

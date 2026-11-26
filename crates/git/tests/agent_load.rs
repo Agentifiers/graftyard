@@ -636,6 +636,65 @@ fn a_root_repositorys_network_names_and_keys_are_mains() {
     assert_eq!(R2Key::pack_prefix(n), "pack/131171/");
 }
 
+/// AM3-WP2a, 32.31: a fork's `Genesis` names its network in one core row. A root has no such event, and its own
+/// network id is a no-op rather than a row that would move every root's rows (`decisions/DECISIONS.md`,
+/// "`fork-network-read`").
+#[test]
+fn a_fork_chain_names_its_network_and_a_roots_rows_do_not_move() {
+    use graftyard_git::repo::{RepoEvent, RepoFold};
+    use graftyard_git::tiers::{self, ForkRow};
+    use graftyard_raft::{EntryBody, Fold, Format, LogEntry, PREV_ZERO, Term, TierSet};
+    use graftyard_types::{AccountId, Index, RepoId, Tier};
+
+    let repo = RepoId(DbId(7));
+    let owner = AccountId(DbId(1));
+    let cut = (RepoId(DbId(3)), Index(9));
+    let genesis = |network| RepoEvent::Genesis {
+        owner,
+        network,
+        name: graftyard_identity::RepoName::parse("fork").unwrap(),
+        fork_of: Some(cut),
+    };
+    let entry = |events: Vec<RepoEvent>| {
+        let tiers = events.iter().fold(TierSet::NONE, |t, e| t.union(<RepoFold as Fold>::tiers(e)));
+        LogEntry {
+            term: Term(2),
+            index: Index(1),
+            prev: PREV_ZERO,
+            format: Format { family: 0x20, version: 31 },
+            tiers,
+            at: Timestamp(1_000),
+            requests: Default::default(),
+            extend: None,
+            body: EntryBody::Events(events),
+        }
+    };
+    let apply = |events| {
+        let mut fold = RepoFold::new(repo, owner);
+        fold.apply_entry(&entry(events));
+        fold
+    };
+
+    let network = NetworkId::of_root(cut.0);
+    let fork = apply(vec![genesis(network)]);
+    assert_eq!(tiers::network(&*fork.core, repo), network);
+    assert_eq!(tiers::fork(&*fork.core), Some(ForkRow { network, fork_of: Some(cut) }));
+
+    let root = apply(vec![genesis(NetworkId::of_root(repo))]);
+    let empty = apply(Vec::new());
+    // `fold_digest` also covers the entry's own digest, which a `Genesis` and an empty entry necessarily change.
+    // Holding that header to the empty entry's, the root's row sum gives exactly the empty fold's digest.
+    let root_meta = graftyard_fold::meta(&*root.core);
+    let empty_meta = graftyard_fold::meta(&*empty.core);
+    assert_eq!(root_meta.sum, empty_meta.sum);
+    assert_eq!(
+        graftyard_fold::digest_with(&tiers::CORE, &empty_meta, &root_meta.sum),
+        graftyard_fold::fold_digest(&*empty.core, Tier::Core)
+    );
+    assert_eq!(tiers::network(&*root.core, repo), NetworkId::of_root(repo));
+    assert_eq!(tiers::fork(&*root.core), None);
+}
+
 /// A site's report of its k shards: the most loaded one's CPU, not their sum or mean, and their queues summed.
 #[test]
 fn a_site_reports_its_most_loaded_shard_and_the_summed_queue() {

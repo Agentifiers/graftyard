@@ -624,6 +624,48 @@ fn a_merge_plans_from_its_rows_as_from_both_tiers() {
     assert!(rest_on(&core2, &meta2, "2").is_err(), "a merged pull request is refused by number too");
 }
 
+/// A fork's network reaches the edge with the access rows it already reads; a root adds no row and no bytes.
+#[test]
+fn access_rows_include_a_forks_network_row_but_no_root_row() {
+    use graftyard_api::hosted::TierRows;
+    use graftyard_git::repo::{RepoEvent, RepoFold};
+    use graftyard_raft::{EntryBody, Fold, Format, LogEntry, PREV_ZERO, Term};
+    use graftyard_types::{Index, NetworkId, RepoId};
+
+    let repo = RepoId(DbId(7));
+    let owner = AccountId(DbId(1));
+    let network = NetworkId::of_root(RepoId(DbId(3)));
+    let fork_of = Some((RepoId(DbId(3)), Index(9)));
+    let mut fork = RepoFold::new(repo, owner);
+    fork.apply_entry(&LogEntry {
+        term: Term(2),
+        index: Index(1),
+        prev: PREV_ZERO,
+        format: Format { family: 0x20, version: 31 },
+        tiers: TierSet::CORE,
+        at: Timestamp(1_000),
+        requests: Default::default(),
+        extend: None,
+        body: EntryBody::Events(vec![RepoEvent::Genesis {
+            owner,
+            network,
+            name: graftyard_identity::RepoName::parse("fork").unwrap(),
+            fork_of,
+        }]),
+    });
+    let rows = TierRows::access_rows(&fork.core);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "fork");
+    assert!(rows[0].1.is_empty());
+    assert_eq!(
+        graftyard_git::tiers::fork(&TierRows::store(&rows)),
+        Some(graftyard_git::tiers::ForkRow { network, fork_of })
+    );
+
+    let root = RepoFold::new(repo, owner);
+    assert!(TierRows::access_rows(&root.core).is_empty());
+}
+
 /// An agent push reads its policy and every task, and no settings, open-task index, ref, or issue rows. The narrow
 /// store answers the policy and session lookups exactly as the full tiers do.
 #[test]
@@ -1288,6 +1330,60 @@ fn rest_assignees_add_remove_and_replace_render_the_issue() {
     assert_eq!(reply.value()["assignee"]["login"], "bob");
 }
 
+/// F141: an issue `PATCH` whose body names exactly one of `title` and `body` is one title or body `Change`, and its 200
+/// is the issue after the entry. Two fields, `state`, or an assignees-only body are not this route (M4-WP4's atomic
+/// update and F20's assignment own them), so a two-field `PATCH` never splits into commands that are not atomic.
+#[test]
+fn rest_issue_patch_of_one_field_is_one_change() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_ok};
+    use graftyard_api::rest::plan_issue_edit;
+    use graftyard_git::issues::IssueChange;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let plan = |c: &Chain, n: &str, body: Value| plan_issue_edit(&c.repo(0, &h, &dir), n, &body);
+    for multi in [
+        json!({ "title": "t", "body": "b" }),
+        json!({ "state": "closed" }),
+        json!({ "title": "t", "state": "closed" }),
+        json!({ "assignees": ["bob"] }),
+        json!({}),
+        json!("title"),
+    ] {
+        assert!(plan(&c, "1", multi.clone()).is_none(), "{multi}");
+    }
+    assert_eq!(plan(&c, "99", json!({ "body": "b" })).unwrap().unwrap_err().status, 404);
+    assert_eq!(plan(&c, "1", json!({ "title": ["t"] })).unwrap().unwrap_err().status, 422);
+    let IssueOp::Change { change: IssueChange::Title(t), .. } = plan(&c, "1", json!({ "title": 42 })).unwrap().unwrap()
+    else {
+        panic!("a numeric title is a title change")
+    };
+    assert_eq!(&*t, "42");
+    let IssueOp::Change { change: IssueChange::Body(b), .. } = plan(&c, "1", json!({ "body": null })).unwrap().unwrap()
+    else {
+        panic!("a null body clears it")
+    };
+    assert_eq!(&*b, "");
+    // The issue's author, a reader, edits its body: committed, and the 200 renders the new body.
+    let op = plan(&c, "1", json!({ "body": "steps, again" })).unwrap().unwrap();
+    let out = c.commit(READER, op).unwrap();
+    let logins: std::collections::BTreeMap<i64, String> =
+        [(OWNER, "o".to_owned()), (WRITER, "alice".to_owned()), (READER, "bob".to_owned())].into();
+    let hosted = HostedDir { home: Some(dir.home()), logins, ..Default::default() };
+    let render = Render {
+        host: h.name().to_owned(),
+        isolation: false,
+        dir: hosted,
+        what: What::IssueAssigned { n: 1, created: false },
+    };
+    let m = &c.members[0];
+    let reply = render_ok(&render, &ack(out), &m.core, &m.meta).reply();
+    assert_eq!(
+        (reply.status, reply.value()["body"].clone(), reply.value()["title"].clone()),
+        (200, json!("steps, again"), json!("it breaks"))
+    );
+    keep_rest_as("issue-patched", "PATCH", "/repos/{owner}/{repo}/issues/{issue_number}", &reply);
+}
+
 /// F137's REST edits: a multi-field `PATCH /issues/{n}` is one `Edit` whose 200 is the issue after the entry, a single
 /// `title` is the `Change` it always was, a comment `PATCH` answers 200 with the comment and `DELETE` 204, a lock
 /// answers 204 with the issue routes' errors, and `GET .../assignees/{login}` is 204 only for a write-or-more account.
@@ -1295,7 +1391,8 @@ fn rest_assignees_add_remove_and_replace_render_the_issue() {
 fn rest_issue_edits_commit_and_render_as_ghes_does() {
     use graftyard_api::hosted::{HostedDir, Render, What, render_err, render_ok};
     use graftyard_api::rest::{
-        check_assignee, get_issue, plan_delete_issue_comment, plan_edit_issue_comment, plan_issue_edit, plan_issue_lock,
+        check_assignee, get_issue, plan_delete_issue_comment, plan_edit_issue_comment, plan_issue_lock,
+        plan_issue_update,
     };
     use graftyard_git::issues::{IssueChange, LockReason};
     use graftyard_identity::RepoPermission;
@@ -1307,18 +1404,18 @@ fn rest_issue_edits_commit_and_render_as_ghes_does() {
     let render = |what: What| Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what };
 
     // A single title is the `Change` it always was; title with state is one `Edit`.
-    let op = plan_issue_edit(&c.repo(0, &h, &dir), "1", &json!({ "title": "t" })).unwrap();
+    let op = plan_issue_update(&c.repo(0, &h, &dir), "1", &json!({ "title": "t" })).unwrap();
     assert!(matches!(op, IssueOp::Change { change: IssueChange::Title(_), .. }), "{op:?}");
-    assert_eq!(plan_issue_edit(&c.repo(0, &h, &dir), "99", &json!({ "title": "t" })).unwrap_err().status, 404);
+    assert_eq!(plan_issue_update(&c.repo(0, &h, &dir), "99", &json!({ "title": "t" })).unwrap_err().status, 404);
     for bad in [json!({ "title": ["x"] }), json!({ "labels": ["nope"] }), json!({ "state": "shut" })] {
-        assert_eq!(plan_issue_edit(&c.repo(0, &h, &dir), "1", &bad).unwrap_err().status, 422, "{bad}");
+        assert_eq!(plan_issue_update(&c.repo(0, &h, &dir), "1", &bad).unwrap_err().status, 422, "{bad}");
     }
     // `state: open` on an open issue changes nothing, so title plus that state is still the one `Change`.
-    let op = plan_issue_edit(&c.repo(0, &h, &dir), "1", &json!({ "title": "t", "state": "open" })).unwrap();
+    let op = plan_issue_update(&c.repo(0, &h, &dir), "1", &json!({ "title": "t", "state": "open" })).unwrap();
     assert!(matches!(op, IssueOp::Change { .. }), "{op:?}");
     let body = json!({ "title": "renamed", "body": "new steps", "state": "closed", "state_reason": "not_planned",
         "labels": [], "assignees": ["alice", "nobody"] });
-    let op = plan_issue_edit(&c.repo(0, &h, &dir), "1", &body).unwrap();
+    let op = plan_issue_update(&c.repo(0, &h, &dir), "1", &body).unwrap();
     assert!(matches!(op, IssueOp::Edit { .. }), "{op:?}");
     let out = c.commit(WRITER, op).unwrap();
     let m = &c.members[0];

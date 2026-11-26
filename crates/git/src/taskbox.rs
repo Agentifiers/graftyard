@@ -37,6 +37,11 @@
 //!   queues it again. On `issues.edited` and `issues.assigned` for the task's issue the host reads the base's task and
 //!   hands its state to the box (`Input::Base`), which follows it with no permission check of its own: a pause stops
 //!   the Sandbox, and a resume starts a new one from the base, on the snapshot the base moved.
+//! - **The session log.** The harness reports its log once, before its last report (`crate::session_log`). From then
+//!   until the host's push of it is answered (`TaskBox::log_answered`), `unreported` withholds a final state, because
+//!   `decide` takes the session ref only while the base reads the task live; a push with no answer is tried again at
+//!   each alarm, at most `LOG_TRIES` times in all (AM3-WP4). A host pause drops a log not yet pushed, so a paused and
+//!   resumed task gets its one log from the resumed Sandbox; a log pushed before the pause stays the task's one log.
 
 use std::time::Duration;
 
@@ -46,6 +51,7 @@ use crate::agent::RefPattern;
 use crate::controller::{Resume, SandboxId, StepErr, Task, TaskEvent, TaskState};
 use crate::pkt::{Pkt, Reader};
 use crate::refs::ObjectId;
+use crate::session_log::{LOG_TRIES, Pushed};
 use crate::task::TaskApiState;
 
 /// How often the alarm checks the container [guess]. Well inside a Sandbox's 6-hour inactivity stop, and short enough
@@ -57,6 +63,9 @@ pub const SILENT_MAX: Duration = Duration::from_secs(10 * 60);
 /// How long a box waits on a held version before it fails its task [guess]: an hour is past a `ControllerRoll`'s
 /// abort on a healthy deploy API, and a task that waits longer has outlived `TASK_WALL` anyway.
 pub const HOLD_MAX: Duration = Duration::from_secs(60 * 60);
+/// The most acked heads a box keeps for its session log's `pushes` [guess]: a 60-minute task pushing every 15 s
+/// makes 240.
+pub const PUSHES_MAX: usize = 1_024;
 
 /// The task's durable state in its object.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +85,24 @@ pub struct TaskBox {
     /// before A59 reads `None` and sends its state once.
     #[serde(default)]
     pub base: Option<TaskApiState>,
+    /// The heads the host saw acked, in order, at most `PUSHES_MAX`: the session log's `pushes`.
+    #[serde(default)]
+    pub pushes: Vec<ObjectId>,
+    /// The session log's push.
+    #[serde(default)]
+    pub log: LogState,
+}
+
+/// Where a task's session log is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LogState {
+    /// The harness has not reported one.
+    #[default]
+    Unreported,
+    /// Reported and stored; `tries` pushes so far got no answer.
+    Pending { tries: u8 },
+    /// Answered: pushed, refused, or `Retry` when `LOG_TRIES` pushes got no answer.
+    Done(Pushed),
 }
 
 /// One input to the box.
@@ -127,7 +154,17 @@ pub enum Report {
 
 impl TaskBox {
     pub fn new(task: Task) -> TaskBox {
-        TaskBox { task, generation: 0, version: None, heard: 0, late: 0, hold: None, base: Some(TaskApiState::Queued) }
+        TaskBox {
+            task,
+            generation: 0,
+            version: None,
+            heard: 0,
+            late: 0,
+            hold: None,
+            base: Some(TaskApiState::Queued),
+            pushes: Vec::new(),
+            log: LogState::Unreported,
+        }
     }
 
     fn next_id(&mut self) -> SandboxId {
@@ -187,9 +224,35 @@ impl TaskBox {
     }
 
     /// The state the base's task should read and has not answered: `TaskState::api`'s, unless the base already
-    /// answered it or the task is `Cancelled`.
+    /// answered it or the task is `Cancelled`. A final state waits while the session log's push is unanswered.
     pub fn unreported(&self) -> Option<TaskApiState> {
-        self.task.state.api().filter(|s| self.base != Some(*s))
+        let s = self.task.state.api().filter(|s| self.base != Some(*s))?;
+        (!(s.is_final() && self.log_due())).then_some(s)
+    }
+
+    /// The harness reported its session log: `true` for the first report, which the host stores and pushes; `false`
+    /// for any later one, which the host refuses, since the session ref is created once.
+    pub fn log_reported(&mut self) -> bool {
+        if self.log != LogState::Unreported {
+            return false;
+        }
+        self.log = LogState::Pending { tries: 0 };
+        true
+    }
+
+    /// Whether the host still owes the session log's push.
+    pub fn log_due(&self) -> bool {
+        matches!(self.log, LogState::Pending { .. })
+    }
+
+    /// The host's push of the session log was answered `p`: a push or a refusal ends it, and a push with no answer is
+    /// tried again until `LOG_TRIES` have had none.
+    pub fn log_answered(&mut self, p: Pushed) {
+        let LogState::Pending { tries } = self.log else { return };
+        self.log = match p {
+            Pushed::Retry if tries + 1 < LOG_TRIES => LogState::Pending { tries: tries + 1 },
+            p => LogState::Done(p),
+        };
     }
 
     /// The base answered the `PATCH` for `state` with `status`. A 2xx took it. A 4xx refused it for good, as for a task
@@ -206,7 +269,16 @@ impl TaskBox {
         match input {
             Input::Report { from, event } => {
                 self.admit(&from, now)?;
+                let head = match &event {
+                    TaskEvent::Pushed { head } => Some(*head),
+                    _ => None,
+                };
                 self.task.step(event).map_err(Report::Refused)?;
+                if let Some(h) = head
+                    && self.pushes.len() < PUSHES_MAX
+                {
+                    self.pushes.push(h);
+                }
                 self.heard = now;
                 Ok(if self.task.state.is_final() { Act::Stop } else { Act::Keep })
             }
@@ -220,6 +292,11 @@ impl TaskBox {
                     TaskApiState::WaitingForUser if !paused => {
                         self.task.step(TaskEvent::IssueEdited { by_writer: false }).expect("a live task pauses");
                         self.base = Some(TaskApiState::WaitingForUser);
+                        // A log not yet pushed is dropped: `decide` refuses the session ref while the task is paused,
+                        // and the resumed Sandbox reports the task's one log. A pushed one stays the task's log.
+                        if self.log != LogState::Done(Pushed::Ok) {
+                            self.log = LogState::Unreported;
+                        }
                         self.hold = None;
                         Ok(Act::Stop)
                     }

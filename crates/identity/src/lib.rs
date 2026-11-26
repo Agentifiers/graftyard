@@ -64,9 +64,9 @@ pub use identity::{
 };
 pub use ids::{IdBlock, IdCursor, IdsCmd, IdsErr, IdsEvent, IdsFold, IdsScratch};
 pub use names::{
-    AccountRow, ClientRoute, Login, LoginKey, LoginRow, NAME_SHARDS, NameError, NameKey, NamesCmd, NamesErr,
-    NamesEvent, NamesFold, NamesMore, NamesOp, NamesOut, NamesRead, NamesScratch, RESERVED, RepoName, RepoNameKey,
-    Shortcode, SlugRow, account_shard, name_shard,
+    AccountRow, ClientRoute, CursorPart, ForkRows, Login, LoginKey, LoginRow, NAME_SHARDS, NameError, NameKey,
+    NamesCmd, NamesErr, NamesEvent, NamesFold, NamesMore, NamesOp, NamesOut, NamesRead, NamesScratch, RESERVED,
+    RepoName, RepoNameKey, Shortcode, SlugRow, account_shard, name_shard,
 };
 pub use org::{
     INVITATION_TTL, InstanceAuth, InvitationEvent, InvitationGrant, InvitationId, InvitationRow, Invitee, LdapConfig,
@@ -123,6 +123,9 @@ pub const AUTHZ_FORMAT_V15: Format = Format { family: 0x12, version: 15 };
 /// The `Audit` consumer's cursor on `Names` and `Tokens` shards (`crate::audit`), M3's close. Read and enabled on the
 /// same terms as version 2.
 pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };
+/// AM3-WP2a: `NamesOp::RepoOwnerIn` and `NamesEvent::ForkOwner`, a fork's `RepoOwner` row with its network
+/// (`build/BUILD-PLAN.md`, AM3-WP2a). Read and enabled on the same terms as version 2.
+pub const NAMES_FORMAT_V4: Format = Format { family: 0x10, version: 4 };
 pub const TOKENS_FORMAT_V3: Format = Format { family: 0x11, version: 3 };
 /// AM2-WP1: `StoreWith` of a `ghu_` from `token/scoped`, which may carry `repos` and an MCP grant's `grant` and
 /// `write` (`TokenFields::fits_at`). Read and enabled on the same terms as version 2.

@@ -837,6 +837,7 @@ impl Family for Repo {
             git::issue_ops::call::REPO_FORMAT_ASSIGN,
             git::issue_ops::call::REPO_FORMAT_ISSUE_COMMENT,
             git::issue_ops::call::REPO_FORMAT_HOST_PAUSE,
+            git::issue_ops::call::REPO_FORMAT_FORKS,
             git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT,
             #[cfg(feature = "test-format")]
             git::repo::REPO_FORMAT_TEST,
@@ -1682,8 +1683,9 @@ impl Family for Names {
     type C = id::NamesCmd;
 
     /// Format 3 is the `Audit` cursor's, written only by this release's own consumer once `GRAFTYARD_AUDIT` is set.
+    /// Format 4 is a fork's `RepoOwner` row with its network (AM3-WP2a), sent only once `FormatsEnable` enabled it.
     fn reads() -> Vec<Format> {
-        vec![id::NAMES_FORMAT, id::NAMES_FORMAT_V2, id::NAMES_FORMAT_V3]
+        vec![id::NAMES_FORMAT, id::NAMES_FORMAT_V2, id::NAMES_FORMAT_V3, id::NAMES_FORMAT_V4]
     }
     /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`).
     fn fold_alarm_ms(leading: bool) -> Option<i64> {
@@ -1741,6 +1743,10 @@ impl Family for Names {
         }
         if let Some(r) = q.get("repoOwner").and_then(Value::as_i64) {
             out.insert("repoOwner".into(), json!(f.repo_owner(graftyard_types::RepoId(DbId(r)))));
+        }
+        // A fork's network from its `RepoOwner` row (format 0x10.4), `null` for a root: the edge's id-only routes.
+        if let Some(r) = q.get("repoNetwork").and_then(Value::as_i64) {
+            out.insert("repoNetwork".into(), json!(f.repo_network(graftyard_types::RepoId(DbId(r)))));
         }
         if q.get("ids").is_some() {
             out.insert("ids".into(), cursor_json(&f.ids));

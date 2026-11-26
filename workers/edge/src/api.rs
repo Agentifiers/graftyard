@@ -525,6 +525,7 @@ pub(crate) async fn read_repo(
     // `settings` and the `collaborator` rows. A private repository whose owner's `Authz` did not answer is 503, not a
     // 404 the caller would take as "no such repository".
     let core = TierRows::store(&rows.core);
+    crate::nets::learn_rows(repo.id, &core);
     // A read-class request's owner `Authz` may be up to `READ_CACHE` old (`crate::rcache`): one that would hide the
     // repository is read again fresh first, so a grant shows at once and only a revocation waits out the cache.
     if gate == Gate::Readers
@@ -1262,8 +1263,17 @@ pub(crate) async fn tasks(
             };
             return Ok(t::list(&view, authz, crate::now(), &f, reader, &format!("/repos/{owner}/{repo}/tasks")));
         }
-        (Route::Task { id, .. }, Method::Get) => return Ok(t::get(&view, authz, crate::now(), id, reader)),
-        (Route::Log { id, .. }, Method::Get) => return Ok(t::log(&view, id, reader)),
+        (Route::Task { id, .. }, Method::Get) => return Ok(t::get(&view, authz, crate::now(), id, query, reader)),
+        (Route::Log { id, .. }, Method::Get) => {
+            let id = match t::log_reader(&view, id, reader) {
+                Ok(id) => id,
+                Err(r) => return Ok(r),
+            };
+            return Ok(match session_log(c, &rd, &id).await? {
+                Ok(l) => t::log(l.as_ref()),
+                Err(r) => r,
+            });
+        }
         (Route::Tasks { .. }, Method::Post) => t::parse_create(body, requester.map(graftyard_identity::UserId)),
         (Route::Task { id, .. }, Method::Patch) => match t::path_id(id, caller) {
             Some(id) => t::parse_patch(id, body),
@@ -1285,6 +1295,97 @@ pub(crate) async fn tasks(
     }
     let created = matches!(op, IssueOp::CreateTask(_) | IssueOp::CreateRun(_));
     commit_issue(c, &rd, &who, op, What::Task { created, contents: reader.contents }).await
+}
+
+/// Task `id`'s stored session log (`design/AGENT-LAYER.md`, Shape, `SessionLog`), for a reader `log_reader` let
+/// through on the base `rd`: `session.json` at its session ref's tip on the base, else on the base owner's workspace
+/// fork `<owner>-agents/<repo>`, read as the host (no viewer), since only `graftyard-workspace` under the task's live
+/// claim writes a session ref. `Ok(None)` while neither holds the ref.
+pub(crate) async fn session_log(
+    c: &Ctx<'_>,
+    rd: &Read,
+    id: &graftyard_identity::SessionId,
+) -> Result<std::result::Result<Option<graftyard_git::session_log::SessionLog>, Reply>> {
+    use graftyard_git::session_log::{LOG_PATH, session_ref};
+    let Ok(name) = graftyard_git::refs::RefName::parse(session_ref(id).as_bytes()) else { return Ok(Ok(None)) };
+    let Ok(host) = Host::new(&c.cfg.host, false) else {
+        return Ok(Err(unavailable("the install's host is not valid")));
+    };
+    let read_at = |r: &Read| r.view(&host).ref_value(&name);
+    let fork;
+    let (from, tip) = match read_at(rd) {
+        Some(tip) => (rd, tip),
+        None => {
+            let Ok(owner) = graftyard_identity::Login::parse(&rd.at.owner) else { return Ok(Ok(None)) };
+            let base = graftyard_git::controller::RepoRef {
+                owner,
+                name: match graftyard_identity::RepoName::parse(&rd.at.name) {
+                    Ok(n) => n,
+                    Err(_) => return Ok(Ok(None)),
+                },
+            };
+            let Ok(graftyard_git::controller::Workspace::Fork(f)) =
+                graftyard_git::controller::workspace(graftyard_identity::WorkspaceMode::Fork, &base)
+            else {
+                return Ok(Ok(None));
+            };
+            // The fork's refs are read with no read gate (`Gate::Invitees`): the viewer passed `log_reader` on the base,
+            // and a base reader need not reach the fork (LF-10).
+            let repo = match resolve(c, f.owner.as_str(), f.name.as_str()).await? {
+                Ok(Some(r)) => r,
+                Ok(None) => return Ok(Ok(None)),
+                Err(e) => return Ok(Err(read_failed("the workspace fork's lookup failed; retry", &e))),
+            };
+            let (o, n) = (f.owner.as_str(), f.name.as_str());
+            fork = match read_repo(c, repo, o, n, None, None, Rows::Core, Gate::Invitees).await? {
+                Ok(r) => r,
+                Err(r) if r.status == 404 => return Ok(Ok(None)),
+                Err(r) => return Ok(Err(r)),
+            };
+            match read_at(&fork) {
+                Some(tip) => (&fork, tip),
+                None => return Ok(Ok(None)),
+            }
+        }
+    };
+    let q = [("commit", tip.hex()), ("path", LOG_PATH.to_owned())];
+    match crate::ui::shard_json(c, from, "blob", &q).await {
+        Ok(v) => Ok(Ok(graftyard_api::tasks::stored_log(id, v["text"].as_str()))),
+        Err(r) if r.status == 404 => Ok(Ok(None)),
+        Err(r) => Ok(Err(r)),
+    }
+}
+
+/// `GET /{owner}/{repo}/_graftyard/sessions/{id}` (`design/AGENT-LAYER.md`, Shape, `SessionLog`): the base's task
+/// read with the viewer's access, as `GET .../tasks/{id}/log` reads it, then the stored log as JSON under `Accept:
+/// application/json` or as HTML.
+pub(crate) async fn session_page(c: &Ctx<'_>, req: &Request, owner: &str, name: &str, id: &str) -> Result<Reply> {
+    use graftyard_api::tasks as t;
+    if !c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_TASKS) {
+        return Ok(unavailable("session pages need record format 32.12, which FormatsEnable has not enabled"));
+    }
+    c.read_class.set(true);
+    let who = authenticate(c, req).await?;
+    let rd = match read(c, owner, name, who.as_ref()).await? {
+        Ok(r) => r,
+        Err(r) => return Ok(r),
+    };
+    let Some(authz) = rd.dir.authz.as_ref() else {
+        return Ok(unavailable("the owner's Authz chain did not answer; retry"));
+    };
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    let reader = t::Reader::of(who.as_ref(), authz, &access);
+    let Ok(host) = Host::new(&c.cfg.host, false) else { return Ok(unavailable("the install's host is not valid")) };
+    let view = rd.view(&host);
+    let id = match t::log_reader(&view, id, reader) {
+        Ok(id) => id,
+        Err(r) => return Ok(r),
+    };
+    let json = req.headers().get("accept")?.is_some_and(|a| a.contains("application/json"));
+    Ok(match session_log(c, &rd, &id).await? {
+        Ok(l) => t::session_page(&view, l.as_ref(), json),
+        Err(r) => r,
+    })
 }
 
 /// The command read a task request makes (`command-rows`): none for a `GET`, which renders the tiers here; a write
@@ -1993,13 +2094,14 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let comment_route = matches!(tail, ["issues", _, "comments"]);
     // F137's REST edits (a comment edit, a lock change, a multi-field issue edit) are served only once 32.34 is
     // enabled; until then they answer as before (404).
-    let edit_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT);
-    let edit_route = matches!((&method, tail), (Method::Patch, ["issues", "comments", _]) | (_, ["issues", _, "lock"]));
+    let writes_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT);
+    let writes_route =
+        matches!((&method, tail), (Method::Patch, ["issues", "comments", _]) | (_, ["issues", _, "lock"]));
     c.decided.set(
         rest_decided(&method, tail)
             && (routes_on || tail != ["issues"])
             && (comment_on || !comment_route)
-            && (edit_on || !edit_route),
+            && (writes_on || !writes_route),
     );
     let merge_of = rest_merge(&method, tail);
     c.leader_reads.set(merge_of.is_some());
@@ -2140,8 +2242,13 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // An assignment's body, read before the view borrows `rd`: a login the tiers do not name is read into the
     // directory, so the plan resolves it and the leader renders it; a bot login (`{slug}[bot]`) resolves only to
     // `graftyard-agent`'s bot account, which `decide` checks is installed.
+    // F141's single-field issue edit is served only once 32.33 is enabled, whose members may pause the issue's tasks in
+    // the edit's own entry; until then a title or body `PATCH` answers as before (404).
+    let edit_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_HOST_PAUSE);
     let assign_body = match (assign_on, &method, tail) {
-        (true, Method::Post | Method::Delete, ["issues", _, "assignees"]) | (true, Method::Patch, ["issues", _]) => {
+        (true, Method::Post | Method::Delete, ["issues", _, "assignees"]) | (_, Method::Patch, ["issues", _])
+            if assign_on || edit_on || writes_on =>
+        {
             let b = serde_json::from_slice::<Value>(&req.bytes().await?).unwrap_or(Value::Null);
             for login in rest::assignee_logins(&b) {
                 if graftyard_api::view::Directory::by_login(&rd.dir, &login).is_some() {
@@ -2285,7 +2392,8 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         }
         // F20: `issues/{n}/assignees` add and remove, and an issue `PATCH` that sets only `assignees`.
         (m @ (Method::Post | Method::Delete | Method::Patch), ["issues", n] | ["issues", n, "assignees"])
-            if assign_body.is_some()
+            if assign_on
+                && assign_body.is_some()
                 && let Some(plan) = rest::plan_issue_assignees(
                     &r,
                     match m {
@@ -2309,9 +2417,39 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Err(x) => x,
             }
         }
+        // F141 and F137: an issue `PATCH`. A body naming exactly one of `title` and `body` is one `Change` (32.33, which
+        // may pause the issue's tasks in the same entry), with the assignment route's 200. Any other body, once 32.34 is
+        // enabled, is one `Edit` that commits whole or not at all, with `What::IssueUpdated`'s; an assignees-only body
+        // is F20's arm above. Until its format is enabled, each shape answers as before (404).
+        (Method::Patch, ["issues", n])
+            if let Some(plan) = {
+                let b = assign_body.as_ref().unwrap_or(&Value::Null);
+                match rest::plan_issue_edit(&r, n, b) {
+                    Some(plan) => edit_on.then_some(plan),
+                    None => writes_on.then(|| rest::plan_issue_update(&r, n, b)),
+                }
+            } =>
+        {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match plan {
+                Ok(op) => {
+                    let n = n.parse().unwrap_or(0);
+                    // A `Change` keeps the single-field route's render, which every 32.33 member has.
+                    let what = match op {
+                        IssueOp::Edit { .. } => What::IssueUpdated { n },
+                        _ => What::IssueAssigned { n, created: false },
+                    };
+                    commit_issue(c, &rd, &who, to_wire(op), what).await?
+                }
+                Err(x) => x,
+            }
+        }
         // F137: a REST comment edit (200 `issue-comment`) and a lock change (204), each in 32.34, served only once it is
         // enabled; a comment delete commits the existing `DeleteComment` in its own format, and answers 204.
-        (Method::Patch, ["issues", "comments", cid]) if edit_on => {
+        (Method::Patch, ["issues", "comments", cid]) if writes_on => {
             let who = match need(&who) {
                 Ok(w) => w,
                 Err(x) => return Ok(x),
@@ -2334,7 +2472,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Err(x) => x,
             }
         }
-        (m @ (Method::Put | Method::Delete), ["issues", n, "lock"]) if edit_on => {
+        (m @ (Method::Put | Method::Delete), ["issues", n, "lock"]) if writes_on => {
             let who = match need(&who) {
                 Ok(w) => w,
                 Err(x) => return Ok(x),

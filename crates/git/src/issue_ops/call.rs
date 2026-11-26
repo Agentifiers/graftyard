@@ -64,7 +64,7 @@ pub const REPO_FORMAT_ASSIGN: Format = Format { family: 0x20, version: 30 };
 /// `What::IssueCommentCreated` cannot render after the entry commits, and which an App's token authors as its bot
 /// account (`AppId::bot`), as 32.29 does for an issue. It carries an App's claims, a task's included, or none for a
 /// user, as 32.30 does. A member that cannot read it refuses it before it commits, and the edge sends it only once
-/// `FormatsEnable` enabled it. 32.31 is AM2's forks (another branch).
+/// `FormatsEnable` enabled it. 32.31 is AM3-WP2a's forks (`REPO_FORMAT_FORKS`).
 pub const REPO_FORMAT_ISSUE_COMMENT: Format = Format { family: 0x20, version: 32 };
 /// AM3-WP3's host pause (`decisions/DECISIONS.md`, "`host-pause`"): a title or body `Change` or an `Assign`
 /// (`IssueCall::pausable`) whose entry may carry the pause (`TaskUpdated` to `waiting_for_user`) or the resume
@@ -82,6 +82,10 @@ pub const REPO_FORMAT_HOST_PAUSE: Format = Format { family: 0x20, version: 33 };
 /// user, and for an `Edit` the pause and a body edit's lease events. A member that cannot read it refuses it before it
 /// commits, and the edge sends it only once `FormatsEnable` enabled it.
 pub const REPO_FORMAT_ISSUE_EDIT: Format = Format { family: 0x20, version: 34 };
+/// AM3-WP2a, base forks (`build/BUILD-PLAN.md`): `RepoEvent::Genesis` (tag 50), whose fork's core `fork` row names the
+/// repository's network. A member that cannot read it refuses it before it commits, and the edge sends it only once
+/// `FormatsEnable` enabled it.
+pub const REPO_FORMAT_FORKS: Format = Format { family: 0x20, version: 31 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
