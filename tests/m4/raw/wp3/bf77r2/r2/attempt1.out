@@ -1,0 +1,12 @@
+file://~/workspace/repo/.worktrees/bf77h/tests/m4/wp3/bf77/bf77.mjs:30
+const must = (w, r, ...ok) => { if (!(ok.length ? ok : [200, 201]).includes(r.status)) throw new Error(`${w}: ${r.status} ${JSON.stringify(r.body).slice(0, 400)}`); return r.body; };
+                                                                                             ^
+
+Error: create: 503 {"documentation_url":"https://docs.github.com/enterprise-server@3.22/rest","message":"the initial commit: repo:65621: 0 of 3 joined ([Some((409, Object {\"refused\": String(\"claim unanswered\")})), Some((409, Object {\"refused\": String(\"claim unanswered\")})), Some((409, Object {\"refused\": String(\"claim unanswered\")}))]); repo:65621: no group","status":"503"}
+    at must (file://~/workspace/repo/.worktrees/bf77h/tests/m4/wp3/bf77/bf77.mjs:30:94)
+    at runWorkflow (file://~/workspace/repo/.worktrees/bf77h/tests/m4/wp3/bf77/bf77.mjs:51:112)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async file://~/workspace/repo/.worktrees/bf77h/tests/m4/wp3/bf77/bf77.mjs:137:13
+
+Node.js v26.12.0
+exit 1

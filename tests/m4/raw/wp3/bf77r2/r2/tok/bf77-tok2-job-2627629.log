@@ -1,0 +1,28 @@
+2026-11-26T06:30:35.0904432Z Current runner version: '2.338.2'
+2026-11-26T06:30:35.0909777Z Runner name: 'bf77-3'
+2026-11-26T06:30:35.0910217Z Machine name: '172'
+2026-11-26T06:30:35.0912610Z Prepare workflow directory
+2026-11-26T06:30:35.1328465Z Prepare all required actions
+2026-11-26T06:30:35.1449555Z Complete job name: rw
+2026-11-26T06:30:35.2223489Z ##[group]Run set -u
+2026-11-26T06:30:35.2223693Z [36;1mset -u[0m
+2026-11-26T06:30:35.2223759Z [36;1mapi() { curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "authorization: token $GITHUB_TOKEN" -H 'content-type: application/json' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$2" ${3:+--data "$3"}; }[0m
+2026-11-26T06:30:35.2223790Z [36;1mecho "BF77 $GITHUB_JOB read $(api GET '')"[0m
+2026-11-26T06:30:35.2223818Z [36;1mecho "BF77 $GITHUB_JOB issue $(api POST /issues '{"title":"bf77"}')"[0m
+2026-11-26T06:30:35.2223878Z [36;1mecho "BF77 $GITHUB_JOB status $(api POST /statuses/$GITHUB_SHA '{"state":"success","context":"bf77"}')"[0m
+2026-11-26T06:30:35.2223907Z [36;1mecho "BF77 $GITHUB_JOB artifacts $(api GET /actions/artifacts)"[0m
+2026-11-26T06:30:35.2224038Z [36;1mrm -rf p && git init -q p && cd p[0m
+2026-11-26T06:30:35.2224169Z [36;1mgit -c user.name=bf77 -c user.email=bf77@example.invalid commit -q --allow-empty -m bf77[0m
+2026-11-26T06:30:35.2224292Z [36;1mauth="authorization: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"[0m
+2026-11-26T06:30:35.2224324Z [36;1mif git -c http.extraHeader="$auth" push -q "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/bf77-$GITHUB_JOB" 2>/dev/null[0m
+2026-11-26T06:30:35.2224383Z [36;1mthen echo "BF77 $GITHUB_JOB push accepted"; else echo "BF77 $GITHUB_JOB push refused"; fi[0m
+2026-11-26T06:30:35.2250306Z shell: /usr/sbin/bash -e {0}
+2026-11-26T06:30:35.2250662Z env:
+2026-11-26T06:30:35.2250993Z   GITHUB_TOKEN: ***
+2026-11-26T06:30:35.2251034Z ##[endgroup]
+2026-11-26T06:30:36.4540563Z BF77 rw read 200
+2026-11-26T06:30:39.0522677Z BF77 rw issue 201
+2026-11-26T06:30:40.2060626Z BF77 rw status 201
+2026-11-26T06:30:40.8921310Z BF77 rw artifacts 403
+2026-11-26T06:30:42.4536892Z BF77 rw push accepted
+2026-11-26T06:30:42.4755597Z Cleaning up orphan processes

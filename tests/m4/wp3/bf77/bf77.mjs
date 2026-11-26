@@ -24,6 +24,8 @@ const jit = process.env.JITCONFIG ?? join(process.env.CARGO_TARGET_DIR ?? join(r
 const mirror = process.env.MIRROR_ORG ?? "actions-mirror";
 // CACHE_MIRROR: the org holding `cache` when `actions-mirror/cache` is held Deleted (BF-69's teardown, 2026-11-25), as
 // `actions-mirror2` on graft-m4a; DEL_REPO renames the delete half's repository after a first run deleted it.
+// TOKEN_ONLY=1 runs the token half alone (its rerun after `bf77-routes`, 2026-11-26, the delete half having passed),
+// and TOK_REPO renames its repository, since a deleted name stays held for 90 days.
 const cacheMirror = process.env.CACHE_MIRROR ?? mirror;
 const must = (w, r, ...ok) => { if (!(ok.length ? ok : [200, 201]).includes(r.status)) throw new Error(`${w}: ${r.status} ${JSON.stringify(r.body).slice(0, 400)}`); return r.body; };
 const t0 = new Date();
@@ -95,20 +97,23 @@ async function runWorkflow(name, file, priv = false) {
 }
 
 // ---- the delete half
-const del = await runWorkflow(process.env.DEL_REPO ?? "bf77-del", "seed.yml");
+const tokenOnly = process.env.TOKEN_ONLY === "1";
+let del = null, shard = null, before = null, polls = [];
+if (!tokenOnly) {
+del = await runWorkflow(process.env.DEL_REPO ?? "bf77-del", "seed.yml");
 check(Object.values(del.logs).every((j) => j.conclusion === "Success"), `seed jobs: ${JSON.stringify(Object.fromEntries(Object.entries(del.logs).map(([k, v]) => [k, v.conclusion])))}`);
 const listed = must("caches", await api("GET", `/api/v3/repos/${del.R}/actions/caches`, admin), 200, 404);
-const shard = (await objects(BUCKETS[0], "actions/artifacts/")).find((k) => k.includes(`/${del.repo}/`))?.split("/")[2];
+shard = (await objects(BUCKETS[0], "actions/artifacts/")).find((k) => k.includes(`/${del.repo}/`))?.split("/")[2];
 check(Boolean(shard), `the seeded artifact names the repository's shard: ${shard}`);
 const chain = shard;
 const leader = chain ? await leaderOf(chain) : null;
 const caches = async () => (await voter(chain, leader, "/read", { q: { repoCaches: del.repo } })).v?.value?.repoCaches;
-const before = { caches: await caches(), cacheObjs: await count(`actions/cache/${shard}/`), artObjs: await count(`actions/artifacts/${shard}/${del.repo}/`) };
+before = { caches: await caches(), cacheObjs: await count(`actions/cache/${shard}/`), artObjs: await count(`actions/artifacts/${shard}/${del.repo}/`) };
 check(before.caches >= 2 && before.artObjs > 0, `before the delete: ${JSON.stringify(before)} (REST caches ${JSON.stringify(listed).slice(0, 120)})`);
 const gone = await api("DELETE", `/api/v3/repos/${del.R}`, admin);
 check(gone.status === 204, `DELETE ${del.R}: ${gone.status}`);
 const at = Date.now();
-let after = null, polls = [];
+let after = null;
 for (;;) {
   await sleep(30_000);
   let c;
@@ -120,6 +125,7 @@ for (;;) {
 }
 check(after.caches === 0 && after.artObjs === 0 && after.s <= 630, `10 min after the delete: ${JSON.stringify(after)}`);
 check(after.cacheObjs <= before.cacheObjs - 2, `the seeded entries' chunks left the shard's cache prefix: ${before.cacheObjs} -> ${after.cacheObjs}`);
+}
 
 // ---- the token half
 const WANT = {
@@ -128,7 +134,7 @@ const WANT = {
   rw: { read: "200", issue: "201", status: "201", artifacts: "403", push: "accepted" },
 };
 // Private, so a read the token makes is its own permission's and not a public repository's anonymous read.
-const tok = await runWorkflow("bf77-tok", "perms.yml", true);
+const tok = await runWorkflow(process.env.TOK_REPO ?? "bf77-tok", "perms.yml", true);
 const got = {};
 for (const [job, j] of Object.entries(tok.logs)) {
   got[job] = {};
@@ -139,7 +145,7 @@ const branches = must("branches", await api("GET", `/api/v3/repos/${tok.R}/branc
 check(branches.includes("bf77-rw") && !branches.includes("bf77-ro") && !branches.includes("bf77-default"), `branches after the pushes: ${branches}`);
 
 const ok = fails.length === 0;
-const res = { ok, from: t0.toISOString(), to: new Date().toISOString(), fails, del: { run: del.run, repo: del.repo, shard, before, polls }, tok: { run: tok.run, repo: tok.repo, got } };
+const res = { ok, from: t0.toISOString(), to: new Date().toISOString(), fails, del: del && { run: del.run, repo: del.repo, shard, before, polls }, tok: { run: tok.run, repo: tok.repo, got } };
 row(join(out, "result.jsonl"), res);
 log(`BF-77 ${ok ? "PASS" : "FAIL"}: ${JSON.stringify(res).slice(0, 1500)}`);
 log(`sheds: python3 tests/fanout/tieroff503.py ${res.from} ${res.to} graft-m4a-edge`);
