@@ -31,3 +31,10 @@ exit 0
 == R23 M2 100% 2026-11-20T18:25:06Z by the lead's 50% rule (run 1713035: 3 of 8 jobs on RunnerBox, 8 of 8 Success, gave_up 0, 18:20:46Z sweep destroyed 0); same deploy_versions [(13193b05, 100)] as upgrade's runner_box path (its canary-age check counts from the 18:14:27Z 50% deployment)
   graft-runners: 13193b05 at 100% from 2026-11-20T18:25:14.811191Z [('13193b05', 100)]
 exit 0
+== R23 M3 2026-11-26T07:41:41Z from e726a3a5a, bundle /tmp/m3-bundle, image sha256:d0652a89d973b07cc7581f696b0fa74ecf818b7125ad82f308ab58ba66ac35ea
+  HostedRunnersAppKey: written to Secrets Store graft-runners (2b564b906c40496ea9544799904bc93b)
+  container application graft-runners-sandboxstd4: deleted (release M3)
+  container application graft-runners-sandboxstd3: deleted (release M3)
+  graft-runners: deployed, sweep */5 * * * *, webhook at https://graft-runners.<runner-sub>.workers.dev
+  container application graft-runners-runnerbox: exists
+exit 0

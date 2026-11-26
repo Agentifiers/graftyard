@@ -400,7 +400,8 @@ enum ReleaseCmd {
 
 #[derive(Subcommand)]
 enum RunnersCmd {
-    /// Writes `HostedRunnersAppKey`, deploys `graft-runners` with its sweep, and creates its Sandbox applications.
+    /// Writes `HostedRunnersAppKey`, deploys `graft-runners` with its sweep, and creates `RunnerBox`'s application. On
+    /// an account at `v1` or `v2` it is release M3, which deletes the Sandbox classes and their applications.
     Init {
         #[arg(long)]
         account: String,
