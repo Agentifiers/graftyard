@@ -6,6 +6,8 @@
 //! (`crate::shard`'s run key makes a replay create nothing twice). `on: push` (BF-78; `decisions/DECISIONS.md`,
 //! "`push-trigger`"): every branch or tag a committed entry moves to a new commit, run at that commit.
 
+use std::collections::BTreeMap;
+
 use graftyard_fold::Read;
 use graftyard_git::hooks::{Subject, webhooks};
 use graftyard_git::issues::{IssueNumber, MergeabilityResult};
@@ -309,6 +311,54 @@ pub fn push_run(
         fork: false,
     };
     Ok(Some((run, jobs, declared)))
+}
+
+/// The commit push `p`'s `paths` filters and `github.event.commits` are read against (F133): `before` for an existing
+/// ref, and for a new one the default branch's tip `default_tip`, since the git cache's `/ui/diff` and `/ui/commits`
+/// from it read from its merge base with `after` [doc: GHES 3.22, "Webhook events and payloads", `push`: the commits
+/// are those "included in the compare between the before commit and the after commit", and for "a newly created ref
+/// that is directly based on the default branch", the compare is "between the head of the default branch and the
+/// after commit"]. `None`, which runs every path-filtered workflow and lists the head commit alone, for a new tag (tags
+/// ignore path filters, and what GHES lists for one is [unverified]), a new branch that is the default branch itself,
+/// or when the default branch has no tip.
+pub fn push_base(p: &PushEvent, default_branch: &RefName, default_tip: Option<ObjectId>) -> Option<ObjectId> {
+    if !p.created() {
+        return Some(p.before);
+    }
+    default_tip.filter(|_| !p.tag() && p.r#ref != *default_branch)
+}
+
+/// A git cache `/ui/diff` answer's paths, each with its blob on the diff's head side, `None` where the head has no
+/// file there (removed, or a rename's old name); `None` when the diff is truncated, which runs every path filter.
+pub fn diff_paths(d: &serde_json::Value) -> Option<BTreeMap<String, Option<String>>> {
+    if d["truncated"].as_bool() == Some(true) {
+        return None;
+    }
+    let mut out = BTreeMap::new();
+    for f in d["files"].as_array().into_iter().flatten() {
+        let Some(name) = f["filename"].as_str() else { continue };
+        let status = f["status"].as_str();
+        out.insert(name.to_owned(), f["sha"].as_str().filter(|_| status != Some("removed")).map(str::to_owned));
+        if let Some(prev) = f["previous_filename"].as_str().filter(|_| status == Some("renamed")) {
+            out.entry(prev.to_owned()).or_insert(None);
+        }
+    }
+    Some(out)
+}
+
+/// The paths a two-dot diff of `before` and `after` changes, from their diffs against their merge base (`to_after`
+/// and `to_before`, as `diff_paths` reads them), as GHES reads a force push [doc: GHES 3.22, "Workflow syntax", "Git
+/// diff comparisons": "A two-dot diff compares the head and base SHAs directly"]: a path one side changed and the
+/// other did not, or both changed to different blobs.
+pub fn two_dot(
+    to_after: &BTreeMap<String, Option<String>>,
+    to_before: &BTreeMap<String, Option<String>>,
+) -> Vec<String> {
+    let mut out: Vec<String> =
+        to_after.iter().filter(|(k, v)| to_before.get(*k) != Some(v)).map(|(k, _)| k.clone()).collect();
+    out.extend(to_before.keys().filter(|k| !to_after.contains_key(*k)).cloned());
+    out.sort();
+    out
 }
 
 /// Whether a push's head commit message skips its `push` runs [doc: GHES 3.22, "Skipping workflow runs": `[skip ci]`,
