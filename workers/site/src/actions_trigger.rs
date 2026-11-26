@@ -577,7 +577,17 @@ async fn push_runs(
         Some((_, r)) => r.as_bytes().to_vec(),
         None => head_commit(env, site, repo, record, p.after).await?,
     };
-    let dir = crate::hookseq::directory(h, repo, f.owner, record).await?;
+    let mut dir = crate::hookseq::directory(h, repo, f.owner, record).await?;
+    // The pusher's login: the directory holds only the logins the repository's rows name, so without it `pusher` and
+    // `sender` read `ghost` (BF-78 r1). The run's actor is the same account, sent only where claims are on.
+    let pusher = match p.pusher {
+        Some(a) => Some((a, crate::activity::login_of(env, a).await?)),
+        None => None,
+    };
+    if let Some((a, l)) = &pusher {
+        dir.logins.entry(a.0.0).or_insert_with(|| l.clone());
+    }
+    let actor = pusher.filter(|_| crate::actions::oidc_claims(env));
     let event = {
         let host = graftyard_api::wire::Host::new(&crate::hookseq::api_host(env), false).map_err(|e| e.to_string())?;
         let core = h.core.borrow();
@@ -602,7 +612,6 @@ async fn push_runs(
     let paths = push_paths(env, site, repo, record, p, forced, ahead).await?;
     let paths: Option<Vec<&str>> = paths.as_ref().map(|v| v.iter().map(String::as_str).collect());
     let make = |path: &str, src: &str| push_run(repo, c.index, path, src, p, paths.as_deref());
-    let actor = run_actor(env, p.pusher).await?;
     let actor = actor.as_ref().map(|(a, l)| (*a, l.as_str()));
     let mut times = Times::default();
     runs_on(env, site, b, repo, f.owner, record, p.after, make, Call::Push { actor, event: &event }, &mut times).await

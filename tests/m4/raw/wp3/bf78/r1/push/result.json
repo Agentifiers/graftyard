@@ -1,0 +1,488 @@
+{
+  "repo": "m3org/bf78-r1",
+  "actor": "m3-admin",
+  "pushes": [
+    {
+      "id": "p1",
+      "ref": "refs/heads/main",
+      "sha": "fcfbcdcf87594f0e7583b335ef76548b24998b52",
+      "before": "a8e17c56585342d00e271453006538c0b81cece6",
+      "at": 1795650249442,
+      "want": [
+        ".github/workflows/any.yml",
+        ".github/workflows/branches.yml",
+        ".github/workflows/ignore.yml",
+        ".github/workflows/paths.yml"
+      ],
+      "got": [
+        [
+          2627580,
+          ".github/workflows/branches.yml",
+          "refs/heads/main",
+          "fcfbcdcf87594f0e7583b335ef76548b24998b52"
+        ],
+        [
+          2627578,
+          ".github/workflows/any.yml",
+          "refs/heads/main",
+          "fcfbcdcf87594f0e7583b335ef76548b24998b52"
+        ],
+        [
+          2627584,
+          ".github/workflows/paths.yml",
+          "refs/heads/main",
+          "fcfbcdcf87594f0e7583b335ef76548b24998b52"
+        ],
+        [
+          2627582,
+          ".github/workflows/ignore.yml",
+          "refs/heads/main",
+          "fcfbcdcf87594f0e7583b335ef76548b24998b52"
+        ]
+      ]
+    },
+    {
+      "id": "p2",
+      "ref": "refs/heads/main",
+      "sha": "d32fb64e5bfc0ac6986f1be47ea4a780424dfca4",
+      "before": "fcfbcdcf87594f0e7583b335ef76548b24998b52",
+      "at": 1795650324059,
+      "want": [
+        ".github/workflows/any.yml",
+        ".github/workflows/branches.yml",
+        ".github/workflows/ignore.yml"
+      ],
+      "got": [
+        [
+          2627586,
+          ".github/workflows/any.yml",
+          "refs/heads/main",
+          "d32fb64e5bfc0ac6986f1be47ea4a780424dfca4"
+        ],
+        [
+          2627590,
+          ".github/workflows/ignore.yml",
+          "refs/heads/main",
+          "d32fb64e5bfc0ac6986f1be47ea4a780424dfca4"
+        ],
+        [
+          2627588,
+          ".github/workflows/branches.yml",
+          "refs/heads/main",
+          "d32fb64e5bfc0ac6986f1be47ea4a780424dfca4"
+        ]
+      ]
+    },
+    {
+      "id": "p3",
+      "ref": "refs/heads/rel/1.0",
+      "sha": "065e3030ba45c14bb4bba254c2ae093d48ffd687",
+      "before": "0000000000000000000000000000000000000000",
+      "at": 1795650400223,
+      "want": [
+        ".github/workflows/any.yml",
+        ".github/workflows/branches.yml"
+      ],
+      "got": [
+        [
+          2627594,
+          ".github/workflows/branches.yml",
+          "refs/heads/rel/1.0",
+          "065e3030ba45c14bb4bba254c2ae093d48ffd687"
+        ],
+        [
+          2627592,
+          ".github/workflows/any.yml",
+          "refs/heads/rel/1.0",
+          "065e3030ba45c14bb4bba254c2ae093d48ffd687"
+        ]
+      ]
+    },
+    {
+      "id": "p4",
+      "ref": "refs/heads/rel/1.0-wip",
+      "sha": "461d49f5623724c9249ff8f5680a5206534405c6",
+      "before": "0000000000000000000000000000000000000000",
+      "at": 1795650468284,
+      "want": [
+        ".github/workflows/any.yml"
+      ],
+      "got": [
+        [
+          2627596,
+          ".github/workflows/any.yml",
+          "refs/heads/rel/1.0-wip",
+          "461d49f5623724c9249ff8f5680a5206534405c6"
+        ]
+      ]
+    },
+    {
+      "id": "p5",
+      "ref": "refs/heads/dev",
+      "sha": "603554dedb9ae552668d7672afa640a7eb8a3600",
+      "before": "0000000000000000000000000000000000000000",
+      "at": 1795650537982,
+      "want": [
+        ".github/workflows/any.yml",
+        ".github/workflows/ignore.yml"
+      ],
+      "got": [
+        [
+          2627600,
+          ".github/workflows/ignore.yml",
+          "refs/heads/dev",
+          "603554dedb9ae552668d7672afa640a7eb8a3600"
+        ],
+        [
+          2627598,
+          ".github/workflows/any.yml",
+          "refs/heads/dev",
+          "603554dedb9ae552668d7672afa640a7eb8a3600"
+        ]
+      ]
+    },
+    {
+      "id": "p6",
+      "ref": "refs/tags/v1",
+      "sha": "d32fb64e5bfc0ac6986f1be47ea4a780424dfca4",
+      "before": "0000000000000000000000000000000000000000",
+      "at": 1795650607255,
+      "want": [
+        ".github/workflows/any.yml",
+        ".github/workflows/tags.yml"
+      ],
+      "got": [
+        [
+          2627604,
+          ".github/workflows/tags.yml",
+          "refs/tags/v1",
+          "d32fb64e5bfc0ac6986f1be47ea4a780424dfca4"
+        ],
+        [
+          2627602,
+          ".github/workflows/any.yml",
+          "refs/tags/v1",
+          "d32fb64e5bfc0ac6986f1be47ea4a780424dfca4"
+        ]
+      ]
+    },
+    {
+      "id": "p7",
+      "ref": "refs/heads/dev",
+      "sha": "3273b96984099c3e91a2cd455ba97370a51874d7",
+      "before": "603554dedb9ae552668d7672afa640a7eb8a3600",
+      "at": 1795650675681,
+      "want": [
+        ".github/workflows/any.yml",
+        ".github/workflows/ignore.yml"
+      ],
+      "got": [
+        [
+          2627608,
+          ".github/workflows/ignore.yml",
+          "refs/heads/dev",
+          "3273b96984099c3e91a2cd455ba97370a51874d7"
+        ],
+        [
+          2627606,
+          ".github/workflows/any.yml",
+          "refs/heads/dev",
+          "3273b96984099c3e91a2cd455ba97370a51874d7"
+        ]
+      ]
+    },
+    {
+      "id": "p8",
+      "ref": "refs/heads/dev",
+      "sha": "",
+      "before": "3273b96984099c3e91a2cd455ba97370a51874d7",
+      "at": 1795650743342,
+      "want": [],
+      "got": []
+    },
+    {
+      "id": "p9",
+      "ref": "refs/heads/main",
+      "sha": "866ad234d7eec4d933d1cb7d529750ff8657f40c",
+      "before": "d32fb64e5bfc0ac6986f1be47ea4a780424dfca4",
+      "at": 1795650812640,
+      "want": [],
+      "got": []
+    }
+  ],
+  "per": [
+    {
+      "id": "p1",
+      "run": 2627578,
+      "event": {
+        "ref": "refs/heads/main",
+        "before": "a8e17c56585342d00e271453006538c0b81cece6",
+        "after": "fcfbcdcf87594f0e7583b335ef76548b24998b52",
+        "created": false,
+        "forced": false,
+        "commits": 1,
+        "head": "p1: change src"
+      },
+      "claims": {
+        "iss": "https://graft-m4a-edge.<sub>.workers.dev/_services/token",
+        "aud": "bf78",
+        "sub": "repo:m3org/bf78-r1:ref:refs/heads/main",
+        "actor": "m3-admin",
+        "actor_id": "7100003",
+        "run_number": "2",
+        "head_ref": "",
+        "base_ref": "",
+        "event_name": "push",
+        "ref": "refs/heads/main",
+        "job_workflow_ref": "m3org/bf78-r1/.github/workflows/any.yml@refs/heads/main"
+      },
+      "mismatch": {}
+    },
+    {
+      "id": "p2",
+      "run": 2627586,
+      "event": {
+        "ref": "refs/heads/main",
+        "before": "fcfbcdcf87594f0e7583b335ef76548b24998b52",
+        "after": "d32fb64e5bfc0ac6986f1be47ea4a780424dfca4",
+        "created": false,
+        "forced": false,
+        "commits": 1,
+        "head": "p2: docs only"
+      },
+      "claims": {
+        "iss": "https://graft-m4a-edge.<sub>.workers.dev/_services/token",
+        "aud": "bf78",
+        "sub": "repo:m3org/bf78-r1:ref:refs/heads/main",
+        "actor": "m3-admin",
+        "actor_id": "7100003",
+        "run_number": "3",
+        "head_ref": "",
+        "base_ref": "",
+        "event_name": "push",
+        "ref": "refs/heads/main",
+        "job_workflow_ref": "m3org/bf78-r1/.github/workflows/any.yml@refs/heads/main"
+      },
+      "mismatch": {}
+    },
+    {
+      "id": "p3",
+      "run": 2627592,
+      "event": {
+        "ref": "refs/heads/rel/1.0",
+        "before": "0000000000000000000000000000000000000000",
+        "after": "065e3030ba45c14bb4bba254c2ae093d48ffd687",
+        "created": true,
+        "forced": false,
+        "commits": 1,
+        "head": "p3: rel/1.0"
+      },
+      "claims": {
+        "iss": "https://graft-m4a-edge.<sub>.workers.dev/_services/token",
+        "aud": "bf78",
+        "sub": "repo:m3org/bf78-r1:ref:refs/heads/rel/1.0",
+        "actor": "m3-admin",
+        "actor_id": "7100003",
+        "run_number": "4",
+        "head_ref": "",
+        "base_ref": "",
+        "event_name": "push",
+        "ref": "refs/heads/rel/1.0",
+        "job_workflow_ref": "m3org/bf78-r1/.github/workflows/any.yml@refs/heads/rel/1.0"
+      },
+      "mismatch": {}
+    },
+    {
+      "id": "p4",
+      "run": 2627596,
+      "event": {
+        "ref": "refs/heads/rel/1.0-wip",
+        "before": "0000000000000000000000000000000000000000",
+        "after": "461d49f5623724c9249ff8f5680a5206534405c6",
+        "created": true,
+        "forced": false,
+        "commits": 1,
+        "head": "p4: rel/1.0-wip"
+      },
+      "claims": {
+        "iss": "https://graft-m4a-edge.<sub>.workers.dev/_services/token",
+        "aud": "bf78",
+        "sub": "repo:m3org/bf78-r1:ref:refs/heads/rel/1.0-wip",
+        "actor": "m3-admin",
+        "actor_id": "7100003",
+        "run_number": "5",
+        "head_ref": "",
+        "base_ref": "",
+        "event_name": "push",
+        "ref": "refs/heads/rel/1.0-wip",
+        "job_workflow_ref": "m3org/bf78-r1/.github/workflows/any.yml@refs/heads/rel/1.0-wip"
+      },
+      "mismatch": {}
+    },
+    {
+      "id": "p5",
+      "run": 2627598,
+      "event": {
+        "ref": "refs/heads/dev",
+        "before": "0000000000000000000000000000000000000000",
+        "after": "603554dedb9ae552668d7672afa640a7eb8a3600",
+        "created": true,
+        "forced": false,
+        "commits": 1,
+        "head": "p5: dev"
+      },
+      "claims": {
+        "iss": "https://graft-m4a-edge.<sub>.workers.dev/_services/token",
+        "aud": "bf78",
+        "sub": "repo:m3org/bf78-r1:ref:refs/heads/dev",
+        "actor": "m3-admin",
+        "actor_id": "7100003",
+        "run_number": "6",
+        "head_ref": "",
+        "base_ref": "",
+        "event_name": "push",
+        "ref": "refs/heads/dev",
+        "job_workflow_ref": "m3org/bf78-r1/.github/workflows/any.yml@refs/heads/dev"
+      },
+      "mismatch": {}
+    },
+    {
+      "id": "p6",
+      "run": 2627602,
+      "event": {
+        "ref": "refs/tags/v1",
+        "before": "0000000000000000000000000000000000000000",
+        "after": "d32fb64e5bfc0ac6986f1be47ea4a780424dfca4",
+        "created": true,
+        "forced": false,
+        "commits": 1,
+        "head": "p2: docs only"
+      },
+      "claims": {
+        "iss": "https://graft-m4a-edge.<sub>.workers.dev/_services/token",
+        "aud": "bf78",
+        "sub": "repo:m3org/bf78-r1:ref:refs/tags/v1",
+        "actor": "m3-admin",
+        "actor_id": "7100003",
+        "run_number": "7",
+        "head_ref": "",
+        "base_ref": "",
+        "event_name": "push",
+        "ref": "refs/tags/v1",
+        "job_workflow_ref": "m3org/bf78-r1/.github/workflows/any.yml@refs/tags/v1"
+      },
+      "mismatch": {}
+    },
+    {
+      "id": "p7",
+      "run": 2627606,
+      "event": {
+        "ref": "refs/heads/dev",
+        "before": "603554dedb9ae552668d7672afa640a7eb8a3600",
+        "after": "3273b96984099c3e91a2cd455ba97370a51874d7",
+        "created": false,
+        "forced": true,
+        "commits": 1,
+        "head": "p7: dev rewritten"
+      },
+      "claims": {
+        "iss": "https://graft-m4a-edge.<sub>.workers.dev/_services/token",
+        "aud": "bf78",
+        "sub": "repo:m3org/bf78-r1:ref:refs/heads/dev",
+        "actor": "m3-admin",
+        "actor_id": "7100003",
+        "run_number": "8",
+        "head_ref": "",
+        "base_ref": "",
+        "event_name": "push",
+        "ref": "refs/heads/dev",
+        "job_workflow_ref": "m3org/bf78-r1/.github/workflows/any.yml@refs/heads/dev"
+      },
+      "mismatch": {}
+    }
+  ],
+  "checks": {
+    "p1": {
+      "exact": true,
+      "none_elsewhere": true,
+      "one_each": true,
+      "event": false,
+      "token": false,
+      "job_succeeded": true,
+      "context": true,
+      "no_token_in_logs": true
+    },
+    "p2": {
+      "exact": true,
+      "none_elsewhere": true,
+      "one_each": true,
+      "event": false,
+      "token": false,
+      "job_succeeded": true,
+      "context": true,
+      "no_token_in_logs": true
+    },
+    "p3": {
+      "exact": true,
+      "none_elsewhere": true,
+      "one_each": true,
+      "event": false,
+      "token": false,
+      "job_succeeded": true,
+      "context": true,
+      "no_token_in_logs": true
+    },
+    "p4": {
+      "exact": true,
+      "none_elsewhere": true,
+      "one_each": true,
+      "event": false,
+      "token": true,
+      "job_succeeded": true,
+      "context": true,
+      "no_token_in_logs": true
+    },
+    "p5": {
+      "exact": true,
+      "none_elsewhere": true,
+      "one_each": true,
+      "event": false,
+      "token": true,
+      "job_succeeded": true,
+      "context": true,
+      "no_token_in_logs": true
+    },
+    "p6": {
+      "exact": true,
+      "none_elsewhere": true,
+      "one_each": true,
+      "event": false,
+      "token": true,
+      "job_succeeded": true,
+      "context": true,
+      "no_token_in_logs": true
+    },
+    "p7": {
+      "exact": true,
+      "none_elsewhere": true,
+      "one_each": true,
+      "event": false,
+      "token": true,
+      "job_succeeded": true,
+      "context": true,
+      "no_token_in_logs": true
+    },
+    "p8": {
+      "exact": true,
+      "none_elsewhere": true,
+      "one_each": true
+    },
+    "p9": {
+      "exact": true,
+      "none_elsewhere": true,
+      "one_each": true
+    }
+  },
+  "ok": false,
+  "runners": 20
+}

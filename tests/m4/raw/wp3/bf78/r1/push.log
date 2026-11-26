@@ -1,0 +1,14 @@
+2026-11-25T23:40:45Z
+b31affddc
+2026-11-25T23:42:34.845Z setup push: 4 runs [".github/workflows/ignore.yml",".github/workflows/branches.yml",".github/workflows/any.yml",".github/workflows/paths.yml"]
+2026-11-25T23:45:22.802Z p1 refs/heads/main fcfbcdcf8759: 4 runs [".github/workflows/branches.yml",".github/workflows/any.yml",".github/workflows/paths.yml",".github/workflows/ignore.yml"]
+2026-11-25T23:46:38.976Z p2 refs/heads/main d32fb64e5bfc: 3 runs [".github/workflows/any.yml",".github/workflows/ignore.yml",".github/workflows/branches.yml"]
+2026-11-25T23:47:46.594Z p3 refs/heads/rel/1.0 065e3030ba45: 2 runs [".github/workflows/branches.yml",".github/workflows/any.yml"]
+2026-11-25T23:48:56.234Z p4 refs/heads/rel/1.0-wip 461d49f56237: 1 runs [".github/workflows/any.yml"]
+2026-11-25T23:50:05.964Z p5 refs/heads/dev 603554dedb9a: 2 runs [".github/workflows/ignore.yml",".github/workflows/any.yml"]
+2026-11-25T23:51:14.122Z p6 refs/tags/v1 d32fb64e5bfc: 2 runs [".github/workflows/tags.yml",".github/workflows/any.yml"]
+2026-11-25T23:52:22.185Z p7 refs/heads/dev 3273b9698409: 2 runs [".github/workflows/ignore.yml",".github/workflows/any.yml"]
+2026-11-25T23:53:31.383Z p8 refs/heads/dev (delete): 0 runs []
+2026-11-25T23:54:39.147Z p9 refs/heads/main 866ad234d7ee: 0 runs []
+2026-11-26T00:05:04.415Z BF-78: FAIL {"p1":{"exact":true,"none_elsewhere":true,"one_each":true,"event":false,"token":false,"job_succeeded":true,"context":true,"no_token_in_logs":true},"p2":{"exact":true,"none_elsewhere":true,"one_each":true,"event":false,"token":false,"job_succeeded":true,"context":true,"no_token_in_logs":true},"p3":{"exact":true,"none_elsewhere":true,"one_each":true,"event":false,"token":false,"job_succeeded":true,"context":true,"no_token_in_logs":true},"p4":{"exact":true,"none_elsewhere":true,"one_each":true,"event":false,"token":true,"job_succeeded":true,"context":true,"no_token_in_logs":true},"p5":{"exact":true,"none_elsewhere":true,"one_each":true,"event":false,"token":true,"job_succeeded":true,"context":true,"no_token_in_logs":true},"p6":{"exact":true,"none_elsewhere":true,"one_each":true,"event":false,"token":true,"job_succeeded":true,"context":true,"no_token_in_logs":true},"p7":{"exact":true,"none_elsewhere":true,"one_each":true,"event":false,"token":true,"job_succeeded":true,"context":true,"no_token_in_logs":true},"p8":{"exact":true,"none_elsewhere":true,"one_each":true},"p9":{"exact":true,"none_elsewhere":true,"one_each":true}}
+push exit 1

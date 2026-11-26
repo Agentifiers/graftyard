@@ -30,8 +30,17 @@ WD=graft-m4a-edge.$CF_WORKERS_SUBDOMAIN.workers.dev
 scrub() { sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g" -e "s#$REPO/#<checkout>/#g"; }
 log() { { date -u +%FT%TZ; git -C "$REPO" rev-parse --short HEAD; cat; } | scrub >"$O/$STEP.log"; cat "$O/$STEP.log"; }
 # BF-73's site day (its flags, the workers.dev host), with PUSH=1 adding GRAFTYARD_PUSH_TRIGGER=1. `deploy.mjs` writes
-# only the vars it is given, so a day without PUSH removes the flag.
-site_day() { ROW=bf78 CLAIMS=1 PUSH=$1 HOSTV=$WD bash "$REPO/tests/m4/wp3/bf74/row.sh" "$TAG/$STEP" site; }
+# only the vars it is given, so a day without PUSH removes the flag. Every other live `GRAFTYARD_*` flag of site a that
+# the day does not set itself (BF-72's GRAFTYARD_REUSABLE) is passed on as it is.
+site_day() {
+  local sets='^GRAFTYARD_(HOST|ACTIVITY|AUDIT|APP_HOOKS|PR_TRIGGER|ACTIONS_CACHE|JOB_TOKENS|OIDC_HEAD_REF|OIDC_CLAIMS|PUSH_TRIGGER|SITES|INSTALL|CUSTOMER_KEY|GENESIS.*)$'
+  local extra
+  extra=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+    "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/graft-m4a-site-a/settings" |
+    jq -r --arg s "$sets" '[.result.bindings[] | select(.type == "plain_text" and (.name | test("^GRAFTYARD_")) and (.name | test($s) | not)) | "--var \(.name)=\(.text)"] | join(" ")')
+  echo "kept as live: ${extra:-none}"
+  ROW=bf78 CLAIMS=1 PUSH=$1 EXTRA=$extra HOSTV=$WD bash "$REPO/tests/m4/wp3/bf74/row.sh" "$TAG/$STEP" site
+}
 
 case $STEP in
 state) ROW=bf78 bash "$REPO/tests/m4/wp3/bf74/row.sh" "$TAG" state ;;

@@ -15,7 +15,7 @@
 // `tests/m4/wp3/bf74/rp.py` with `sub` `repo:m3org/<repo>:ref:<ref>` and `actor` the admin's login. Writes
 // <out>/result.json; exits 1 when a check fails. No token is printed.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EDGE, Git, api, log, row, sleep, tokens } from "../../../am1/hosted/lib.mjs";
 
@@ -103,17 +103,47 @@ async function runOne() {
     { cwd: runnerDir, stdio: ["pipe", "ignore", "ignore"], detached: true, env: { ...process.env, BF78_OUT: jobsDir } });
   child.stdin.end(config);
   const t0 = Date.now();
-  while (child.exitCode === null && Date.now() - t0 < 15 * 60_000) await sleep(3000);
+  while (child.exitCode === null && Date.now() - t0 < 15 * 60_000) {
+    verifyAll();
+    await sleep(3000);
+  }
   if (child.exitCode === null) process.kill(-child.pid, "SIGKILL");
 }
+// Each token verified within seconds of its job writing it, with no claim asked (the checks compare the claims later).
+const live = new Map();
+function verify(run) {
+  const tok = join(jobsDir, `token-${run}.jwt`);
+  // The job's `curl | python3 > file` creates the file before it writes it: wait until it is 2 s old.
+  if (!existsSync(tok) || Date.now() - statSync(tok).mtimeMs < 2000) return null;
+  const x = spawnSync("python3", [join(repoRoot, "tests/m4/wp3/bf74/rp.py"), tok, "--aud", "bf78",
+    ...(new URL(EDGE).hostname.endsWith(".workers.dev") ? ["--agent", "bf78-rp"] : [])], { encoding: "utf8" });
+  try {
+    const v = JSON.parse(x.stdout.trim().split("\n").pop());
+    live.set(run, v);
+    rmSync(tok, { force: true });
+    return v;
+  } catch {
+    return null;
+  }
+}
+const verifyAll = () => {
+  for (const f of existsSync(jobsDir) ? readdirSync(jobsDir) : []) {
+    const m = f.match(/^token-(\d+)\.jwt$/);
+    if (m && !live.has(Number(m[1]))) verify(Number(m[1]));
+  }
+};
 async function drain(ids) {
   for (;;) {
+    verifyAll();
     const states = [];
     for (const id of ids) {
       const v = must("run", await retry503("run", () => api("GET", `${A}/runs/${id}`, admin))).value;
       states.push(...v.jobs.map((j) => ({ run: id, job: j.spec.id, name: j.spec.name, state: Object.keys(j.state)[0], s: j.state })));
     }
-    if (states.every((j) => j.state === "Completed")) return states;
+    if (states.every((j) => j.state === "Completed")) {
+      verifyAll();
+      return states;
+    }
     if (states.some((j) => j.state === "Queued")) await runOne();
     else await sleep(5000);
   }
@@ -193,13 +223,11 @@ for (const p of pushes) {
       ev.deleted === false && ev.forced === (p.id === "p7") && ev.head_commit?.id === p.sha && ev.pusher?.name === me.login &&
       ev.sender?.login === me.login && ev.repository?.full_name === R && Array.isArray(ev.commits) &&
       !("added" in (ev.head_commit ?? {}));
-    const tok = join(jobsDir, `token-${anyRun.id}.jwt`);
     const want = { sub: `repo:${R}:ref:${p.ref}`, actor: me.login, actor_id: String(me.id), ref: p.ref, event_name: "push" };
-    const x = spawnSync("python3", [join(repoRoot, "tests/m4/wp3/bf74/rp.py"), tok, "--aud", "bf78",
-      ...(new URL(EDGE).hostname.endsWith(".workers.dev") ? ["--agent", "bf78-rp"] : []),
-      ...Object.entries(want).flatMap(([k, v]) => ["--want", `${k}=${v}`])], { encoding: "utf8" });
-    const rp = existsSync(tok) ? JSON.parse(x.stdout.trim().split("\n").pop() || "{}") : {};
-    c.token = x.status === 0 && rp.accepted === true;
+    // The token lives 300 s, so it is verified as soon as its job wrote it (`live`, while the jobs run); this reads
+    // that record. r1 verified it only after every job ended, when the earliest tokens had expired.
+    const rp = live.get(anyRun.id) ?? verify(anyRun.id) ?? {};
+    c.token = rp.accepted === true && Object.entries(want).every(([k, v]) => rp.claims?.[k] === v);
     const job = states.find((j) => j.run === anyRun.id);
     c.job_succeeded = job?.s.Completed?.conclusion === "Success";
     let text = "";
@@ -212,7 +240,6 @@ for (const p of pushes) {
     const said = text.split("\n").filter((l) => !l.includes("##[group]") && !l.includes("\u001b[36;1m")).join("\n");
     c.context = said.includes(`context event=push ref=${p.ref} sha=${p.sha} actor=${me.login}`);
     c.no_token_in_logs = !jwt.test(text);
-    rmSync(tok, { force: true });
     per.push({ id: p.id, run: anyRun.id, event: ev && { ref: ev.ref, before: ev.before, after: ev.after, created: ev.created, forced: ev.forced, commits: ev.commits?.length, head: ev.head_commit?.message }, claims: rp.claims, mismatch: rp.mismatch });
   }
   checks[p.id] = c;
