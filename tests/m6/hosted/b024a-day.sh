@@ -1,6 +1,6 @@
 #!/bin/bash
 # B0-24a's site day, edge day and tools edge on graft-m3f (tests/m6/results/m6-wp2.md, "B0-24a on the Spectrum
-# ingress: plan"), from this checkout's HEAD, which must hold the row's code (main `b6a44183` or later):
+# ingress: plan"), from this checkout's HEAD, which must hold the row's code (main `42a47a55` or later):
 # - a shard image and an sshfront image built from HEAD's `containers/` and pushed digest-pinned, since main changed
 #   both after m3f's last images (`7d5c7540…` from `2a020ed1`; `6085be00…` from `b9dd485f`, before `graftyard_2`);
 # - the sites with `--test-faults --ssh`, which sets `SSH_KILL=1` on each, the install's anchor, standard-4 (`--vars`),
@@ -8,6 +8,7 @@
 #   `tests/m1/wp7/edge.ts` (its `/ssh_kill`, `/ssh_status`, and `/commit_many` with `leader`);
 # - every site schedule `[]` after, and the checks the smoke needs: `SSH_KILL` on each site, `meta/ssh` with slot A,
 #   and `/ssh_status` answering for each site through the tools edge.
+# It stops first if the account's spend for the UTC day is past $150 (the lead's rule, 2026-11-26) or does not read.
 # One-shot per tag: an orb service that reruns it does nothing. Steps: `images`, `deploy`, or `all`.
 #   bash tests/m6/hosted/b024a-day.sh <tag> [all|images|deploy]   -> tests/m6/raw/b024a/day-<tag>[-<step>].log
 # `deploy` alone needs IMG and SIMG (digest-pinned), as `images` prints them.
@@ -28,7 +29,13 @@ live_formats() { api /workers/scripts/graft-m3f-edge/settings | jq -r '.result.b
 # The digest wrangler printed for the pushed tag.
 pushed() { WR containers push "$1" 2>&1 | grep -oE 'sha256:[0-9a-f]{64}' | tail -1; }
 { date -u +%FT%TZ; echo "head $(git rev-parse --short HEAD)"; git status --short -- workers crates containers tests/m1/wp7 | head -5
-  git merge-base --is-ancestor b6a44183 HEAD || { echo "HEAD lacks b6a44183, the row's code: stop"; exit 1; }
+  git merge-base --is-ancestor 42a47a55 HEAD || { echo "HEAD lacks 42a47a55, the row's code and the driver's import fix: stop"; exit 1; }
+  # The lead's gate: no row starts while the account's UTC day is already past $150 (acctcost.py, the whole account).
+  DAY=$(python3 tests/fanout/acctcost.py "$(date -u +%FT00:00:00Z)" "$(date -u +%FT%TZ)" | head -1)
+  USD=$(echo "$DAY" | jq -r '.usd // empty')
+  echo "account today: \$${USD:-unread}"
+  [ -n "$USD" ] || { echo "the account's spend did not read: stop"; exit 1; }
+  awk -v u="$USD" 'BEGIN { exit !(u > 150) }' && { echo "the account is past \$150 for the UTC day: stop"; exit 1; }
   [ -d tests/m0/node_modules ] || npm ci --prefix tests/m0 --silent
   if [ "$STEP" = all ] || [ "$STEP" = images ]; then
     docker build -q -t "graft-m3f-gitshard:b024a-$T" containers/git | tail -1
