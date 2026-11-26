@@ -4,7 +4,7 @@
 // narrow-reads-3.md (gates 17 to 19), tests/m4/results/m4-wp1-hosted.md, m4-wp2.md, m4-wp3.md, m4-wp5.md,
 // tests/m5/results/m5-wp1.md to m5-wp6.md, tests/am1/results/b033-closing.md, b034-mt19.md, b029-m3fmf.md,
 // tests/am2/results/am2-wp1.md, am2-wp3.md, am2-wp4.md and tests/m6/results/m6-wp2.md. The plan wins wherever this file is shorter or older.
-export const asOf = '25 November 2026';
+export const asOf = '26 November 2026';
 const row = (id: string) => ` <span class="rid">${id}</span>`;
 
 export type State = 'done' | 'now' | 'next';
@@ -87,7 +87,7 @@ export const milestones: Milestone[] = [
     after: 'Three rows, B0-32, B0-33 and B0-34, are met on the lead\'s rulings, which the operator accepted by closing AM1. Clauses that need Graftyard\'s own agents move to AM3, and fleets this size on one repository stay off until metadata child groups pass (M7-WP4).',
   },
   {
-    id: 'm4', code: 'M4', name: 'Webhooks, notifications, search, Actions and the web app', state: 'now', when: 'Every test row passes; held open for cache, artifacts and OIDC',
+    id: 'm4', code: 'M4', name: 'Webhooks, notifications, search, Actions and the web app', state: 'done', when: 'Closed 26 November',
     lead: 'Everything that reads the committed log: webhooks, notifications and search, the Actions engine and its runners, and the web app.',
     groups: [
       { title: 'Passing on a hosted test install', items: [
@@ -100,10 +100,10 @@ export const milestones: Milestone[] = [
         '2,500 runners polling one broker past its cap: 512 of 512 jobs succeeded, starting at p99 16.6 s against a 35 s line' + row('BF-54'),
         'Hosted runners on Cloudflare Sandboxes: 50 of 50 jobs from a cold start, never more than 20 at once under the per-owner cap, and no Sandbox left behind' + row('BF-60'),
         'The gate: an unmodified <code>actions/runner</code> ran a 2 by 4 matrix with a site taken down mid-run, and every leg finished exactly once' + row('BM-4'),
-      ] },
-      { title: 'Still in build', items: [
-        'The launch service, so a step can call another action with <code>uses:</code>, and each job\'s own <code>GITHUB_TOKEN</code>. Both are built and ship with the next site day',
-        'What holds M4 open: <code>actions/cache</code>, <code>upload-artifact</code> and <code>download-artifact</code>, and OIDC tokens for cloud sign-in. Each gets its own test row, and the cache is being built now',
+        'GitHub Actions parity: <code>actions/cache</code>, artifacts through the REST routes, the zip and <code>gh run download</code>, and OIDC tokens a cloud trust policy accepts' + row('BF-69, BF-70, BF-71, BF-75'),
+        'Reusable workflows, <code>on: push</code>, the OIDC claims trust policies read, and an install on its own hostname' + row('BF-72, BF-73, BF-74, BF-78'),
+        '<code>upload-artifact@v4</code> and <code>download-artifact@v4</code> through pinned forks: an unapproved pin fails as on GHES, with Graftyard\'s annotation on the check run, and passes once the pin map is approved' + row('BF-76'),
+        'Each job\'s own <code>GITHUB_TOKEN</code> with its <code>permissions</code>, and a deleted repository\'s cache dropped' + row('BF-77'),
       ] },
     ],
   },
@@ -138,7 +138,7 @@ export const milestones: Milestone[] = [
     after: 'One known limit stays open: the swap-back is judged on too few requests at 1% (R47). Its fix, a held and judged 100% step, is built and gets its hosted read on the next MCP release.',
   },
   {
-    id: 'am3', code: 'AM3', name: 'The controller and Graftyard-run agents', state: 'next', when: 'First pieces built',
+    id: 'am3', code: 'AM3', name: 'The controller and Graftyard-run agents', state: 'now', when: 'Controller rows on a test install',
     lead: 'Graftyard\'s own agents, off until an org turns them on. A controller in a separate account turns an assigned issue into a task, runs it in a Sandbox workspace whose network is closed by default, and keeps a session log for every run.',
     groups: [
       { title: 'Built so far, in memory', items: [
@@ -150,7 +150,7 @@ export const milestones: Milestone[] = [
     ],
   },
   {
-    id: 'm6', code: 'M6', name: 'Region loss, SSH and the lifeboat', state: 'next', when: 'Parts built early',
+    id: 'm6', code: 'M6', name: 'Region loss, SSH and the lifeboat', state: 'now', when: 'Region-loss drill 27 to 29 November',
     lead: 'Replacing a lost region\'s members with every account API token revoked, opt-in native SSH on port 22 through Cloudflare Spectrum, and the lifeboat: a read-only copy on the customer\'s own hosts that serves clones and reads when Cloudflare is down.',
     groups: [
       { title: 'Started early', items: [

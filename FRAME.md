@@ -399,6 +399,13 @@ Under that direction the orchestrator settled how graft-m6a's BF-50 rows read "L
 - **Known limits that stay, not gate lines:** the `x5t` header (F123: AWS, Vault, and MinIO select keys by `kid`); `graftyard actions import`; an unapproved SHA pin to `upload-artifact@v4` failing until an org admin approves the pin map, as on GHES; and `FormatsEnable` of the Actions formats on a test install (F124).
 - **Cost:** the code is $0. Each hosted row runs on graft-m4a with a stop of at most $3, inside its $40 a UTC day; `graftyard.dev` is the Pro zone the vendor already has, so the custom hostname adds no paid product.
 
+### Operator decision, 2026-11-26, M4 closed
+
+> "GO, close M4"
+
+- **M4 is closed.** Every M4-WP3 gate row the 2026-11-25 parity decision named passed hosted on graft-m4a: BF-69 to BF-71 (2026-11-25), BF-72 to BF-75 and BF-78 (2026-11-25 to 26), BF-77's delete half and its token half on the rerun (2026-11-26 06:42Z), and BF-76 in r1 and r2 (2026-11-26 10:24Z) (`build/BUILD-PLAN.md`, Milestone 4, "State (2026-11-26)"). Every acceptance row in M4-WP1 to M4-WP6, BM-4 included, was already met hosted.
+- **What stays open, not as gate lines:** the `x5t` header (F123); `graftyard actions import`; `FormatsEnable` of the Actions formats on a test install (F124); and F136's two gaps in the pull-request list (`long-running` without GHES's age limit, and the schema's non-null label description).
+
 ## Four Cloudflare questions still carry the run's defaults
 
 The run asked these on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference]. Each default is the run's choice, not the operator's. `decisions/DECISIONS.md` and `design/DESIGN.md`, "Open questions and risks", track them.
