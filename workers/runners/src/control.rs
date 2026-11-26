@@ -63,7 +63,7 @@ pub trait Host {
     /// `Ok(false)` when the install refused because the runner holds a job.
     async fn delete(&self, owner: &str, runner: RunnerId) -> Result<bool, String>;
     async fn start(&self, owner: &str, runner: RunnerId, instance: Instance, jit: String) -> Result<(), String>;
-    async fn destroy(&self, runner: RunnerId, instance: Instance) -> Result<(), String>;
+    async fn destroy(&self, runner: RunnerId) -> Result<(), String>;
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -100,8 +100,7 @@ pub async fn pass<H: Host>(h: &H) -> Report {
             match h.delete(owner, *r).await {
                 Ok(true) => {
                     let label = d.runners.iter().find(|(x, _)| x == r).map_or("", |(_, l)| &**l);
-                    let instance = HostedLabel::named(label).map_or(Instance::Standard4, Instance::for_label);
-                    if let Err(e) = h.destroy(*r, instance).await {
+                    if let Err(e) = h.destroy(*r).await {
                         report.errors.push(format!("{owner}: destroy {}: {e}", r.0.0));
                     }
                     report.destroyed += 1;
@@ -197,7 +196,7 @@ mod tests {
             self.calls.borrow_mut().push(format!("start {} {}", runner.0.0, i.name()));
             Ok(())
         }
-        async fn destroy(&self, runner: RunnerId, _: Instance) -> Result<(), String> {
+        async fn destroy(&self, runner: RunnerId) -> Result<(), String> {
             self.calls.borrow_mut().push(format!("destroy {}", runner.0.0));
             Ok(())
         }
@@ -292,7 +291,7 @@ mod tests {
             *self.started_vcpu.borrow_mut() += i.vcpu();
             Ok(())
         }
-        async fn destroy(&self, _: RunnerId, _: Instance) -> Result<(), String> {
+        async fn destroy(&self, _: RunnerId) -> Result<(), String> {
             Ok(())
         }
     }

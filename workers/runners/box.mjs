@@ -13,8 +13,8 @@
 // `o` is the object (`entry.mjs`): `ctx.storage` (get, put, setAlarm), `ctx.container` (running, images, start,
 // monitor, setInactivityTimeout, destroy), and `sleep(ms)`.
 
-export const RETRY_S = 10; // [guess], as `launch.mjs`
-export const GIVE_UP_MS = 6 * 60_000; // [guess], as `launch.mjs`
+export const RETRY_S = 10; // [guess]
+export const GIVE_UP_MS = 6 * 60_000; // [guess]: covers BF-60's slowest measured placement (179 s) twice
 // How long a start waits for the platform to refuse placement before it counts the container as started [guess]: the
 // Containers class retries a refused start every 300 ms, so a refusal comes within one try [inference].
 export const PLACED_WAIT_MS = 3_000;
@@ -88,8 +88,8 @@ export async function wake(o) {
   if (o.ctx.container?.running) await o.ctx.container.setInactivityTimeout(JOB_MS);
 }
 
-// `graft-runners`' destroy. False for a runner this object never held (it ran on a legacy Sandbox class), so the
-// Worker destroys it there, and writes nothing.
+// `graft-runners`' destroy. False, writing nothing, for a runner this object never held: an object named for a runner
+// whose start never reached it has no container to stop.
 export async function destroy(o) {
   if (!(await o.ctx.storage.get(KEY))) return false;
   await close(o);

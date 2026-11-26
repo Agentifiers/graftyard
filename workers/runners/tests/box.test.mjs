@@ -259,9 +259,9 @@ test("a destroy wins over a start in flight, and a runner this class never held 
   const sim = new Sim();
   const acct = new Account(sim, 0);
   const o = new Obj(sim, acct, { runner: "img@sha256:1" });
-  const legacy = new Obj(sim, acct, { runner: "img@sha256:1" });
-  assert.equal(await legacy.destroy(), false, "the Worker then destroys it on its legacy Sandbox class");
-  assert.equal(legacy.state(), undefined, "and writes nothing here");
+  const never = new Obj(sim, acct, { runner: "img@sha256:1" });
+  assert.equal(await never.destroy(), false, "a runner whose start never reached this object has nothing to stop");
+  assert.equal(never.state(), undefined, "and writes nothing here");
   await o.arm();
   await sim.until(25 * S); // refused, waiting to retry
   assert.equal(await o.destroy(), true);

@@ -1359,6 +1359,45 @@ Tests: `python3 -m unittest tests/m4/wp4/test_runnerlogs.py`, 7 tests on a fake 
 
 Seven planted bugs, each caught: one chunk for the whole window; no retry; a failed chunk failing the whole check; no split; no walk-back; no backoff; no chunk deadline.
 
+## R23 release M3: the Sandbox SDK classes deleted (2026-11-26, code only)
+
+The lead gave GO on 2026-11-26 to build M3 at $0 from main `35231e41`, after the $0 read below, with the hosted half only on a later GO (`decisions/DECISIONS.md`, "`r23-m3`").
+
+### M3's gate, read at $0 on the runner account
+
+The gate: M2 has run a day at 100% with no stale runners. Version `13193b05` has served 100% since 2026-11-20 18:25:14Z. The read ran 2026-11-26 05:50Z to 06:10Z with the observability events view, filtered by `$workers.entrypoint` (`SandboxStd3`, `SandboxStd4`, `RunnerBox`) and by pass-line text. The full `runnerlogs.py` walk was stopped, because its first hour held 14,476 events.
+
+| Count | Value |
+| --- | --- |
+| `SandboxStd3` / `SandboxStd4` events, 11-20 18:25Z to 11-26 06:00Z | 0 / 0 |
+| Passes with `destroyed` above 0 in that window | 0 (the last, 18:16:33Z on 11-20, before the 100% promotion) |
+| Passes that started a runner in that window | 4 (11-25 07:30Z to 07:48Z), each on `RunnerBox` (`launched 3 s after arm`) |
+| Legacy objects armed, 11-19 11:34Z (M1) to 11-20 18:25Z | 32 (30 std3, 2 std4), all on 11-20 16:49:54Z to 16:52:11Z |
+| ... of those: launched / gave up / destroyed | 32 / 0 / 20 (the other 12 ended with their runners' exits) |
+| **Stale destroys of legacy-class runners since 100%** | **0** |
+| **Legacy objects still armed** (armed with no `launched`, `gave up` or `destroy`) | **0** |
+| Containers API: `graft-runners-sandboxstd3` / `-sandboxstd4` / `-runnerbox` | 36 `inactive` / 4 `inactive` / 15 `stopped` and 11 `failed`; none running |
+
+### What M3 changes
+
+- `workers/runners`: `RunnerBox` is the only class. `launch.mjs`, `tests/launch.test.mjs`, `package.json` and `package-lock.json` (`@cloudflare/sandbox` 0.12.14) are deleted. `worker.rs` arms and destroys only `RUNNER_BOX`. `RUNNER_BOX_ON`, `nodejs_compat`, and `runners.json`'s `runner_box` and `max_instances` are gone. `deploy.mjs` writes migration `v3` (`deleted_classes`).
+- `graftyard runners init` (`cli/src/runners.rs`):
+  - migration `v3` from none, `v1` or `v2`;
+  - then it deletes the two Sandbox applications (`Cf::delete_container_app`);
+  - it refuses before writing anything while one of them lists an instance that is not `inactive`, `stopped`, `failed` or `deleted` (`Cf::container_instances`).
+- `graftyard runners upgrade` refuses below `v3` and never touches an application.
+- The bundle builds at $0 (`worker-build --release`, then `deploy.mjs --config-only`, then `wrangler deploy --dry-run --outdir`). It is `entry.js` plus one `.wasm`, 592 KiB, down from about 1.2 MiB with the SDK. Wrangler lists one binding, `env.RUNNER_BOX (RunnerBox)`, and one container, `RunnerBox (durable_object)`.
+- DESIGN: the Stack table no longer lists the Sandbox SDK, and the `actions state` rows (bad-config, Deployment modes) name `v3` and M3. `research/cloudflare.md` keeps the product's row, with its use ended.
+
+### Hosted plan (not run; waits for the lead's GO, $1 stop)
+
+1. **Before.** Re-read the counts above for the window since 06:00Z (same queries) and the Containers instance list. Stop if any legacy instance is not stopped, which `init` would refuse anyway.
+2. **M3.** Build the image by digest as before (`tests/m4/wp4/image.sh`, the same `d0652a89…` unless the Dockerfile changed, and it has not changed past comments), and the bundle as above from main with `r23-m3`. Run `graftyard runners init --account $R` with `~/.graft-m4a/hosted/runners.json`: its `max_instances` key is ignored now. Expect migration `v2` to `v3`, and `graft-runners-sandboxstd3` and `-sandboxstd4` deleted. Log to `tests/m4/raw/wp4/runners-init.log`.
+3. **Burst.** `tests/m4/wp4/r23.mjs` unchanged: 8 jobs, 6 on `standard-3` and 2 on `standard-4`, on graft-m4a after any current owner frees it (one deploy at a time with B0-02 and LM-1; this needs no m4a deploy). Pass is r23.mjs's: 8 of 8 Success, PID 1 is `run.sh` on each, and no instance and no registration left 10 minutes after the last job.
+4. **After.** `GET /containers/applications` lists only `graft-runners-runnerbox`, and `GET /workers/scripts` reads `graft-runners` at `v3`.
+5. **Rollback.** None to a class. M2's version `13193b05` binds the `SANDBOX_STD*` namespaces that `v3` deletes, so it cannot be redeployed after M3 [inference: a version cannot bind a deleted class]. That is why the refusal and step 1 come first. M3 changes no start logic (`box.mjs` is M2's but for comments, and `worker.rs` now always takes M2's `RunnerBox` path), so a burst failure is fixed forward with a new version. As `r23-runnerbox` says, re-adding the classes would need a new migration.
+6. **Cost.** R23's M1 burst cost $0.00 on the runner account and $0.06 on m4a, and its rerun cost about the same. Expect under $0.20. Stop at $1 by `tests/fanout/acctcost.py` on both accounts.
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |

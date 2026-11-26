@@ -1,4 +1,4 @@
-//! The Workers host for `control::pass` (`design/DESIGN.md`, Shape, `graft-runners`; Stack, Workers, Sandbox SDK, Cron
+//! The Workers host for `control::pass` (`design/DESIGN.md`, Shape, `graft-runners`; Stack, Workers, Containers, Cron
 //! Triggers). It reaches the install only through the front, as the `graftyard-hosted-runners` App:
 //!
 //! - **App JWT.** RS256 under `HOSTED_RUNNERS_APP_KEY` (the Secrets Store binding of `HostedRunnersAppKey`), `iss` the
@@ -7,15 +7,12 @@
 //!   installation on it [inference: the install serves no `GET /app/installations` yet, so the list is configured].
 //! - **Runner keys.** WebCrypto makes each runner's RSA key pair; the public half goes to the install's register route
 //!   and the private half only into the `--jitconfig` this Worker writes (`runsvc::jit_config`), so no runner key
-//!   leaves the runner account except inside its own Sandbox.
-//! - **Runner objects.** One per runner, named `runner-<id>`, called over Durable Object RPC. A pass only arms the
-//!   object (`arm`), and the object's own alarm starts the container (F80). While the version's `RUNNER_BOX_ON` is "1",
-//!   the object is a `RunnerBox` (`box.mjs`): one class on one `durable_object`-policy application, started with
-//!   `ctx.container` on this version's `runner` image at the label's instance type, with the runner as the container's
-//!   main process, so its exit stops the container (`decisions/DECISIONS.md`, "`r23-runnerbox`"). Otherwise it is the
-//!   legacy Sandbox SDK class of its instance type, `SANDBOX_STD3` or `SANDBOX_STD4` (`launch.mjs`), which runs
-//!   `run.sh --jitconfig` with `keepAlive`, then signals the Sandbox's PID 1 [measured: BF-60's hosted runs], until
-//!   release M3 removes those classes.
+//!   leaves the runner account except inside its own container.
+//! - **Runner objects.** One `RunnerBox` per runner (`box.mjs`), named `runner-<id>`, called over Durable Object RPC:
+//!   one class on one `durable_object`-policy application. A pass only arms the object (`arm`), and the object's own
+//!   alarm starts the container (F80) with `ctx.container` on this version's `runner` image at the label's instance
+//!   type, with the runner as the container's main process, so its exit stops the container (`decisions/DECISIONS.md`,
+//!   "`r23-runnerbox`"). Release M3 deleted the Sandbox SDK classes that ran runners before it ("`r23-m3`").
 //! - **Triggers.** `fetch` takes the App's `workflow_job` webhook (`X-Hub-Signature-256` under `WEBHOOK_SECRET`) and
 //!   runs a pass for that owner after answering 202; `scheduled` runs one over every owner on the 5-minute cron.
 
@@ -35,9 +32,6 @@ use worker::wasm_bindgen_futures::JsFuture;
 use worker::*;
 
 use crate::control::{self, Host, Instance, Registered};
-
-/// Where the runner image unpacks `actions/runner` (`containers/runner/Dockerfile`).
-const RUNNER_DIR: &str = "/home/runner";
 
 struct Live {
     env: Env,
@@ -197,28 +191,12 @@ impl Live {
         format!("/api/graftyard/v1/owners/{owner}/actions/hosted")
     }
 
-    /// The runner's object on the legacy Sandbox SDK class of its instance type, `None` once release M3 removed it.
-    fn sandbox(&self, instance: Instance, runner: RunnerId) -> std::result::Result<Option<(JsValue, String)>, String> {
-        let binding = match instance {
-            Instance::Standard3 => "SANDBOX_STD3",
-            Instance::Standard4 => "SANDBOX_STD4",
-        };
-        self.object(binding, runner)
-    }
-
-    /// The runner's object in `binding`'s namespace, named `runner-<id>`, or `None` when this version has no such
-    /// binding.
-    fn object(&self, binding: &str, runner: RunnerId) -> std::result::Result<Option<(JsValue, String)>, String> {
-        let Ok(ns) = self.env.durable_object(binding) else { return Ok(None) };
+    /// The runner's `RunnerBox`, named `runner-<id>`.
+    fn runner_box(&self, runner: RunnerId) -> std::result::Result<(JsValue, String), String> {
+        let ns = self.env.durable_object("RUNNER_BOX").map_err(|e| format!("RUNNER_BOX: {e}"))?;
         let name = format!("runner-{}", runner.0.0);
         let stub = ns.get_by_name(&name).map_err(|e| e.to_string())?;
-        Ok(Some((stub.into_rpc::<JsValue>(), name)))
-    }
-
-    /// Whether this version starts runners on `RunnerBox` (`RUNNER_BOX_ON` "1"; `decisions/DECISIONS.md`,
-    /// "`r23-runnerbox`"), else on the legacy Sandbox classes.
-    fn runner_box(&self) -> bool {
-        self.env.var("RUNNER_BOX_ON").is_ok_and(|v| v.to_string() == "1")
+        Ok((stub.into_rpc::<JsValue>(), name))
     }
 }
 
@@ -272,6 +250,9 @@ impl Host for Live {
         }
     }
 
+    /// `box.mjs`: the object stores the start and its own alarm starts the container on this version's image, with the
+    /// runner as its main process, so this call returns before placement and a delivery pass is never cut at
+    /// `waitUntil`'s 30 s mid-start (F80).
     async fn start(
         &self,
         _: &str,
@@ -279,33 +260,14 @@ impl Host for Live {
         instance: Instance,
         jit: String,
     ) -> std::result::Result<(), String> {
-        if self.runner_box() {
-            // `box.mjs`: the object stores the start and its own alarm starts the container on this version's image,
-            // with the runner as its main process.
-            let (stub, name) = self.object("RUNNER_BOX", runner)?.ok_or("this version has no RUNNER_BOX binding")?;
-            return call_js(&stub, "arm", &[name.into(), instance.name().into(), jit.into()]).await.map(|_| ());
-        }
-        let (stub, name) = self.sandbox(instance, runner)?.ok_or("this version has no legacy Sandbox class")?;
-        let cmd = format!("{RUNNER_DIR}/run.sh --jitconfig \"$JIT\"; kill -TERM 1");
-        let opts =
-            obj(&[("env", obj(&[("JIT", jit.into())])), ("cwd", RUNNER_DIR.into()), ("processId", "runner".into())]);
-        // Stores the start in the Sandbox, whose own alarm starts the process (`launch.mjs`): this call returns before
-        // placement, so a delivery pass is never cut at `waitUntil`'s 30 s mid-start (F80).
-        call_js(&stub, "arm", &[name.into(), cmd.into(), opts]).await.map(|_| ())
+        let (stub, name) = self.runner_box(runner)?;
+        call_js(&stub, "arm", &[name.into(), instance.name().into(), jit.into()]).await.map(|_| ())
     }
 
-    /// A runner lives on `RunnerBox` or, if started before `RUNNER_BOX_ON` or by a version rolled back to, on its legacy
-    /// Sandbox class: `RunnerBox` answers false for a runner it never held, and the legacy class is asked then.
-    async fn destroy(&self, runner: RunnerId, instance: Instance) -> std::result::Result<(), String> {
-        if let Some((stub, _)) = self.object("RUNNER_BOX", runner)?
-            && call_js(&stub, "destroy", &[]).await?.as_bool() == Some(true)
-        {
-            return Ok(());
-        }
-        match self.sandbox(instance, runner)? {
-            Some((stub, _)) => call_js(&stub, "destroy", &[]).await.map(|_| ()),
-            None => Ok(()),
-        }
+    /// A box answers false for a runner it never held, which has nothing to stop.
+    async fn destroy(&self, runner: RunnerId) -> std::result::Result<(), String> {
+        let (stub, _) = self.runner_box(runner)?;
+        call_js(&stub, "destroy", &[]).await.map(|_| ())
     }
 }
 

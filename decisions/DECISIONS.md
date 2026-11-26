@@ -4843,6 +4843,43 @@ Plants 99 to 105 (`tests/m4/wp4/plant.py`): a cursor past an unfinished event (9
 - A canary whose bad image the by-image count missed: then gate the 100% run on `tests/m4/wp4/sandboxstarts.py`'s `by_image` in `runners upgrade` itself.
 - The Containers platform adding an application-level instance cap to the `durable_object` policy: then set it as the legacy applications' `max_instances` did.
 
+### `r23-m3`: release M3 deletes the Sandbox SDK classes and their applications, so `RunnerBox` alone runs hosted runners, 2026-11-26
+
+**Status.** Code-only, on branch `r23-m3`, not deployed. The hosted half (one `graftyard runners init` on the runner account and an 8-job burst on graft-m4a, $1 stop) waits for the lead's GO. Ends R23 (`decisions/OPEN-QUESTIONS.md`) as `r23-runnerbox` planned it.
+
+**Decision.**
+- **Code.** `graft-runners` exports only `RunnerBox` (`workers/runners/entry.mjs`). `launch.mjs`, its test, `@cloudflare/sandbox` 0.12.14 (with `package.json` and its lock), the `SANDBOX_STD3`/`SANDBOX_STD4` bindings, `RUNNER_BOX_ON` and `runners.json`'s `runner_box` and `max_instances` are deleted. The Worker arms and destroys only `RunnerBox` (`workers/runners/src/worker.rs`), so `Host::destroy` no longer takes an instance type. `nodejs_compat` went with the SDK, whose bundle alone needed it. The runner image keeps the Sandbox base image, because every hosted run so far measured it. `RunnerBox` bypasses the base image's server, and a new base is a new image with its own canary.
+- **Migration.** `graftyard runners init` uploads with migration `v3`. On a fresh account that is one step that adds `RunnerBox`. From `v2` it is one `deleted_classes: ["SandboxStd3", "SandboxStd4"]` step. From `v1` it is both steps. After that upload commits, `init` deletes the two applications, `{script}-sandboxstd3` and `-sandboxstd4` (`DELETE /containers/applications/{id}`, as `wrangler containers delete`). It deletes the classes first, so a failed delete leaves an application with no class, and a rerun deletes it.
+- **The refusal.** Before it writes anything, `init` lists each Sandbox application's instances and refuses if any is not `inactive`, `stopped`, `failed` or `deleted`, because such a container may run a runner's job. `stopping` counts as live.
+- **Upgrade.** `graftyard runners upgrade` refuses an account not at `v3`. A version upload carries no migration, and a version without the Sandbox bindings cannot run beside classes that still exist. No upgrade run creates, rolls or deletes a container application.
+
+**Why.** R23's M3 had one gate: "only after M2 has run a day at 100% with no stale runners". M2 has been at 100% since 2026-11-20 18:25:14Z (version `13193b05`). The runner account's Workers Logs were read at $0 on 2026-11-26 (05:50Z to 06:10Z, the events view filtered by `$workers.entrypoint`; the full walk was dropped after its first hour held 14,476 events):
+- From 2026-11-20 18:25Z to 2026-11-26 06:00Z: 0 `SandboxStd3` and 0 `SandboxStd4` events. Every pass in that window destroyed 0. The 4 passes that started a runner (2026-11-25 07:30Z to 07:48Z) started it on `RunnerBox`.
+- From 2026-11-19 11:34Z (M1) to 18:25Z on 11-20, the legacy objects were armed only on 11-20 between 16:49:54Z and 16:52:11Z: 32 in all, 30 `SandboxStd3` and 2 `SandboxStd4`. All 32 logged `launched` and none gave up. 20 got a `destroy` RPC, and the rest ended with their runners' exits. The newest legacy event is `SandboxStd3` at 18:16:30Z, before the 100% promotion.
+- The Containers API on 2026-11-26: `graft-runners-sandboxstd3` 36 instances, all `inactive`; `-sandboxstd4` 4, all `inactive`; `graft-runners-runnerbox` 26, 15 `stopped` and 11 `failed`. None is running.
+So there are 0 stale destroys of legacy-class runners and 0 legacy objects still armed.
+
+**What it beat.**
+- **Keeping the classes as a rollback path.** A rollback to a pre-M2 version would start runners on the Sandbox applications' old image, which is the bad-image exposure R23 removed. `r23-runnerbox` already named M2's code without the fallback as M3's recovery.
+- **Deleting the applications before the migration.** A version that still bound the classes would then start Sandboxes with no application, and every start would fail.
+- **No refusal.** A `deleted_classes` migration deletes the objects' storage, and an application delete stops its containers. Either one, while a job runs, fails that job.
+
+**Evidence.**
+- `cli/src/runners.rs` tests. 6 of 9 fail on main's code (checked by compiling this branch's test module against main's `runners.rs`):
+  - `init_writes_the_key_to_secrets_store_and_creates_only_the_runnerbox_application`
+  - `init_on_a_v2_account_deletes_the_sandbox_classes_then_their_applications`
+  - `init_on_a_v1_account_adds_runnerbox_and_deletes_the_sandbox_classes_at_once`
+  - `init_refuses_release_m3_while_a_sandbox_container_runs` (`running`, `stopping` and `provisioning`, with nothing written)
+  - `upgrade_canaries_the_image_in_the_version_at_10_percent_and_touches_no_application`
+  - `upgrade_refuses_an_account_before_release_m3`
+- `tests/m0carried/plant273.py`: 8 of 8 caught. The first mutant is main's rule.
+- `tests/m4/wp4/plant.py`: slots 60 to 68 now plant F80's rules in `box.mjs` (`launch.mjs` is gone), slot 120 plants an application delete at 100%, and slots 20 and 121 are re-anchored.
+- `workers/runners/tests/box.test.mjs` and `bf60.rs` pass unchanged in substance.
+
+**Flip.**
+- The hosted half: if `init` refuses on a live Sandbox container, nothing has changed; wait and rerun. If the 8-job burst after it fails on `RunnerBox`, fix forward with a new version. M2's version `13193b05` binds the deleted `SANDBOX_STD*` namespaces and cannot be redeployed, and M3 starts runners exactly as M2's `RunnerBox` path did.
+- A Containers API that keeps an application after its class's `deleted_classes`, or answers `DELETE` 409 while instances are listed `inactive`: then delete only applications whose instances list is empty, and leave the rest for a rerun.
+
 ### `roll-up`: a bounded roll of a chain's oldest promoted packs, recorded as `Compacted` on the repository chain, 2026-11-16
 
 **Status.** Approved by the operator after round 32's review, with the repository-chain form; built on branch `rollup` (G9), not deployed. Built: the fold and `verify`, the archive alarm's roll step (`log_archive::roll_plan`, `Step::Rolled`), the site's warm `/roll` through the promotion path, the container's `/roll`, the rehydrate's read of produced packs with its fallback to the consumed packs, the site variable `GRAFTYARD_ROLLUP` that gates every roll (`log_archive::rollup_enabled`: unset, the alarm sends no `/roll` and records no `Compacted`; a site day sets it to `1` only after `FormatsEnable` enabled 32.25, as R24's `GRAFTYARD_APP_HOOKS` waits for 32.24), and the deletion guard as a pure rule (`sweep::consumed_deletable`). Not built: the sweeper's deletion of consumed packs, which waits for that rule's shard answers (G9's remainder). DESIGN, Shape, `Promoted` and `rehydrate`, and Failure modes (pack buckets bad-deploy, git caches noisy-tenant) carry the rule; this entry carries the numbers.

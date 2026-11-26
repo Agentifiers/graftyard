@@ -411,7 +411,7 @@ impl Host for Fake<'_> {
         w.max_boxes = w.max_boxes.max(n);
         Ok(())
     }
-    async fn destroy(&self, runner: RunnerId, _: Instance) -> Result<(), String> {
+    async fn destroy(&self, runner: RunnerId) -> Result<(), String> {
         Yield(self.0, false).await;
         self.0.borrow_mut().boxes.remove(&runner);
         Ok(())
