@@ -1,0 +1,9 @@
+# F132: a push whose job `uses:` another repository's workflow at tag v1 (a branch named v1 also exists; the tag wins).
+name: f132-caller
+on: push
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  call:
+    uses: SHARED/.github/workflows/called.yml@v1

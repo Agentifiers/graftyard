@@ -720,12 +720,17 @@ async fn runs_on(
             sha: tip.0,
         };
         let t = crate::now_ms();
-        let reads = CallReads { env, site, b, repo, record };
+        let reads = CallReads { env, site, b, repo, record, failed: RefCell::new(None) };
         let planned = graftyard_actions::reusable::plan_run(&parsed.workflow, &origin, reusable(env), |w| {
             graftyard_actions::reusable::called_file(&reads, w)
         })
         .await;
         times.reads += crate::now_ms().saturating_sub(t);
+        // A read that failed (no leader, a shed, a tier still loading) is tried again with the item, not taken as a
+        // tree that cannot run.
+        if let Some(e) = reads.failed.take() {
+            return Err(format!("{path}: {e}"));
+        }
         let plan = match planned {
             Ok(Some(e)) => {
                 (jobs, permissions) = (e.jobs, e.declared);
@@ -790,11 +795,42 @@ struct CallReads<'a> {
     b: &'a Bindings<'a>,
     repo: RepoId,
     record: &'a PlacementRecord,
+    /// The first read that failed, which `runs_on` retries rather than skipping the workflow.
+    failed: RefCell<Option<String>>,
 }
 
 impl graftyard_actions::reusable::CallReads for CallReads<'_> {
     type At = PlacementRecord;
     async fn other(
+        &self,
+        owner: &str,
+        name: &str,
+        version: &str,
+    ) -> std::result::Result<Option<graftyard_actions::reusable::Other<PlacementRecord>>, String> {
+        self.note(self.other_rows(owner, name, version).await)
+    }
+    async fn blob(
+        &self,
+        repo: Option<&graftyard_actions::reusable::Other<PlacementRecord>>,
+        sha: [u8; 20],
+        path: &str,
+    ) -> std::result::Result<Option<String>, String> {
+        let (r, rec) = repo.map_or((self.repo, self.record), |o| (o.id, &o.at));
+        let commit = git::refs::ObjectId(sha).hex();
+        let v = self.note(ui(self.env, self.site, r, rec, "blob", &[("commit", &commit), ("path", path)]).await)?;
+        Ok(v.map(|v| v["text"].as_str().unwrap_or_default().to_owned()))
+    }
+}
+
+impl CallReads<'_> {
+    fn note<T>(&self, r: std::result::Result<T, String>) -> std::result::Result<T, String> {
+        if let Err(e) = &r {
+            self.failed.borrow_mut().get_or_insert_with(|| e.clone());
+        }
+        r
+    }
+
+    async fn other_rows(
         &self,
         owner: &str,
         name: &str,
@@ -839,23 +875,17 @@ impl graftyard_actions::reusable::CallReads for CallReads<'_> {
         };
         let rows =
             graftyard_api::hosted::TierRows::from_value(&v["value"]).map_err(|e| format!("{owner}/{name}: {e}"))?;
+        // A member whose metadata tier is loading answers the access rows alone, without the refs: as on the edge,
+        // that is not an answer yet.
+        if !rows.complete || rows.meta.is_none() {
+            return Err(format!("{owner}/{name}: the repository's tiers are loading"));
+        }
         Ok(Some(graftyard_actions::reusable::Other {
             id: other,
             owner: account,
             core: graftyard_api::hosted::TierRows::store(&rows.core),
             at: record,
         }))
-    }
-    async fn blob(
-        &self,
-        repo: Option<&graftyard_actions::reusable::Other<PlacementRecord>>,
-        sha: [u8; 20],
-        path: &str,
-    ) -> std::result::Result<Option<String>, String> {
-        let (r, rec) = repo.map_or((self.repo, self.record), |o| (o.id, &o.at));
-        let commit = git::refs::ObjectId(sha).hex();
-        let v = ui(self.env, self.site, r, rec, "blob", &[("commit", &commit), ("path", path)]).await?;
-        Ok(v.map(|v| v["text"].as_str().unwrap_or_default().to_owned()))
     }
 }
 
