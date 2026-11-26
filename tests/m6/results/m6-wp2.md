@@ -145,3 +145,136 @@ The operator approved it on 2026-11-20: "Yes you can take out the oracle vm and 
 **Cleanup.**
 - The test repository `m3-member/ssh-m3fcut` (repo:3932162) was retired (`retirenets.mjs`: 4 names, all not joined) and purged (28 objects, then 0 on the second pass).
 - The three `SshFront` containers are left as they are. `ssh.graftyard.dev` is a live hostname now, and with the idle fix each stops 1 h after its last session.
+
+## B0-24a on the Spectrum ingress: plan (2026-11-26, not run)
+
+The plan for `build/BUILD-PLAN.md`, M6-WP2's last row: three SSH fronts, one killed every 10 minutes for a day, with sessions through Spectrum and the edge's `connect()`, and with writes. **Pass:** at least 99.9% of sessions succeed and no acknowledged push is lost. **Fail:** under 99%, or a lost acknowledged push. It also runs BF-52's revocation half. Nothing here has run. Nothing is deployed until the lead's GO.
+
+### What the gate can reach with clean kills
+
+A `destroy()` kill ends every session in flight on the killed front. The edge picks the first front to try by `now_ms % 3` (`workers/edge/src/ssh.rs`, `order`), so each front carries a third of the sessions in flight. With sessions starting at rate r and lasting d seconds on average, one kill costs r·d/3 sessions. 144 kills cost 144·r·d/3 out of r·86,400 sessions, so the failure rate from kills alone is **d / 1,800 s, whatever the load** [inference].
+
+| Mean session time d | Failure rate from kills alone | Success before any background failure |
+| --- | --- | --- |
+| 1.5 s | 0.083% | 99.92% |
+| 1.8 s | 0.100% | 99.90%, the pass line |
+| 3 s | 0.167% | 99.83% |
+| 5 s | 0.278% | 99.72% |
+
+B0-24d's warm clones took 2.7 to 5.6 s end to end. B0-24a's cloudflared run had p50s of 2.6 to 3.0 s and lost 69 in-flight sessions over 143 kills (`tests/m0/results/m0-wp7.md`, "The run of record"). So the row is likely to land between the lines on the kills alone [inference]. The design gives the client no retry. The install docs only say that a failed session, a push included, is safe to retry. The lead decides whether to run the gate as written, knowing this, or to have the operator read it the way B0-24a's analysis did, with the failures in flight at a kill counted apart from the rest. The driver records every number both readings need.
+
+### How a front is killed without a site day per kill
+
+The deployed sites (`graft-m3f-site-a` `5b742740`, site day 2026-11-24 23:14Z) cannot kill a front from outside:
+- `SshFront` answers only `GET /status` (`workers/site/entry.mjs`), and the Registry's `/ssh_front` only reads it (`workers/site/src/registry.rs`).
+- The Containers API lists and reads instances but has no delete (`NOT_ENABLED` on 2026-11-20, above, "Spend and teardown").
+- Changing the container application would be a container config change. That ships only through a site day (`AGENTS.md`, "Invariants never to break").
+
+So the row ships one small change, test installs only, on **one** site day at its start. After that, every kill is an ordinary call and creates no script version:
+- **`SshFront` `POST /kill`** (`workers/site/entry.mjs`): `ctx.container.destroy("b024a kill")`, the same clean kill B0-24a used. It answers `{at, running, open}`, where `open` is the number of sessions this object had in flight at that moment.
+  - The object counts its open `connect()` calls. `GET /status` reports the same count.
+  - It answers only when the site's `SSH_KILL` variable is `1`. `workers/site/deploy.mjs` sets that variable only with `--test-faults`.
+- **Registry `POST /ssh_front_kill`** (`workers/site/src/registry.rs`), under `#[cfg(feature = "test-faults")]`. It forwards to this site's `ssh#<site>`, as `/ssh_front` does.
+- **The tools edge's `/ssh_kill {site}`** (`tests/m1/wp7/edge.ts`). It binds `REGISTRY_<n>` already and is deployed by its own script, so this is no site day. The product edge does not change.
+- **Tests:** a node test in `workers/site/tests/` for the kill, the open count and the variable gate, and a plant for each.
+
+The front comes back the way it does after an idle stop: the next session routed to it starts the container and waits up to `BANNER_WAIT_MS` (45 s) for the banner before it forwards a byte (`workers/site/ssh.mjs`, `open`). A cold start took 2 to 6 s in B0-24d. The killer probes the killed front's `/status` every 500 ms. Restart time is measured from the kill's `at` to the first banner.
+
+### The driver
+
+A new resumable Node driver in `tests/m6/hosted/`, run as a supervised orb service, as B0-24a's `wp7-load` was. Its structure (load loop, killer, report) comes from `tests/m0/run/wp7.ts`, and its key, repository and client setup from `tests/m6/hosted/ssh-e2e.sh`.
+- **Setup:**
+  - A new ed25519 key added to `m3-member` with `POST /user/keys`.
+  - A repository `m3-member/b024a-<tag>` with a README.
+  - The hostname is `ssh.graftyard.dev`, the live Spectrum app, so no Spectrum app is made or changed.
+- **The client:** stock OpenSSH and stock git, with `ConnectTimeout 30`, `ServerAliveInterval 15`, `BatchMode`, and a pinned `known_hosts` holding slot A's ED25519 key. Each session runs in its own process group and is killed whole at 90 s.
+- **Load:** the same mix as B0-24a, so the two compare directly. Two workers each run one session every 6 s, rotating clone, fetch and push. That is about 20 sessions a minute and about 28,800 a day.
+  - A push commits a new file on `main`'s tip and pushes it to `refs/heads/b024a/<n>`. `main` never moves, so clone and fetch keep reading the same tip.
+- **A session succeeds** when git exits 0. For a push, the remote's report must also name the ref as updated, and the push then counts as **acknowledged**.
+- **Writes are checked against the log, not the refs:**
+  - An acknowledgement checker tails the repository leader's `/log` every minute (the test route `tests/am1/hosted/lib.mjs` `logFrom` reads). Each entry's `refs` list gives `[name, new]`.
+  - Every acknowledged (ref, commit) must appear in a committed entry. A push the client saw fail is looked up there too and reported, as B0-24a found five.
+  - A deleter removes verified branches over HTTPS in batches of 50 every 5 minutes. That keeps the ref count near 100, so clone and `ls-refs` times, and with them d, do not grow over the day. Its pushes are not SSH sessions and do not count.
+- **Kills:** one every 10 minutes, round robin over sites 0, 1 and 2, 144 in the day. Each kill row records `at`, `open`, the restart time, the first success after the kill on any front, and the orb's clock offset.
+- **Readings, fixed before the run:**
+  - sessions and success rate, by operation;
+  - failures in three classes: in flight on the killed front (the `open` counts), started inside the 2 minutes after a kill, and the background outside every kill window, with the background's own rate;
+  - the measured mean session time d, and the d / 1,800 s floor computed from it;
+  - acknowledged pushes found in the log (it must be all of them), and failed pushes found anyway;
+  - p50, p99 and max session time by operation, and restart and first-success times by kill.
+- **Orb pauses:** time the orb was paused is left out of every count and reported. After a pause the next kill is one period away, not a burst of missed ones.
+
+### BF-52's revocation half in the same row
+
+It fits. It runs once, on its own repository, before the 24-hour load starts, so it does not touch the session count. It has the same shape as BF-15 and BF-27 hosted (`tests/m1/results/m1-wp7.md`, BF-15):
+1. A key is added. A real SSH push with it is accepted, which is the control.
+2. A new bin in `tests/m3/hosted/tools` builds 1,000 format-32.26 pushes. Each has its own request id, its own `refs/heads/q<i>` and the key's fingerprint principal, encoded with `graftyard_git`'s own encoder (`Push::to_wire`).
+3. The tools edge's `/commit_many` sends them to the repository's leader with `hold_deps_ms` 8,000, so the first entry holds its dependency read and the other 999 queue behind it.
+4. Two seconds into the hold, `DELETE /user/keys/{id}` removes the key.
+5. **Pass:** each of the 1,000 outcomes is 401 and no ref moved. A real SSH push and clone with the key then fail with "Permission denied (publickey)".
+
+The queued commands go through the test route, not 1,000 SSH sessions at once. The credential they carry is the SSH key's, and the leader's re-read of the key's `Tokens` row is what refuses them. That is the claim BF-52 makes. One thing to check in the smoke step: whether the tools edge's `/commit_many` finds a repository chain's leader as it found the `Authz` leader for BF-15. If it does not, the bin sends to the leader that `/leader` names.
+
+### Order of work
+
+1. At $0 after the GO: the kill route, the open count, the tools-edge route, the driver, the BF-52 bin, their tests and plants. These go out on one branch for review and merge.
+2. **Site day and edge day** on `graft-m3f` from merged main, as `tests/am1/results/install-m3f.md`, "Site day", gives them:
+   - with `--test-faults` and `--ssh`, since `ssh.graftyard.dev` depends on this install;
+   - with `SHARD_INSTANCE=standard-1` for the row (see the cost below);
+   - followed by the tools edge from main.
+   This site day also puts main's `idle-stall` (`decisions/DECISIONS.md`) on m3f.
+3. **Smoke, about 15 minutes:** 50 sessions, one kill on each site, and a check that `open`, the restart and the log tail all read.
+4. BF-52's revocation half, about 10 minutes.
+5. The 24-hour load.
+6. The report into this file, then teardown.
+
+### Teardown
+
+1. Stop the driver service.
+2. `DELETE /user/keys/{id}` for the row's keys.
+3. Retire and purge the row's repositories with `tests/fanout/retirenets.mjs` and `purge.py`.
+4. Stop shards with `INSTALL=graft-m3f python3 tests/fanout/teardown.py --sweep`. It must name no running shard.
+5. Kill each `SshFront` once more with the row's route. Each front stays stopped until `ssh.graftyard.dev`'s next session, so no front bills past the row.
+6. The next m3f site day goes back to the install's own `--vars` (`standard-4`).
+7. Remove the copied install state (`~/.graft-m3f`) and the tools-token link.
+8. Add the row's line to `tests/am1/results/install-m3f.md`.
+
+The Spectrum app, the host-key slots and the Secrets Store are not touched.
+
+### Cost estimate and stops
+
+The prices are the bill's overage rates (`research/cloudflare.md`, Containers and Durable Objects). The day is 86,400 s.
+
+| Item | Basis | Estimate |
+| --- | --- | --- |
+| Three `SshFront` containers, `basic` (1 GiB, 4 GB disk), up all day | memory 3 × 1 × 86,400 × $0.0000025 = $0.65; disk 3 × 4 × 86,400 × $0.00000007 = $0.07; CPU about 0.1 vCPU-s a session [guess], 28,800 × 0.1 × $0.00002 = $0.06 | $0.78 |
+| The network's git cache shard, 1 or 2 containers (warm on two sites) at `standard-1` (4 GiB, 8 GB) | memory 4 × 86,400 × $0.0000025 = $0.86; disk 8 × 86,400 × $0.00000007 = $0.05, each; push CPU 9,600 × 0.2 vCPU-s (DESIGN's push receive) = $0.04 | $0.95 to $1.85 |
+| Durable Object rows written | about 10,000 entries × 3 voters × 20 rows [guess] | $0.60 |
+| Durable Object duration and requests | members and fronts active about half the day [guess]; about 30 calls a session | $0.75 |
+| Workers (edge, front, tools edge) | about 1 M requests and their CPU | $0.40 |
+| Spectrum data | about 1.5 GB, inside Pro's 5 GB a month [unverified for Worker apps, K1] | $0 |
+| Site day, edge day, smoke, BF-52's half | builds, about 15 minutes of sessions, 1,000 queued commands | $0.15 |
+| **Row total** | | **about $3.6 to $4.5** |
+
+At the install's own `standard-4` the shard line is $2.71 per container-day, and the row comes to **about $5.4 to $8.1**, close to the $10 cap. That is why the plan asks for `standard-1` on the row's site day. The shard's size does not bear on SSH reliability for a small repository [inference]. graft-m3f's idle spend was $1.50 on 2026-11-25 (`acctcost.py`, `prefix_usd`). The row's reading counts whatever idle spend falls in its window.
+
+**Stops**, read with `PREFIX=graft-m3f python3 tests/fanout/acctcost.py`:
+- every 10 minutes by the driver;
+- every hour by the thread's follow schedule.
+
+| Stop | Limit | What happens |
+| --- | --- | --- |
+| The row, from the site day's start | $10 (`FRAME.md`, the standing queue's per-row cap) | The load stops |
+| graft-m3f per UTC day | $40 | The load stops; the row spans two UTC days, and each is checked |
+| The account per day | $200 | The load stops |
+
+A row stopped early is reported as stopped, with its hours and readings so far, not as a pass or a fail.
+
+### Window
+
+**Proposed: the site day at 2026-11-30 01:00Z, load from about 01:45Z to 2026-12-01 01:45Z.** This does not overlap the BM-6 drill on `graft-m6a` (00:05Z 2026-11-27 to 2026-11-29).
+- **Why not overlap:**
+  - BM-6 passes only if "no script version is created". Its checks read `graft-m6a`'s scripts. Still, a site day and the tools edge on `graft-m3f` would create versions in the same account during the drill.
+  - The two rows would also share the account's day: the drill at most $20 a day, this row at most $10.
+  - Neither would breach a cap, but keeping them apart keeps the drill's readings clean.
+- **If the lead wants it sooner:** the row can run inside the drill. Separate installs keep separate caps, and the account takes at most $30 a day from the two of them. The only change is that the drill's "no script version" line must then be read for `graft-m6a` alone.
