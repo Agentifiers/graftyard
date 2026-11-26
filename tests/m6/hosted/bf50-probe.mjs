@@ -9,7 +9,7 @@
 // promise) and a 15 s wait so that read leaves nothing ticking, then `gh api` on the repository and `git ls-remote`,
 // each timed from the client, first cold and then once more. The PAT stays in ~/.graft-m6a/bf50 (0600) and reaches gh
 // and git through their environment only; no line names the edge's host.
-//   BENCH=... EDGE=... node tests/m6/hosted/bf50-probe.mjs seed|probe <raw folder>
+//   BENCH=... EDGE=... [REPO=<name>] node tests/m6/hosted/bf50-probe.mjs seed|probe <raw folder>
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -112,7 +112,8 @@ if (MODE === "seed") {
   await op(`tokens:${tok.shard}`, { Store: { hash: tok.hash, kind: "Pat", account: owner, scopes: 1, expires: null } });
   writeFileSync(PAT_FILE, tok.text, { mode: 0o600, flag: "w" });
   // The repository, through the product edge as its owner would make it.
-  const name = "r66";
+  // BM-6's seed makes `bm6` (`bm6.sh seed`); BF-50's, `r66`.
+  const name = process.env.REPO ?? "r66";
   const t0 = Date.now();
   // `auto_init`, so `main` holds a commit for ls-remote to list.
   const r = await fetch(`${EDGE}/api/v3/user/repos`, { method: "POST", body: JSON.stringify({ name, auto_init: true }),

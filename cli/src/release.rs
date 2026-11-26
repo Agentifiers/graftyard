@@ -13,7 +13,9 @@
 //! "<hex>"}}, "undo": [{"EdgePointer": {"pin": "<hex>"}}], "undo_key": "<private key path>"}}`, and
 //! `{"Undo": {"intent": "<ulid>", "entry": {"EdgePointer": {"pin": "<hex>"}}}}`, which binds a pre-signed undo to its
 //! parent for the `sign` that pre-signed it, and `{"StaleMode": {"scope": {"Repo": 7}, "until_s": 600}}`. An intent may
-//! be `{"Rotate": {"secret": "DeployToken", "slot": 1}}` (M5-WP6).
+//! be `{"Rotate": {"secret": "DeployToken", "slot": 1}}` (M5-WP6). `{"FormatsEnable": {"format": "17.5", "release_key":
+//! "<private key path>"}}` carries the release-signing key's half over `formats_enable_message`, so `sign` with the
+//! customer key adds the other.
 
 use std::fs;
 use std::path::Path;
@@ -233,6 +235,7 @@ fn body(v: &Value, t: &InstallToml, keys: &Value) -> Res<ReleaseEntry> {
         "McpPointer" => ReleaseEntry::McpPointer { pin: release_id(b, "pin")? },
         "ControllerPointer" => ReleaseEntry::ControllerPointer { pin: release_id(b, "pin")? },
         "SiteLost" => ReleaseEntry::SiteLost { site: site(b, "site")? },
+        "FormatsEnable" => ReleaseEntry::FormatsEnable { format: format(str_field(b, "format")?)? },
         // `{"StaleMode": {"scope": "Install" | {"Owner": id} | {"Repo": id}, "until_s": seconds from now}}`, or an
         // absolute `"until"` in epoch ms.
         "StaleMode" => {
@@ -330,7 +333,14 @@ pub fn entry(config: &Path, spec: &Path, out: &Path, prev: Option<&str>, keys: O
         let prev = prev.ok_or("--prev: the digest of the group's last signed entry")?;
         (Bound { install, group: ChainId::Release, prev: Some(Digest(h32(prev)?)), parent: None }, body(&v, &t, &keys)?)
     };
-    let e = SignedEntry::unsigned(bound, body);
+    let mut e = SignedEntry::unsigned(bound, body);
+    if let ReleaseEntry::FormatsEnable { format } = &e.body {
+        let rkey = read_private_key(Path::new(str_field(field(&v, "FormatsEnable")?, "release_key")?))?;
+        e.sigs.push((
+            graftyard_release::public_key(&rkey),
+            graftyard_release::sign_record(&rkey, &graftyard_release::formats_enable_message(*format)),
+        ));
+    }
     fs::write(out, e.encode()).map_err(|e| format!("{}: {e}", out.display()))?;
     println!(
         "wrote unsigned {} to {}, prev {}{}",
@@ -879,6 +889,81 @@ mod tests {
         let c = fold.current.as_deref().unwrap();
         assert_eq!(c.intent.id, IntentId(id.parse().unwrap()));
         assert!(matches!(c.state, graftyard_release::IntentState::Running { .. }), "{:?}", c.state);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `release entry`'s `FormatsEnable` (BM-6's prep): the release key's half from `release_key`, then `sign` adds the
+    /// customer's, and the group commits it once every site reports a release that reads the format. The same spec
+    /// with another key as `release_key` is refused.
+    #[test]
+    fn a_formats_enable_entry_carries_the_release_half_and_commits() {
+        let dir = scratch();
+        let config = install_toml(&dir, &CUSTOMER);
+        let t = InstallToml::load(&config).unwrap();
+        let anchor = t.anchor().unwrap();
+        let unsigned = make_genesis(&dir, &config, "genesis.unsigned");
+        let ckey = key_file(&dir, "customer.key", &CUSTOMER, false);
+        let signed = dir.join("genesis.signed");
+        sign(&unsigned, &signed, &ckey, None).unwrap();
+        let mut fold = ReleaseFold::default();
+        let mut at = Timestamp(1_790_000_000_000);
+        let mut commit = |fold: &mut ReleaseFold, b: &[u8]| -> Result<(), String> {
+            at = Timestamp(at.0 + 60_000);
+            let ev = fold.decide(&anchor, at, b).map_err(|e| e.variant().to_string())?;
+            fold.apply(&ev, at);
+            Ok(())
+        };
+        commit(&mut fold, &fs::read(&signed).unwrap()).unwrap();
+        let exec = [5u8; 32];
+        let mut k = fold.keys.clone().unwrap();
+        k.generation += 1;
+        k.executor = graftyard_release::public_key(&exec);
+        let bound =
+            |f: &ReleaseFold| Bound { install: anchor.install, group: ChainId::Release, prev: f.last, parent: None };
+        let signed_by = |f: &ReleaseFold, b: ReleaseEntry, key: &[u8; 32]| {
+            let mut e = SignedEntry::unsigned(bound(f), b);
+            e.sign(key);
+            e.encode()
+        };
+        let e = signed_by(&fold, ReleaseEntry::Keys(Box::new(k)), &CUSTOMER);
+        commit(&mut fold, &e).unwrap();
+        let f175 = Format { family: 17, version: 5 };
+        let reads = FormatSet::new([Format { family: 32, version: 1 }, f175]);
+        let rec = format!(
+            r#"{{"files":[{{"name":"formats.txt","sha256":"{}"}}]}}"#,
+            crate::config::hex(&sha2::Sha256::digest(reads.file().as_bytes()))
+        )
+        .into_bytes();
+        let rid = ReleaseId(sha2::Sha256::digest(&rec).into());
+        let up = ReleaseUploaded {
+            release: rid,
+            record_sig: sign_record(&[3; 32], &rec),
+            record: rec.into(),
+            versions: (0..4).map(|s| (Script::Site(SiteId(s)), graftyard_release::VersionId([s + 1; 16]))).collect(),
+            images: smallvec::SmallVec::new(),
+            reads,
+        };
+        let e = signed_by(&fold, ReleaseEntry::ReleaseUploaded(Box::new(up)), &exec);
+        commit(&mut fold, &e).unwrap();
+        for s in 0..4 {
+            let e = signed_by(&fold, ReleaseEntry::SiteRelease { site: SiteId(s), release: rid }, &exec);
+            commit(&mut fold, &e).unwrap();
+        }
+        let wrong = key_file(&dir, "wrong.key", &[9; 32], false);
+        let rkey = key_file(&dir, "release.key", &[3; 32], false);
+        let prev = fold.last.unwrap().hex();
+        let mut try_enable = |fold: &mut ReleaseFold, release_key: &Path, name: &str| {
+            let spec = dir.join(format!("{name}.json"));
+            let spec_json = json!({ "FormatsEnable": { "format": "17.5", "release_key": release_key } });
+            fs::write(&spec, spec_json.to_string()).unwrap();
+            let (u, s) = (dir.join(format!("{name}.unsigned")), dir.join(format!("{name}.signed")));
+            entry(&config, &spec, &u, Some(&prev), None).unwrap();
+            sign(&u, &s, &ckey, None).unwrap();
+            commit(fold, &fs::read(&s).unwrap())
+        };
+        assert!(try_enable(&mut fold, &wrong, "wrong").is_err(), "another key's half is refused");
+        try_enable(&mut fold, &rkey, "enable").unwrap();
+        assert!(fold.enabled.contains(&f175));
         fs::remove_dir_all(&dir).unwrap();
     }
 }
