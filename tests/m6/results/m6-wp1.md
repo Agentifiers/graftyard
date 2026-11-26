@@ -223,3 +223,34 @@ The continuation started at 04:34:19Z from main 4cf538d9, carrying 265 (`restore
 - **Why it stopped.** Every run then logged `Stale("SiteMode")` on all 32 passes. graft-ops' replica held 12 of the 15 entries. 265's refusal of a `RestorePlacement` while its site is lost and not replaced also runs when a replica replays committed entries, and it refused m6aL2's restore at index 12. On the fold cut at 11, site 0 is lost and not drained, so `auto_drain` signs `Drain{0}` bound to index 11's digest, and the group answers 409 `StalePrev`. Replaying m6a's real pages through `Replica::extend` and `ops::next` from 4cf538d9 at $0 gives the same result (`cont-replay.txt`).
 - **The stop.** graft-ops' cron was turned off at 05:04Z. Nothing was committed, lifted or signed. The Release group stands as at the row's stop: the `ReplaceMember` current at Running step 0, the restore Halted, A drained, the fault on until 2026-11-27T01:10Z. 0 shard containers. Spend: $0.03 for the continuation; the m6a day $10.09, the total $41.45.
 - **Fix.** `restore-gate-from` (`decisions/DECISIONS.md`, OPEN-QUESTIONS R72): the refusal holds only from `RESTORE_GATE_FROM`, 2026-11-27T12:00Z, after the drill's prep site day. On that branch the real pages replay to 15, and graft-ops' next action is the move, with no drain.
+
+## m6aL2 continuation, resumed (2026-11-26): every line from `after` on passes
+
+After `restore-gate-from` merged (main aaaff100), `graft-m6a-ops` was redeployed from main 4b41325c as 82bc3adb at 06:06Z. Its cron first fired at 06:14:14Z, with no reset (`tests/am3/hosted/cron-fired.py`, R52). The ruled order then ran under the continuation's $10 row stop, with the day held ≤ $20.
+
+- **IntentDone with A faulted.** The `ReplaceMember`'s `IntentStep` and `IntentDone` committed at Release indexes 15 and 16 (06:15:16Z and 06:15:19Z), signed by the executor, with A still faulted.
+- **`after`** (06:15 to 06:32Z):
+
+| Line | Verdict | Evidence |
+| --- | --- | --- |
+| Line 2 | PASS | 3,136 judged (21 excluded), 3,132 held on A, 3,132 moved, 0 short; controls 4 of 4 untouched |
+| Signers | PASS | indexes 14 to 16 executor only; 11 and 12 customer; 13 the drain key |
+| Line 3 | PASS | 453 coordinator steps; registry rows 64/64 from sites 1 and 2; single-copy refill before the full one |
+| Campaign | groups done | 3,155 of 3,155 groups complete; 3,757 campaign steps; 3,153 chains elected |
+
+- **Lift and undrain.** The fault lifted at 06:32:59Z. graft-ops undrained A (index 17, drain key) by 07:03:03Z, `OPS_RECOVER_MS` after the lift.
+- **Resume in place of restore2.** The four ruled preconditions held, read from the Release view (`view-preresume.json`): the `ReplaceMember`'s `IntentDone` committed (16), `lift` done, A out of `drained` (17), and the halted `RestorePlacement` 01M8APNH9Q41NDG3G0JYXN5RBR current. The customer-signed `Resume{intent: 01M8APNH9Q41NDG3G0JYXN5RBR, undo: []}`, built with `graftyard release entry` from main 4b41325c, committed at index 18 at 07:03:30Z, 30 minutes after `lift`. restore2's line was met by this `Resume` of the original intent, not by a fresh `RestorePlacement`.
+- **The restore.** Its coordinator started 3,157 groups at 07:04Z. 3,148 were complete by 07:42Z. `repo:0`, which never formed, sorts first, so the coordinator's poll cursor sat at 6 until its group ended unmoved at `ASKS_MAX` (08:09Z). The polls then reached the end, and the coordinator completed at about 08:22Z with `{groups: 3157, unmoved: [repo:0]}`. graft-ops committed `IntentStep` and `IntentDone` at indexes 19 and 20 (08:25Z).
+- **Warm shards (R67 not yet on the sites).** The restore warmed 50 network shards on site a. 266 (`warm-lapse`) ships on the drill's prep site day, so they stayed up. The orchestrator ruled not to stop them mid-restore. They were torn down at 08:14Z, once every group was complete and the coordinator was only polling, with the day at $17.52 against the $18 trip, through each shard's own `/teardown` with the spare guard overridden (106 of 106 answered 200; 50 → 0). Containers cost $7.06 of the continuation's $7.77.
+- **`home`** (08:25 to 08:49Z):
+
+| Line | Verdict | Evidence |
+| --- | --- | --- |
+| Home | PASS | 3,132 of 3,132 back on [0, 1, 2], none on the spare, each on its own pre-loss home; 0 short |
+| Signers | PASS | the restore path signed by the customer (Resume, 18) and the executor (19, 20) |
+| Writes | PASS | 36 of 36 acked register values read back from the home leaders |
+
+- **Probe (R66): PASS.** On `r66`, idle since `seed` and seeded through the bench's test-only `/op` (no product route until R14), timed from the client after `home`: `gh api` 4,984 ms cold (server `resolve` 2,629 ms, `tier` 1,486 ms), then 1,998 ms; `git ls-remote` 3,484 ms cold, then 857 ms.
+- **Teardown.** The probe started one shard on site a. `bf50-teardown.sh`, with its guard intact (no config names the spare), stopped it at 08:51Z. Every gitshard application reads 0 active.
+- **Versions.** Every site script, the edge and the Workflows script are unchanged from `before`. `graft-m6a-ops` gained baee86af and 82bc3adb, the two ruled redeploys.
+- **Spend** (acctcost): the continuation $7.77 from 04:34:19Z (containers $7.06); the m6a day $17.82; the install's total since creation $49.18. graft-ops' cron stays on, as rows start with it.
