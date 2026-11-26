@@ -313,3 +313,59 @@ fn the_base_task_is_sent_each_state_until_the_base_answers_it() {
     c.cancel();
     assert_eq!(c.unreported(), None);
 }
+
+/// AM3-WP4: a reported session log holds the final `PATCH` until the host's push of it is answered, since `decide`
+/// takes the session ref only while the base reads the task live. A push with no answer is tried again, and after
+/// `LOG_TRIES` with none the task is let go; a refusal lets it go at once; a second report is refused. A state that is
+/// not final is never held, and a box with no log owes its final state at once, as before. The log's `pushes` are the
+/// heads the host saw acked, in order.
+#[test]
+fn a_reported_session_log_holds_the_final_state_until_its_push_is_answered() {
+    use graftyard_git::session_log::{LOG_TRIES, Pushed};
+    use graftyard_git::task::TaskApiState::{Completed, InProgress};
+    use graftyard_git::taskbox::LogState;
+    let (h1, h2) = (ObjectId([1; 20]), ObjectId([2; 20]));
+    let mut b = started();
+    assert!(b.log_reported(), "the first report");
+    assert_eq!(b.unreported(), Some(InProgress), "a state that is not final is not held");
+    b.answered(InProgress, 200);
+    b.on(pushed(sb(1), h1), 1).unwrap();
+    b.on(pushed(sb(1), h2), 2).unwrap();
+    assert_eq!(b.pushes, [h1, h2]);
+    assert_eq!(b.on(Input::Report { from: sb(1), event: TaskEvent::Finished }, 3), Ok(Act::Stop));
+    assert_eq!(b.unreported(), None, "held while the log's push is owed");
+    assert!(!b.log_reported(), "a second report is refused");
+    for i in 1..LOG_TRIES {
+        b.log_answered(Pushed::Retry);
+        assert_eq!(b.log, LogState::Pending { tries: i });
+        assert_eq!(b.unreported(), None, "try {i}: still held");
+    }
+    b.log_answered(Pushed::Retry);
+    assert_eq!(b.log, LogState::Done(Pushed::Retry));
+    assert_eq!(b.unreported(), Some(Completed), "let go after LOG_TRIES tries with no answer");
+    b.log_answered(Pushed::Ok);
+    assert_eq!(b.log, LogState::Done(Pushed::Retry), "an answer after the box gave up changes nothing");
+
+    for answer in [Pushed::Ok, Pushed::Refused] {
+        let mut b = started();
+        b.answered(InProgress, 200);
+        b.log_reported();
+        b.on(Input::Report { from: sb(1), event: TaskEvent::Finished }, 3).unwrap();
+        assert_eq!(b.unreported(), None);
+        b.log_answered(Pushed::Retry);
+        b.log_answered(answer);
+        assert_eq!(b.log, LogState::Done(answer));
+        assert_eq!(b.unreported(), Some(Completed), "{answer:?} lets the final state go");
+    }
+    let mut b = started();
+    b.answered(InProgress, 200);
+    b.on(Input::Report { from: sb(1), event: TaskEvent::Finished }, 3).unwrap();
+    assert_eq!(b.unreported(), Some(Completed), "no log reported: nothing held");
+    // A box stored before AM3-WP4 has no `pushes` or `log`, and reads as one with neither.
+    let mut v = serde_json::to_value(started()).unwrap();
+    let o = v.as_object_mut().unwrap();
+    o.remove("pushes");
+    o.remove("log");
+    let old: TaskBox = serde_json::from_value(v).unwrap();
+    assert_eq!((old.pushes.len(), old.log), (0, LogState::Unreported));
+}

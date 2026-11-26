@@ -20,6 +20,12 @@
 //!   `redirect: "manual"`, and for a receive-pack reads the host's report (`acked_pushes`), so `last_push` moves only
 //!   on the host's `ok`. The Sandbox's own reports (usage, finished, failed) go to `REPORT_HOST`, which the router
 //!   answers here and never forwards.
+//! - **Session log.** `POST https://controller.graftyard.internal/log` from the current Sandbox, once, before its last
+//!   report: the host builds the `SessionLog` (`graftyard_git::session_log::build`, redacting the tokens this object
+//!   minted and the model key), stores the receive-pack request under `log`, and pushes it to the push target's
+//!   `refs/graftyard/sessions/<id>` under the `graftyard-workspace` token, never through the router, which refuses
+//!   receive-pack outside the task's branches. A push with no answer is sent again before each `report_base`, and the
+//!   box holds the final `PATCH` until it is answered (`tb::TaskBox::log_answered`).
 //! - **Tokens.** A `graftyard-agent` token for the base and a `graftyard-workspace` token for the push target, each
 //!   from `POST /api/v3/app/installations/{id}/access_tokens` on the install with `repositories` and `graftyard_task`
 //!   naming the task, under an App JWT (`graftyard_identity::appauth`), cached in the object until
@@ -36,6 +42,7 @@ use base64::Engine as _;
 use futures_util::future::{Either, select};
 use graftyard_git::controller::{Delivery, Resume, SandboxId, TASK_WALL, Task, TaskBudget, TaskEvent};
 use graftyard_git::outbound::{Allowed, Cred, OutReq, Route, Scheme, outbound};
+use graftyard_git::session_log::{self as sl, LogReport, Pushed};
 use graftyard_git::taskbox::{self as tb, Act, HEARTBEAT, Input, Pointer, Report, acked_pushes};
 use graftyard_identity::appauth::{app_key, sign_app_jwt};
 use graftyard_identity::{AppId, SessionId, WorkspaceMode};
@@ -245,6 +252,17 @@ fn host(route: &Route) -> Option<&str> {
     })
 }
 
+/// The repository the task pushes to, `owner/name`: the workspace fork in fork mode, the base in-repo.
+fn push_target(route: &Route) -> Option<String> {
+    route.arms.iter().find_map(|a| match a {
+        Allowed::GraftyardHost { base, fork, .. } => {
+            let r = fork.as_ref().unwrap_or(base);
+            Some(format!("{}/{}", r.owner.as_str(), r.name.as_str()))
+        }
+        _ => None,
+    })
+}
+
 /// Logs a refusal's line (`tb::refused`) and answers its status.
 fn refuse(b: &tb::TaskBox, r: &Report, message: &str) -> Result<Response> {
     let (status, line) = tb::refused(b, r);
@@ -355,9 +373,10 @@ impl TaskBox {
         }
         self.save(&s).await?;
         self.act(&act, &s).await?;
+        self.push_log().await?;
         self.report_base().await?;
-        // A final box keeps its alarm until the base answered its last state.
-        let unreported = self.load().await?.is_some_and(|s| s.b.unreported().is_some());
+        // A final box keeps its alarm until the base answered its last state and its session log's push.
+        let unreported = self.load().await?.is_some_and(|s| s.b.unreported().is_some() || s.b.log_due());
         if !s.b.task.state.is_final() || unreported {
             self.state.storage().set_alarm(HEARTBEAT).await?;
         }
@@ -373,6 +392,9 @@ impl TaskBox {
             return refuse(&s.b, &r, "refused: this Sandbox is not the task's");
         }
         if req.url()?.host_str() == Some(REPORT_HOST) {
+            if req.path() == "/log" {
+                return self.log_report(req).await;
+            }
             return self.report(req, props.sandbox).await;
         }
         let headers: Vec<(String, String)> =
@@ -438,11 +460,92 @@ impl TaskBox {
         match out {
             Ok(act) => {
                 self.act(&act, &s).await?;
+                self.push_log().await?;
                 self.report_base().await?;
                 reply(200, json!({ "state": s.b.task.state }))
             }
             Err(r) => refuse(&s.b, &r, &format!("{r:?}")),
         }
+    }
+
+    /// `POST https://controller.graftyard.internal/log` from the Sandbox `outbound` admitted: its `LogReport`, once.
+    /// The host builds the log with the heads it saw acked and every secret it knows redacted, stores the push, and
+    /// sends it. 409 for a second report, 422 for one that does not parse.
+    async fn log_report(&self, mut req: Request) -> Result<Response> {
+        let report: LogReport = match req.json().await {
+            Ok(r) => r,
+            Err(e) => return reply(422, json!({ "message": format!("a log report is a LogReport: {e}") })),
+        };
+        let mut s = self.load().await?.ok_or_else(|| err("the box went away"))?;
+        if !s.b.log_reported() {
+            return reply(409, json!({ "message": "this task's session log was already reported" }));
+        }
+        let mut known: Vec<String> = self.tokens.borrow().iter().map(|t| t.1.clone()).collect();
+        if let Ok(Some(k)) = async { self.env.secret_store("MODEL_KEY")?.get().await }.await {
+            known.push(k);
+        }
+        let known: Vec<&str> = known.iter().map(String::as_str).collect();
+        let id = s.b.task.id.clone();
+        let log = sl::build(id.clone(), &s.b.pushes, report, &known);
+        let host = host(&s.start.route).ok_or_else(|| err("the route names no host"))?.to_owned();
+        let email = format!("graftyard-workspace[bot]@users.noreply.{host}");
+        let who =
+            graftyard_git::init::Signature { name: "graftyard-workspace[bot]", email: &email, at: Timestamp(now_ms()) };
+        let (commit, pack) = sl::commit(&sl::encode(&log), &id, &who);
+        let body = sl::push_request(&id, commit, &pack);
+        self.state.storage().put("log", graftyard_git::pack::b64::encode(&body)).await?;
+        self.save(&s).await?;
+        self.push_log().await?;
+        let s = self.load().await?.ok_or_else(|| err("the box went away"))?;
+        reply(200, json!({ "commit": commit.hex(), "log": s.b.log }))
+    }
+
+    /// Sends the stored session log's push to the push target if the box still owes it, under `graftyard-workspace`'s
+    /// token, and records the answer (`tb::TaskBox::log_answered`). The box is loaded again after the request, as
+    /// `report_base` does.
+    async fn push_log(&self) -> Result<()> {
+        let Some(s) = self.load().await? else { return Ok(()) };
+        if !s.b.log_due() {
+            return Ok(());
+        }
+        let id = s.b.task.id.clone();
+        let stored: Option<String> = self.state.storage().get("log").await?;
+        let Some(body) = stored.as_deref().and_then(graftyard_git::pack::b64::decode) else {
+            // Reported but nothing stored: give it up rather than hold the task.
+            let mut s = s;
+            s.b.log_answered(Pushed::Refused);
+            return self.save(&s).await;
+        };
+        let host = host(&s.start.route).ok_or_else(|| err("the route names no host"))?.to_owned();
+        let target = push_target(&s.start.route).ok_or_else(|| err("the route names no push target"))?;
+        let url = format!("https://{host}/{target}.git/git-receive-pack");
+        let auth =
+            self.credential(Cred::Workspace(Scheme::Basic), &s).await?.ok_or_else(|| err("no workspace token"))?;
+        let h = Headers::new();
+        h.set("authorization", &auth)?;
+        h.set("content-type", "application/x-git-receive-pack-request")?;
+        h.set("accept", "application/x-git-receive-pack-result")?;
+        h.set("user-agent", "git/2.56.0 graft-controller")?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post)
+            .with_headers(h)
+            .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
+        let (status, answer) = match Fetch::Request(Request::new_with_init(&url, &init)?).send().await {
+            Ok(mut r) => (Some(r.status_code()), r.bytes().await.unwrap_or_default()),
+            Err(_) => (None, Vec::new()),
+        };
+        let pushed = sl::outcome(&id, &body, status, &answer);
+        let Some(mut s) = self.load().await? else { return Ok(()) };
+        s.b.log_answered(pushed);
+        console_log!(
+            "graft-controller: task {} log push to {target}: {status:?} {pushed:?}, now {:?}",
+            id.text(),
+            s.b.log
+        );
+        if !s.b.log_due() {
+            self.state.storage().delete("log").await?;
+        }
+        self.save(&s).await
     }
 
     /// The `Authorization` value for `cred`, minting the task's installation token when none is cached.

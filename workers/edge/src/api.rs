@@ -1255,8 +1255,17 @@ pub(crate) async fn tasks(
             };
             return Ok(t::list(&view, authz, crate::now(), &f, reader, &format!("/repos/{owner}/{repo}/tasks")));
         }
-        (Route::Task { id, .. }, Method::Get) => return Ok(t::get(&view, authz, crate::now(), id, reader)),
-        (Route::Log { id, .. }, Method::Get) => return Ok(t::log(&view, id, reader)),
+        (Route::Task { id, .. }, Method::Get) => return Ok(t::get(&view, authz, crate::now(), id, query, reader)),
+        (Route::Log { id, .. }, Method::Get) => {
+            let id = match t::log_reader(&view, id, reader) {
+                Ok(id) => id,
+                Err(r) => return Ok(r),
+            };
+            return Ok(match session_log(c, &rd, &id).await? {
+                Ok(l) => t::log(l.as_ref()),
+                Err(r) => r,
+            });
+        }
         (Route::Tasks { .. }, Method::Post) => t::parse_create(body, requester.map(graftyard_identity::UserId)),
         (Route::Task { id, .. }, Method::Patch) => match t::path_id(id, caller) {
             Some(id) => t::parse_patch(id, body),
@@ -1278,6 +1287,97 @@ pub(crate) async fn tasks(
     }
     let created = matches!(op, IssueOp::CreateTask(_) | IssueOp::CreateRun(_));
     commit_issue(c, &rd, &who, op, What::Task { created, contents: reader.contents }).await
+}
+
+/// Task `id`'s stored session log (`design/AGENT-LAYER.md`, Shape, `SessionLog`), for a reader `log_reader` let
+/// through on the base `rd`: `session.json` at its session ref's tip on the base, else on the base owner's workspace
+/// fork `<owner>-agents/<repo>`, read as the host (no viewer), since only `graftyard-workspace` under the task's live
+/// claim writes a session ref. `Ok(None)` while neither holds the ref.
+pub(crate) async fn session_log(
+    c: &Ctx<'_>,
+    rd: &Read,
+    id: &graftyard_identity::SessionId,
+) -> Result<std::result::Result<Option<graftyard_git::session_log::SessionLog>, Reply>> {
+    use graftyard_git::session_log::{LOG_PATH, session_ref};
+    let Ok(name) = graftyard_git::refs::RefName::parse(session_ref(id).as_bytes()) else { return Ok(Ok(None)) };
+    let Ok(host) = Host::new(&c.cfg.host, false) else {
+        return Ok(Err(unavailable("the install's host is not valid")));
+    };
+    let read_at = |r: &Read| r.view(&host).ref_value(&name);
+    let fork;
+    let (from, tip) = match read_at(rd) {
+        Some(tip) => (rd, tip),
+        None => {
+            let Ok(owner) = graftyard_identity::Login::parse(&rd.at.owner) else { return Ok(Ok(None)) };
+            let base = graftyard_git::controller::RepoRef {
+                owner,
+                name: match graftyard_identity::RepoName::parse(&rd.at.name) {
+                    Ok(n) => n,
+                    Err(_) => return Ok(Ok(None)),
+                },
+            };
+            let Ok(graftyard_git::controller::Workspace::Fork(f)) =
+                graftyard_git::controller::workspace(graftyard_identity::WorkspaceMode::Fork, &base)
+            else {
+                return Ok(Ok(None));
+            };
+            // The fork's refs are read with no read gate (`Gate::Invitees`): the viewer passed `log_reader` on the base,
+            // and a base reader need not reach the fork (LF-10).
+            let repo = match resolve(c, f.owner.as_str(), f.name.as_str()).await? {
+                Ok(Some(r)) => r,
+                Ok(None) => return Ok(Ok(None)),
+                Err(e) => return Ok(Err(read_failed("the workspace fork's lookup failed; retry", &e))),
+            };
+            let (o, n) = (f.owner.as_str(), f.name.as_str());
+            fork = match read_repo(c, repo, o, n, None, None, Rows::Core, Gate::Invitees).await? {
+                Ok(r) => r,
+                Err(r) if r.status == 404 => return Ok(Ok(None)),
+                Err(r) => return Ok(Err(r)),
+            };
+            match read_at(&fork) {
+                Some(tip) => (&fork, tip),
+                None => return Ok(Ok(None)),
+            }
+        }
+    };
+    let q = [("commit", tip.hex()), ("path", LOG_PATH.to_owned())];
+    match crate::ui::shard_json(c, from, "blob", &q).await {
+        Ok(v) => Ok(Ok(graftyard_api::tasks::stored_log(id, v["text"].as_str()))),
+        Err(r) if r.status == 404 => Ok(Ok(None)),
+        Err(r) => Ok(Err(r)),
+    }
+}
+
+/// `GET /{owner}/{repo}/_graftyard/sessions/{id}` (`design/AGENT-LAYER.md`, Shape, `SessionLog`): the base's task
+/// read with the viewer's access, as `GET .../tasks/{id}/log` reads it, then the stored log as JSON under `Accept:
+/// application/json` or as HTML.
+pub(crate) async fn session_page(c: &Ctx<'_>, req: &Request, owner: &str, name: &str, id: &str) -> Result<Reply> {
+    use graftyard_api::tasks as t;
+    if !c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_TASKS) {
+        return Ok(unavailable("session pages need record format 32.12, which FormatsEnable has not enabled"));
+    }
+    c.read_class.set(true);
+    let who = authenticate(c, req).await?;
+    let rd = match read(c, owner, name, who.as_ref()).await? {
+        Ok(r) => r,
+        Err(r) => return Ok(r),
+    };
+    let Some(authz) = rd.dir.authz.as_ref() else {
+        return Ok(unavailable("the owner's Authz chain did not answer; retry"));
+    };
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    let reader = t::Reader::of(who.as_ref(), authz, &access);
+    let Ok(host) = Host::new(&c.cfg.host, false) else { return Ok(unavailable("the install's host is not valid")) };
+    let view = rd.view(&host);
+    let id = match t::log_reader(&view, id, reader) {
+        Ok(id) => id,
+        Err(r) => return Ok(r),
+    };
+    let json = req.headers().get("accept")?.is_some_and(|a| a.contains("application/json"));
+    Ok(match session_log(c, &rd, &id).await? {
+        Ok(l) => t::session_page(&view, l.as_ref(), json),
+        Err(r) => r,
+    })
 }
 
 /// The command read a task request makes (`command-rows`): none for a `GET`, which renders the tiers here; a write

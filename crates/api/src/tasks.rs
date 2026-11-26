@@ -9,6 +9,7 @@
 
 use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
 use graftyard_git::issues::IssueNumber;
+use graftyard_git::session_log::SessionLog;
 use graftyard_git::task::{
     NewRun, NewTask, PROMPT_MAX, SUMMARY_MAX, TaskActor, TaskApiState, TaskCore, TaskErr, TaskMeta, effective,
     task_core, task_ids, task_meta,
@@ -155,13 +156,19 @@ pub fn task_json_in(
     v
 }
 
-/// `GET /tasks/{id}`.
-pub fn get(r: &Repo<'_>, owner: &dyn AuthzRead, at: Timestamp, id: &str, reader: Reader) -> Reply {
+/// `GET /tasks/{id}`. `?fields=prompt` asks for the prompt, which a reader without `contents: read` gets 403 for; a
+/// plain read answers it without `prompt` (L0-15).
+pub fn get(r: &Repo<'_>, owner: &dyn AuthzRead, at: Timestamp, id: &str, query: &str, reader: Reader) -> Reply {
     if !reader.metadata {
         return Reply::not_found();
     }
     let Some(id) = SessionId::parse(id, None) else { return Reply::not_found() };
     let Some(core) = task_core(r.core, &id) else { return Reply::not_found() };
+    let prompt =
+        query.split('&').any(|kv| kv.strip_prefix("fields=").is_some_and(|v| v.split(',').any(|f| f == "prompt")));
+    if prompt && !reader.contents {
+        return Reply::error(403, "Resource not accessible: prompts need contents: read", DOC);
+    }
     let meta = task_meta(r.meta, &id);
     Reply::json(200, task_json(r, owner, at, &id, &core, meta.as_ref(), reader, true))
 }
@@ -247,13 +254,95 @@ pub fn list(r: &Repo<'_>, owner: &dyn AuthzRead, at: Timestamp, f: &Filter, read
     reply
 }
 
-/// `GET /tasks/{id}/log`: the `SessionLog` is pushed under `refs/graftyard/sessions/<id>` (AM3), so until then 404.
-pub fn log(r: &Repo<'_>, id: &str, reader: Reader) -> Reply {
-    let found = SessionId::parse(id, None).and_then(|id| task_core(r.core, &id));
-    if !reader.contents || found.is_none() {
-        return Reply::not_found();
+// ---- session logs ----
+
+/// Who may read task `id`'s session log, by `GET /tasks/{id}/log` or its session page (`design/AGENT-LAYER.md`, Shape,
+/// `SessionLog`): 404 without `metadata: read` or with no such task, as every task read answers; 403 without
+/// `contents: read`, since that reader already sees the task (L0-15). The task's id otherwise.
+pub fn log_reader(r: &Repo<'_>, id: &str, reader: Reader) -> Result<SessionId, Reply> {
+    if !reader.metadata {
+        return Err(Reply::not_found());
     }
-    Reply::error(404, "The session log has not been pushed", DOC)
+    let id = SessionId::parse(id, None).filter(|id| task_core(r.core, id).is_some()).ok_or_else(Reply::not_found)?;
+    if !reader.contents {
+        return Err(Reply::error(403, "Resource not accessible: session logs need contents: read", DOC));
+    }
+    Ok(id)
+}
+
+/// The session log of task `id` from its stored text, the `session.json` its session ref's commit holds: `None`
+/// until the ref exists, or when the text is not task `id`'s schema 1 log.
+pub fn stored_log(id: &SessionId, text: Option<&str>) -> Option<SessionLog> {
+    let log: SessionLog = serde_json::from_str(text?).ok()?;
+    (log.schema == graftyard_git::session_log::SCHEMA && log.id == *id).then_some(log)
+}
+
+/// `GET /tasks/{id}/log` once the reader passed `log_reader`: the stored log, or 404 until it is pushed.
+pub fn log(log: Option<&SessionLog>) -> Reply {
+    match log {
+        Some(l) => Reply::json(200, serde_json::to_value(l).expect("a session log serializes")),
+        None => Reply::error(404, "The session log has not been pushed", DOC),
+    }
+}
+
+fn esc(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '<' => o.push_str("&lt;"),
+            '>' => o.push_str("&gt;"),
+            '&' => o.push_str("&amp;"),
+            '"' => o.push_str("&quot;"),
+            '\'' => o.push_str("&#39;"),
+            c => o.push(c),
+        }
+    }
+    o
+}
+
+/// The session page, `/{owner}/{repo}/_graftyard/sessions/{id}` on the base, for a reader who passed `log_reader`:
+/// the log as JSON under `Accept: application/json`, else as HTML, every text escaped. 404 until it is pushed.
+pub fn session_page(r: &Repo<'_>, log: Option<&SessionLog>, json: bool) -> Reply {
+    let Some(l) = log else { return self::log(None) };
+    if json {
+        return self::log(Some(l));
+    }
+    let web = r.host.web();
+    let (o, n) = (esc(&r.at.owner), esc(&r.at.name));
+    let mut h = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Session {id} · {o}/{n}</title></head><body>\
+         <h1>Session {id}</h1><p><a href=\"{web}/{o}/{n}\">{o}/{n}</a> · {hn} {hv} · {hm}</p>",
+        id = esc(&l.id.text()),
+        hn = esc(&l.harness.name),
+        hv = esc(&l.harness.version),
+        hm = esc(&l.harness.model),
+    );
+    if let Some(v) = l.issue_snapshot.as_ref().and_then(|s| s.get("visible")).and_then(Value::as_str) {
+        h += &format!("<h2>Issue as the agent saw it</h2><pre>{}</pre>", esc(v));
+    }
+    h += &format!("<h2>Plan</h2><pre>{}</pre><h2>Steps</h2><ol>", esc(&l.plan));
+    for s in &l.steps {
+        let kind = serde_json::to_value(s.kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        h += &format!(
+            "<li><b>{}</b>{} at {}<pre>{}</pre><pre>{}</pre>{}</li>",
+            esc(&kind),
+            s.tool.as_deref().map(|t| format!(" {}", esc(t))).unwrap_or_default(),
+            crate::wire::iso(Timestamp(s.at)),
+            esc(&s.input),
+            esc(&s.output),
+            if s.truncated { "<p>(truncated)</p>" } else { "" },
+        );
+    }
+    h += "</ol><h2>Pushes</h2><ul>";
+    for p in &l.pushes {
+        h += &format!("<li><a href=\"{web}/{o}/{n}/commit/{p}\">{p}</a></li>", p = esc(p));
+    }
+    h += "</ul><h2>Pull requests</h2><ul>";
+    for pr in &l.prs {
+        h += &format!("<li><a href=\"{web}/{o}/{n}/pull/{0}\">#{0}</a></li>", pr.0);
+    }
+    h += "</ul></body></html>";
+    Reply::bytes(200, "text/html; charset=utf-8", h.into_bytes())
 }
 
 // ---- writes ----

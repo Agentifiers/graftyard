@@ -45,6 +45,7 @@ pub mod run_checks;
 pub mod search;
 pub mod secrets;
 pub mod sequencer;
+pub mod session_log;
 pub mod shard;
 pub mod smart;
 pub mod split;
