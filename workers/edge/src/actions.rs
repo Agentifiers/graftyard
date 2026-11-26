@@ -250,7 +250,7 @@ pub async fn launch(c: &Ctx<'_>, mut req: Request) -> Result<Response> {
         .and_then(|(t, k)| runsvc::verify_token(&t, &k, crate::now()))
         .and_then(|(chain, _)| if let ChainId::Actions(o, _) = chain { Some(o) } else { None });
     let policy = match owner {
-        Some(o) => pinmap::policy(c, o).await,
+        Some(o) => pinmap::policy(c, o, false).await,
         None => pinmap::Policy { tags: false, approved: None, known: None },
     };
     let chosen = pinmap::substitute(&policy, &asked);

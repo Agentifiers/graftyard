@@ -86,3 +86,12 @@ Driver: `tests/m4/wp3/bf76/row.sh r1 <step>` with `bf76.mjs`. Raw output: `tests
 **Cost and sheds.** `acctcost.py` from 07:11:13Z to 07:39:42Z: graft-m4a **$0.30** (containers $0.14 of it), against the $3 stop. The account's $2.88 total is mostly `graft-m6a-site-a-gitshard` ($2.54), which is not this row's. `tieroff503.py` over the same window: elect 0, tierOff 0, edge 503 0. The new repository's 503 retries: none.
 
 **Rerun needs:** the two fixes above as one head (edge, and the site for the op's JSON). Then a site day and an edge day from that main, and `row.sh r2 pin` then `approve` on a fresh repository; `setup` and `tag` need not repeat.
+
+## The r1 fixes (branch `bf76-fix`, from main 321af57d, $0)
+
+- **The annotation reads the current map whatever the policy.** `pinmap::annotations` calls `policy_from(.., known: true)`, which reads `actions/pin-maps/current` even with tags off and no approval, so an unapproved pin is `Unapproved` and Graftyard's annotation comes before the runner's. The launch service passes `known: false` and reads as before. The reads sit behind `MapReads` (the edge's `Live` and a test fake). Test: `workers/edge/src/actions/pinmap.rs`, `an_unapproved_pin_gets_the_pin_map_annotation_with_tags_off_and_nothing_approved`. On main's early return it fails with "the current map is read with tags off and nothing approved: left 0, right 1".
+- **`{pin_map: null}` withdraws.** `SetActionsSubstitution.pin_map`'s JSON form (`authz.rs`, `pin_map_change`) writes a withdraw as `"withdraw"`, reads `null` or an absent field as keep, and reads a digest as approve. Binary formats keep the derived form. Test: `crates/identity/tests/agents.rs`, `actions_substitution_withdraw_survives_the_edge_to_site_json`, which round-trips keep, withdraw and approve through JSON and the raft codec, and pins postcard's `27 00 00` (the wire-tag golden's sample), `27 00 01 00` and `27 00 01 01 <digest>`. On main's shape it fails: `{"pin_map":null}` read back as `pin_map: None`.
+- **Plant274:** 8 of 8 caught.
+- The `GET /repos/{o}/{r}/pulls` list 404 from r1 is M4-WP4's to file and fix (plant 276), not this head's.
+
+**r2, pre-GO'd by the lead, $3 stop:** a site day and an edge day from the main that carries the fix, then `row.sh r2 withdraw` (m3org from r1's empty-map approval to none, by `null`), `FROM=r1 row.sh r2 pin` and `FROM=r1 row.sh r2 approve`, then `teardown`.

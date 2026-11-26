@@ -16,7 +16,9 @@
 #   setup      the forks built (`build-forks.sh`, MIR the upstream bare clones), mirrored as `graftyard-actions/*`
 #              (GA_ID, default 7100013), upstream v4.6.2 and v4.3.0 mirrored into `actions`, and the pin map signed
 #              with ~/.graft-m4a/release.key and stored (`bf76.mjs setup`)
-#   tag        `bf76.mjs tag`, `pin` `bf76.mjs pin`, `approve` `bf76.mjs approve` (RUNNER, an unpacked runner 2.338.2)
+#   tag        `bf76.mjs tag`, `pin` `bf76.mjs pin`, `approve` `bf76.mjs approve` (RUNNER, an unpacked runner 2.338.2);
+#              FROM=<tag> takes an earlier tag's signed map and digest when `setup` is not rerun
+#   withdraw   `bf76.mjs withdraw`: `{tags: false, pin_map: null}`, which must leave no approval (r2's first line)
 #   teardown   `bf76.mjs teardown`, then the shard-container sweep
 #
 # Needs `source tests/am1/lf13/env-m4a.sh` (the tools token for the mirrors), what BF-74's row needs, RUNNER, target/release/examples/jitconfig, and TREE (a worktree at the row's main, with
@@ -56,10 +58,15 @@ setup)
     node "$REPO/tests/m4/wp3/bf69/mirror.mjs" "$F/download-artifact.src.git" download-artifact v4.3.0; echo "upstream download exit $?"
     node "$REPO/tests/m4/wp3/bf76/bf76.mjs" setup "$O/run"; echo "setup exit $?"
   } 2>&1 | log ;;
-tag | pin | approve) { node "$REPO/tests/m4/wp3/bf76/bf76.mjs" "$STEP" "$O/run" "${RUNNER:?RUNNER}"; echo "$STEP exit $?"; } 2>&1 | log ;;
+tag | pin | approve)
+  # FROM=<tag>: a rerun that skips `setup` takes that tag's signed map and digest (the install still holds them).
+  [ -n "${FROM:-}" ] && mkdir -p "$O/run" && for f in digest.txt pin-map.json pin-map.sig; do
+    [ -e "$O/run/$f" ] || cp "$REPO/tests/m4/raw/wp3/bf76/$FROM/run/$f" "$O/run/$f"; done
+  { node "$REPO/tests/m4/wp3/bf76/bf76.mjs" "$STEP" "$O/run" "${RUNNER:?RUNNER}"; echo "$STEP exit $?"; } 2>&1 | log ;;
+withdraw) { node "$REPO/tests/m4/wp3/bf76/bf76.mjs" withdraw "$O/run"; echo "withdraw exit $?"; } 2>&1 | log ;;
 teardown)
   { node "$REPO/tests/m4/wp3/bf76/bf76.mjs" teardown "$O/run"; echo "teardown exit $?"
     python3 "$REPO/tests/fanout/teardown.py" --sweep --shardkill; echo "sweep exit $?"
   } 2>&1 | log ;;
-*) echo "step: state site edge setup tag pin approve teardown"; exit 2 ;;
+*) echo "step: state site edge setup withdraw tag pin approve teardown"; exit 2 ;;
 esac
