@@ -4,7 +4,9 @@
 #   bash tests/m6/hosted/bf50-row.sh <tag> <phase>
 # Phases, in order:
 #   create    test-register chains: 24 Tri homed on A (0), 8 homed on B (1), and 4 Tri on B, C and the spare, the
-#             controls that hold no voter on A
+#             controls that hold no voter on A, at ids BASE+1.., BASE+101.. and BASE+211.. (BASE, default 6000; each
+#             row its own, m6aL 6000 and m6aL2 7000), listed in regs.json. Refused if any of those chains has a
+#             registry row or a generation-1 member not answering "not joined" (m6aL2 r1 re-joined m6aL's)
 #   seed      the R66 probe's real repository, owner and PAT, all homed on A (`bf50-probe.mjs seed`)
 #   load      LOAD_S seconds of puts at LOAD_RATE on the register chains, then stop (load.json: the last acked value
 #             per chain)
@@ -30,12 +32,14 @@ R=$ROOT/tests/m6/raw/m6a/$TAG; mkdir -p "$R"
 J="python3 $ROOT/tests/m6/hosted/bf50judge.py $R"
 WF=graft-m6a-workflows
 log() { echo "{\"at\":\"$(date -u +%FT%TZ)\",\"phase\":\"$PHASE\",$1}" | tee -a "$R/row.log"; }
-chains_a() { for i in $(seq 1 24); do printf '"repo:%d",' $((6000 + i)); done; }
-chains_b() { for i in $(seq 1 8); do printf '"repo:%d",' $((6100 + i)); done; }
-chains_s() { for i in $(seq 1 4); do printf '"repo:%d",' $((6210 + i)); done; }
-# The register chains alone, as a jq test: the R66 probe's repository is a `repo:` chain too, and a register put or
-# `home`'s campaigning read on it would wake it before `probe`.
-REGS='test("^repo:6[0-9]{3}$")'
+BASE=${BASE:-6000}
+chains_a() { for i in $(seq 1 24); do printf '"repo:%d",' $((BASE + i)); done; }
+chains_b() { for i in $(seq 1 8); do printf '"repo:%d",' $((BASE + 100 + i)); done; }
+chains_s() { for i in $(seq 1 4); do printf '"repo:%d",' $((BASE + 210 + i)); done; }
+# The register chains alone, as a jq test over `create`'s regs.json: the R66 probe's repository is a `repo:` chain
+# too, and a register put or `home`'s campaigning read on it would wake it before `probe`; and an earlier row's
+# chains stay in the snapshots, judged like the precreated ones, but get no puts or reads.
+REGS='. as $c | $regs[0] | index($c)'
 # Every register chain as {chain, site, do_name} on a live voter (B's member: never the faulted A).
 regs() {
   jq -c '[.[] | select(.chain | startswith("repo:")) | select(.site == 1) | {chain, site, do_name}] | unique_by(.chain)' "$R/rows-before.json"
@@ -82,6 +86,20 @@ entries() {
 instance() { api "/workflows/$1/instances/$2" | jq -c '{result: {status: .result.status, error: .result.error, output: .result.output, steps: [.result.steps[]? | {name, type, start, end, success}]}}'; }
 case $PHASE in
   create)
+    # Refuse a range that already has members: m6aL2 r1 ran on m6aL's ids, and `/create` re-joined their generation-1
+    # members and campaigned a member no longer a voter.
+    want="[$(chains_a)$(chains_b)$(chains_s)"; want="${want%,}]"
+    snapshot precreate "[0,1,2,3]" rows
+    used=$(jq -c --argjson w "$want" '[.[].chain | select(. as $c | $w | index($c))] | unique' "$R/rows-precreate.json")
+    # Each chain's generation-1 members where `/create` would join them: slot i on site i, the controls' on site i+1.
+    members=$(jq -nc --argjson a "[$(chains_a)$(chains_b)\"\"]" --argjson s "[$(chains_s)\"\"]" '
+      [($a[:-1][] | {c: ., o: 0}), ($s[:-1][] | {c: ., o: 1}) | range(3) as $i | {site: ($i + .o), do_name: "\(.c)#1#f\($i)"}]')
+    # A member that answers anything but "not joined" counts as in use, so an unanswered check also refuses.
+    joined=$(bench /joined "{\"members\":$members}" | jq -c '[to_entries[] | select(.value != false) | .key]')
+    if [ "$used" != "[]" ] || [ "$joined" != "[]" ]; then
+      log "\"refused\":\"ids in use\",\"base\":$BASE,\"rows\":$used,\"joined\":$joined"; exit 1
+    fi
+    echo "$want" >"$R/regs.json"
     log "\"a\":$(bench /create "{\"chains\":[$(chains_a | sed 's/,$//')],\"home\":0}" | jq -c '[.[] | select(.warm and .role == "leader")] | length')"
     log "\"b\":$(bench /create "{\"chains\":[$(chains_b | sed 's/,$//')],\"home\":1}" | jq -c '[.[] | select(.warm and .role == "leader")] | length')"
     # The controls: Tri on B, C and the spare, so no voter on A. A Solo group needs an evaluation genesis, which m6a's is not.
@@ -93,7 +111,8 @@ case $PHASE in
     # The register chains' leaders, from their members on B.
     snapshot load "[1]" rows
     body=$(jq -c --argjson s "${LOAD_S:-120}" --argjson r "${LOAD_RATE:-4}" \
-      "{chains: [.[] | select(.chain | $REGS)], seconds: \$s, rate: \$r, key: \"bf50\"}" "$R/chains-load.json")
+      --slurpfile regs "$R/regs.json" "{chains: [.[] | select(.chain | $REGS)], seconds: \$s, rate: \$r, key: \"bf50\"}" \
+      "$R/chains-load.json")
     bench /load "$body" >"$R/load.json"
     log "\"load\":$(jq -c '{ok, bad, chains: (.last | length), errs}' "$R/load.json")" ;;
   before)
@@ -157,7 +176,7 @@ case $PHASE in
     snapshot home "[0,1,2,3]"
     # Configs read while groups idle come back empty or stale (m6aL: 60 unread, 72 short); reread after the reads
     # below wake each home, and judge on the reread.
-    body=$(jq -c "{chains: [.[] | select(.chain | $REGS)], key: \"bf50\"}" "$R/chains-home.json")
+    body=$(jq -c --slurpfile regs "$R/regs.json" "{chains: [.[] | select(.chain | $REGS)], key: \"bf50\"}" "$R/chains-home.json")
     bench /read "$body" >"$R/read-home.json"
     snapshot home "[0,1,2,3]"
     versions | scrub >"$R/versions-home.jsonl"
