@@ -418,7 +418,12 @@ async fn cache(env: &Env, site: &SiteEnv, repo: i64, ask: &CacheAsk) -> std::res
     let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", me.0))
-        .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{repo}", me.0), region.hint()))
+        .and_then(|ns| {
+            ns.get_by_name_with_location_hint(
+                &git::first_shard_name(graftyard_types::NetworkId::of_root(RepoId(DbId(repo))), me),
+                region.hint(),
+            )
+        })
         .map_err(|e| e.to_string())?;
     let (on, heads, method) = git::merge_cache::chain_of(ask);
     let url = format!("https://shard/merge?repo={repo}&{}", git::merge_cache::chain_query(on, &heads, method));

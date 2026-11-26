@@ -2784,8 +2784,7 @@ async fn codeload(c: &Ctx<'_>, req: &Request, host: &Host, owner: &str, name: &s
         Err(x) => return Ok(x),
     };
     let warm = R2(c.env.bucket(&format!("BUCKET_{}", rd.repo.record.home.0))?);
-    let ar =
-        ArchiveRequest { network: NetworkId(rd.repo.id.0), commit: cl.commit, prefix: &cl.prefix, format: cl.format };
+    let ar = ArchiveRequest { network: rd.repo.network(), commit: cl.commit, prefix: &cl.prefix, format: cl.format };
     let git = ShardArchiver { c, repo: &rd.repo };
     Ok(match graftyard_git::blob::archive(&warm, &git, &ar).await {
         Ok((bytes, _)) => release::archive_reply(&cl, bytes),

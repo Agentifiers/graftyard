@@ -619,6 +619,23 @@ fn pushes_spread_over_the_k_shards_by_push_id() {
     assert_eq!(names, ["git#0#pool:6", "git#0#pool:2", "git#0#pool:8"], "slot p is shard count + p");
 }
 
+/// AM3-WP2a head 0: a root repository's network is its own id, so every name and key it reaches through
+/// `NetworkId::of_root` is main's literal string, and `root` maps back. Main built these from the repository id inline.
+#[test]
+fn a_root_repositorys_network_names_and_keys_are_mains() {
+    use graftyard_git::{PackId, R2Key, first_shard_name, object_name};
+    use graftyard_types::{RepoId, Ulid};
+    let repo = RepoId(DbId(131171));
+    let n = NetworkId::of_root(repo);
+    assert_eq!(n, NetworkId(DbId(131171)));
+    assert_eq!(n.root(), repo);
+    assert_eq!(first_shard_name(n, SiteId(2)), "git#2#net:131171");
+    assert_eq!(object_name(n, graftyard_git::GitCacheShard { site: SiteId(2), shard: 0 }, 1), "git#2#net:131171");
+    let id = PackId(Ulid::new(Timestamp(1_793_491_200_000), [7; 10]));
+    assert_eq!(R2Key::Pack { network: n, id }.to_string(), format!("pack/131171/{id}.pack"));
+    assert_eq!(R2Key::pack_prefix(n), "pack/131171/");
+}
+
 /// A site's report of its k shards: the most loaded one's CPU, not their sum or mean, and their queues summed.
 #[test]
 fn a_site_reports_its_most_loaded_shard_and_the_summed_queue() {

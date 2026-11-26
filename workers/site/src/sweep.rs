@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use graftyard_git::host::R2;
 use graftyard_git::{CronBudget, Marker, PackRef, RequestRow, RequestSource, StoreError, sweep_all};
-use graftyard_types::{ChainId, DbId, Index, NetworkId, RepoId, SiteId, Timestamp};
+use graftyard_types::{ChainId, DbId, Index, NetworkId, SiteId, Timestamp};
 use serde_json::{Value, json};
 use worker::*;
 
@@ -147,7 +147,7 @@ where
 
 /// A network's home: its root repository's owner record's `home`, through `RepoOwner` and `Placement` on `Names`.
 async fn read_home(env: &Env, n: NetworkId) -> std::result::Result<SiteId, String> {
-    let owner = crate::member::repo_owner(env, RepoId(n.0)).await?;
+    let owner = crate::member::repo_owner(env, n.root()).await?;
     Ok(crate::member::owner_record(env, owner).await?.home)
 }
 
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn a_row_names_its_stored_packs_as_markers() {
-        let chain = ChainId::Repo(RepoId(DbId(7)));
+        let chain = ChainId::Repo(graftyard_types::RepoId(DbId(7)));
         let id = PackId(Ulid(5 << 80));
         let stored = PackRef::Stored { id, checksum: Digest([3; 32]), bytes: 99, sites: SiteSet::default() };
         let v = json!({ "value": { "index": 12, "packs": [stored, PackRef::Inline(vec![1])] }, "index": 12 });

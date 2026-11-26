@@ -82,10 +82,10 @@ pub fn pack_key(network: NetworkId, id: PackId) -> String {
 }
 
 /// The network whose prefix holds a repository chain's packs: the repository's own id, as the edge places them
-/// (`NetworkId(repo.id.0)` on every push path) [inference: forks into a shared network are not built].
+/// (`NetworkId::of_root`, the edge's `Repo::network`) [inference: forks into a shared network are not built].
 fn network_of(chain: ChainId) -> Option<NetworkId> {
     match chain {
-        ChainId::Repo(r) | ChainId::RepoMeta(r) => Some(NetworkId(r.0)),
+        ChainId::Repo(r) | ChainId::RepoMeta(r) => Some(NetworkId::of_root(r)),
         _ => None,
     }
 }

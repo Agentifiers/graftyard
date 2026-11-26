@@ -118,6 +118,20 @@ pub struct RepoId(pub DbId);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct NetworkId(pub DbId);
 
+impl NetworkId {
+    /// The network a root repository roots: its own id (`design/SHARED.md`, "Names", `NetworkId`). A fork's network
+    /// is its root's, which only the fork's `Genesis` names, so a caller that holds a fork asks for that instead.
+    pub const fn of_root(repo: RepoId) -> NetworkId {
+        NetworkId(repo.0)
+    }
+
+    /// The root repository of this network, whose owner's `Placement` record places the network chain and whose
+    /// `RepoOwner` row homes the network (`design/DESIGN.md`, Shape, `Placement`).
+    pub const fn root(self) -> RepoId {
+        RepoId(self.0)
+    }
+}
+
 /// SHA-256 of `release.json` (SHARED, registry).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ReleaseId(pub [u8; 32]);

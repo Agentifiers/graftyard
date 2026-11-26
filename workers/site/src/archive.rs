@@ -337,7 +337,7 @@ impl ArchiveHost for SiteHost<'_> {
         let (Ok((chain, _)), Ok(raw)) = (self.chain(), self.buckets()) else { return };
         let ChainId::Repo(repo) = chain else { return };
         let refs: Vec<(SiteId, &git::host::R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
-        let failed = git::mark_committed(&refs, NetworkId(repo.0), pack, chain, index).await;
+        let failed = git::mark_committed(&refs, NetworkId::of_root(repo), pack, chain, index).await;
         self.h.stats.borrow_mut().marker_failures += failed as u32;
     }
 
@@ -483,7 +483,7 @@ async fn promote(env: &Env, p: &Promote) -> std::result::Result<Option<PackRef>,
         rand.copy_from_slice(&p.request.0.0.to_be_bytes()[6..]);
         rand[0] ^= i as u8;
         let s = git::Streamed {
-            network: NetworkId(repo.0),
+            network: NetworkId::of_root(repo),
             id: git::PackId(Ulid::new(Timestamp(now_ms()), rand)),
             meta: git::ObjectMeta { chain: p.chain, request: p.request },
             part: git::PART_SIZE,
@@ -581,7 +581,9 @@ async fn shard_call(
     let region = site.sites.get(at).ok_or_else(|| fail(format!("site {} is not in GRAFTYARD_SITES", at.0)))?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", at.0))
-        .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", at.0, repo.0.0), region.hint()))
+        .and_then(|ns| {
+            ns.get_by_name_with_location_hint(&git::first_shard_name(NetworkId::of_root(repo), at), region.hint())
+        })
         .map_err(|e| fail(e.to_string()))?;
     let rec = serde_json::to_string(&p.record).map_err(|e| fail(e.to_string()))?;
     // A due range's promotion starts a stopped shard but is no client's request (`git::Caller::Start`).

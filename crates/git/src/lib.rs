@@ -76,11 +76,12 @@ pub use shard::{
     KEEP_WARM_MS, LEDGER_BEAT, LEDGER_GAP, LOAD_STALE, LoadReports, MAINT_HOLD_EVERY, NetworkLoad, OnCatchUp,
     POOL_COLD_SKIP_MS, PROMOTE_LAPSE, PROMOTE_NEXT_WAIT_S, PROMOTE_WAIT_S, PoolLease, PoolLedger, REGION_RETRIES,
     RENEW_EVERY, RegionCheck, Renewal, SHARDS, STATS_EVERY, Serve, TOUCH_EVERY, ValidateOn, WARM_FOR, caller,
-    catchup_answer, chain_buckets, clone_cache_buckets, combine, container_regions, evict_plan, fanout, granted_k,
-    image_for, keep_warm_due, maint_hold, may_start, object_name, on_catch_up, owner_share, pool_ask, pool_forward,
-    pool_grants, pool_keep, pool_reserve, promote_lapse, promote_moves_on, promote_sites, promote_wait_s,
-    push_validator, read_disk_first, read_on, region_check, renewal, serve, shards_for, stats_due, stats_line,
-    touch_due, ui_missing, validate_on, validate_status, validator, warm_sites, warm_step, warming_now,
+    catchup_answer, chain_buckets, clone_cache_buckets, combine, container_regions, evict_plan, fanout,
+    first_shard_name, granted_k, image_for, keep_warm_due, maint_hold, may_start, object_name, on_catch_up,
+    owner_share, pool_ask, pool_forward, pool_grants, pool_keep, pool_reserve, promote_lapse, promote_moves_on,
+    promote_sites, promote_wait_s, push_validator, read_disk_first, read_on, region_check, renewal, serve, shards_for,
+    stats_due, stats_line, touch_due, ui_missing, validate_on, validate_status, validator, warm_sites, warm_step,
+    warming_now,
 };
 pub use store::{
     Copies, PART_SIZE, PackStore, Pipe, PipeReader, Place, PlaceError, PutOutcome, Stage, Streamed, TeeError,

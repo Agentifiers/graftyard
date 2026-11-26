@@ -482,11 +482,13 @@ pub fn push_validator(network: NetworkId, site: SiteId, count: u16, pool: &[u16]
 /// shard, `git#<site>#pool:<n>`, serves the one network the site's `PoolLedger` leased it to, and keeps the repository
 /// and `IngestCursor` of each network that held it before side by side.
 pub fn object_name(network: NetworkId, s: GitCacheShard, count: u16) -> String {
-    if s.shard < count {
-        format!("git#{}#net:{}", s.site.0, network.0.0)
-    } else {
-        format!("git#{}#pool:{}", s.site.0, s.shard)
-    }
+    if s.shard < count { first_shard_name(network, s.site) } else { format!("git#{}#pool:{}", s.site.0, s.shard) }
+}
+
+/// The name of `site`'s first shard of `network`, `git#<site>#net:<network>`: the one object every caller that does not
+/// pick a fan-out shard calls. Every such caller names it through here, with the repository's network, never its id.
+pub fn first_shard_name(network: NetworkId, site: SiteId) -> String {
+    format!("git#{}#net:{}", site.0, network.0.0)
 }
 
 /// The policy has no `max_instances`, so a shard object starts its container only while its index is under the cap.

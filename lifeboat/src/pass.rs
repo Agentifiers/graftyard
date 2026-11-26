@@ -167,7 +167,7 @@ pub struct Report {
 /// The repository network a chain's packs are in.
 fn network_of(chain: ChainId) -> Option<NetworkId> {
     match chain {
-        ChainId::Repo(r) | ChainId::RepoMeta(r) => Some(NetworkId(r.0)),
+        ChainId::Repo(r) | ChainId::RepoMeta(r) => Some(NetworkId::of_root(r)),
         _ => None,
     }
 }

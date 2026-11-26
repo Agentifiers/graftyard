@@ -68,7 +68,7 @@ MUTANTS = [
     ('validator: every push to the first shard', SH,
      '    validator(push, &ks).unwrap_or(ks[0])', '    let _ = push;\n    ks[0]', LOAD),
     ('object name: the first shard takes a pool name', SH,
-     '    if s.shard < count {\n        format!("git#{}#net:{}"', '    if s.shard <= count {\n        format!("git#{}#net:{}"', LOAD),
+     '    if s.shard < count { first_shard_name(network, s.site) }', '    if s.shard <= count { first_shard_name(network, s.site) }', LOAD),
     ('fold: k before any Fanout is 0', REPO,
      'get_rec::<u8>(&*self.core, "fanout", &[]).unwrap_or(1)', 'get_rec::<u8>(&*self.core, "fanout", &[]).unwrap_or(0)', PUSH),
     ('fold: Fanout writes no row', TIERS,

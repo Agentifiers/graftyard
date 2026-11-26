@@ -159,7 +159,7 @@ impl Compose {
         let host = ShardHost { state: &self.state, region, image: image(&self.env, &self.state, site.id), instance };
         let home = self.record.home;
         let ns = self.env.durable_object(&format!("SHARD_{}", site.id.0)).map_err(|e| e.to_string())?;
-        let first = ns.id_from_name(&format!("git#{}#net:{}", site.id.0, self.net.0.0)).map_err(|e| e.to_string())?;
+        let first = ns.id_from_name(&graftyard_git::first_shard_name(self.net, site.id)).map_err(|e| e.to_string())?;
         let builder = site.id == home && first.to_string() == self.state.id().to_string();
         let warm = graftyard_git::chain_buckets(self.net, &self.record);
         // After a catch-up the builder steps and every shard on a chain site installs; any other shard installs the
@@ -549,7 +549,7 @@ impl Jobs {
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let instance = instance(&self.env).map_err(|e| e.to_string())?.0;
         let host = ShardHost { state: &self.state, region, image: image(&self.env, &self.state, site.id), instance };
-        let chain = ChainId::Repo(RepoId(self.net.0));
+        let chain = ChainId::Repo(self.net.root());
         // Logs this chain's lookup-mark holders in this isolate: B0-35 m57's catch-ups failed "no member answered" for
         // about 2 min after a term change while the group committed (`decisions/OPEN-QUESTIONS.md`, F101).
         graftyard_lookup::trace_marks(chain);
@@ -964,7 +964,7 @@ impl DurableObject for GitShard {
         }
         let repo: i64 = q(&url, "repo").and_then(|v| v.parse().ok()).ok_or("repo")?;
         let repo = RepoId(DbId(repo));
-        let (net, chain) = (NetworkId(repo.0), ChainId::Repo(repo));
+        let (net, chain) = (NetworkId::of_root(repo), ChainId::Repo(repo));
         let cause = q(&url, "cause")
             .as_deref()
             .and_then(graftyard_git::prsync::MergeCause::parse)
