@@ -7,11 +7,13 @@
 //! - its leader refolds the chain from each tier's newest committed snapshot plus the log tail (`crate::load`), in
 //!   alarm-driven batches, so the refold holds one batch in memory whatever the log's size. It writes no tier table:
 //!   the snapshot is staged as pages and the tail applies over them (`decisions/DECISIONS.md`, "`refold-stream`"). A run
-//!   starts the job (`/fold {"audit": {"start": true}}`) when the last one is a day old, and reads the last report;
+//!   starts the job (`/fold {"audit": {"start": true}}`) when the last one is a day old and the chain wrote its fold
+//!   since (`decisions/DECISIONS.md`, "`idle-stall`"), and reads the last report;
 //! - every voter reports its own `fold_digest` of each tier at the report's index from its digest ring
 //!   (`/fold {"at": index}`), whatever batches it applied in;
 //! - `fold_audit_compare` compares them, and any mismatch alarms. A member that cannot answer for the index (behind
-//!   it, or its metadata tier still loading) is listed, not compared;
+//!   it, or its metadata tier still loading) is listed, not compared; one whose tier is only not loaded still lets
+//!   the chain match;
 //! - a chain whose last refold matched every voter, and on which no voter holds an entry since that writes the fold,
 //!   is `idle`: each voter's digests at that index are compared with the refold's again, with no refold and no lookup
 //!   (so no election). A tombstoned repository is `deleted`, and neither refolded nor compared until its purge
@@ -196,7 +198,7 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow, force: bool) 
     }
     // Only a refold that every voter answered and matched opens the idle path; after an alarm, or with a voter that
     // could not answer, the chain goes through its leader again, which refolds it when due, until one matches.
-    let matched = !alarm && missing.is_empty();
+    let matched = !alarm && missing.iter().all(unloaded);
     let mark = json!({ "index": index.0, "core": replay["core"], "metadata": replay["metadata"], "matched": matched });
     let body = serde_json::to_vec(&json!({ "audit": { "seen": mark } })).unwrap_or_default();
     let _ = graftyard_lookup::post(&b, site.id, &row.do_name, "/fold", &body).await;
@@ -228,6 +230,14 @@ fn live_report(chain: ChainId, answers: &[(graftyard_types::SiteId, Value)]) -> 
     json!({ "started": started, "alarms": alarms })
 }
 
+/// A `missing` entry for a voter's tier that is not loaded (`crate::snap::tiers_json` answers it no digest). It does
+/// not stop a match: the tier is compared once it loads, and until then each visit would send the chain back through
+/// its leader (graft-m2b, 2026-11-26; `decisions/DECISIONS.md`, "`idle-stall`"). A voter with no registry row, one
+/// that did not answer, and a loaded tier behind the index still do.
+fn unloaded(m: &Value) -> bool {
+    m.get("tier").is_some() && m["loaded"] == json!(false)
+}
+
 /// What the idle path found from each voter's `/fold {"at": n, "since": n}` answer, against the refold marked at `n`.
 #[derive(Debug, PartialEq)]
 enum Idle {
@@ -240,8 +250,9 @@ enum Idle {
 }
 
 /// The idle path's verdict (`decisions/DECISIONS.md`, "audit-moved"). `answers` holds the voters that answered, of
-/// `voters`; a voter that did not, or whose ring no longer holds the match's index, sends the chain to a refold, as
-/// does an unloaded tier, which answers no digest.
+/// `voters`; a voter that did not, or whose ring no longer holds the match's index, sends the chain to a refold. A
+/// voter's unloaded tier answers no digest and is left out of that tier's comparison, as `unloaded` leaves it out of
+/// the match.
 fn idle(seen: &Value, answers: &[(graftyard_types::SiteId, Value)], voters: usize) -> Idle {
     if answers.len() < voters || answers.iter().any(|(_, v)| v["moved"] != json!(false)) {
         return Idle::Moved;
@@ -253,6 +264,7 @@ fn idle(seen: &Value, answers: &[(graftyard_types::SiteId, Value)], voters: usiz
         for (s, v) in answers {
             match digest(&v[name]["at"]) {
                 Some(d) => got.push((*s, d)),
+                None if v[name]["loaded"] == json!(false) => {}
                 None => return Idle::Moved,
             }
         }
@@ -408,7 +420,7 @@ mod idle_tests {
     use graftyard_types::SiteId;
     use serde_json::{Value, json};
 
-    use super::{Idle, idle};
+    use super::{Idle, idle, unloaded};
 
     const CORE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const META: &str = "2222222222222222222222222222222222222222222222222222222222222222";
@@ -455,5 +467,34 @@ mod idle_tests {
         let Idle::Mismatch(tiers) = idle(&seen(), &changed, 3) else { panic!("site 2's metadata digest changed") };
         assert_eq!(tiers.len(), 1);
         assert_eq!((tiers[0]["tier"].as_str(), &tiers[0]["mismatches"][0]["site"]), (Some("metadata"), &json!(2)));
+    }
+
+    /// graft-m2b, 2026-11-26 (`decisions/DECISIONS.md`, "`idle-stall`"): a voter whose metadata tier is not loaded
+    /// answers no digest for it. That keeps neither path from matching: the idle path compares the other voters and
+    /// the loaded tier, and a refold whose only `missing` is such a tier opens the idle path. A loaded tier with no
+    /// digest at the index (its ring passed it), a voter that did not answer, or one with no registry row still do.
+    #[test]
+    fn an_unloaded_tier_does_not_keep_a_chain_from_matching() {
+        let cold = (
+            SiteId(1),
+            json!({ "core": { "at": CORE, "loaded": true }, "metadata": { "at": null, "loaded": false }, "moved": false }),
+        );
+        let behind = (
+            SiteId(1),
+            json!({ "core": { "at": CORE, "loaded": true }, "metadata": { "at": null, "loaded": true }, "moved": false }),
+        );
+        let three = |one: (SiteId, Value)| {
+            vec![answer(0, Some(CORE), Some(META), false), one, answer(2, Some(CORE), Some(META), false)]
+        };
+        assert_eq!(idle(&seen(), &three(cold.clone()), 3), Idle::Matched);
+        assert_eq!(idle(&seen(), &three(behind), 3), Idle::Moved, "a loaded tier past its ring");
+        let mut wrong = three(cold);
+        wrong[2] = answer(2, Some(CORE), Some(OTHER), false);
+        assert!(matches!(idle(&seen(), &wrong, 3), Idle::Mismatch(_)), "site 2 still compared on metadata");
+        // The led path's `missing` entries, as `audit_chain` builds them.
+        assert!(unloaded(&json!({ "site": 1, "tier": "metadata", "applied": 7, "loaded": false })));
+        assert!(!unloaded(&json!({ "site": 1, "tier": "metadata", "applied": 7, "loaded": true })), "behind the index");
+        assert!(!unloaded(&json!({ "site": 1, "error": "no answer" })));
+        assert!(!unloaded(&json!({ "site": 1, "error": "no registry row" })));
     }
 }

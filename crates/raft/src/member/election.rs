@@ -66,8 +66,14 @@ impl<C: Command> Member<C> {
         if self.role == Role::Leader {
             return Verdict::Leader;
         }
-        // A stall marker: a follower's first `suspect` report.
-        self.mark_stall();
+        // A stall marker: a follower's first `suspect` report while it holds an entry above its commit that is
+        // CALL_DEADLINE old, the test `tick_leader` and a late re-send use. A report about a quiet group marks
+        // nothing: the fold audit's cron reached graft-m2b's idle B0-33 groups every 4 h, and each visit's report
+        // stamped the whole idle gap on the next leader's `Noop`, which rewrote every live lease on every member
+        // (34,789 rows a member on repo 131408) and kept those leases from ever lapsing.
+        if self.log.iter().any(|e| e.index > self.state.commit && self.now >= after(e.at, CALL_DEADLINE)) {
+            self.mark_stall();
+        }
         if self.now < self.state.promise_until {
             // Only a report about the leader this member promised and has accepted appends from in this term counts:
             // a late report about a deposed leader, or a `NotLeader` from a candidate this member just voted for in
