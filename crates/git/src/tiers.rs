@@ -84,6 +84,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::TaskCreated(_) => both,
         RepoEvent::TaskUpdated { pr: None, summary: None, .. } => TierSet::CORE,
         RepoEvent::TaskUpdated { .. } => both,
+        RepoEvent::TaskResumed { .. } => both,
         RepoEvent::Created { .. } | RepoEvent::Deleted { .. } => TierSet::CORE,
         RepoEvent::LeaseAcquire { .. } | RepoEvent::LeaseRenew { .. } | RepoEvent::LeaseRelease { .. } => TierSet::CORE,
         RepoEvent::PathSet(_) => TierSet::METADATA,
@@ -899,6 +900,7 @@ impl RepoTiers {
             RepoEvent::AgentPolicy(p) => put_rec(w, "agent_policy", Vec::new(), p),
             RepoEvent::TaskCreated(t) => crate::task::write_created_core(w, t, at),
             RepoEvent::TaskUpdated { session, state, .. } => crate::task::write_updated_core(w, session, *state, at),
+            RepoEvent::TaskResumed { session, .. } => crate::task::write_resumed_core(w, session, at),
             RepoEvent::Created { .. } => {
                 if get_rec::<Timestamp>(w, "created", &[]).is_none() {
                     put_rec(w, "created", Vec::new(), &at);
@@ -1257,6 +1259,7 @@ impl RepoTiers {
                 }
                 touch(w, *n, &|_| {});
             }
+            RepoEvent::TaskResumed { session, snapshot } => crate::task::write_resumed_meta(w, session, *snapshot),
             _ => {}
         }
     }

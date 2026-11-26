@@ -801,7 +801,9 @@ impl Family for Repo {
     /// 32.25 is `RepoEvent::Compacted`, which only a leader of this release records itself. 32.26 is a push over SSH
     /// (M6-WP2), whose principal is an SSH key, sent once `FormatsEnable` enabled it. 32.28 is a Graftyard-run create
     /// (AM3-WP3), sent once `FormatsEnable` enabled it. 32.29 is a REST issue create or an App's commit status
-    /// (`bf77-routes`), sent once `FormatsEnable` enabled it. A `test-format` build also reads
+    /// (`bf77-routes`), sent once `FormatsEnable` enabled it. 32.33 is a title or body edit or an assignment change
+    /// that may pause or resume a Graftyard-run task (`host-pause`), sent once `FormatsEnable` enabled it. A
+    /// `test-format` build also reads
     /// BM-5's `REPO_FORMAT_TEST`, which no other release reads.
     fn reads() -> Vec<Format> {
         vec![
@@ -834,6 +836,7 @@ impl Family for Repo {
             git::issue_ops::call::REPO_FORMAT_ROUTES,
             git::issue_ops::call::REPO_FORMAT_ASSIGN,
             git::issue_ops::call::REPO_FORMAT_ISSUE_COMMENT,
+            git::issue_ops::call::REPO_FORMAT_HOST_PAUSE,
             #[cfg(feature = "test-format")]
             git::repo::REPO_FORMAT_TEST,
         ]
