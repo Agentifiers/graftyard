@@ -1,12 +1,46 @@
 # BF-78 (`on: push`) on graft-m4a
 
-Status (2026-11-26 00:08Z): **r1 ran on the lead's GO. Two lines failed, both on our side, both fixed on branch `bf78-r1`, and r2 is owed.**
-- Met: the runs. Exactly the matching pushes started one run each, at the pushed SHA and ref; the branch delete and the `[skip ci]` push started none.
-- Met: the token. Every token verified while it was fresh carried `sub` `repo:m3org/bf78-r1:ref:<ref>`, `actor` `m3-admin` (`actor_id` 7100003) and `event_name` `push`.
-- **Not met:** `github.event`'s `pusher` and `sender` read `ghost`, not the pusher. Every other checked field was right.
-- r1's done line is 00:07:55Z (teardown). The row cost $0.99 by `acctcost.py` (prefix graft-m4a, 23:37:21Z to 00:09Z) against the $3 stop. Raw logs are in `tests/m4/raw/wp3/bf78/r1/`.
+Status (2026-11-26 00:56Z): **r2 passes every line.** The lead gave GO on main `26237276`. The window ran from 00:28Z (`flag`) to 00:56:25Z (teardown, the done line), and the row spent $0.31 against its $3 stop, by `acctcost.py` with prefix graft-m4a from 00:28:21Z. r1 (00:07:55Z, $0.99) was not met only on `github.event`'s `pusher` and `sender`, which read `ghost`, and the lead accepted its runs, filters, event fields and tokens. Raw logs are in `tests/m4/raw/wp3/bf78/r2/` and `r1/`.
 
-## r1: verdict
+## r2: verdict
+
+| Push | Ref | Runs started (expected the same) | `github.event` | Token `sub` |
+| --- | --- | --- | --- | --- |
+| p1 change under `src/` | `refs/heads/main` | any, branches, ignore, paths | `created` false, `forced` false | `repo:m3org/bf78-r2:ref:refs/heads/main` |
+| p2 docs only | `refs/heads/main` | any, branches, ignore | as p1 | as p1 |
+| p3 new branch | `refs/heads/rel/1.0` | any, branches | `created` true | `...:ref:refs/heads/rel/1.0` |
+| p4 new branch | `refs/heads/rel/1.0-wip` | any | `created` true | `...:ref:refs/heads/rel/1.0-wip` |
+| p5 new branch | `refs/heads/dev` | any, ignore | `created` true | `...:ref:refs/heads/dev` |
+| p6 lightweight tag | `refs/tags/v1` | any, tags | `created` true | `...:ref:refs/tags/v1` |
+| p7 force push | `refs/heads/dev` | any, ignore | **`forced` true** | `...:ref:refs/heads/dev` |
+| p8 delete | `refs/heads/dev` | none | | |
+| p9 `[skip ci]` | `refs/heads/main` | none | | |
+
+- **Runs** (`r2/push/result.json`, `ok` true): `exact`, `none_elsewhere` and `one_each` hold for all nine pushes, at the pushed SHA and ref. All 20 jobs succeeded on 20 ephemeral runners (unmodified 2.338.2), and no 503 was retried.
+- **`github.event`**, p1 to p7: `ref`, `before`, `after`, `created`, `deleted` false, `forced` (true only on p7), `head_commit.id` the pushed SHA, `repository`, and no `added` key. **`pusher.name` and `sender.login` are `m3-admin` on all seven**, and on the setup push.
+- **Token**, p1 to p7: verified by `rp.py` within seconds of its job writing it (RS256, discovery and JWKS 200 with `--agent`, F130). `sub` is `repo:m3org/bf78-r2:ref:<the pushed ref>`, `actor` `m3-admin`, `actor_id` 7100003, `ref` the pushed ref, `event_name` `push`. No token appears in a job log, and every token file is removed once verified.
+- Each `any.yml` job printed `context event=push ref=<ref> sha=<sha> actor=m3-admin`.
+
+## r2: what ran
+
+| Step (Cloudflare time) | Result |
+| --- | --- |
+| `state`, 00:28Z | Sites a `c45101cb`, b `12ee6bf6`, c `1e21e393` (r1's `off`); edge `7b3bf05d`; ops `ac4cd9a5`, schedules `[]` |
+| `flag`, 00:28Z | Site day from main `26237276` (the pusher fix, plus BF-76 head 1's Authz 0x12.15 reader, which nothing sends before its enable): a `89e5fa12`, b `3128617a`, c `3b7806db`, every live flag kept and `GRAFTYARD_PUSH_TRIGGER=1` added |
+| `push`, 00:29Z to 00:54Z | `m3org/bf78-r2`, nine pushes, 20 jobs |
+| `off`, 00:55Z | a `3d3e90ee`, b `a5411444`, c `b31691c8`: the same flags without `GRAFTYARD_PUSH_TRIGGER`; crons `[]` |
+| `teardown`, 00:56:25Z | `m3org/bf78-r2` DELETE 204, anonymous read 404 |
+
+m4a is left with:
+- sites a `3d3e90ee`, b `a5411444`, c `b31691c8`, from main `26237276`, with every earlier flag (including `GRAFTYARD_REUSABLE=1`), push trigger off, crons `[]`;
+- edge `7b3bf05d`, unchanged, whose FORMATS_ENABLED does not hold 21.12;
+- ops `ac4cd9a5`, schedules `[]`.
+
+## r1 (not met on `pusher` and `sender`)
+
+r1's done line is 00:07:55Z, and it cost $0.99.
+
+### r1: verdict
 
 | Push | Ref | Runs started (expected the same) | `github.event` (bar `pusher`/`sender`) | Token |
 | --- | --- | --- | --- | --- |
@@ -26,7 +60,7 @@ Status (2026-11-26 00:08Z): **r1 ran on the lead's GO. Two lines failed, both on
   - The setup push's token (run 2627566) expired before the watcher started. It is not one of the nine pushes.
 - **`pusher` / `sender` `ghost`**: the payload took logins from the repository's directory (`hookseq::directory`), which holds only the accounts the repository's rows name. A brand-new repository's rows name none, so the pusher rendered as `ghost`. The run's actor (`RunActor`, so the token's `actor` and `github.actor`) was right, because it reads the login from `Names`. The fix adds the pusher's login, read once, to the directory before the payload is built (`workers/site/src/actions_trigger.rs`, `push_runs`). No native test caught it, because the in-memory directory always names the pusher.
 
-## r1: what ran
+### r1: what ran
 
 | Step (Cloudflare time) | Result |
 | --- | --- |
@@ -39,9 +73,7 @@ Status (2026-11-26 00:08Z): **r1 ran on the lead's GO. Two lines failed, both on
 
 m4a is left with sites a `c45101cb`, b `12ee6bf6`, c `1e21e393` (main `5c1737ba`, the 0x15.12 reader, every earlier flag, push trigger off), edge `7b3bf05d` (unchanged; FORMATS_ENABLED without 21.12), and ops `ac4cd9a5` with schedules `[]`.
 
-## r2 (owed)
-
-The same steps on the `bf78-r1` fix, from its merge into main. r2 needs no separate readers day: its `flag` day ships the fixed site and the flag together, because the reader (0x15.12) has not changed. That makes it `state`, `flag`, `push`, `off`, `teardown`. Stop $3; about $1, the same as r1.
+## The row
 
 The row (`build/BUILD-PLAN.md`, M4-WP3): workflows with `push` filters on branches, tags, `branches-ignore` and `paths`, then pushes that match and pushes that do not, including a tag push, a force push and a branch delete. One matching job requests `id-token: write`. Pass when:
 
