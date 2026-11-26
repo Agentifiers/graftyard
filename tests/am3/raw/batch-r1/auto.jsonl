@@ -1,0 +1,9 @@
+{"t":1795694249515,"policy_put":200,"ci":"auto_read_only"}
+{"t":1795694255980,"pr":"claude/auto2-249539","status":200,"number":5}
+{"t":1795694258634,"auto_run":{"event":"pull_request","head_ref":"refs/pull/5/merge","head_sha":"686a721b056ab359c61547d98dd34889dc8df8d3","id":1194879,"status":"Queued","trigger":157,"workflow":".github/workflows/ci.yml"}}
+{"t":1795694259099,"read":0,"status":200,"run_status":"queued","conclusion":null}
+{"t":1795694261282,"jobs":200,"total":2,"fork":true,"states":["Queued","Pending"]}
+{"t":1795694261282,"check":"under AutoReadOnly the run reads queued at once with its jobs listed","ok":true}
+{"t":1795694261282,"check":"the AutoReadOnly run is fork and never held","ok":true}
+{"t":1795694262727,"policy_back":200}
+{"t":1795694264366,"cancel":1194879,"status":202}

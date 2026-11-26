@@ -1,0 +1,13 @@
+2026-11-26T11:57:24Z
+2bf216fa3
+2026-11-26T11:57:29.523Z {"policy_put":200,"ci":"auto_read_only"}
+2026-11-26T11:57:35.980Z {"pr":"claude/auto2-249539","status":200,"number":5}
+2026-11-26T11:57:38.634Z {"auto_run":{"event":"pull_request","head_ref":"refs/pull/5/merge","head_sha":"686a721b056ab359c61547d98dd34889dc8df8d3","id":1194879,"status":"Queued","trigger":157,"workflow":".github/workflows/ci.yml"}}
+2026-11-26T11:57:39.099Z {"read":0,"status":200,"run_status":"queued","conclusion":null}
+2026-11-26T11:57:41.282Z {"jobs":200,"total":2,"fork":true,"states":["Queued","Pending"]}
+2026-11-26T11:57:41.282Z {"check":"under AutoReadOnly the run reads queued at once with its jobs listed","ok":true}
+2026-11-26T11:57:41.282Z {"check":"the AutoReadOnly run is fork and never held","ok":true}
+2026-11-26T11:57:42.727Z {"policy_back":200}
+2026-11-26T11:57:44.366Z {"cancel":1194879,"status":202}
+VERDICT auto PASS 
+auto exit 0

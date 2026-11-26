@@ -1,0 +1,18 @@
+2026-11-26T11:41:35Z
+2bf216fa3
+before {"script":"graft-m4a-site-a","created_on":"2026-11-26T11:40:29.126079Z","versions":["bb5ea824 100"]}
+before {"script":"graft-m4a-site-b","created_on":"2026-11-26T11:40:40.417207Z","versions":["c10c8cc7 100"]}
+before {"script":"graft-m4a-site-c","created_on":"2026-11-26T11:40:51.205461Z","versions":["0f67b3f8 100"]}
+deploy exit 0
+Current Version ID: c6a700b1-71f3-4403-9bfc-fbc9a510f3a4
+Current Version ID: 483b8e62-101a-4264-a46b-30bfd1516cbb
+Current Version ID: c34bd6c4-c65c-4f57-874a-969b467150a5
+Current Version ID: 28d01739-7261-484a-b4fb-75ca3a223d94
+Current Version ID: 3de96500-1e99-4009-9f97-9c46b6c1901f
+Current Version ID: 09986bf7-c04e-4802-8a74-747a4e3ddeab
+{"graft-m4a-site-a":[]}
+after {"script":"graft-m4a-site-a","created_on":"2026-11-26T11:42:26.746979Z","versions":["28d01739 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_ARTIFACTS_V4=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
+{"graft-m4a-site-b":[]}
+after {"script":"graft-m4a-site-b","created_on":"2026-11-26T11:42:36.259422Z","versions":["3de96500 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_ARTIFACTS_V4=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
+{"graft-m4a-site-c":[]}
+after {"script":"graft-m4a-site-c","created_on":"2026-11-26T11:42:45.67373Z","versions":["09986bf7 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_ARTIFACTS_V4=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]

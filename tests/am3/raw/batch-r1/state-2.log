@@ -1,0 +1,8 @@
+2026-11-26T12:30:00Z
+2bf216fa3
+{"script":"graft-m4a-site-a","created_on":"2026-11-26T11:42:26.746979Z","versions":["28d01739 100"]} ["GRAFTYARD_AGENT_CI=1 1"]
+{"script":"graft-m4a-site-b","created_on":"2026-11-26T11:42:36.259422Z","versions":["3de96500 100"]} ["GRAFTYARD_AGENT_CI=1 1"]
+{"script":"graft-m4a-site-c","created_on":"2026-11-26T11:42:45.67373Z","versions":["09986bf7 100"]} ["GRAFTYARD_AGENT_CI=1 1"]
+{"script":"graft-m4a-edge","created_on":"2026-11-26T11:47:55.500863Z","versions":["b5c99d99 100"]} ["FORMATS_ENABLED=38 32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.1"]
+{"script":"graft-m4a-ops","created_on":"2026-11-25T14:56:05.928151Z","versions":["ac4cd9a5 100"]} []
+row since 2026-11-26T11:39:13Z: graft-m4a $0.28, runner graft-agents-m4a- $0, total $0.28 (stop $2.50)

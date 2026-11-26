@@ -1,0 +1,8 @@
+{"t":1795695338896,"issue":"demote target","status":201,"number":13}
+{"t":1795695362778,"first_failed_write":{"status":503}}
+{"t":1795695362778,"writes":49,"ms":23322}
+{"t":1795695362778,"check":"60 writes inside the window (49 in 23322 ms)","ok":false}
+{"t":1795695364178,"demoted_create":201,"id":"01a217c8-f919-88f9-9a61-7d658d31d97b"}
+{"t":1795695364178,"check":"the create inside the window is 403 (NotWriter)","ok":false}
+{"t":1795695416415,"control_create":201,"id":"01a217c9-c34f-81ac-b295-613830971914"}
+{"t":1795695416415,"check":"the control create after the window is 201","ok":true}

@@ -11,7 +11,8 @@
 #   state | sweep | init | register | keys | infra | front | ops | bundles | roll <R> | abort <R> | view | status | logs
 #                  lf7-day.sh's, as ROW=kill TB=1 (`controller` and `bundles` build the `TaskBox` controller with
 #                  test-faults; `infra` mints the agents deploy token with Secrets Store Write and Containers Write, A54)
-#   taskbox        $K/taskbox.json for `controller`: the App ids, the runner store, the harness image
+#   taskbox        $K/taskbox.json for `controller`: the App ids, the runner store, the harness image (HARNESS_REPO and
+#                  HARNESS_PUSHES override the harness's repository and push count, for LM-3's batched row)
 #                  (tests/am3/hosted/kill/Dockerfile), the install's host, the harness's command, and the secret names
 #                  `agents init` gave (OPEN-QUESTIONS A58)
 #   controller     lf7-day.sh's, with the `TaskBox` (`--test-faults --taskbox`), then again with AGENTS_FRONT once the
@@ -73,7 +74,7 @@ taskbox)
     jq -n --arg a "$app" --arg w "$ws" --arg store $RSTORE --arg host "$EDGE_HOST" --arg p "$P-" --arg img "$img" \
       '{agent_app_id: ($a|tonumber), workspace_app_id: ($w|tonumber), store: $store,
         image: $img, host: $host,
-        harness: ["python3", "/harness.py", $host, "m3org/kill-'"$TAG"'", "8", "15"],
+        harness: ["python3", "/harness.py", $host, "'"${HARNESS_REPO:-m3org/kill-$TAG}"'", "'"${HARNESS_PUSHES:-8}"'", "15"],
         secrets: {AGENT_APP_KEY: "\($p)AGENTS_APP_KEY_A", WORKSPACE_APP_KEY: "\($p)WORKSPACE_APP_KEY_A", MODEL_KEY: null}}' \
       >"$K/taskbox.json"
     [ -n "${FRONTB:-}" ] && jq --arg f $FRONT '. + {agents_front: $f}' "$K/taskbox.json" >"$K/tb.tmp" && mv "$K/tb.tmp" "$K/taskbox.json"

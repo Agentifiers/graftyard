@@ -1,0 +1,10 @@
+{"t":1795694083109,"pr":"f136-open-68277","status":200,"number":1}
+{"t":1795694084629,"pr":"f136-merge-68277","status":200,"number":2}
+{"t":1795694085511,"merge":200,"merged":true}
+{"t":1795694085819,"list":"state=all","status":200,"numbers":[[2,"closed"],[1,"open"]],"missing":[]}
+{"t":1795694085819,"check":"state=all answers 200 with pull-request-simple's required fields","ok":true}
+{"t":1795694085820,"check":"state=all lists the open and the closed pull request","ok":true}
+{"t":1795694086175,"list":"state=all&head=m3org:f136-open-68277","status":200,"numbers":[[1,"open"]],"missing":[]}
+{"t":1795694086175,"check":"head=owner:branch lists only its pull request","ok":true}
+{"t":1795694086701,"list":"state=closed&base=main","status":200,"numbers":[[2,"closed"]],"missing":[]}
+{"t":1795694086706,"check":"base=main with state=closed lists the merged pull request only among closed","ok":true}

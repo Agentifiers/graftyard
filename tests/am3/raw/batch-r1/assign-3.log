@@ -1,0 +1,27 @@
+2026-11-26T12:10:19Z
+2bf216fa3
+2026-11-26T12:10:25.969Z {"issue":"assign rest","status":201,"number":9}
+2026-11-26T12:10:27.930Z {"rest_add":201,"assignees":["graftyard-agent[bot]"]}
+2026-11-26T12:10:27.930Z {"check":"REST add answers 201 with the bot assigned","ok":true}
+2026-11-26T12:10:37.776Z {"create_after_ms":9845}
+2026-11-26T12:10:37.776Z {"rest_create":9,"task":"01a217c3-e574-8349-8029-1ecd0d9a1366","requester":"m3-admin","state":"queued"}
+2026-11-26T12:10:37.776Z {"check":"the controller's create from the REST assignment names the assigner (m3-admin) as requester","ok":true}
+2026-11-26T12:10:39.471Z {"issue":"assign graphql","status":201,"number":10}
+2026-11-26T12:10:43.635Z {"graphql_add":200,"assignees":["graftyard-agent[bot]"]}
+2026-11-26T12:10:44.177Z {"check":"GraphQL add assigns the bot","ok":true}
+2026-11-26T12:10:53.055Z {"create_after_ms":8878}
+2026-11-26T12:10:53.055Z {"graphql_create":10,"task":"01a217c4-1c78-873e-9c17-afb78d306a1f","requester":"m3-admin","state":"queued"}
+2026-11-26T12:10:53.055Z {"check":"the controller's create from the GraphQL assignment names the assigner","ok":true}
+2026-11-26T12:10:54.920Z {"rest_remove":200,"assignees":[]}
+2026-11-26T12:10:54.920Z {"check":"REST remove answers 200 without the bot","ok":true}
+2026-11-26T12:10:57.119Z {"patch":200,"assignees":["graftyard-agent[bot]","m3-admin"]}
+2026-11-26T12:10:57.122Z {"check":"an assignees-only PATCH answers 200 and sets the bot","ok":true}
+2026-11-26T12:11:00.098Z {"issue":"assign by second writer","status":201,"number":11}
+2026-11-26T12:11:03.524Z {"member_permission":"write","member_add":201,"assignees":["graftyard-agent[bot]"]}
+2026-11-26T12:11:12.151Z {"create_after_ms":8626}
+2026-11-26T12:11:12.151Z {"member_create":11,"task":"01a217c4-7871-8d2a-ae8b-7bb6b609b2b7","requester":"ghost","state":"queued"}
+2026-11-26T12:11:12.152Z {"check":"a second writer's assignment creates with that writer as requester (id 7100002, login ghost)","ok":true}
+2026-11-26T12:11:17.824Z {"other_app_create":403,"message":"Only a person who can push to the repository creates a Graftyard-run task, never an App's token"}
+2026-11-26T12:11:17.825Z {"check":"another App's create is 403","ok":true}
+VERDICT assign PASS 
+assign exit 0

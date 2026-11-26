@@ -1,0 +1,26 @@
+2026-11-26T11:58:32Z
+2bf216fa3
+2026-11-26T11:58:34.795Z {"issue":"assign rest","status":201,"number":6}
+2026-11-26T11:58:36.809Z {"rest_add":201,"assignees":["graftyard-agent[bot]"]}
+2026-11-26T11:58:36.809Z {"check":"REST add answers 201 with the bot assigned","ok":true}
+2026-11-26T12:01:42.373Z {"timeout":"task from #6","ms":180000}
+2026-11-26T12:01:42.374Z {"rest_create":6}
+2026-11-26T12:01:42.374Z {"check":"the controller's create from the REST assignment names the assigner (m3-admin) as requester","ok":null}
+2026-11-26T12:01:44.350Z {"issue":"assign graphql","status":201,"number":7}
+2026-11-26T12:01:47.339Z {"graphql_add":200,"assignees":[]}
+2026-11-26T12:01:47.896Z {"check":"GraphQL add assigns the bot","ok":false}
+2026-11-26T12:01:56.389Z {"graphql_create":7,"task":"01a217bb-f165-8e8e-b820-7b45045c0814","requester":"m3-admin","state":"queued"}
+2026-11-26T12:01:56.389Z {"check":"the controller's create from the GraphQL assignment names the assigner","ok":true}
+2026-11-26T12:01:57.803Z {"rest_remove":200,"assignees":[]}
+2026-11-26T12:01:57.803Z {"check":"REST remove answers 200 without the bot","ok":true}
+2026-11-26T12:01:59.557Z {"patch":200,"assignees":["graftyard-agent[bot]","m3-admin"]}
+2026-11-26T12:01:59.557Z {"check":"an assignees-only PATCH answers 200 and sets the bot","ok":true}
+2026-11-26T12:02:01.823Z {"issue":"assign by reader","status":201,"number":8}
+2026-11-26T12:02:07.259Z {"reader_add":201,"assignees":[]}
+2026-11-26T12:02:08.378Z {"check":"a reader's assignment of the bot is dropped","ok":true}
+2026-11-26T12:02:40.112Z {"reader_tasks":1}
+2026-11-26T12:02:40.112Z {"check":"no task from a reader's assignment","ok":false}
+2026-11-26T12:02:45.399Z {"other_app_create":403,"message":"Only a person who can push to the repository creates a Graftyard-run task, never an App's token"}
+2026-11-26T12:02:45.399Z {"check":"another App's create is 403","ok":true}
+VERDICT assign FAIL the controller's create from the REST assignment names the assigner (m3-admin) as requester; GraphQL add assigns the bot; no task from a reader's assignment
+assign exit 1
