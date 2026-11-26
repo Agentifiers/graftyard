@@ -683,8 +683,8 @@ fn a_writer_past_demote_per_min_at_the_creates_entry_cannot_create_a_run_task() 
     });
     assert_eq!(refused_at, Some(opened), "the create is decided in the 60th write's entry");
     let o: Vec<RepoOutcome> = all.into_iter().map(|r| r.map(|a| a.out)).collect();
-    assert_eq!(task_err(&o[2]), Some(TaskErr::NotWriter), "the same entry's 60th write counts");
-    assert_eq!(task_err(&run_create(&mut w, user(WRITER2), None, Some("x"))), Some(TaskErr::NotWriter));
+    assert_eq!(task_err(&o[2]), Some(TaskErr::Demoted), "the same entry's 60th write counts");
+    assert_eq!(task_err(&run_create(&mut w, user(WRITER2), None, Some("x"))), Some(TaskErr::Demoted));
     // Another writer is not counted with it.
     assert!(run_create(&mut w, user(WRITER), None, Some("x")).is_ok());
     // A new leader reads the same window from the log it applied.
@@ -699,7 +699,7 @@ fn a_writer_past_demote_per_min_at_the_creates_entry_cannot_create_a_run_task() 
     w.repo.inbox.extend(out.early.into_iter().chain(out.messages));
     w.settle();
     assert_eq!(w.repo.leader(), next, "the follower leads");
-    assert_eq!(task_err(&run_create(&mut w, user(WRITER2), None, Some("x"))), Some(TaskErr::NotWriter));
+    assert_eq!(task_err(&run_create(&mut w, user(WRITER2), None, Some("x"))), Some(TaskErr::Demoted));
 }
 
 /// The session is the request id's bits as a version-8 UUID: the same request mints the same id, two requests two.

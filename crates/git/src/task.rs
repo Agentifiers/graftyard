@@ -532,6 +532,9 @@ pub enum TaskErr {
     /// 422: the install's `graftyard-agent` or `graftyard-workspace` is not registered as `GraftyardRun`, or not
     /// installed on the repository.
     NoRunApps,
+    /// 403: a writer past DEMOTE_PER_MIN at the create's own entry, classed as an agent for the window (F139).
+    /// Appended, so the variants before it keep their tags.
+    Demoted,
 }
 
 /// The entry's time and the folds a task command reads: the owner's `Authz`, for permissions and derived states, and
@@ -658,7 +661,7 @@ pub fn decide(
                     }
                     // A demoted actor, past DEMOTE_PER_MIN at the create's own entry, is not a human for this rule.
                     if ctx.writes >= graftyard_raft::admit::DEMOTE_PER_MIN {
-                        return Err(TaskErr::NotWriter);
+                        return Err(TaskErr::Demoted);
                     }
                     u
                 }

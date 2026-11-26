@@ -405,6 +405,15 @@ pub fn refused(e: &IssueErr) -> Reply {
                 "Only a person who can push to the repository creates a Graftyard-run task, never an App's token",
                 DOC,
             ),
+            TaskErr::Demoted => Reply::error(
+                403,
+                &format!(
+                    "A user with {} writes in the last minute is classed as an agent and cannot create a \
+                     Graftyard-run task; retry when the minute has passed",
+                    graftyard_raft::admit::DEMOTE_PER_MIN
+                ),
+                DOC,
+            ),
             TaskErr::AgentsOff => Reply::error(422, "Graftyard-run tasks are not enabled for this organization", DOC),
             TaskErr::ForkMode => Reply::error(
                 422,

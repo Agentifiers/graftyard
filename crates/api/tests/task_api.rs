@@ -459,11 +459,11 @@ fn a_command_reads_its_task_and_the_gate_not_the_tiers() {
     assert!(graftyard_git::lease::marks(&patch, &core));
     assert_eq!(graftyard_git::lease::marks(&patch, &core), graftyard_git::lease::marks(&patch, &*f.core));
     // The logins the reply may name, as a whole-tier read knew them: of the task's requester and the create's
-    // (WRITER2), those the tiers name. WRITER2 names no row, so a whole-tier read rendered it `ghost` too, and READER,
-    // named but not asked, is not read.
+    // (WRITER2), those the tiers name. WRITER2 is named by task b's requester alone, which a whole-tier read now reads
+    // too (F138), and READER, named but not asked, is not read.
     let picks = graftyard_api::narrow::Picks::of(t.picks.clone());
     let named = picks.login_accounts(None, AccountId(DbId(OWNER))).unwrap();
-    assert_eq!(named, vec![AccountId(DbId(WRITER))]);
+    assert_eq!(named, vec![AccountId(DbId(WRITER)), AccountId(DbId(WRITER2))]);
     assert!(t.picks.as_ref().unwrap().iter().any(|(k, _)| k == LOGIN_SHARDS));
     assert!(t.picks.as_ref().unwrap().iter().any(|(k, _)| k == LOGINS));
     drop(f);
@@ -492,7 +492,8 @@ fn a_patch_reply_over_the_command_logins_is_the_whole_tier_reply() {
     named_by_an_issue(&mut w, &[WRITER]);
     w.commit_all(vec![issue(app(CLAUDE), create("a", WRITER)), issue(app(CLAUDE), create("b", WRITER2))]);
     let login = |id: i64| format!("login{id}");
-    for (name, requester) in [("a", Some(login(WRITER))), ("b", None)] {
+    // b's requester, WRITER2, is named by no row but its task's: it renders its login, not `ghost` (F138).
+    for (name, requester) in [("a", login(WRITER)), ("b", login(WRITER2))] {
         let id = SessionId::parse(&format!("{}.{name}", CLAUDE.0.0), None).unwrap();
         let patch = IssueOp::UpdateTask { id: id.clone(), state: None, pr: None, summary: Some("s".into()) };
         let acked = w.commit_all_acked(vec![issue(app(CLAUDE), patch)]).pop().unwrap().expect("patched");
@@ -523,7 +524,7 @@ fn a_patch_reply_over_the_command_logins_is_the_whole_tier_reply() {
         assert_eq!(by_whole.status, 200);
         assert_eq!(serde_json::to_vec(&by_command).unwrap(), serde_json::to_vec(&by_whole).unwrap(), "{name}");
         let body = by_command.body.unwrap();
-        assert_eq!(body["requester"]["login"].as_str().map(str::to_owned), requester.or(Some("ghost".into())));
+        assert_eq!(body["requester"]["login"].as_str(), Some(requester.as_str()));
         assert_eq!(body["summary"], "s");
         assert_eq!(body["creator"], json!({ "type": "App", "id": CLAUDE.0.0 }));
         assert_eq!(body["state"], "queued");

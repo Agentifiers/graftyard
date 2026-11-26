@@ -304,8 +304,9 @@ impl TierRows {
 // ---- the directory ----
 
 /// The tables whose rows name an account a reply may render, by tier: authors, assignees, reviewers, status creators,
-/// release authors, asset uploaders, lock owners, and mergers.
-const NAMING: [(graftyard_types::Tier, &str); 9] = {
+/// release authors, asset uploaders, lock owners, mergers, and a task's requester, whom no other row may name: without
+/// it the requester rendered as `ghost` (F138, LM-3's batched row r1). A task's user creator is its requester.
+const NAMING: [(graftyard_types::Tier, &str); 10] = {
     use graftyard_types::Tier::{Core, Metadata};
     [
         (Metadata, "issue"),
@@ -317,6 +318,7 @@ const NAMING: [(graftyard_types::Tier, &str); 9] = {
         (Metadata, "asset"),
         (Metadata, "lfs_lock"),
         (Core, "pull_head"),
+        (Core, "agent_task"),
     ]
 };
 
@@ -346,6 +348,7 @@ fn row_account(table: &str, key: &[Val], cols: &[Val]) -> Option<AccountId> {
             PrState::Merged { by, .. } => Some(by.0),
             _ => None,
         },
+        "agent_task" => rec::<graftyard_git::task::TaskCore>(cols).requester.map(|u| u.0),
         _ => None,
     }
 }
