@@ -409,10 +409,14 @@ Under that direction the orchestrator settled how graft-m6a's BF-50 rows read "L
 ### Operator decision, 2026-11-26, a model key for LM-3's real-harness kill case
 
 > "Let's do it. What paid key do you need"
+>
+> "Instead of an Anthropic key can you use the same url amp is configured for and I can give you the key for it"
+>
+> "It uses sonnet class but the name of the model might be different, try different ones after taking my key"
 
 - **LM-3 runs its real-harness case.** "A Sandbox killed mid-task resumes" (`build/BUILD-PLAN.md`, AM3-WP1) passed on the scripted harness. Its real-harness case now runs as its own hosted row: 10 in-repo tasks under Claude Code, each Sandbox killed once at a random point, under the same Pass and Fail.
-- **A new paid outside product: an Anthropic API key.** It is used only by test installs, through the controller's `MODEL_KEY` Secrets Store binding on the runner account. The Sandbox never holds it (`design/AGENT-LAYER.md`, A3 step 5). The key is named for the row, carries a $25 monthly spend limit set at the provider, and is revoked when the row's results are in. Model tokens count against that limit, not against the Cloudflare daily limit.
-- **Stop:** $25 in model tokens, read from the provider, plus $3 on graft-m4a and the runner account. The row starts only after AM2's in-repo row tears down, and after the controller sends the key in Anthropic's `x-api-key` header (it sends `Authorization: Bearer` today).
+- **The model endpoint is the operator's token proxy, not a new Anthropic account.** The operator's workspace already reaches models through `https://token-proxy.workinprogress.dev`, and he supplied a key for it, stored as the project secret `TOKEN_PROXY_KEY`. On 2026-11-26 the proxy answered Anthropic's Messages API at `/v1/messages`, with `x-api-key` or `Authorization: Bearer`, streaming, and Anthropic's `usage` block, for `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-sonnet-4-6` and `claude-sonnet-4-5-20250929` [measured]. The row uses `claude-sonnet-5-5`. The key reaches only test installs, through the controller's `MODEL_KEY` Secrets Store binding on the runner account, and the route's model arm points at the proxy's host. The Sandbox never holds it (`design/AGENT-LAYER.md`, A3 step 5). The secret is deleted from the store and from the project when the row's results are in, and the operator rotates the key. Model tokens count against the stop below, not against the Cloudflare daily limit.
+- **Stop:** $25 in model tokens, counted by the row from each response's `usage` at Anthropic's list price for the model, because the proxy has no provider-side limit we can read. Add $3 on graft-m4a and the runner account. The row starts only after AM2's in-repo row tears down, and after the controller sends the key in the `x-api-key` header.
 
 ## Four Cloudflare questions still carry the run's defaults
 
