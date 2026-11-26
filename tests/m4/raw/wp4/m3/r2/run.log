@@ -1,0 +1,21 @@
+2026-11-26T08:09:05.203Z repo m3org/wp4-r23 (repo:65569); boxes before {"runnerbox":{"stopped":15,"failed":11}}
+2026-11-26T08:09:10.134Z run 1713082 dispatched
+2026-11-26T08:09:12.416Z +2s jobs {"queued":8} boxes {"runnerbox":{"stopped":15,"failed":11}}
+2026-11-26T08:09:28.427Z +17s jobs {"queued":8} boxes {"runnerbox":{"provisioning":2,"stopped":15,"failed":11}}
+2026-11-26T08:09:44.825Z +33s jobs {"started":6,"queued":2} boxes {"runnerbox":{"running":2,"stopped":15,"failed":11}}
+2026-11-26T08:09:58.972Z +48s jobs {"started":6,"queued":2} boxes {"runnerbox":{"running":10,"failed":21,"stopped":15}}
+2026-11-26T08:10:12.651Z +62s jobs {"done":5,"started":1,"queued":2} boxes {"runnerbox":{"stopped":21,"failed":24,"running":1}}
+2026-11-26T08:10:26.191Z +75s jobs {"done":6,"started":2} boxes {"runnerbox":{"stopped":22,"failed":24}}
+2026-11-26T08:10:41.010Z +90s jobs {"done":6,"started":2} boxes {"runnerbox":{"failed":30,"running":2,"stopped":22}}
+2026-11-26T08:10:55.163Z +104s jobs {"done":7,"started":1} boxes {"runnerbox":{"failed":30,"running":1,"stopped":23}}
+2026-11-26T08:11:02.872Z job 1713083 std3 (0): Success; pid1 /bin/bash /home/runner/run.sh; comm run.sh; sandbox server 0; 2 mem 8484
+2026-11-26T08:11:03.765Z job 1713084 std3 (1): Success; pid1 /bin/bash /home/runner/run.sh; comm run.sh; sandbox server 0; 2 mem 8484
+2026-11-26T08:11:05.018Z job 1713085 std3 (2): Success; pid1 /bin/bash /home/runner/run.sh; comm run.sh; sandbox server 0; 2 mem 8484
+2026-11-26T08:11:06.129Z job 1713086 std3 (3): Success; pid1 /bin/bash /home/runner/run.sh; comm run.sh; sandbox server 0; 2 mem 8484
+2026-11-26T08:11:07.052Z job 1713087 std3 (4): Success; pid1 /bin/bash /home/runner/run.sh; comm run.sh; sandbox server 0; 2 mem 8484
+2026-11-26T08:11:07.881Z job 1713088 std3 (5): Success; pid1 /bin/bash /home/runner/run.sh; comm run.sh; sandbox server 0; 2 mem 8484
+2026-11-26T08:11:08.775Z job 1713089 std4 (6): Success; pid1 /bin/bash /home/runner/run.sh; comm run.sh; sandbox server 0; 4 mem 12650
+2026-11-26T08:11:10.048Z job 1713090 std4 (7): Success; pid1 /bin/bash /home/runner/run.sh; comm run.sh; sandbox server 0; 4 mem 12650
+2026-11-26T08:11:10.048Z every job done; watching 10 minutes for leftover boxes
+2026-11-26T08:21:15.257Z shard teardown (end): exit 0 {"torn_down": 1, "codes": {"200": 1}} | shardkill deleted: True
+2026-11-26T08:21:15.258Z R23 cold burst: PASS {"jobs8":true,"everyJobSucceeded":true,"runnerIsPid1":true,"noBoxLeft10MinAfter":true}; last job 111 s; at most 10 live instances

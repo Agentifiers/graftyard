@@ -6,7 +6,10 @@
 //! --config-only`'s config (`entry.js` and one `.wasm` module) and the runner image pinned by digest
 //! (`tests/m4/wp4/image.sh`).
 //!
-//! - `init` writes `HostedRunnersAppKey` to the runner account's Secrets Store `graft-runners`, uploads and deploys the
+//! - `init` writes `HostedRunnersAppKey` to the runner account's Secrets Store `graft-runners` only when `--app-key` is
+//!   given, and only after the install accepts an App JWT signed with that key, so a retired key never replaces the
+//!   current one (`decisions/DECISIONS.md`, "`init-key-guard`"). Without `--app-key` it keeps the stored key, and
+//!   refuses on an account that has none. Then it uploads and deploys the
 //!   script with its bindings, its migrations to `v3`, and the 5-minute sweep, turns on its workers.dev route for the
 //!   App's webhook, and creates `RunnerBox`'s container application on the `durable_object` policy. A rerun changes
 //!   nothing that exists. On an account at `v1` or `v2` it is release M3 (`decisions/DECISIONS.md`, "`r23-m3`"): the
@@ -203,8 +206,9 @@ pub struct InitArgs<'a> {
     pub spec: &'a Path,
     pub bundle: &'a Path,
     pub image: &'a str,
-    /// The `graftyard-hosted-runners` App's private key (PEM), written to Secrets Store and nowhere else.
-    pub app_key: &'a Path,
+    /// The `graftyard-hosted-runners` App's private key (PEM), written to Secrets Store and nowhere else, once the App
+    /// accepts it. `None` keeps the stored key.
+    pub app_key: Option<&'a Path>,
     /// The App's webhook secret, as a file.
     pub webhook_secret: &'a Path,
 }
@@ -220,13 +224,32 @@ fn init_with(cf: &Cf, a: InitArgs) -> Res<()> {
     let bundle = Bundle::read(a.bundle)?;
     let read =
         |p: &Path| fs::read_to_string(p).map(|s| s.trim().to_string()).map_err(|e| format!("{}: {e}", p.display()));
-    let (key, webhook) = (read(a.app_key)?, read(a.webhook_secret)?);
-    if !key.contains("PRIVATE KEY-----") {
-        return Err(format!("{}: not a PEM private key", a.app_key.display()));
-    }
+    let webhook = read(a.webhook_secret)?;
+    // Before anything is written: a key the App no longer lists would stop every runner start (R23 M3's r1).
+    let key = match a.app_key {
+        Some(p) => Some(
+            read(p).and_then(|k| app_accepts(&spec, &k).map(|()| k)).map_err(|e| format!("{}: {e}", p.display()))?,
+        ),
+        None => None,
+    };
     let store = cf.store(STORE)?;
-    cf.put_secret(&store, APP_KEY_SECRET, &key, "graftyard runners init: the graftyard-hosted-runners App key")?;
-    println!("  {APP_KEY_SECRET}: written to Secrets Store {STORE} ({store})");
+    match key {
+        Some(key) => {
+            cf.put_secret(
+                &store,
+                APP_KEY_SECRET,
+                &key,
+                "graftyard runners init: the graftyard-hosted-runners App key",
+            )?;
+            println!("  {APP_KEY_SECRET}: written to Secrets Store {STORE} ({store}); the App accepts it");
+        }
+        None if cf.has_secret(&store, APP_KEY_SECRET)? => println!("  {APP_KEY_SECRET}: kept (no --app-key)"),
+        None => {
+            return Err(format!(
+                "{APP_KEY_SECRET} is not in Secrets Store {STORE}: pass --app-key with the App's current private key"
+            ));
+        }
+    }
     let tag = cf.scripts()?.into_iter().find(|(s, _)| *s == spec.script).map(|(_, t)| t);
     let mut meta = metadata(&spec, bindings(&spec, &store, Some(&webhook)), a.image);
     let add_box = json!({ "new_sqlite_classes": [BOX.0] });
@@ -258,6 +281,51 @@ fn init_with(cf: &Cf, a: InitArgs) -> Res<()> {
         cf.subdomain()?
     );
     ensure_app(cf, &spec)
+}
+
+/// An App JWT for `app` signed with `pem` (PKCS#8 or PKCS#1), as `graft-runners` mints it (`workers/runners/src/worker.rs`,
+/// `app_jwt`), and the key's SPKI SHA-256 prefix, which names the key in errors.
+fn app_jwt(pem: &str, app: i64, now_s: u64) -> Res<(String, String)> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+    use rsa::RsaPrivateKey;
+    use rsa::pkcs1::DecodeRsaPrivateKey as _;
+    use rsa::pkcs1v15::SigningKey;
+    use rsa::pkcs8::{DecodePrivateKey as _, EncodePublicKey as _};
+    use rsa::signature::{SignatureEncoding as _, Signer as _};
+    let key = RsaPrivateKey::from_pkcs8_pem(pem)
+        .or_else(|_| RsaPrivateKey::from_pkcs1_pem(pem))
+        .map_err(|_| "not an RSA private key in PKCS#8 or PKCS#1 PEM".to_string())?;
+    let spki = key.to_public_key().to_public_key_der().map_err(|e| format!("SPKI: {e}"))?;
+    let head = B64.encode(json!({ "alg": "RS256", "typ": "JWT" }).to_string());
+    let claims = B64.encode(json!({ "iat": now_s - 60, "exp": now_s + 540, "iss": app }).to_string());
+    let signed = format!("{head}.{claims}");
+    let sig = SigningKey::<Sha256>::new(key).sign(signed.as_bytes()).to_vec();
+    Ok((format!("{signed}.{}", B64.encode(sig)), hex(&Sha256::digest(spki.as_bytes()))[..16].to_string()))
+}
+
+/// Refuses a key the App does not list now: the install verifies the App JWT against the App's current keys on
+/// `GET /app/hook/config` (`workers/edge/src/ident.rs`, `app_hook_config`), and answers 200 only when one verifies. The
+/// install serves no `GET /app`.
+fn app_accepts(spec: &Spec, pem: &str) -> Res<()> {
+    let (jwt, spki) = app_jwt(pem, spec.app_id, crate::config::now().0 / 1000)?;
+    let url = format!("{}/api/v3/app/hook/config", spec.url.trim_end_matches('/'));
+    let req =
+        ureq::get(&url).set("authorization", &format!("Bearer {jwt}")).set("accept", "application/vnd.github+json");
+    let (status, text) = match req.call() {
+        Ok(r) => (r.status(), String::new()),
+        Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+        Err(e) => return Err(format!("GET {url}: {e}; HostedRunnersAppKey not written")),
+    };
+    if status == 200 {
+        return Ok(());
+    }
+    let text: String = text.chars().take(200).collect();
+    Err(format!(
+        "App {} does not accept this key (SPKI sha256 {spki}): GET {url} answered {status} {text}; HostedRunnersAppKey \
+         not written and nothing deployed. Pass the key the App lists now, or omit --app-key to keep the stored one",
+        spec.app_id
+    ))
 }
 
 /// Deletes the Sandbox classes' applications, only once the migration that deletes their classes has committed.
@@ -424,9 +492,14 @@ mod tests {
         log: Log,
         tag: Option<&'static str>,
         apps: Vec<(&'static str, &'static str, Vec<&'static str>)>,
+        app: App,
     ) -> Answer {
         Box::new(move |s: &Seen| {
             let (m, p) = (s.line.split(' ').next().unwrap_or("").to_string(), path(s));
+            if s.line.starts_with("GET /api/v3/app/hook/config ") {
+                log.lock().unwrap().push((m, "install /app/hook/config".into(), vec![]));
+                return app.answer(s);
+            }
             log.lock().unwrap().push((m.clone(), p.clone(), s.body.clone()));
             let ok = |r: Value| (200, json!({ "success": true, "result": r }).to_string());
             let instances =
@@ -437,7 +510,9 @@ mod tests {
             }
             match (m.as_str(), p.as_str()) {
                 ("GET", "/secrets_store/stores") => ok(json!([{ "id": "st1", "name": "graft-runners" }])),
-                ("GET", p) if p.starts_with("/secrets_store/stores/st1/secrets") => ok(json!([])),
+                ("GET", p) if p.starts_with("/secrets_store/stores/st1/secrets") => {
+                    ok(if app.stored { json!([{ "id": "k1", "name": "HostedRunnersAppKey" }]) } else { json!([]) })
+                }
                 ("GET", "/workers/scripts") => ok(match tag {
                     None => json!([]),
                     Some(t) => json!([{ "id": "graft-runners", "migration_tag": t }]),
@@ -463,21 +538,92 @@ mod tests {
             spec: leak(d.join("runners.json")),
             bundle: leak(d.join("bundle")),
             image: IMAGE,
-            app_key: leak(d.join("app.pem")),
+            app_key: Some(leak(d.join("app.pem"))),
             webhook_secret: leak(d.join("hook")),
         }
     }
 
-    /// `init` over the stub: its result and every request made.
+    /// Two RSA keys, generated once: the App's current key and one it no longer lists.
+    fn keys() -> &'static [rsa::RsaPrivateKey; 2] {
+        static K: std::sync::OnceLock<[rsa::RsaPrivateKey; 2]> = std::sync::OnceLock::new();
+        K.get_or_init(|| {
+            let new = || rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048).unwrap();
+            [new(), new()]
+        })
+    }
+
+    fn pem(k: &rsa::RsaPrivateKey) -> String {
+        use rsa::pkcs8::EncodePrivateKey as _;
+        k.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap().to_string()
+    }
+
+    /// The install's side of the stub, App 7: `GET /app/hook/config` answers 200 only to an RS256 JWT whose `iss` is 7
+    /// and whose signature verifies under `listed`, checked here with the `rsa` crate, not with `app_jwt`'s code.
+    /// `stored`: the runner store already holds `HostedRunnersAppKey`.
+    #[derive(Clone)]
+    struct App {
+        listed: rsa::RsaPublicKey,
+        stored: bool,
+    }
+
+    impl App {
+        fn answer(&self, s: &Seen) -> (u16, String) {
+            use base64::Engine as _;
+            use rsa::signature::Verifier as _;
+            let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            let jwt = s.headers.iter().find(|(k, _)| k == "authorization").map_or("", |(_, v)| v.as_str());
+            let jwt = jwt.strip_prefix("Bearer ").unwrap_or("");
+            let parts: Vec<&str> = jwt.split('.').collect();
+            let ok = parts.len() == 3 && {
+                let claims: Value =
+                    serde_json::from_slice(&b64.decode(parts[1]).unwrap_or_default()).unwrap_or_default();
+                let sig = b64.decode(parts[2]).unwrap_or_default();
+                let signed = &jwt[..parts[0].len() + 1 + parts[1].len()];
+                claims["iss"] == json!(7)
+                    && rsa::pkcs1v15::Signature::try_from(sig.as_slice()).is_ok_and(|sig| {
+                        rsa::pkcs1v15::VerifyingKey::<Sha256>::new(self.listed.clone())
+                            .verify(signed.as_bytes(), &sig)
+                            .is_ok()
+                    })
+            };
+            if ok {
+                (200, json!({ "url": "https://hook", "content_type": "json", "secret": "********" }).to_string())
+            } else {
+                (401, json!({ "message": "A JSON web token could not be decoded (no key of the App verifies the signature)" }).to_string())
+            }
+        }
+    }
+
+    /// `init` over the stub, with the App's current key as `--app-key`: its result and every request made.
     fn run_init(
         tag: Option<&'static str>,
         apps: Vec<(&'static str, &'static str, Vec<&'static str>)>,
     ) -> (Res<()>, Vec<Req>) {
+        run_init_key(tag, apps, Some(&keys()[0]), App { listed: keys()[0].to_public_key(), stored: false })
+    }
+
+    /// `init` over the stub with `key` as `--app-key` (`None`: no `--app-key`), the install at the stub's own URL.
+    fn run_init_key(
+        tag: Option<&'static str>,
+        apps: Vec<(&'static str, &'static str, Vec<&'static str>)>,
+        key: Option<&rsa::RsaPrivateKey>,
+        app: App,
+    ) -> (Res<()>, Vec<Req>) {
         let d = scratch();
         let log = Log::default();
-        let mut answer = account(log.clone(), tag, apps);
+        let mut answer = account(log.clone(), tag, apps, app);
         let (url, _rx) = serve(40, move |s| answer(s));
-        let r = init_with(&Cf::with(&url, "r", "t"), init_args(&d));
+        fs::write(
+            d.join("runners.json"),
+            format!(r#"{{"script":"graft-runners","graftyard_url":"{url}","app_id":7,"owners":{{"acme":11}}}}"#),
+        )
+        .unwrap();
+        let mut args = init_args(&d);
+        match key {
+            Some(k) => fs::write(d.join("app.pem"), pem(k)).unwrap(),
+            None => args.app_key = None,
+        }
+        let r = init_with(&Cf::with(&url, "r", "t"), args);
         let log = log.lock().unwrap().clone();
         (r, log)
     }
@@ -596,10 +742,47 @@ mod tests {
             spec: &d.join("runners.json"),
             bundle: &d.join("bundle"),
             image: "registry.cloudflare.com/f076/graft-runners-runner:latest",
-            app_key: &d.join("app.pem"),
+            app_key: Some(&d.join("app.pem")),
             webhook_secret: &d.join("hook"),
         };
         assert!(init_with(&cf, args).unwrap_err().contains("by digest"));
+    }
+
+    /// R23 M3's r1: `init` wrote a retired App key over the current one and every runner start failed on 401. A key
+    /// the App does not list now is refused before anything is written or deployed; one it lists is written.
+    #[test]
+    fn init_writes_hosted_runners_app_key_only_when_the_app_accepts_it() {
+        let writes = |log: &[Req]| {
+            log.iter().filter(|(m, p, _)| m != "GET" && p.starts_with("/secrets_store/stores/st1/secrets")).count()
+        };
+        let app = |stored| App { listed: keys()[0].to_public_key(), stored };
+        // The retired key, as on 2026-11-26: refused, nothing written, uploaded, or deleted.
+        let apps = || SANDBOX_APPS.iter().map(|(n, id)| (*n, *id, vec!["inactive"])).collect();
+        let (r, log) = run_init_key(Some("v2"), apps(), Some(&keys()[1]), app(true));
+        let err = r.unwrap_err();
+        assert!(err.contains("App 7 does not accept this key") && err.contains("401"), "{err}");
+        assert!(log.iter().any(|(_, p, _)| p == "install /app/hook/config"), "the install was asked");
+        assert_eq!(writes(&log), 0, "no secret written");
+        assert!(upload_of(&log).is_empty() && !log.iter().any(|(m, ..)| m == "DELETE" || m == "PUT"));
+        // The current key: checked, then written over the stored one.
+        let (r, log) = run_init_key(Some("v3"), vec![], Some(&keys()[0]), app(true));
+        r.unwrap();
+        let check = log.iter().position(|(_, p, _)| p == "install /app/hook/config").unwrap();
+        let patch =
+            log.iter().position(|(m, p, _)| m == "PATCH" && p == "/secrets_store/stores/st1/secrets/k1").unwrap();
+        assert!(check < patch, "checked before the write");
+        let body: Value = serde_json::from_slice(&log[patch].2).unwrap();
+        assert_eq!(body["value"].as_str().unwrap().trim(), pem(&keys()[0]).trim());
+        // No --app-key: the stored key is kept and the deploy goes on.
+        let (r, log) = run_init_key(Some("v3"), vec![], None, app(true));
+        r.unwrap();
+        assert_eq!(writes(&log), 0);
+        assert!(!upload_of(&log).is_empty());
+        assert!(!log.iter().any(|(_, p, _)| p == "install /app/hook/config"));
+        // No --app-key and none stored: refused before the deploy.
+        let (r, log) = run_init_key(None, vec![], None, app(false));
+        assert!(r.unwrap_err().contains("pass --app-key"));
+        assert!(upload_of(&log).is_empty() && writes(&log) == 0);
     }
 
     fn release(d: &Path, seed: &[u8; 32], files: &[(&str, &[u8])], digest: &str) {

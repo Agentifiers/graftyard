@@ -1400,7 +1400,7 @@ The gate: M2 has run a day at 100% with no stale runners. Version `13193b05` has
 
 ### Hosted result r1 (2026-11-26): M3 is deployed; the burst failed because `init` wrote a retired App key
 
-The lead gave GO with a $1 stop. The row ran after LM-1's BF-76 done line (07:39Z) through `tests/m4/wp4/m3.sh`. The raws are in `tests/m4/raw/wp4/m3/` and `tests/m4/raw/wp4/runners-init.log`.
+The lead gave GO with a $1 stop. The row ran after LM-1's BF-76 done line (07:39Z) through `tests/m4/wp4/m3.sh`. The raws are in `tests/m4/raw/wp4/m3/r1/` and `tests/m4/raw/wp4/runners-init.log`.
 
 | Step | Time (Z) | Result |
 | --- | --- | --- |
@@ -1411,13 +1411,27 @@ The lead gave GO with a $1 stop. The row ran after LM-1's BF-76 done line (07:39
 
 **Why no runner started.** Every pass since the deploy logged `m3org: demand: access_tokens: 401 ... A JSON web token could not be decoded (no key of the App verifies the signature)` and `started 0` (Workers Logs, 07:43:14Z, 8 webhook passes).
 
-`runners init` writes `HostedRunnersAppKey` from `--app-key` every time it runs (`cli/src/runners.rs`, `init_with`). This orb's `~/.graft-m4a/hosted/app.pem` still holds App 1835008's key 1 (SPKI sha256 `31e2cc5bbbbd0dd9`). The HostedRunnersAppKey rotation row (2026-11-25, `tests/m5/results/raw/hrak/r1/`) made key 2 (`35a71a94b701f6a2`) the App's only key and PATCHed the store with it. Key 2's private half lives in that row's own orb. So M3's `init` put a retired key back into the store, and `graft-runners` has minted no installation token since 07:41:41Z.
+`runners init` writes `HostedRunnersAppKey` from `--app-key` every time it runs (`cli/src/runners.rs`, `init_with`). This orb's `~/.graft-m4a/hosted/app.pem` still holds App 1835008's key 1 (SPKI sha256 `31e2cc5bbbbd0dd9`). The HostedRunnersAppKey rotation row (2026-11-25, `tests/m5/results/raw/hrak/r1/`) made key 2 (`35a71a94b701f6a2`) the App's only key and PATCHed the store with it. Key 2's private half was kept only on LM-1's orb: B0-02 shredded its staged copy on 11-26 (correction after r1). So M3's `init` put a retired key back into the store, and `graft-runners` has minted no installation token since 07:41:41Z.
 
 M3 itself did what the plan says: migration `v3`, no Sandbox application left, and `RunnerBox` alone. M3 changes no start logic.
 
 **Not yet shown hosted:** 8 of 8 Success on `RunnerBox` under `v3`, and PID 1 as `run.sh`. That needs `HostedRunnersAppKey` restored to key 2, then the burst again.
 
 **Cost.** Runner account $0.00. graft-m4a $0.04 for 07:41Z to 07:51Z (`acctcost.py`; the same window's $0.86 on `graft-m6a-site-a-gitshard` is not this row's).
+
+### Hosted result r2 (2026-11-26): the burst passes on `v3`; R23 settled
+
+Following the lead's ruling, LM-1 PATCHed `HostedRunnersAppKey` back to key 2 (SPKI sha256 `35a71a94b701f6a2`, the only key App 1835008 lists) from its own orb at 08:02:13Z. The first pass after it, at 08:05:49Z, minted with no error. The lead then gave GO to rerun the burst inside the same $1 stop: `before`, `burst` and `after`, with no `init` and no store write. The raws are in `tests/m4/raw/wp4/m3/r2/`.
+
+| Step | Time (Z) | Result |
+| --- | --- | --- |
+| `before` | 08:08:44 | 0 legacy events since 07:50Z, nothing live. Only `graft-runners-runnerbox` (15 `stopped`, 11 `failed`). `v3`, `5129a092` at 100%. `stop` false |
+| `burst` | 08:09:10 to 08:21:15 | **PASS**. Run 1713082: 8 of 8 `Success`, the last job done at 111 s, at most 10 live instances. PID 1 is `/bin/bash /home/runner/run.sh` (comm `run.sh`) on every job. The Sandbox SDK server is not running (0). `std3` jobs ran on 3 vCPU and `std4` jobs on 4 vCPU with 12,650 MB. 0 live 10 minutes after the last job. The shard teardown tore down 1 |
+| `after` | 08:21:29 | pass: only `graft-runners-runnerbox` is listed (24 `stopped`, 30 `failed`), `v3`, 0 live |
+
+- **Passes** (Workers Logs, 08:08:50Z on). The 8 webhook passes at 08:09:28Z started 2 or 3 each, and each answered `full 2`. Later passes started 1 or 2, then destroyed the surplus: one pass `destroyed 1`, and two overlapping passes at 08:10:39Z each `destroyed 6`, the same six. The 08:11Z and 08:15:48Z sweeps logged `started 0 destroyed 0`. There were no error-level lines.
+- **The 19 new `failed` instances** are the surplus `RunnerBox`es the passes destroyed: 8 jobs, with 2 or 3 starts per webhook pass. This is the same pattern as M2's 50% burst, where the surplus was destroyed with exit 137. None was running at the end.
+- **Cost** (`acctcost.py`, 08:08Z to 08:21:29Z): runner account $0.02 (`graft-runners-runnerbox`), graft-m4a $0.06. The window's $0.62 on `graft-m6a-site-a-gitshard` is not this row's. Both runs together came to about $0.12, under the $1 stop.
 
 ## Spend against the $25 stop
 

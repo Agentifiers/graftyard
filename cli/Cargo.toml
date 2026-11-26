@@ -21,7 +21,8 @@ graftyard-raft = { path = "../crates/raft" }
 graftyard-release = { path = "../crates/release" }
 graftyard-types.workspace = true
 # The first-party Apps' RS256 keys (`graftyard apps init`), drawn from the OS source; the CLI never builds for wasm.
-rsa = { version = "0.9", default-features = false, features = ["std", "pem", "getrandom"] }
+# `sha2` signs the App JWT `runners init` checks the hosted-runners key with.
+rsa = { version = "0.9", default-features = false, features = ["std", "pem", "getrandom", "sha2"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
