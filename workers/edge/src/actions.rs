@@ -43,12 +43,12 @@ pub(crate) mod sub;
 pub const SERVICES: &str = "/_services/";
 pub const VIEWER: &str = "/_t/logrelay/repos/";
 
-fn public_key(c: &Ctx<'_>) -> Option<[u8; 32]> {
+pub(crate) fn public_key(c: &Ctx<'_>) -> Option<[u8; 32]> {
     let v = c.env.var("RUN_SERVICE_PUBLIC").ok()?.to_string();
     graftyard_lookup::unhex(v.trim())?.try_into().ok()
 }
 
-fn bearer(req: &Request) -> Option<String> {
+pub(crate) fn bearer(req: &Request) -> Option<String> {
     let h = req.headers().get("authorization").ok()??;
     let (scheme, t) = h.split_once(' ')?;
     scheme.eq_ignore_ascii_case("bearer").then(|| t.trim().to_owned())
@@ -127,6 +127,10 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
     // actions-cache (`crate::cache`), whose chunk uploads and downloads stream and are never read here.
     if let Some(tail) = rest.strip_prefix("cache/") {
         return crate::cache::serve(c, req, tail, grant, &public).await;
+    }
+    // A v4 artifact's Azure blocks, whose upload ticket in the URL is the capability: no bearer token (`crate::twirp`).
+    if let Some(tail) = rest.strip_prefix("artifact-blob/") {
+        return crate::twirp::blob(c, req, tail).await;
     }
     // A REST artifact zip (F131), whose ticket in the URL is the capability: no bearer token.
     if let Some(tail) = rest.strip_prefix("artifact-zip/") {
@@ -1278,6 +1282,7 @@ mod tests {
                     cache: false,
                     // As the shard leader reads it (`workers/site/src/actions.rs`, `acquire`).
                     id_token: graftyard_actions::oidc::id_token_granted(f.more.tokens.get(&row.spec.id), run.fork),
+                    artifacts_v4: false,
                     actor: None,
                     run_number: None,
                     reusable: None,

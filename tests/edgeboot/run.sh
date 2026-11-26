@@ -12,7 +12,7 @@ feat=(--features test-faults); [ -n "${PRODUCT:-}" ] && feat=()
 cd "$root/workers/edge" && worker-build --release --out-dir "$B/out" "${feat[@]}" >"$B/build.log" 2>&1 \
   || { tail -20 "$B/build.log"; exit 1; }
 python3 - "$B" "$root" <<'PY'
-import json, sys
+import json, os, sys
 b, root = sys.argv[1], sys.argv[2]
 # The test install's sites and genesis, as tests/m1/integ/deploy-edge.mjs writes them, with no bindings: every member,
 # bucket and Cache API call fails, which is the cold path a new isolate takes before any read answers.
@@ -28,6 +28,12 @@ json.dump({"name": "edgeboot", "main": f"{b}/out/index.js", "compatibility_date"
 w = json.load(open(f"{b}/wrangler.json"))
 w["r2_buckets"] = [{"binding": "BED_ARTIFACTS", "bucket_name": "edgeboot-artifacts"}]
 json.dump(w, open(f"{b}/wrangler.json", "w"))
+# BF-76's v4 check (below) on test builds: the artifact routes on, and every route's run and bucket the bed's
+# (`artifacts::bed_twirp`), with a job token the run service's key signs: the public half of seed [7; 32].
+if not os.environ.get("PRODUCT"):
+    w["vars"].update({"GRAFTYARD_ARTIFACTS": "1", "GRAFTYARD_BED_TWIRP": "1",
+                      "RUN_SERVICE_PUBLIC": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"})
+    json.dump(w, open(f"{b}/wrangler.json", "w"))
 open(f"{b}/front.js", "w").write(
     "export default { async fetch(req, env) { const r = await env.EDGE.fetch(req);"
     " return new Response(r.body, { status: r.status, headers: r.headers }); } }\n")
@@ -135,6 +141,12 @@ print(f"rest artifacts: {len(keys)} objects after the delete, rows {left}")
 print("  FAIL: " + "; ".join(fail) if fail else "rest artifacts ok")
 raise SystemExit(1 if fail else 0)
 PY
+  # BF-76 head 3: the real upload-artifact v4.6.2 and download-artifact v4.3.0 bundles, with the forks' one change
+  # (tests/m4/wp3/bf76/build-forks.sh), against the edge's own Twirp, block, and zip routes through the front: three
+  # 8 MiB-or-less blocks staged by concurrent Put Blocks and one Put Block List, the finalize's row, a second create of
+  # the name refused (v4 artifacts are immutable), the list, the signed URL's zip, and every file SHA-256 identical.
+  # BF76_BUNDLES names a directory caching the two upstream bundles (up.js, down.js).
+  bash "$root/tests/m4/wp3/bf76/v4bed.sh" "$B" "$FP" || { echo "  FAIL: v4 artifacts"; ok=0; }
   n=$(grep -c 'out of bounds\|RuntimeError' "$B/front.log"); [ "$n" = 0 ] || ok=0
 fi
 sleep 1

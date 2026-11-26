@@ -26,7 +26,7 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::ids::{JobId, RunnerId};
+use crate::ids::{JobId, RunId, RunnerId};
 use crate::job::Conclusion;
 
 /// The runner token's lifetime (`expires_in`) [guess: GitHub's is an hour].
@@ -131,6 +131,11 @@ impl Urls {
     }
     pub fn token(&self) -> String {
         format!("{}oauth/token", self.services)
+    }
+    /// `ResultsServiceUrl`, which the runner exports as `ACTIONS_RESULTS_URL`: `@actions/artifact` 2.x keeps only its
+    /// origin and posts to `/twirp/...` there (`crate::twirp::PREFIX`).
+    pub fn results_service(&self) -> String {
+        self.launch()
     }
     /// `system.github.launch_endpoint`: the install's root, since the runner joins an absolute path onto it
     /// (`crate::launch`).
@@ -285,6 +290,10 @@ struct TokenClaims {
     exp: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     orch_id: Option<String>,
+    /// A job token's `Actions.Results:<run>:<job>` scope, which `@actions/artifact` 2.x reads for the backend ids it
+    /// sends (`crate::twirp::results_scope`). Nothing here reads it back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scp: Option<String>,
 }
 
 /// The service's signing key, unwrapped by the host. Never logged.
@@ -299,8 +308,24 @@ impl ServiceKey {
 /// A three-part EdDSA JWS for `grant` until `exp` (seconds). `orch_id` is the job token's, which the runner reads
 /// for its logs [measured].
 pub fn sign_token(key: &ServiceKey, chain: ChainId, grant: Grant, exp: u64, orch_id: Option<String>) -> String {
+    sign(key, &TokenClaims { chain, grant, exp, orch_id, scp: None })
+}
+
+/// The job token of attempt `attempt` of `job` in run `run`: its orchestration id (`orch_id`) and its results scope.
+pub fn sign_job_token(key: &ServiceKey, chain: ChainId, run: RunId, job: JobId, attempt: u16, exp: u64) -> String {
+    let claims = TokenClaims {
+        chain,
+        grant: Grant::Job { job, attempt },
+        exp,
+        orch_id: Some(orch_id(run.0.0, job, attempt)),
+        scp: Some(crate::twirp::results_scope(run, job)),
+    };
+    sign(key, &claims)
+}
+
+fn sign(key: &ServiceKey, claims: &TokenClaims) -> String {
     let h = B64.encode(br#"{"typ":"JWT","alg":"EdDSA"}"#);
-    let p = B64.encode(serde_json::to_vec(&TokenClaims { chain, grant, exp, orch_id }).expect("claims"));
+    let p = B64.encode(serde_json::to_vec(claims).expect("claims"));
     let signed = format!("{h}.{p}");
     let s = B64.encode(SigningKey::from_bytes(&key.0).sign(signed.as_bytes()).to_bytes());
     format!("{signed}.{s}")
@@ -410,6 +435,9 @@ pub struct JobMessage<'a> {
     pub cache: bool,
     /// The job is granted `id-token: write`, so the message names `GenerateIdTokenUrl` (`crate::oidc`).
     pub id_token: bool,
+    /// `ResultsServiceUrl` and `GRAFTYARD_ACTIONS=true` in the job's environment, which the `graftyard-actions` forks'
+    /// `isGhes()` trusts (`crate::twirp`): only where a site day set `GRAFTYARD_ARTIFACTS_V4`.
+    pub artifacts_v4: bool,
     /// A planned run's job's `needs` and `inputs` (`crate::reusable::contexts`), plain JSON, and its `outputs:` token,
     /// which the runner evaluates after the steps and sends back in `completejob` (`JobOutputs`). `None` for a run
     /// with no plan, whose message is the one it was.
@@ -444,6 +472,9 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
     // without the grant gets neither (`crate::oidc`).
     if m.id_token {
         data.insert("GenerateIdTokenUrl".into(), json!(urls.id_token()));
+    }
+    if m.artifacts_v4 {
+        data.insert("ResultsServiceUrl".into(), json!(urls.results_service()));
     }
     let mut ctx = serde_json::Map::new();
     ctx.insert("github".into(), m.github.clone());
@@ -485,6 +516,11 @@ pub fn job_message(urls: &Urls, m: &JobMessage<'_>) -> Value {
     if let Some(o) = m.reusable.as_ref().and_then(|r| r.outputs.clone()) {
         msg["jobOutputs"] = o;
     }
+    // Job-level environment, a list of mapping tokens the runner evaluates once into every step's environment
+    // (`Runner.Worker/JobExtension.cs`, "Evaluate the job-level environment variables"); a step's own `env` wins.
+    if m.artifacts_v4 {
+        msg["environmentVariables"] = json!([{"type": 2, "map": [{"Key": "GRAFTYARD_ACTIONS", "Value": "true"}]}]);
+    }
     msg
 }
 
@@ -503,6 +539,8 @@ pub struct Acquired<'a> {
     pub cache: bool,
     /// `JobMessage::id_token`.
     pub id_token: bool,
+    /// `JobMessage::artifacts_v4`.
+    pub artifacts_v4: bool,
     /// The run's actor's login (`ActionsEvent::RunActor`, F120), `github.actor`; the owner's login without one.
     pub actor: Option<&'a str>,
     /// The run's number (`ActionsEvent::RunNumber`, F119), `github.run_number`; 1 without one.
@@ -587,6 +625,7 @@ pub fn acquire_message(
         locked_until: &graftyard_wire::time::iso(a.locked_until),
         cache: a.cache,
         id_token: a.id_token,
+        artifacts_v4: a.artifacts_v4,
         reusable: a.reusable.clone(),
     };
     job_message(urls, &m)
@@ -875,6 +914,7 @@ mod tests {
             locked_until: "2026-11-18T00:00:00Z",
             cache: false,
             id_token: false,
+            artifacts_v4: false,
             reusable: None,
         };
         let v = job_message(&urls, &m);
@@ -898,12 +938,41 @@ mod tests {
         // `GenerateIdTokenUrl` only for a job granted `id-token: write`, under the run path, with a query to append to.
         let data = |v: &Value| v["resources"]["endpoints"][0]["data"].clone();
         assert!(data(&v).get("GenerateIdTokenUrl").is_none());
-        let v = job_message(&urls, &JobMessage { id_token: true, ..m });
+        m.id_token = true;
+        let v = job_message(&urls, &m);
         assert_eq!(
             data(&v)["GenerateIdTokenUrl"],
             json!("https://graft.example/_services/run/idtoken?api-version=2.0")
         );
         assert!(data(&v)["FeedStreamUrl"].is_string());
+        // v4 artifacts: neither the results URL nor the forks' env before the site day sets it; then the install's
+        // root (the client keeps only the origin) and `GRAFTYARD_ACTIONS=true` as a job-level environment token.
+        assert!(data(&v).get("ResultsServiceUrl").is_none() && v.get("environmentVariables").is_none());
+        m.artifacts_v4 = true;
+        let v = job_message(&urls, &m);
+        assert_eq!(data(&v)["ResultsServiceUrl"], json!("https://graft.example/"));
+        assert_eq!(
+            v["environmentVariables"],
+            json!([{"type": 2, "map": [{"Key": "GRAFTYARD_ACTIONS", "Value": "true"}]}])
+        );
+    }
+
+    /// The job token's payload as `jwt_decode` reads it: `scp` names the run's plan GUID and the job's GUID, the ids
+    /// the job message names, and the token still verifies to its grant.
+    #[test]
+    fn a_job_token_carries_the_results_scope_of_its_own_run_and_job() {
+        let k = ServiceKey([7; 32]);
+        let chain = ChainId::Actions(AccountId(DbId(100)), 3);
+        let (run, job) = (RunId(DbId(3)), JobId(DbId(9)));
+        let t = sign_job_token(&k, chain, run, job, 2, 2_000);
+        let claims: Value = serde_json::from_slice(&B64.decode(t.split('.').nth(1).unwrap()).unwrap()).unwrap();
+        let scp = claims["scp"].as_str().unwrap();
+        assert_eq!(scp, format!("Actions.Results:{}:{}", job_guid(2, 3), job_guid(1, 9)));
+        assert_eq!(claims["orch_id"], json!(orch_id(3, job, 2)));
+        assert_eq!(verify_token(&t, &k.public(), Timestamp(0)), Some((chain, Grant::Job { job, attempt: 2 })));
+        let runner = sign_token(&k, chain, Grant::Runner { runner: RunnerId(DbId(4)) }, 2_000, None);
+        let rc: Value = serde_json::from_slice(&B64.decode(runner.split('.').nth(1).unwrap()).unwrap()).unwrap();
+        assert!(rc.get("scp").is_none(), "a runner token reaches no artifacts");
     }
 
     /// `reusable`: a planned run's job carries its `needs` and `inputs` as context data, its call's secrets in place
@@ -948,6 +1017,7 @@ mod tests {
             variables: vec![],
             cache: false,
             id_token: false,
+            artifacts_v4: false,
             actor: None,
             run_number: None,
             reusable,

@@ -14,6 +14,7 @@
 //!   upload. The item path starts with the artifact's name, and the last upload to finish is the one a download
 //!   reads, whole.
 //! - `m/<name>`: the artifact's manifest, written by the client's finalize. Only a name with a manifest is listed.
+//! - `v/<name>/...` and `w/<name>`: a v4 artifact's staged blocks and committed blob (`crate::twirp`).
 
 use graftyard_types::{ChainId, DbId, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -145,6 +146,10 @@ pub struct ArtifactRow {
     pub expires: u64,
     pub head_sha: String,
     pub head_branch: Option<String>,
+    /// A v4 artifact's zip as its finalize hashed it, `sha256:<hex>`, which `ListArtifacts` answers and
+    /// `download-artifact` checks (`crate::twirp`); a v3 artifact has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
 }
 
 impl ArtifactRow {
@@ -185,6 +190,7 @@ pub fn finalized_row(
         expires: ArtifactRow::expires_at(at, days),
         head_sha: run.head_sha.iter().map(|b| format!("{b:02x}")).collect(),
         head_branch: run.head_ref.strip_prefix("refs/heads/").map(str::to_owned),
+        digest: None,
     }
 }
 
@@ -292,8 +298,8 @@ pub fn of_artifact(rel: &str) -> Option<&str> {
     }
 
     match rel.split_once('/') {
-        Some(("m" | "c", name)) => (!name.is_empty() && !name.contains('/')).then_some(name),
-        Some(("i", rest)) => named(rest),
+        Some(("m" | "c" | "w", name)) => (!name.is_empty() && !name.contains('/')).then_some(name),
+        Some(("i" | "v", rest)) => named(rest),
         Some(("u", rest)) => {
             let (job, rest) = rest.split_once('/')?;
             if job.is_empty() { None } else { named(rest) }
@@ -620,6 +626,7 @@ mod tests {
             expires: ArtifactRow::expires_at(created, 1),
             head_sha: "abc123".into(),
             head_branch: None,
+            digest: None,
         }
     }
 

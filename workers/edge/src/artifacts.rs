@@ -70,7 +70,11 @@ fn refusal(r: Refused) -> Result<Response> {
 }
 
 /// The job's run, from the shard's fold: its id is the job row's, and its repository the run's.
-async fn job_run(c: &Ctx<'_>, chain: ChainId, job: JobId) -> std::result::Result<WorkflowRun, String> {
+pub(crate) async fn job_run(c: &Ctx<'_>, chain: ChainId, job: JobId) -> std::result::Result<WorkflowRun, String> {
+    #[cfg(feature = "test-faults")]
+    if bed_twirp(c.env) {
+        return Ok(bed_run());
+    }
     let row = crate::actions::job_row(c, chain, job).await.ok_or("no such job")?;
     let v = crate::actions::shard_read(c, chain, json!({ "run": row.run.0.0 })).await?;
     let run: WorkflowRun = serde_json::from_value(v["run"]["run"].clone()).map_err(|e| e.to_string())?;
@@ -80,13 +84,53 @@ async fn job_run(c: &Ctx<'_>, chain: ChainId, job: JobId) -> std::result::Result
     Ok(run)
 }
 
-async fn home_bucket(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<Bucket, String> {
+pub(crate) async fn home_bucket(c: &Ctx<'_>, chain: ChainId) -> std::result::Result<Bucket, String> {
+    #[cfg(feature = "test-faults")]
+    if bed_twirp(c.env) {
+        return c.env.bucket("BED_ARTIFACTS").map_err(|e| e.to_string());
+    }
     let record = crate::actions::shard_record(c, chain).await?;
     c.env.bucket(&format!("BUCKET_{}", record.home.0)).map_err(|e| e.to_string())
 }
 
+/// The run service's base URL for the URLs an artifact call answers: the install's, or on a test build with
+/// `GRAFTYARD_BED_TWIRP`, the request's own origin, so a local client reaches them.
+pub(crate) fn services(c: &Ctx<'_>, req: &Request) -> Result<String> {
+    #[cfg(feature = "test-faults")]
+    if bed_twirp(c.env) {
+        let u = req.url()?;
+        return Ok(format!("{}/_services/", u.origin().ascii_serialization()));
+    }
+    let _ = req;
+    Ok(Urls::new(&format!("https://{}", c.cfg.host)).services)
+}
+
+/// A test build's v4 bed (tests/edgeboot): every artifact route reads the bucket `BED_ARTIFACTS` and every job token's
+/// run is `bed_run`, so the real Twirp, block, and zip routes answer with no shard bound. The token is still verified.
+#[cfg(feature = "test-faults")]
+fn bed_twirp(env: &Env) -> bool {
+    env.var("GRAFTYARD_BED_TWIRP").is_ok_and(|v| v.to_string() == "1")
+}
+
+#[cfg(feature = "test-faults")]
+fn bed_run() -> WorkflowRun {
+    let repo = RepoId(DbId(65_000));
+    WorkflowRun {
+        id: RunId(DbId(3)),
+        repo,
+        workflow: "ci.yml".into(),
+        event: "push".into(),
+        head_sha: [0xab; 20],
+        head_ref: "refs/heads/main".into(),
+        trigger: (ChainId::Repo(repo), graftyard_types::Index(1)),
+        attempt: 1,
+        concurrency: None,
+        fork: false,
+    }
+}
+
 /// Every key under `prefix` with its size and custom metadata, all pages.
-async fn listing(b: &Bucket, prefix: &str) -> std::result::Result<Vec<(String, u64)>, String> {
+pub(crate) async fn listing(b: &Bucket, prefix: &str) -> std::result::Result<Vec<(String, u64)>, String> {
     let (mut out, mut cursor) = (Vec::new(), None);
     loop {
         let mut l = b.list().prefix(prefix.to_owned());
@@ -417,7 +461,12 @@ pub async fn bed(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
 
 const DOC: &str = "rest/actions/artifacts";
 
-async fn put_row(bucket: &Bucket, chain: ChainId, repo: RepoId, row: &ArtifactRow) -> std::result::Result<(), String> {
+pub(crate) async fn put_row(
+    bucket: &Bucket,
+    chain: ChainId,
+    repo: RepoId,
+    row: &ArtifactRow,
+) -> std::result::Result<(), String> {
     let json = serde_json::to_string(row).map_err(|e| e.to_string())?;
     let meta = std::collections::HashMap::from([("row".to_owned(), json.clone())]);
     let key = art::index_key(chain, repo, row.id);
@@ -426,7 +475,11 @@ async fn put_row(bucket: &Bucket, chain: ChainId, repo: RepoId, row: &ArtifactRo
 }
 
 /// Every row of the repository's artifacts, from one paged list with their custom metadata.
-async fn rows(bucket: &Bucket, chain: ChainId, repo: RepoId) -> std::result::Result<Vec<ArtifactRow>, String> {
+pub(crate) async fn rows(
+    bucket: &Bucket,
+    chain: ChainId,
+    repo: RepoId,
+) -> std::result::Result<Vec<ArtifactRow>, String> {
     let (mut out, mut cursor) = (Vec::new(), None);
     loop {
         let mut l = bucket.list().prefix(art::index_prefix(chain, repo)).include(vec![Include::CustomMetadata]);
@@ -447,7 +500,7 @@ async fn rows(bucket: &Bucket, chain: ChainId, repo: RepoId) -> std::result::Res
     }
 }
 
-async fn row(bucket: &Bucket, chain: ChainId, repo: RepoId, id: i64) -> Result<Option<ArtifactRow>> {
+pub(crate) async fn row(bucket: &Bucket, chain: ChainId, repo: RepoId, id: i64) -> Result<Option<ArtifactRow>> {
     let Some(o) = bucket.get(art::index_key(chain, repo, id)).execute().await? else { return Ok(None) };
     let Some(b) = o.body() else { return Ok(None) };
     Ok(serde_json::from_slice(&b.bytes().await?).ok())
@@ -558,18 +611,19 @@ pub async fn repo_route(
         // GHES answers 302 to a URL that works for one minute, and 410 once the artifact expired.
         Rest::Zip(a) => match one(a).await? {
             Ok(a) if a.expired(now) => Reply::error(410, "Artifact has expired", DOC),
-            Ok(a) => {
-                let mut b = [0u8; 16];
-                b[..10].copy_from_slice(&crate::rand10());
-                b[10..].copy_from_slice(&crate::rand10()[..6]);
-                let nonce = art::ticket_name(&b);
-                let ticket = json!({ "id": a.id, "exp": now / 1000 + art::ZIP_URL_LIFE_S }).to_string();
-                if let Err(e) = bucket.put(art::ticket_key(chain, repo, &nonce), ticket.into_bytes()).execute().await {
-                    return Ok(Some(store(&e.to_string())));
-                }
-                let services = Urls::new(&format!("https://{}", c.cfg.host)).services;
-                Reply::empty(302).with("location", art::zip_url(&services, chain, repo, a.id, &nonce))
-            }
+            Ok(a) => match zip_ticket(
+                &Urls::new(&format!("https://{}", c.cfg.host)).services,
+                &bucket,
+                chain,
+                repo,
+                a.id,
+                now,
+            )
+            .await
+            {
+                Ok(url) => Reply::empty(302).with("location", url),
+                Err(e) => store(&e),
+            },
             Err(r) => r,
         },
         Rest::Delete(a) => match one(a).await? {
@@ -582,6 +636,29 @@ pub async fn repo_route(
     }))
 }
 
+/// A fresh 128-bit name: a zip or upload ticket's.
+pub(crate) fn nonce() -> String {
+    let mut b = [0u8; 16];
+    b[..10].copy_from_slice(&crate::rand10());
+    b[10..].copy_from_slice(&crate::rand10()[..6]);
+    art::ticket_name(&b)
+}
+
+/// A zip URL for artifact `id` that works for one minute: its ticket written, its URL answered.
+pub(crate) async fn zip_ticket(
+    services: &str,
+    bucket: &Bucket,
+    chain: ChainId,
+    repo: RepoId,
+    id: i64,
+    now: u64,
+) -> std::result::Result<String, String> {
+    let nonce = nonce();
+    let ticket = json!({ "id": id, "exp": now / 1000 + art::ZIP_URL_LIFE_S }).to_string();
+    bucket.put(art::ticket_key(chain, repo, &nonce), ticket.into_bytes()).execute().await.map_err(|e| e.to_string())?;
+    Ok(art::zip_url(services, chain, repo, id, &nonce))
+}
+
 enum Rest {
     List(Option<RunId>),
     Get(Option<i64>),
@@ -591,7 +668,12 @@ enum Rest {
 
 /// Every object of artifact `a` in its run (manifest, create record, records, upload pointers, chunks), then its row,
 /// so a delete that stops part way leaves a row that the next delete finishes, and never bytes no row names.
-async fn delete(bucket: &Bucket, chain: ChainId, repo: RepoId, a: &ArtifactRow) -> std::result::Result<(), String> {
+pub(crate) async fn delete(
+    bucket: &Bucket,
+    chain: ChainId,
+    repo: RepoId,
+    a: &ArtifactRow,
+) -> std::result::Result<(), String> {
     let ct = Container { chain, repo, run: a.run };
     let prefix = ct.prefix();
     let keys: Vec<String> = listing(bucket, &prefix)
@@ -633,12 +715,32 @@ pub async fn zip(c: &Ctx<'_>, req: &Request, rest: &str) -> Result<Response> {
         return error(410, "Artifact has expired");
     }
     let ct = Container { chain, repo, run: a.run };
+    let filename = format!("attachment; filename=\"{}.zip\"", a.name.replace('"', ""));
+    // A v4 artifact is the zip its client uploaded: its committed blocks, in order, as stored.
+    if let Some(blob) = committed(&bucket, &ct, &a.name).await? {
+        let keys = blob.blocks.iter().map(|(p, _)| ct.block_key(&a.name, blob.upload, p)).collect();
+        let mut r = stored(bucket, keys, blob.size, false)?;
+        r.headers_mut().set("content-type", "application/zip")?;
+        r.headers_mut().set("content-disposition", &filename)?;
+        return Ok(r);
+    }
     let Ok(steps) = plan(&bucket, &ct, &a.name).await else { return error(503, "the artifact store is unavailable") };
     let Some(steps) = steps else { return error(404, "Not Found") };
     let h = Headers::new();
     h.set("content-type", "application/zip")?;
-    h.set("content-disposition", &format!("attachment; filename=\"{}.zip\"", a.name.replace('"', "")))?;
+    h.set("content-disposition", &filename)?;
     Ok(Response::from_stream(compose(bucket, steps))?.with_headers(h))
+}
+
+/// A v4 artifact's committed blob (`graftyard_actions::twirp::Committed`), if its client committed one.
+pub(crate) async fn committed(
+    bucket: &Bucket,
+    ct: &Container,
+    name: &str,
+) -> Result<Option<graftyard_actions::twirp::Committed>> {
+    let Some(o) = bucket.get(ct.blob_key(name)).execute().await? else { return Ok(None) };
+    let Some(b) = o.body() else { return Ok(None) };
+    Ok(serde_json::from_slice(&b.bytes().await?).ok())
 }
 
 /// One step of a zip: a file's header, one of its chunks, its end, or the zip's end.

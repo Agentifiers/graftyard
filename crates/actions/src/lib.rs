@@ -22,6 +22,7 @@ pub mod shard;
 pub mod specs;
 pub mod token;
 pub mod trigger;
+pub mod twirp;
 pub mod workflow;
 pub mod zip;
 
