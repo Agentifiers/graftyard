@@ -1759,6 +1759,8 @@ It also carries LM-3's "the provenance row passes" (the rerun of L0-10).
 
 The rows rerun are L0-14, L0-02, L0-03, and L0-04. The provenance row is L0-10.
 
+**Gate ledger (2026-11-26, $0, `tests/am3/results/lm3-gate.md`).** Met hosted: a Sandbox killed mid-task resumes (`lm3-kill.md` r2, scripted harness) and a bad controller at 1% swaps back (`lm3.md` r2). In AM2's in-repo row, now running: A3 in-repo with its prompt-only task (without the draft leg, OPEN-QUESTIONS F140), L0-14, L0-04, and L0-03's base and no-live-task cells. Pending a row with no owner: L0-02 and L0-03's other in-repo cells, planned as one graft-m4a row waiting for the lead's GO. Pending code: every fork-mode line (AM3-WP2a), and L0-10's vault restore, which is M7-WP7's build (the ledger's contradiction 1).
+
 ## Milestone 6: region loss, SSH, and the lifeboat
 
 Built (`design/DESIGN.md`, "Milestones 1 to 7"): `ReplaceMember` signed by the executor key and `RestorePlacement`, both finding groups through `MemberRegistry`, `Degraded`, lifeboat tail and pack pulls over the Milestone 5 export endpoints, `graft-blob`, lifeboat registration, `lifeboat:read` enroll, the workerd bundle, and native SSH through a Spectrum Worker app, the edge's `connect()`, `SshFront`, `graft-sshd`, and `SshOutbound`, with host keys from Secrets Store, plus `git-ssh` and the SSH parts of `lfs` and `rest:deploy-keys` [inference].
