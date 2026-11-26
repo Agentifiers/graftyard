@@ -24,6 +24,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { EDGE, Git, api, log, logFrom, leaderOf, row, sleep, state as m3, tokens, tools, voterAt } from "../../am1/hosted/lib.mjs";
 import { judge } from "./b024a-judge.mjs";
@@ -36,12 +37,14 @@ const SITES = [0, 1, 2];
 const STOPS = { row: 10, install: 40, account: 200 };
 const ROOT = resolve(new URL("../../..", import.meta.url).pathname);
 
-const { values: opt, positionals } = parseArgs({ allowPositionals: true, options: {
+// Run as a script, the arguments are the command line; imported (b024a.test.mjs), there are none and nothing runs.
+const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+const { values: opt, positionals } = parseArgs({ args: isMain ? process.argv.slice(2) : [], allowPositionals: true, options: {
   hours: { type: "string", default: "24" }, "kill-every-min": { type: "string", default: "10" }, "row-from": { type: "string" },
 } });
 const [cmd, dirArg, extra] = positionals;
 const dir = resolve(dirArg ?? ".");
-mkdirSync(dir, { recursive: true });
+if (isMain) mkdirSync(dir, { recursive: true });
 const P = (f) => join(dir, f);
 const jsonl = (f) => (existsSync(P(f)) ? readFileSync(P(f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 const readJson = (f) => JSON.parse(readFileSync(P(f), "utf8"));
@@ -353,10 +356,23 @@ async function bf52() {
   out({ step: "verdict", pass, repo: s.repo, repoId: s.id });
 }
 
-if (cmd === "setup") await setup();
-else if (cmd === "load") await load();
-else if (cmd === "report") report();
-else if (cmd === "bf52") await bf52();
-else if (cmd === "kill") console.log(JSON.stringify(await killOnce(Number(extra))));
-else if (cmd === "drop-key") { const s = readJson("setup.json"); console.log((await api("DELETE", `/api/v3/user/keys/${s.keyId}`, tokens.member)).status); }
-else { console.error("usage: b024a.mjs setup|load|report|bf52|kill <site>|drop-key <dir>"); process.exit(2); }
+// Every subcommand, by name: the usage line and b024a.test.mjs read this table.
+export const COMMANDS = {
+  setup,
+  load,
+  report: async () => report(),
+  bf52,
+  kill: async () => console.log(JSON.stringify(await killOnce(Number(extra)))),
+  "drop-key": async () => {
+    const s = readJson("setup.json");
+    console.log((await api("DELETE", `/api/v3/user/keys/${s.keyId}`, tokens.member)).status);
+  },
+};
+
+if (isMain) {
+  if (!Object.hasOwn(COMMANDS, cmd)) {
+    console.error(`usage: b024a.mjs ${Object.keys(COMMANDS).join("|")} <dir> [kill: <site>]`);
+    process.exit(2);
+  }
+  await COMMANDS[cmd]();
+}

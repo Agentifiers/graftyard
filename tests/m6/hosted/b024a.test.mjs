@@ -8,6 +8,22 @@ import { judge, verdict } from "./b024a-judge.mjs";
 const T0 = Date.parse("2026-11-30T01:45:00Z");
 const S = 1000;
 
+// The driver itself loads, and has every subcommand the plan and the day script name. Its imports resolve only when
+// it is imported (b024a.mjs imported a missing `../am1/hosted/lib.mjs` until 340eb1e0). `lib.mjs` reads an install's
+// token files at import, so this gives it stand-ins in a temporary folder; the driver runs nothing when imported.
+test("the driver loads and has every subcommand", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const d = mkdtempSync(`${tmpdir()}/b024a-load-`);
+  for (const [f, v] of [["tools.token", "t0000000"], ["bed.token", "b0000000"], ["m3.json", "{}"], ["m3-tokens.txt", "member m0000000"], ["app.pem", ""]]) {
+    writeFileSync(`${d}/${f}`, v);
+  }
+  Object.assign(process.env, { TOOLS_TOKEN_FILE: `${d}/tools.token`, BED_TOKEN_FILE: `${d}/bed.token`, M3_STATE: d });
+  const { COMMANDS } = await import("./b024a.mjs");
+  assert.deepEqual(Object.keys(COMMANDS).sort(), ["bf52", "drop-key", "kill", "load", "report", "setup"]);
+  for (const [k, f] of Object.entries(COMMANDS)) assert.equal(typeof f, "function", k);
+});
+
 test("the verdict is the gate's, on both sides of each line", () => {
   assert.equal(verdict(1, 0), "pass");
   assert.equal(verdict(0.999, 0), "pass");
