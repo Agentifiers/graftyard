@@ -12137,3 +12137,29 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/m0carried/plant279.py`: 19 mutants. The first is main's 404 for a metadata-only reader; two are the host pause keeping an unpushed log or dropping a pushed one.
 
 **Flip.** A GHES-compatible client that relies on 404 for a metadata-only `/log` read; or a harness whose session log routinely needs more than 1 MiB, which would need a larger blob read than `/ui/blob` gives; or a need to keep logs of cancelled tasks.
+
+### `l010-at-bm7`: LM-3's provenance clause (L0-10) runs once, at BM-7, before and after BM-7's vault restore, 2026-11-26
+
+**Status.** The lead's ruling (T-01a17bda, 2026-11-26), on contradiction 1 of `tests/am3/results/lm3-gate.md`. Nothing built; this moves where a gate clause runs, not what it says.
+
+**Decision.**
+- LM-3's "the provenance row passes" (AM3-WP4 carries it, AM3-WP5 gates it) is carried whole to BM-7 (M7-WP8).
+- L0-10 runs there as one run: 10,000 replayed agent commits, resolved before BM-7's vault restore to its chosen cutoff and again after it.
+- The row's text and its pass stay as written: "100% resolve to a session or PR before and after", fail on any lost.
+- AM3 closes with this clause carried, not met. LM-3's other clauses are unchanged.
+
+**Why.**
+- L0-10 ends with "then a vault restore". The restore is M7-WP7's build ("The five-step restore from the vault or from a lifeboat export into new accounts"), and M5-WP5 says "The vault's restore is gated by BM-7 (M7-WP8)". AM3 depends on M5, not M7, so LM-3 could not close as ordered.
+- BM-7 already runs a vault restore to a chosen cutoff. Resolving the same 10,000 commits on both sides of that restore tests provenance through the restore the design ships, not a stand-in.
+
+**What it beat.**
+- Running the before half now on graft-m4a (option B in `lm3-gate.md`, $2.5 to $5): BM-7 would repeat it, and the half alone cannot pass the row.
+- A one-chain restore built early for AM3, as M0-WP16's prototype did: a second restore path beside M7-WP7's, which owns the restore.
+- Holding AM3 open until M7: every other AM3 clause would wait on an unrelated milestone.
+
+**Evidence.**
+- `build/BUILD-PLAN.md`: L0-10's row (Milestone 0), AM3-WP4 ("It also carries LM-3's 'the provenance row passes'"), M5-WP5, M7-WP7, M7-WP8.
+- `tests/m0/results/m0-wp16.md`, L0-10: the prototype's pass on a one-chain restore (10,489 of 10,489 before and after).
+- `tests/am3/results/lm3-gate.md`, line 10 and contradiction 1.
+
+**Flip.** If M7-WP7 is dropped or moved after a release that needs agent provenance proven through a restore, run L0-10 on whatever restore exists then. If a design change makes provenance resolve through rows a restore does not carry, run the row again where that change lands.

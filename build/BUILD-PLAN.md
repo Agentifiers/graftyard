@@ -1745,6 +1745,8 @@ It also carries three clauses moved from LM-1 by the operator's decision of 2026
 
 It also carries LM-3's "the provenance row passes" (the rerun of L0-10).
 
+That clause is carried to BM-7 (M7-WP8) by the lead's ruling of 2026-11-26 (`decisions/DECISIONS.md`, "`l010-at-bm7`"): L0-10 ends with a vault restore, which M7-WP7 builds.
+
 ### AM3-WP5. AM3 gate
 
 **Build.** Nothing new.
@@ -1760,6 +1762,8 @@ It also carries LM-3's "the provenance row passes" (the rerun of L0-10).
 The rows rerun are L0-14, L0-02, L0-03, and L0-04. The provenance row is L0-10.
 
 **Gate ledger (2026-11-26, $0, `tests/am3/results/lm3-gate.md`).** Met hosted: a Sandbox killed mid-task resumes (`lm3-kill.md` r2, scripted harness) and a bad controller at 1% swaps back (`lm3.md` r2). In AM2's in-repo row, now running: A3 in-repo with its prompt-only task (without the draft leg, OPEN-QUESTIONS F140), L0-14, L0-04, and L0-03's base and no-live-task cells. Pending a row with no owner: L0-02 and L0-03's other in-repo cells, planned as one graft-m4a row waiting for the lead's GO. Pending code: every fork-mode line (AM3-WP2a), and L0-10's vault restore, which is M7-WP7's build (the ledger's contradiction 1).
+
+**L0-10 carried to BM-7 (the lead, 2026-11-26; `decisions/DECISIONS.md`, "`l010-at-bm7`").** LM-3's "the provenance row passes" is not run in AM3. L0-10 runs once, at BM-7: 10,000 replayed agent commits resolve 100% to a session or PR before BM-7's vault restore and 100% after it, with the row's text and its pass unchanged. AM3 closes with this clause carried, not met. LM-3's other clauses are unchanged.
 
 ## Milestone 6: region loss, SSH, and the lifeboat
 
@@ -1997,6 +2001,8 @@ Its oracle is also the `rest:migrations` export and import round trip in `design
 | Row | Gate (Pass) |
 | --- | --- |
 | BM-7 | A self-hosted install with no vendor key passes milestones 1 to 6 gates and enables a new format. A vault restore to a chosen cutoff and a lifeboat-export restore into new accounts each lose no entry up to their cutoff, and afterward a developer's PAT and SSH key, a user-owned repository, and an org name all work, while a PAT revoked after the cutoff fails. A `Solo` group moves to `Tri` under load with no failed write |
+
+It also carries L0-10 from LM-3 (AM3-WP5; `decisions/DECISIONS.md`, "`l010-at-bm7`"): 10,000 replayed agent commits on the restored install's source, resolved before the vault restore to the chosen cutoff and again after it, as one run. Pass: 100% resolve to a session or PR before and after. Fail: any lost.
 
 ## Work packages per milestone
 
