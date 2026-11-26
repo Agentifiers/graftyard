@@ -329,17 +329,15 @@ impl Cf {
         Ok(v["result"].as_array().cloned().unwrap_or_default())
     }
 
-    /// Changes an application's configuration, then rolls it out to every instance as wrangler does (`full_auto`).
-    pub fn roll_container_app(&self, id: &str, configuration: &Value) -> Res<()> {
-        self.json("PATCH", &format!("/containers/applications/{id}"), &[], &json!({ "configuration": configuration }))?;
-        let body = json!({
-            "description": "graftyard runners upgrade",
-            "strategy": "rolling",
-            "kind": "full_auto",
-            "step_percentage": 100,
-            "target_configuration": configuration,
-        });
-        self.json("POST", &format!("/containers/applications/{id}/rollouts"), &[], &body).map(|_| ())
+    /// An application's container instances (`status.state` each), as `tests/m4/wp4/bf60.mjs` reads them.
+    pub fn container_instances(&self, id: &str) -> Res<Vec<Value>> {
+        let v = self.call("GET", &format!("/containers/applications/{id}/instances?per_page=1000"), &[], None)?;
+        Ok(v["result"]["instances"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// Deletes a container application (`DELETE /containers/applications/{id}`, as `wrangler containers delete`).
+    pub fn delete_container_app(&self, id: &str) -> Res<()> {
+        self.call("DELETE", &format!("/containers/applications/{id}"), &[], None).map(|_| ())
     }
 
     pub fn delete_script(&self, script: &str) -> Res<()> {
@@ -477,7 +475,6 @@ mod tests {
         cf.put_script("s1", &git_shard(), &[]).unwrap();
         assert!(t.elapsed() < cf.prep_poll, "a prepared image does not wait a poll");
         let runner = json!({ "containers": [
-            { "name": "graft-runners-sandboxstd3", "class_name": "SandboxStd3" },
             { "name": "graft-runners-runnerbox", "class_name": "RunnerBox", "images": { "runner": IMAGE, "again": IMAGE } },
         ] });
         assert_eq!(cf.upload_version("graft-runners", &runner, &[]).unwrap(), "v1");

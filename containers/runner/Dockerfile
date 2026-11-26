@@ -1,10 +1,11 @@
-# The hosted runner image (design/SHARED.md, "Actions", Hosted runners; build/BUILD-PLAN.md, M4-WP4): the Sandbox SDK's
-# base image, whose `/container-server/sandbox` serves the SDK's calls, plus an unmodified `actions/runner` at the
-# version the install pins (tests/m4/wp3/runner-protocol.md), checked against the release's published SHA-256.
-# `graft-runners` starts `run.sh --jitconfig` in it, one job per container (workers/runners/src/worker.rs): on the legacy
-# Sandbox classes through the base image's server, and on `RunnerBox` (workers/runners/box.mjs) as the container's main
-# process, whose entrypoint override bypasses that server [unverified until release M1's check]. Built and pushed by
-# wrangler from workers/runners/deploy.mjs's config.
+# The hosted runner image (design/SHARED.md, "Actions", Hosted runners; build/BUILD-PLAN.md, M4-WP4): an unmodified
+# `actions/runner` at the version the install pins (tests/m4/wp3/runner-protocol.md), checked against the release's
+# published SHA-256, on the Sandbox SDK's base image. `RunnerBox` (workers/runners/box.mjs) starts it with an
+# entrypoint that execs `run.sh --jitconfig` as the container's main process, one job per container, so the base
+# image's `/container-server/sandbox` never runs [measured: R23's M1 check, PID 1 is run.sh]. Release M3 (`r23-m3`)
+# deleted the Sandbox SDK classes that used that server; the base stays only because it is the image every hosted run
+# so far measured, and moving off it is a new runner image with its own canary. Built and pushed by
+# tests/m4/wp4/image.sh.
 ARG SANDBOX_VERSION=0.12.14
 FROM docker.io/cloudflare/sandbox:${SANDBOX_VERSION}
 
