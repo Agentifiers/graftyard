@@ -14,7 +14,35 @@ use graftyard_types::{ChainId, PlacementRecord, SiteTable, Timestamp};
 use serde_json::{Value, json};
 use worker::{Context, Delay, Env, js_sys};
 
-use crate::{Bindings, Target, known_voters, now_ms, post_within, registry_record, unhex};
+use crate::{Bindings, Target, known_voters, now_ms, post_within, unhex};
+use graftyard_types::{RegistryRow, SiteId};
+
+/// The members a cold refresh asks, with no voters learned yet, from each site's `MemberRegistry` row for the chain
+/// (`rows`, as `(site read, row)`): a member writes its site's row and rewrites it on each config change, so each row
+/// names the member its site holds now. Every row's member is asked, the newest generation first, then any of
+/// `record`'s bootstrap names (else the newest row's) that no row named. One site's row is not the group's record: in
+/// m6aL2 site 0's row named `release#4#f0`, A's member since m6aL's `home`, while the voters were `#5#f0` on the
+/// spare, `#2#f1` and `#1#f2`. graft-m6a's graft-ops took site 0's row as the record and asked its bootstrap names,
+/// `#4#f0` (faulted) and `#4#f1`, `#4#f2` (never members), so it read no view while site 0 was down and never committed
+/// the `ReplaceMember`'s `IntentDone` (`tests/m6/results/m6-wp1.md`, "m6aL2").
+pub(crate) fn cold_targets(rows: &[(SiteId, RegistryRow)], record: Option<&PlacementRecord>) -> Vec<Target> {
+    let mut rows: Vec<&(SiteId, RegistryRow)> = rows.iter().collect();
+    rows.sort_by_key(|(_, r)| std::cmp::Reverse(r.generation));
+    let mut out: Vec<Target> = Vec::new();
+    let mut add = |t: Target| {
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    };
+    for (site, r) in &rows {
+        add(Target { site: *site, do_name: r.do_name.to_string() });
+    }
+    let fallback = record.cloned().or_else(|| rows.first().and_then(|(_, r)| r.record()));
+    for m in fallback.map(|r| r.bootstrap_members(ChainId::Release)).unwrap_or_default() {
+        add(Target { site: m.site, do_name: m.do_name.to_string() });
+    }
+    out
+}
 
 #[derive(Default)]
 struct View {
@@ -266,22 +294,33 @@ async fn refresh(b: &Bindings<'_>, anchor: &Anchor, start: u64) {
     }
 }
 
-/// The members a refresh asks, in order: the `Release` voters this isolate knows, else the genesis record's bootstrap
-/// members. The leader the last answer named goes first, because a follower applies an entry only once a later round
-/// carries its commit, so it can be one round behind; with no leader known, a random member goes first, so isolates
-/// spread their refreshes over the group.
+/// How long a refresh that knows no voters waits for the sites' `MemberRegistry` rows of the `Release` chain, read at
+/// once: a site whose registry hangs is left out, and half of VIEW_CALL_MS is left for the members.
+const ROWS_MS: u64 = VIEW_CALL_MS / 2;
+
+/// The members a refresh asks, in order: the `Release` voters this isolate knows, else its view's genesis record's
+/// bootstrap names, else (an isolate with no view, or whose last refresh failed) `cold_targets` over every site's
+/// registry row. The leader the last answer named goes first, because a follower applies an entry only once a
+/// later round carries its commit, so it can be one round behind; with no leader known, a random member goes first, so
+/// isolates spread their refreshes over the group.
 async fn members(b: &Bindings<'_>) -> Result<Vec<Target>, (String, bool)> {
-    let record = match release_record() {
-        Some(r) => r,
-        None => registry_record(b, ChainId::Release).await.ok_or(("no Release group is registered".into(), true))?,
-    };
     let mut out = known_voters(ChainId::Release);
+    let record = release_record();
+    // A warm isolate whose last refresh answered keeps asking its genesis record's names, with no registry read.
+    let cold = record.is_none() || VIEW.with(|v| v.borrow().fresh.failing);
+    if out.is_empty() && !cold {
+        out = cold_targets(&[], record.as_ref());
+    }
     if out.is_empty() {
-        out = record
-            .bootstrap_members(ChainId::Release)
-            .into_iter()
-            .map(|m| Target { site: m.site, do_name: m.do_name.to_string() })
-            .collect();
+        let rows = b.sites.0.iter().map(|s| async move {
+            let row = crate::within(Duration::from_millis(ROWS_MS), crate::registry_row(b, s.id, ChainId::Release));
+            Some((s.id, row.await.flatten()?))
+        });
+        let rows: Vec<_> = futures_util::future::join_all(rows).await.into_iter().flatten().collect();
+        out = cold_targets(&rows, record.as_ref());
+        if out.is_empty() {
+            return Err(("no Release group is registered".into(), true));
+        }
     }
     if !out.is_empty() {
         let leader = VIEW.with(|v| v.borrow().leader);
@@ -365,4 +404,55 @@ async fn read(b: &Bindings<'_>, anchor: &Anchor) -> Result<(), (String, bool)> {
         }
     }
     if any { Ok(()) } else { Err((last, false)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use graftyard_types::PlacementName;
+
+    use super::*;
+
+    fn row(name: &str, generation: u32) -> RegistryRow {
+        RegistryRow {
+            chain: ChainId::Release,
+            do_name: name.into(),
+            generation,
+            sites: [SiteId(0), SiteId(1), SiteId(2)].into_iter().collect(),
+        }
+    }
+
+    /// m6aL2's cold graft-ops (`cold_targets`): site 0's row is a stale generation 4 on a faulted site, the voters are
+    /// `#5#f0` on the spare, `#2#f1` and `#1#f2`. A cold refresh asks every row's member, the newest first, before any
+    /// bootstrap name, so the live voters are asked although site 0's row is read first and its site is down.
+    #[test]
+    fn a_cold_view_asks_every_sites_row_before_one_rows_bootstrap_names() {
+        let rows = vec![
+            (SiteId(0), row("release#4#f0", 4)),
+            (SiteId(1), row("release#2#f1", 2)),
+            (SiteId(2), row("release#1#f2", 1)),
+            (SiteId(3), row("release#5#f0", 5)),
+        ];
+        let got: Vec<(u8, String)> = cold_targets(&rows, None).into_iter().map(|t| (t.site.0, t.do_name)).collect();
+        let want = [(3, "release#5#f0"), (0, "release#4#f0"), (1, "release#2#f1"), (2, "release#1#f2")];
+        assert_eq!(got[..4], want.map(|(s, n)| (s, n.to_string())), "every row's member, the newest generation first");
+        assert!(
+            got[4..].iter().all(|(_, n)| n.starts_with("release#5#")),
+            "then the newest row's bootstrap names: {got:?}"
+        );
+        // A record the view holds keeps its bootstrap names after the rows, each name once.
+        let rec = PlacementRecord {
+            name: PlacementName::Tri,
+            home: SiteId(0),
+            sites: [SiteId(0), SiteId(1), SiteId(2)].into_iter().collect(),
+            generation: 1,
+            moving_from: None,
+            at: Timestamp(1),
+        };
+        let got = cold_targets(&rows, Some(&rec));
+        let names: Vec<&str> = got.iter().map(|t| t.do_name.as_str()).collect();
+        assert_eq!(names[4..], ["release#1#f0", "release#1#f1"], "the record's names after the rows, #1#f2 once");
+        // No row: the record's names alone, as before.
+        assert_eq!(cold_targets(&[], Some(&rec)).len(), 3);
+        assert!(cold_targets(&[], None).is_empty());
+    }
 }

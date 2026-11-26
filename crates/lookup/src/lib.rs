@@ -415,7 +415,7 @@ async fn post_join(b: &Bindings<'_>, to: SiteId, do_name: &str, body: &[u8]) -> 
     within(Duration::from_secs(60), call).await.flatten()
 }
 
-async fn registry_row(b: &Bindings<'_>, at: SiteId, chain: ChainId) -> Option<RegistryRow> {
+pub(crate) async fn registry_row(b: &Bindings<'_>, at: SiteId, chain: ChainId) -> Option<RegistryRow> {
     let reg = MemberRegistry::for_chain(at, chain);
     let stub = b.registry(at, &reg.do_name()).ok()?;
     let url = format!("https://registry/row?chain={chain}");
