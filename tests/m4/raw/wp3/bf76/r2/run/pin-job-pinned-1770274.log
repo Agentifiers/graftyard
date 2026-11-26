@@ -1,0 +1,34 @@
+2026-11-26T10:20:56.8644945Z Current runner version: '2.338.2'
+2026-11-26T10:20:56.8650310Z Runner name: 'bf76-pin-1'
+2026-11-26T10:20:56.8650824Z Machine name: '172'
+2026-11-26T10:20:56.8654708Z Prepare workflow directory
+2026-11-26T10:20:56.9125601Z Prepare all required actions
+2026-11-26T10:20:56.9178146Z Getting action download info
+2026-11-26T10:21:07.8847154Z Download action repository 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+2026-11-26T10:21:11.9345454Z Complete job name: pinned
+2026-11-26T10:21:12.0181888Z ##[group]Run mkdir -p p && head -c 100000 /dev/urandom > p/x.bin && sha256sum p/x.bin | sed 's/^/BF76 SUM /'
+2026-11-26T10:21:12.0182112Z [36;1mmkdir -p p && head -c 100000 /dev/urandom > p/x.bin && sha256sum p/x.bin | sed 's/^/BF76 SUM /'[0m
+2026-11-26T10:21:12.0206543Z shell: /usr/sbin/bash -e {0}
+2026-11-26T10:21:12.0206945Z env:
+2026-11-26T10:21:12.0206998Z   GRAFTYARD_ACTIONS: true
+2026-11-26T10:21:12.0207040Z ##[endgroup]
+2026-11-26T10:21:12.0377721Z BF76 SUM d6e6fd999c619f33954f94aa50141c8c7bc513b87378cb8ff54e12fc480f5801  p/x.bin
+2026-11-26T10:21:12.0529918Z ##[group]Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+2026-11-26T10:21:12.0530126Z with:
+2026-11-26T10:21:12.0530173Z   name: pinned
+2026-11-26T10:21:12.0530202Z   path: p
+2026-11-26T10:21:12.0530270Z   if-no-files-found: warn
+2026-11-26T10:21:12.0530309Z   compression-level: 6
+2026-11-26T10:21:12.0530359Z   overwrite: false
+2026-11-26T10:21:12.0530387Z   include-hidden-files: false
+2026-11-26T10:21:12.0530456Z env:
+2026-11-26T10:21:12.0530491Z   GRAFTYARD_ACTIONS: true
+2026-11-26T10:21:12.0530534Z ##[endgroup]
+2026-11-26T10:21:12.4198666Z With the provided path, there will be 1 file uploaded
+2026-11-26T10:21:12.4219794Z ##[warning]Artifact upload failed with error: GHESNotSupportedError: @actions/artifact v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not currently supported on GHES..
+
+Errors can be temporary, so please try again and optionally run the action with debug mode enabled for more information.
+
+If the error persists, please check whether Actions is operating normally at [https://githubstatus.com](https://www.githubstatus.com).
+2026-11-26T10:21:12.4229388Z ##[error]@actions/artifact v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not currently supported on GHES.
+2026-11-26T10:21:12.4404570Z Cleaning up orphan processes

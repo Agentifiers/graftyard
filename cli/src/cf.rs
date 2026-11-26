@@ -397,6 +397,12 @@ impl Cf {
         v["result"]["id"].as_str().map(String::from).ok_or_else(|| "store create returned no id".into())
     }
 
+    /// Whether the store holds a secret named `name`. Its value is write-only, so this is all that can be read back.
+    pub fn has_secret(&self, store: &str, name: &str) -> Res<bool> {
+        let v = self.call("GET", &format!("/secrets_store/stores/{store}/secrets?search={name}"), &[], None)?;
+        Ok(v["result"].as_array().into_iter().flatten().any(|s| s["name"] == json!(name)))
+    }
+
     /// Writes `value` under `name`, replacing an earlier value of the same name. The value is write-only.
     pub fn put_secret(&self, store: &str, name: &str, value: &str, comment: &str) -> Res<()> {
         let path = format!("/secrets_store/stores/{store}/secrets");

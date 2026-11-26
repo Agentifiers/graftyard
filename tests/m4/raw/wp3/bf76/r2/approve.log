@@ -1,0 +1,14 @@
+2026-11-26T10:21:47Z
+191f35058
+2026-11-26T10:21:55.563Z policy PUT {"pin_map":"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93"}: 200; now {"pin_map":"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93","tags":false}
+2026-11-26T10:21:55.567Z ok   org admin approves the map 5277fe93c5ab: {"pin_map":"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93","tags":false}
+2026-11-26T10:21:56.474Z ok   approving a digest the install does not hold: 422
+2026-11-26T10:21:58.464Z run 1770276 (pin.yml on pin)
+2026-11-26T10:22:01.602Z runner 1 (id 1770278)
+2026-11-26T10:22:41.506Z ok   the same pinned workflow concluded Success (want Success)
+2026-11-26T10:22:41.506Z ok   Set up job downloads actions/upload-artifact@ea165f8d... as written at the fork's SHA aeb6043f
+2026-11-26T10:22:41.506Z ok   no GHESNotSupportedError
+2026-11-26T10:22:43.794Z ok   REST zip of pinned: files {"x.bin":"9d19ef04c7cd32d942569a0d54787c5ecee6a04b1159c484e4db85d7b7f56546"} vs {"p/x.bin":"9d19ef04c7cd32d942569a0d54787c5ecee6a04b1159c484e4db85d7b7f56546"}
+2026-11-26T10:22:43.795Z BF-76 approve PASS (2026-11-26T10:21:47.294Z to 2026-11-26T10:22:43.795Z)
+2026-11-26T10:22:43.795Z sheds: python3 tests/fanout/tieroff503.py 2026-11-26T10:21:47.294Z 2026-11-26T10:22:43.795Z graft-m4a-edge
+approve exit 0

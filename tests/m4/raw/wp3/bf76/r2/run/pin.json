@@ -1,0 +1,55 @@
+{
+ "phase": "pin",
+ "ok": true,
+ "from": "2026-11-26T10:20:05.921Z",
+ "to": "2026-11-26T10:21:29.553Z",
+ "fails": [],
+ "lines": [
+  {
+   "ok": true,
+   "what": "org policy: tags false, no approved map: {\"pin_map\":null,\"tags\":false}"
+  },
+  {
+   "ok": true,
+   "what": "the pinned job concluded Failure (want Failure)"
+  },
+  {
+   "ok": true,
+   "what": "Set up job downloads actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 at the upstream SHA (as written, no substitution)"
+  },
+  {
+   "ok": true,
+   "what": "the step's lines: ##[warning]...GHESNotSupportedError true, ##[error]@actions/artifact v2.0.0+, upl... true"
+  },
+  {
+   "ok": true,
+   "what": "the error is in the action's own step (step at 1168, error at 2288), not at Set up job"
+  },
+  {
+   "ok": true,
+   "what": "check run 1770274: completed/failure, annotations_count 3"
+  },
+  {
+   "ok": true,
+   "what": "REST: Graftyard's annotation, failure, names /organizations/m3org/settings/actions/pin-map and graftyard-actions/upload-artifact@aeb6043f: {\"annotation_level\":\"failure\",\"blob_href\":\"https://graft-m4a-edge.<sub>.workers.dev/m3org/bf76-r2/blob/aa66a3d46d9e988195a566f8e871ee6e526304e5/.github\",\"end_column\":null,\"end_line\":1,\"message\":\"`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` is upload-artifact v4+, which GHES does not support. Approve the pin map at https://graft-m4a-edge.<sub>.workers.d"
+  },
+  {
+   "ok": true,
+   "what": "REST: the step's own failure annotation with GHES's message: {\"annotation_level\":\"failure\",\"blob_href\":\"https://graft-m4a-edge.<sub>.workers.dev/m3org/bf76-r2/blob/aa66a3d46d9e988195a566f8e871ee6e526304e5/.github\",\"end_column\":null,\"end_line\":18,\"message\":\"@actions/artifact v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not currently s"
+  },
+  {
+   "ok": true,
+   "what": "GraphQL CheckRun.annotations on PR #1 (commit aa66a3d4): 3 annotations, ours {\"annotationLevel\":\"FAILURE\",\"location\":{\"end\":{\"line\":1},\"start\":{\"line\":1}},\"message\":\"`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` is upload-artifact v4+, which GHES does not support. Approve the pin map at https://graft-m4a-edge.<sub>.workers.dev/organizations/m"
+  },
+  {
+   "ok": true,
+   "what": "GraphQL: the step's failure annotation too"
+  }
+ ],
+ "run": 1770273,
+ "head": "aa66a3d46d9e988195a566f8e871ee6e526304e5",
+ "pr": 1,
+ "job": 1770274,
+ "check_run": 1770274,
+ "annotations": 3
+}

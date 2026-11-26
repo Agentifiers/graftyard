@@ -1,0 +1,136 @@
+{
+  "repo": "m3org/wp4-r23",
+  "repoId": 65569,
+  "run": 1713082,
+  "lastJobS": 111,
+  "maxLive": 10,
+  "after": {
+    "runnerbox": {
+      "failed": 30,
+      "stopped": 24
+    }
+  },
+  "legs": [
+    {
+      "job": 1713083,
+      "name": "std3 (0)",
+      "conclusion": "Success",
+      "pid1": "/bin/bash /home/runner/run.sh",
+      "comm1": "run.sh",
+      "sandboxServer": "0",
+      "size": "2 mem 8484"
+    },
+    {
+      "job": 1713084,
+      "name": "std3 (1)",
+      "conclusion": "Success",
+      "pid1": "/bin/bash /home/runner/run.sh",
+      "comm1": "run.sh",
+      "sandboxServer": "0",
+      "size": "2 mem 8484"
+    },
+    {
+      "job": 1713085,
+      "name": "std3 (2)",
+      "conclusion": "Success",
+      "pid1": "/bin/bash /home/runner/run.sh",
+      "comm1": "run.sh",
+      "sandboxServer": "0",
+      "size": "2 mem 8484"
+    },
+    {
+      "job": 1713086,
+      "name": "std3 (3)",
+      "conclusion": "Success",
+      "pid1": "/bin/bash /home/runner/run.sh",
+      "comm1": "run.sh",
+      "sandboxServer": "0",
+      "size": "2 mem 8484"
+    },
+    {
+      "job": 1713087,
+      "name": "std3 (4)",
+      "conclusion": "Success",
+      "pid1": "/bin/bash /home/runner/run.sh",
+      "comm1": "run.sh",
+      "sandboxServer": "0",
+      "size": "2 mem 8484"
+    },
+    {
+      "job": 1713088,
+      "name": "std3 (5)",
+      "conclusion": "Success",
+      "pid1": "/bin/bash /home/runner/run.sh",
+      "comm1": "run.sh",
+      "sandboxServer": "0",
+      "size": "2 mem 8484"
+    },
+    {
+      "job": 1713089,
+      "name": "std4 (6)",
+      "conclusion": "Success",
+      "pid1": "/bin/bash /home/runner/run.sh",
+      "comm1": "run.sh",
+      "sandboxServer": "0",
+      "size": "4 mem 12650"
+    },
+    {
+      "job": 1713090,
+      "name": "std4 (7)",
+      "conclusion": "Success",
+      "pid1": "/bin/bash /home/runner/run.sh",
+      "comm1": "run.sh",
+      "sandboxServer": "0",
+      "size": "4 mem 12650"
+    }
+  ],
+  "jobs": {
+    "1713083": {
+      "startedS": 25.728,
+      "doneS": 61.619,
+      "conclusion": "Success"
+    },
+    "1713084": {
+      "startedS": 25.728,
+      "doneS": 61.619,
+      "conclusion": "Success"
+    },
+    "1713085": {
+      "startedS": 25.728,
+      "doneS": 61.619,
+      "conclusion": "Success"
+    },
+    "1713086": {
+      "startedS": 25.728,
+      "doneS": 61.619,
+      "conclusion": "Success"
+    },
+    "1713087": {
+      "startedS": 25.728,
+      "doneS": 68.955,
+      "conclusion": "Success"
+    },
+    "1713088": {
+      "startedS": 25.728,
+      "doneS": 61.619,
+      "conclusion": "Success"
+    },
+    "1713089": {
+      "startedS": 68.955,
+      "doneS": 104.003,
+      "conclusion": "Success"
+    },
+    "1713090": {
+      "startedS": 75.259,
+      "doneS": 111.307,
+      "conclusion": "Success"
+    }
+  },
+  "checks": {
+    "jobs8": true,
+    "everyJobSucceeded": true,
+    "runnerIsPid1": true,
+    "noBoxLeft10MinAfter": true
+  },
+  "pass": true
+}

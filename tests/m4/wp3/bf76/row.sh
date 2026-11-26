@@ -16,7 +16,9 @@
 #   setup      the forks built (`build-forks.sh`, MIR the upstream bare clones), mirrored as `graftyard-actions/*`
 #              (GA_ID, default 7100013), upstream v4.6.2 and v4.3.0 mirrored into `actions`, and the pin map signed
 #              with ~/.graft-m4a/release.key and stored (`bf76.mjs setup`)
-#   tag        `bf76.mjs tag`, `pin` `bf76.mjs pin`, `approve` `bf76.mjs approve` (RUNNER, an unpacked runner 2.338.2)
+#   tag        `bf76.mjs tag`, `pin` `bf76.mjs pin`, `approve` `bf76.mjs approve` (RUNNER, an unpacked runner 2.338.2);
+#              FROM=<tag> takes an earlier tag's signed map and digest when `setup` is not rerun
+#   withdraw   `bf76.mjs withdraw`: `{tags: false, pin_map: null}`, which must leave no approval (r2's first line)
 #   teardown   `bf76.mjs teardown`, then the shard-container sweep
 #
 # Needs `source tests/am1/lf13/env-m4a.sh` (the tools token for the mirrors), what BF-74's row needs, RUNNER, target/release/examples/jitconfig, and TREE (a worktree at the row's main, with
@@ -29,7 +31,10 @@ O=$REPO/tests/m4/raw/wp3/bf76/$TAG; mkdir -p "$O"
 export BF76_REPO=${BF76_REPO:-bf76-$TAG}
 WD=graft-m4a-edge.$CF_WORKERS_SUBDOMAIN.workers.dev
 export GRAFT_EDGE=https://$WD
-export WRANGLER=${WRANGLER:-$REPO/tests/m0/node_modules/wrangler/bin/wrangler.js}
+# A worktree without tests/m0's install takes the main checkout's (`git rev-parse --git-common-dir`).
+W0=$REPO/tests/m0/node_modules/wrangler/bin/wrangler.js
+[ -e "$W0" ] || W0=$(cd "$(git -C "$REPO" rev-parse --git-common-dir)/.." && pwd)/tests/m0/node_modules/wrangler/bin/wrangler.js
+export WRANGLER=${WRANGLER:-$W0}
 scrub() { sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g" -e "s#$REPO/#<checkout>/#g"; }
 log() { { date -u +%FT%TZ; git -C "$REPO" rev-parse --short HEAD; cat; } | scrub >"$O/$STEP.log"; cat "$O/$STEP.log"; }
 # BF-78's site day: every live `GRAFTYARD_*` flag of site a that BF-73's day does not set itself is passed on as it is.
@@ -56,10 +61,15 @@ setup)
     node "$REPO/tests/m4/wp3/bf69/mirror.mjs" "$F/download-artifact.src.git" download-artifact v4.3.0; echo "upstream download exit $?"
     node "$REPO/tests/m4/wp3/bf76/bf76.mjs" setup "$O/run"; echo "setup exit $?"
   } 2>&1 | log ;;
-tag | pin | approve) { node "$REPO/tests/m4/wp3/bf76/bf76.mjs" "$STEP" "$O/run" "${RUNNER:?RUNNER}"; echo "$STEP exit $?"; } 2>&1 | log ;;
+tag | pin | approve)
+  # FROM=<tag>: a rerun that skips `setup` takes that tag's signed map and digest (the install still holds them).
+  [ -n "${FROM:-}" ] && mkdir -p "$O/run" && for f in digest.txt pin-map.json pin-map.sig; do
+    [ -e "$O/run/$f" ] || cp "$REPO/tests/m4/raw/wp3/bf76/$FROM/run/$f" "$O/run/$f"; done
+  { node "$REPO/tests/m4/wp3/bf76/bf76.mjs" "$STEP" "$O/run" "${RUNNER:?RUNNER}"; echo "$STEP exit $?"; } 2>&1 | log ;;
+withdraw) { node "$REPO/tests/m4/wp3/bf76/bf76.mjs" withdraw "$O/run"; echo "withdraw exit $?"; } 2>&1 | log ;;
 teardown)
   { node "$REPO/tests/m4/wp3/bf76/bf76.mjs" teardown "$O/run"; echo "teardown exit $?"
     python3 "$REPO/tests/fanout/teardown.py" --sweep --shardkill; echo "sweep exit $?"
   } 2>&1 | log ;;
-*) echo "step: state site edge setup tag pin approve teardown"; exit 2 ;;
+*) echo "step: state site edge setup withdraw tag pin approve teardown"; exit 2 ;;
 esac

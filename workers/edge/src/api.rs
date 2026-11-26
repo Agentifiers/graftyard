@@ -2145,6 +2145,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             rest::list_commit_statuses(&r, reference, graftyard_wire::Page::parse(query))
         }
         (Method::Get, ["issues"]) => rest::list_issues(&r, query),
+        (Method::Get, ["pulls"]) => rest::list_pulls(&r, query),
         (Method::Get, ["actions", "jobs", job, "logs"]) => crate::actions::job_log(c, &rd, job).await?,
         (Method::Get, ["actions", "runs", _] | ["actions", "runs", _, "jobs"] | ["actions", "jobs", _]) => {
             crate::actions::rest_read(c, &rd, &r, &tail[1..]).await?

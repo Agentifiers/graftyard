@@ -209,3 +209,31 @@ fn actions_substitution_is_an_org_admins_and_keeps_older_folds_bytes() {
     w.authz_cmd(user, AuthzCmd { cred: OPS, op: AuthzOp::Open { kind: AccountKind::User, enterprise: None } }).unwrap();
     assert_eq!(refused(w.authz_cmd(user, AuthzCmd { cred: OPS, op: set(Some(true), None) })), AuthzErr::NotAnOrg);
 }
+
+/// BF-76 r1: the edge sends `SetActionsSubstitution` to the site as JSON, and `{pin_map: null}` (`Some(None)`, withdraw)
+/// arrived as `None` (keep), so the approval stayed. Each of keep, approve and withdraw now survives the JSON round
+/// trip, and the binary forms, postcard (log rows, the wire-tag golden's `270000`) and canon (`e.u8(39)`), keep their
+/// bytes.
+#[test]
+fn actions_substitution_withdraw_survives_the_edge_to_site_json() {
+    use graftyard_types::Digest;
+    let d = Digest([0xab; 32]);
+    for pin_map in [None, Some(None), Some(Some(d))] {
+        let cmd = AuthzCmd { cred: OPS, op: AuthzOp::SetActionsSubstitution { tags: Some(false), pin_map } };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let back: AuthzCmd = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, cmd, "{json}");
+        let back: AuthzCmd = codec::from_bytes(&codec::to_bytes(&cmd)).unwrap();
+        assert_eq!(back, cmd);
+    }
+    // The pinned postcard bytes of the golden's sample (`id::AuthzOp 39 SetActionsSubstitution 270000`), and each form.
+    let op = |pin_map| AuthzOp::SetActionsSubstitution { tags: None, pin_map };
+    assert_eq!(postcard::to_allocvec(&op(None)).unwrap(), [0x27, 0, 0]);
+    assert_eq!(postcard::to_allocvec(&op(Some(None))).unwrap(), [0x27, 0, 1, 0]);
+    let mut approve = vec![0x27, 0, 1, 1];
+    approve.extend([0xab; 32]);
+    assert_eq!(postcard::to_allocvec(&op(Some(Some(d)))).unwrap(), approve);
+    // A field left out of the JSON keeps, as `null` does.
+    let back: AuthzOp = serde_json::from_str(r#"{"SetActionsSubstitution":{"tags":true}}"#).unwrap();
+    assert_eq!(back, AuthzOp::SetActionsSubstitution { tags: Some(true), pin_map: None });
+}

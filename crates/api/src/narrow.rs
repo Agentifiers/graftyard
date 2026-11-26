@@ -55,6 +55,7 @@ pub fn rest_serves(tail: &[&str]) -> bool {
     matches!(
         tail,
         [] | ["issues"]
+            | ["pulls"]
             | ["pulls", _]
             | ["issues", _, "comments"]
             | ["pulls", _, "reviews"]
@@ -77,6 +78,7 @@ pub fn rest_get(r: &Repo<'_>, tail: &[&str], query: &str, index: Index) -> Optio
     Some(match tail {
         [] => crate::repos::get(r, index),
         ["issues"] => rest::list_issues(r, query),
+        ["pulls"] => rest::list_pulls(r, query),
         ["pulls", n] => rest::get_pull(r, n),
         ["issues", n, "comments"] => rest::list_issue_comments(r, n, query),
         ["pulls", n, "reviews"] => rest::list_reviews(r, n, query),

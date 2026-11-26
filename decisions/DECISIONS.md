@@ -4845,7 +4845,7 @@ Plants 99 to 105 (`tests/m4/wp4/plant.py`): a cursor past an unfinished event (9
 
 ### `r23-m3`: release M3 deletes the Sandbox SDK classes and their applications, so `RunnerBox` alone runs hosted runners, 2026-11-26
 
-**Status.** Deployed on the runner account on 2026-11-26 at 07:41:41Z: `graftyard runners init` from main `d301d866` moved `graft-runners` from `v2` to `v3` (version `5129a092`) and deleted both Sandbox applications. The 8-job burst has not passed. `init` rewrote `HostedRunnersAppKey` from a retired App key, so no runner started (`tests/m4/results/m4-wp4.md`, "Hosted result r1"). R23 (`decisions/OPEN-QUESTIONS.md`) stays open until the burst passes.
+**Status.** Deployed on the runner account on 2026-11-26 at 07:41:41Z: `graftyard runners init` from main `d301d866` moved `graft-runners` from `v2` to `v3` (version `5129a092`) and deleted both Sandbox applications. The 8-job burst has not passed. `init` rewrote `HostedRunnersAppKey` from a retired App key, so no runner started (`tests/m4/results/m4-wp4.md`, "Hosted result r1"). After LM-1 restored key 2, run 1713082 passed (8 of 8 `Success` on `RunnerBox`, "Hosted result r2"), which settles R23 (`decisions/OPEN-QUESTIONS.md`).
 
 **Decision.**
 - **Code.** `graft-runners` exports only `RunnerBox` (`workers/runners/entry.mjs`). `launch.mjs`, its test, `@cloudflare/sandbox` 0.12.14 (with `package.json` and its lock), the `SANDBOX_STD3`/`SANDBOX_STD4` bindings, `RUNNER_BOX_ON` and `runners.json`'s `runner_box` and `max_instances` are deleted. The Worker arms and destroys only `RunnerBox` (`workers/runners/src/worker.rs`), so `Host::destroy` no longer takes an instance type. `nodejs_compat` went with the SDK, whose bundle alone needed it. The runner image keeps the Sandbox base image, because every hosted run so far measured it. `RunnerBox` bypasses the base image's server, and a new base is a new image with its own canary.
@@ -4880,6 +4880,29 @@ So there are 0 stale destroys of legacy-class runners and 0 legacy objects still
 - The hosted half: if `init` refuses on a live Sandbox container, nothing has changed; wait and rerun. If the 8-job burst after it fails on `RunnerBox`, fix forward with a new version. M2's version `13193b05` binds the deleted `SANDBOX_STD*` namespaces and cannot be redeployed, and M3 starts runners exactly as M2's `RunnerBox` path did.
 - A Containers API that keeps an application after its class's `deleted_classes`, or answers `DELETE` 409 while instances are listed `inactive`: then delete only applications whose instances list is empty, and leave the rest for a rerun.
 
+
+### `init-key-guard`: `graftyard runners init` writes `HostedRunnersAppKey` only when the App accepts the key, 2026-11-26
+
+**Status.** Code-only, on branch `init-key-guard`. Not run hosted: the next `runners init` exercises it.
+
+**Decision.**
+- `--app-key` is optional.
+- **Without it,** `init` keeps the stored `HostedRunnersAppKey`, and refuses before the deploy when the store has none.
+- **With it,** `init` first mints an App JWT with that key, as `graft-runners` does (RS256, `iss` the spec's `app_id`, `iat` 60 s back, `exp` 540 s ahead). It sends the JWT to the install's `GET /api/v3/app/hook/config`. The install answers 200 only when one of the App's current keys verifies the JWT (`workers/edge/src/ident.rs`, `app_hook_config`). On any other answer, or on a transport error, `init` refuses with the key's SPKI sha256 prefix and the answer. That happens before any store write, upload or application change.
+- The check goes against the keys the App lists now, not a list held in the CLI or a script. Since hrak r1, that list is key 2 alone.
+
+**Why.** R23 M3's r1 (`tests/m4/results/m4-wp4.md`, "Hosted result r1"): `init` always wrote `--app-key` to the store. The operator's file still held App 1835008's key 1, which the HostedRunnersAppKey rotation had retired on 11-25. So every `graft-runners` pass then got 401 on `access_tokens`, and no runner started for about 24 minutes (07:41:41Z to the first clean pass at 08:05:49Z), until LM-1 restored key 2.
+
+**What it beat.**
+- **Never write when the secret exists.** That leaves no way to install a rotated key through `init`, and it still writes a wrong key on a fresh account.
+- **`GET /app`.** The install doesn't serve it (404 on graft-m4a, 2026-11-26). `GET /app/hook/config` verifies the App JWT the same way `POST /app/installations/{id}/access_tokens` does, and needs no installation id.
+- **Comparing SPKI hashes against a list in the operator's files.** That is the trap hrak.sh's `put` guard fell into: it still expects keys 1 and 2.
+
+**Evidence.**
+- `cli/src/runners.rs` `init_writes_hosted_runners_app_key_only_when_the_app_accepts_it` fails on main's `init_with` (checked by compiling this test module against main's code). The stub install verifies the JWT with the `rsa` crate, not with `app_jwt`. The test covers four cases: a retired key is refused with nothing written, uploaded or deleted; the current key is checked, then PATCHed; no `--app-key` keeps the stored key; and no `--app-key` with an empty store is refused.
+- `tests/m0carried/plant275.py`: 5 of 5 caught. The first mutant is main's rule.
+
+**Flip.** The install serves `GET /app`. Then check against it, as GitHub's own docs show.
 ### `roll-up`: a bounded roll of a chain's oldest promoted packs, recorded as `Compacted` on the repository chain, 2026-11-16
 
 **Status.** Approved by the operator after round 32's review, with the repository-chain form; built on branch `rollup` (G9), not deployed. Built: the fold and `verify`, the archive alarm's roll step (`log_archive::roll_plan`, `Step::Rolled`), the site's warm `/roll` through the promotion path, the container's `/roll`, the rehydrate's read of produced packs with its fallback to the consumed packs, the site variable `GRAFTYARD_ROLLUP` that gates every roll (`log_archive::rollup_enabled`: unset, the alarm sends no `/roll` and records no `Compacted`; a site day sets it to `1` only after `FormatsEnable` enabled 32.25, as R24's `GRAFTYARD_APP_HOOKS` waits for 32.24), and the deletion guard as a pure rule (`sweep::consumed_deletable`). Not built: the sweeper's deletion of consumed packs, which waits for that rule's shard answers (G9's remainder). DESIGN, Shape, `Promoted` and `rehydrate`, and Failure modes (pack buckets bad-deploy, git caches noisy-tenant) carry the rule; this entry carries the numbers.
@@ -11738,6 +11761,7 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - **Policy.** `AuthzOp::SetActionsSubstitution { tags, pin_map }`, format 0x12.15, an org admin's, writing `AuthzEvent::ActionsSubstitution`, stored in a trailing part of the fold so an org that never sets it keeps its bytes (`graftyard_identity::compat`).
 - **Storage and routes (head 2).** A site admin uploads the vendor's map and signature to `PUT /api/graftyard/v1/actions/pin-map`, which stores it at `actions/pin-maps/<digest>` and `actions/pin-maps/current` in the `Release` group's home bucket once it verifies under `Keys.release`; an org admin approves a digest the install holds at `PUT /api/graftyard/v1/orgs/{org}/actions/substitution`. The launch service reads the run owner's policy and both maps on each call and answers a substituted action with `resolved_name` the fork and `resolved_sha` its commit, keeping `name` and `version` as written, so the runner's directory and its download line keep the written reference. `completejob`'s annotations commit as `ActionsEvent::JobAnnotations` in the entry of the job's `Finished` (`ActionsOp::FinishAnnotated`, Actions format 0x15.10), at most 50 and 8 KB of text a job, and `RunOwner` writes them as the completed check run's `output` (REST `check-runs/{id}/annotations`, GraphQL `CheckRun.annotations`). The pin-map annotation is built at `completejob` from the step's `action_name` and `ref`, not recorded at resolve time, so the launch service stays a read and the job's annotations are one event.
 - **Failure.** An unapproved SHA pin runs the exact upstream bytes, which fail in the action's own step with GHES's lines; the step's `##[error]` reaches the job's check run as a `failure` annotation from `completejob`'s `stepResults`, and a Graftyard annotation names the approval page and the fork SHA (SHARED, "Toolkit hostname heuristics and SHA pins").
+- **r1 fixes, 2026-11-26 (`bf76-fix`, plant274).** `completejob`'s annotation path reads `actions/pin-maps/current` whatever the org's policy (`pinmap::policy_from` with `known`), because hosted r1's unapproved pin, with tags off and nothing approved, got no Graftyard annotation: the policy read returned before the current map. And `SetActionsSubstitution.pin_map`'s JSON form, the edge's command to the site, writes a withdraw as `"withdraw"`: serde wrote `Some(None)` as `null`, which read back as `None` (keep), so `{pin_map: null}` withdrew nothing. Postcard and canon bytes are unchanged (the wire-tag golden's `270000` and `e.u8(39)`).
 
 **Why.** The failure GHES shows comes from the action, not the server, so the only faithful way to fail "exactly as on GHES" is to run the bytes; a 422 at launch would fail at "Set up job" with a line GHES never prints. The annotation path is the runner's own (`IssueExtensions.ToAnnotation`), so the same route also carries every other step's `##[error]` and `##[warning]`.
 
@@ -11863,3 +11887,40 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/edgeboot/run.sh`, with and without `PRODUCT=1`: PASS, 0 wasm traps (`GRAFTYARD_AGENT_CI` unset, so every run is created as on main).
 
 **Flip.** If GHES adds an approve route, serve it as GHES shapes it and keep this one as an alias. If agents push under prefixes humans also use, so that holding humans' runs costs more than it protects, record the pusher's App on the `Refs` entry and detect by it. If GitHub is shown to list a held run's jobs, stop filtering them in `visible_jobs`.
+
+### `pulls-list`: `GET /repos/{o}/{r}/pulls` lists `pull-request-simple` from the fold, through the narrow read, 2026-11-26
+
+**Status.** Built at $0 on branch `pulls-list`. It is native-tested, edgeboot passed with test-faults and with PRODUCT, and plaindiff ran. Its hosted proof rides the next graft-m4a row that already does a site day and an edge day. Closes OPEN-QUESTIONS F136 once hosted.
+
+**Decision.**
+- `rest::list_pulls` serves GHES 3.22's `pulls/list`:
+  - `state`: `open` (the default), `closed` or `all`.
+  - `head` as `owner:branch`, compared case-blind on the owner. A `head` with no `owner:` is ignored, as GitHub ignores it.
+  - `base`: a branch name.
+  - `sort`: `created` (the default), `updated`, `popularity` (the comment count), or `long-running` (by creation).
+  - `direction`: `desc` by default for `created` only, and `asc` for the others, as the description says.
+  - `per_page` and `page`, with a `Link` header that keeps the filters.
+  - Anything else in `state` or `sort` answers 422.
+- Its selection is a `Directory::pick` over `issue_order`'s pull-request keys, so a member answers the narrow read with only the page's items (`narrow::rest_serves`, `rest_get`), as `GET /issues` does. The edge's whole-tier path routes it too.
+- Each item is the pinned `pull-request-simple`: `webhooks::pull_request_simple`, which `pull_request` now builds on. It is the single-pull object without the 12 fields only `pull-request` has. So a list reads no git-cache counts and asks for no test merge.
+- No format. It is a read of rows every member already folds.
+
+**Why.** LM-1's BF-76 r1 on graft-m4a got 404 for `GET /pulls`. Octokit's `pulls.list`, `gh api repos/o/r/pulls`, and the web app's pulls and compare pages (`web/src/areas/pulls/queries.ts`, `pullsQuery`, `state=all&per_page=100`) all call it. The web app reaches it only through its msw mock (`web/src/mocks/areas/pulls.ts`) until `VITE_MOCK_API=false`.
+
+**What it beat.**
+- Serving the full `pull-request` per item. That needs a git-cache compare for each item's counts, a cost GHES's list avoids by its schema.
+- Reusing `GET /issues`' sort defaults. They sort `desc` for every sort, which GHES's `pulls/list` does not.
+
+**Evidence.**
+- `crates/api/tests/narrow.rs`, `rest_pull_lists_follow_ghes_rules_and_are_the_whole_tier_bytes`:
+  - 1,680 queries over every state, sort, direction, `head` and `base` form, and page boundary.
+  - Each page is the one an oracle computes from the rows by the description's rules, with a next link if and only if more follow.
+  - The narrow reply is the whole-tier bytes and holds only the page's items.
+  - Each item equals `GET /pulls/{n}` without the full-only fields.
+  - It fails on main, where `rest_get` serves no `pulls`.
+- All 1,680 replies validate against `ghes-3.22.json`'s `pulls/list` response with `crates/api/gh/validate.py`. That needs one correction of the description: `pull-request-simple`'s label `description` is typed non-null, but GitHub answers null for a label with none (github/rest-api-description#5560). With it, the crate's whole reply set validates but for the four `merge_group` and queue webhook keys GHES 3.22 lacks, which need `DOTCOM_OPENAPI`, as before.
+- `tests/m0carried/plant276.py`: 8 of 8 caught. The first mutant is main's rule.
+- `bash tests/edgeboot/run.sh` and `PRODUCT=1 bash tests/edgeboot/run.sh` pass with 0 wasm traps. Both answer `/repos/o/r/pulls` 503 with no site bound, as they answer `/repos/o/r`.
+- `tests/plaindiff/run.sh`, base main `b65e6812`: 10 request pairs. `rest-pulls` answers 404 on the base and 200 `[]` on the head (named in `CHANGED`), and the other 9 are byte-identical: git, `GET /repos/{o}/{r}`, `GET /pulls/1` (404 on both, since the bed has no pull request), `GET /issues`, a label write, and GraphQL.
+
+**Flip.** A GHES 3.22 reply that differs from this one on the same rows, for example a `long-running` list limited by age, which F136 leaves open because the view has no clock, or a `head` without `owner:` that filters.

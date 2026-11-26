@@ -1,0 +1,78 @@
+{
+ "check_run": {
+  "app": null,
+  "check_suite": {
+   "after": "aa66a3d46d9e988195a566f8e871ee6e526304e5",
+   "app": null,
+   "before": null,
+   "conclusion": "failure",
+   "created_at": "2026-11-26T10:21:31Z",
+   "head_branch": null,
+   "head_sha": "aa66a3d46d9e988195a566f8e871ee6e526304e5",
+   "id": 1770273,
+   "node_id": "CR_kwDOAAEAWs4AGwMh",
+   "pull_requests": [],
+   "status": "completed",
+   "updated_at": "2026-11-26T10:21:31Z",
+   "url": "https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/bf76-r2/check-suites/1770273"
+  },
+  "completed_at": "2026-11-26T10:21:30Z",
+  "conclusion": "failure",
+  "details_url": null,
+  "external_id": "",
+  "head_sha": "aa66a3d46d9e988195a566f8e871ee6e526304e5",
+  "html_url": "https://graft-m4a-edge.<sub>.workers.dev/m3org/bf76-r2/runs/1770274",
+  "id": 1770274,
+  "name": "pinned",
+  "node_id": "CR_kwDOAAEAWs4AGwMi",
+  "output": {
+   "annotations_count": 3,
+   "annotations_url": "https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/bf76-r2/check-runs/1770274/annotations",
+   "summary": null,
+   "text": null,
+   "title": null
+  },
+  "pull_requests": [],
+  "started_at": null,
+  "status": "completed",
+  "url": "https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/bf76-r2/check-runs/1770274"
+ },
+ "annotations": [
+  {
+   "annotation_level": "failure",
+   "blob_href": "https://graft-m4a-edge.<sub>.workers.dev/m3org/bf76-r2/blob/aa66a3d46d9e988195a566f8e871ee6e526304e5/.github",
+   "end_column": null,
+   "end_line": 1,
+   "message": "`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` is upload-artifact v4+, which GHES does not support. Approve the pin map at https://graft-m4a-edge.<sub>.workers.dev/organizations/m3org/settings/actions/pin-map, or pin `graftyard-actions/upload-artifact@aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e`.",
+   "path": ".github",
+   "raw_details": null,
+   "start_column": null,
+   "start_line": 1,
+   "title": "Pinned action needs the Graftyard pin map"
+  },
+  {
+   "annotation_level": "warning",
+   "blob_href": "https://graft-m4a-edge.<sub>.workers.dev/m3org/bf76-r2/blob/aa66a3d46d9e988195a566f8e871ee6e526304e5/.github",
+   "end_column": null,
+   "end_line": 13,
+   "message": "Artifact upload failed with error: GHESNotSupportedError: @actions/artifact v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not currently supported on GHES..\n\nErrors can be temporary, so please try again and optionally run the action with debug mode enabled for more information.\n\nIf the error persists, please check whether Actions is operating normally at [https://githubstatus.com](https://www.githubstatus.com).",
+   "path": ".github",
+   "raw_details": null,
+   "start_column": null,
+   "start_line": 13,
+   "title": null
+  },
+  {
+   "annotation_level": "failure",
+   "blob_href": "https://graft-m4a-edge.<sub>.workers.dev/m3org/bf76-r2/blob/aa66a3d46d9e988195a566f8e871ee6e526304e5/.github",
+   "end_column": null,
+   "end_line": 18,
+   "message": "@actions/artifact v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not currently supported on GHES.",
+   "path": ".github",
+   "raw_details": null,
+   "start_column": null,
+   "start_line": 18,
+   "title": null
+  }
+ ]
+}

@@ -1,0 +1,11 @@
+2026-11-26T10:15:27Z
+191f35058
+2026-11-26T10:15:27Z
+191f35058
+before {"script":"graft-m4a-edge","created_on":"2026-11-26T07:17:15.529078Z","versions":["faaf6f06 100"]}
+deploy exit 0
+Current Version ID: e85dc381-6bc1-4d98-8639-a55525d15cbd
+binding diff (plain text; only HOST and FORMATS_ENABLED by ADDFMT may change):
+after {"script":"graft-m4a-edge","created_on":"2026-11-26T10:19:08.574094Z","versions":["e85dc381 100"]}
+edge: graft-m4a-edge serves e85dc381 at 100% (rev [INFO]: 🌀  Compiling to Wasm...), as ~/tmp/wt-bf76/tests/m4/raw/wp3/bf76/r2/edge-deploy.raw deployed
+edgever exit 0

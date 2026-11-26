@@ -1,0 +1,7 @@
+2026-11-26T10:19:37Z
+191f35058
+2026-11-26T10:19:45.810Z policy PUT {"tags":false,"pin_map":null}: 200; now {"pin_map":null,"tags":false}
+2026-11-26T10:19:45.812Z ok   {tags: false, pin_map: null} withdraws: before {"pin_map":"43dd75a6e4fe74c3c70f8eaa28a7ecda9d7badcaf6e73f4e867cdcc0c87b86b1","tags":false}, after {"pin_map":null,"tags":false}
+2026-11-26T10:19:45.814Z BF-76 withdraw PASS (2026-11-26T10:19:37.336Z to 2026-11-26T10:19:45.813Z)
+2026-11-26T10:19:45.814Z sheds: python3 tests/fanout/tieroff503.py 2026-11-26T10:19:37.336Z 2026-11-26T10:19:45.813Z graft-m4a-edge
+withdraw exit 0

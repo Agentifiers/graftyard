@@ -6,6 +6,7 @@
 //   node tests/m4/wp3/bf76/bf76.mjs tag <out> <runner dir>      policy {tags: true}: tag.yml by `actions/*@v4`
 //   node tests/m4/wp3/bf76/bf76.mjs pin <out> <runner dir>      policy {tags: false}, no approval: pin.yml fails
 //   node tests/m4/wp3/bf76/bf76.mjs approve <out> <runner dir>  policy {pin_map: <digest>}: pin.yml again passes
+//   node tests/m4/wp3/bf76/bf76.mjs withdraw <out>             policy {tags: false, pin_map: null}: no approval after it
 //   node tests/m4/wp3/bf76/bf76.mjs teardown <out>              the repository deleted and the policy withdrawn
 // Each phase writes <out>/<phase>.json and exits 1 when a line fails. The mirrors (`actions/upload-artifact`,
 // `actions/download-artifact`, `graftyard-actions/*`) are pushed by row.sh with tests/m4/wp3/bf69/mirror.mjs.
@@ -87,6 +88,15 @@ if (phase === "setup") {
   }
   writeFileSync(join(out, "digest.txt"), digest);
   finish({ digest });
+}
+
+// r2's first step: m3org from r1's state (tags off, the empty map approved) to no approval, by `{pin_map: null}`.
+if (phase === "withdraw") {
+  const before = (await api("GET", SUB, admin)).body;
+  const p = await policy({ tags: false, pin_map: null });
+  check(p.put === 200 && p.now?.tags === false && p.now?.pin_map === null,
+    `{tags: false, pin_map: null} withdraws: before ${JSON.stringify(before)}, after ${JSON.stringify(p.now)}`);
+  finish({ before, after: p.now });
 }
 
 if (phase === "teardown") {
@@ -305,4 +315,4 @@ if (phase === "approve") {
   check(z.status === 302 && z.zstatus === 200 && z.tested && z.files?.["x.bin"] === sums["p/x.bin"], `REST zip of pinned: files ${JSON.stringify(z.files)} vs ${JSON.stringify(sums)}`);
   finish({ run, head, job: j?.id });
 }
-throw new Error("phase: setup tag pin approve teardown");
+throw new Error("phase: setup withdraw tag pin approve teardown");

@@ -3,7 +3,9 @@
 #   bash tests/m4/wp4/m3.sh before   the legacy classes' Workers Logs since $SINCE and both accounts' instance lists;
 #                                    exit 3 if any legacy object is live (armed with no end, or an instance not stopped)
 #   bash tests/m4/wp4/m3.sh init     `graftyard runners init` from $BUNDLE (migration v2 to v3, the two Sandbox
-#                                    applications deleted); appended to tests/m4/raw/wp4/runners-init.log
+#                                    applications deleted); appended to tests/m4/raw/wp4/runners-init.log. It keeps
+#                                    the stored HostedRunnersAppKey unless APP_KEY names a key file the App accepts
+#                                    (`init-key-guard`): ~/.graft-m4a/hosted/app.pem is the retired key 1
 #   bash tests/m4/wp4/m3.sh burst    tests/m4/wp4/r23.mjs, 8 jobs on RunnerBox, into tests/m4/raw/wp4/m3/
 #   bash tests/m4/wp4/m3.sh after    only graft-runners-runnerbox listed, the script at v3, nothing running
 # Needs CLOUDFLARE_RUNNER_ACCOUNT_ID and CLOUDFLARE_RUNNER_API_TOKEN (the runner account), `tests/am1/lf13/env-m4a.sh`
@@ -84,7 +86,7 @@ init)
   {
     echo "== R23 M3 $(date -u +%FT%TZ) from $(git rev-parse --short HEAD), bundle $BUNDLE, image ${IMAGE##*@}"
     cargo run -q -p graftyard -- runners init --account "$CLOUDFLARE_RUNNER_ACCOUNT_ID" --spec "$HOSTED/runners.json" \
-      --bundle "$BUNDLE" --image "$IMAGE" --app-key "$HOSTED/app.pem" --webhook-secret "$HOSTED/webhook.secret" 2>&1 \
+      --bundle "$BUNDLE" --image "$IMAGE" ${APP_KEY:+--app-key "$APP_KEY"} --webhook-secret "$HOSTED/webhook.secret" 2>&1 \
       && echo "exit 0" || { echo "exit $?"; exit 1; }
   } | tee -a tests/m4/raw/wp4/runners-init.log
   ;;
