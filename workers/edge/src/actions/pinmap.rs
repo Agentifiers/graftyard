@@ -14,7 +14,7 @@
 use graftyard_actions::launch::ActionRef;
 use graftyard_actions::pin_map::{self, PinMap, Substitution};
 use graftyard_git::issues::CheckAnnotation;
-use graftyard_identity::{AUTHZ_FORMAT_V15, AuthzFold, AuthzOp, AuthzRead as _};
+use graftyard_identity::{AUTHZ_FORMAT_V15, ActionsSubstitution, AuthzFold, AuthzOp, AuthzRead as _};
 use graftyard_types::{AccountId, ChainId, Digest};
 use graftyard_wire::Reply;
 use serde_json::{Value, json};
@@ -82,47 +82,77 @@ impl Policy {
     }
 }
 
-/// The policy of the org that owns the job's run (`owner`). A missing or unreadable map is no map: the pin then runs
-/// as written, which is GHES's behaviour, and the reason is logged.
-pub(crate) async fn policy(c: &Ctx<'_>, owner: AccountId) -> Policy {
-    if !c.cfg.enabled.contains(&AUTHZ_FORMAT_V15) {
-        return Policy::off();
-    }
-    let p = match crate::ident::authz_of(c, owner).await {
-        Ok(Some(f)) => f.actions().more.substitution,
-        Ok(None) => return Policy::off(),
-        Err(e) => {
-            console_error!("pin map: owner {} Authz: {e}", owner.0.0);
-            return Policy::off();
+/// The reads `policy_from` and `annotations_from` make: the edge's (`Live`) and the tests' fake.
+#[allow(async_fn_in_trait)]
+pub(crate) trait MapReads {
+    /// The org's policy; `None` when 0x12.15 is off, the owner has no `Authz` chain, or it did not answer.
+    async fn substitution(&self, owner: AccountId) -> Option<ActionsSubstitution>;
+    /// The approved map (`approved`, checked against its digest) and the install's current map, each verified
+    /// against `Keys.release`; a missing or unreadable map is `None`.
+    async fn maps(&self, approved: Option<Digest>) -> (Option<PinMap>, Option<PinMap>);
+    async fn login(&self, owner: AccountId) -> Option<String>;
+}
+
+struct Live<'a, 'b>(&'a Ctx<'b>);
+
+impl MapReads for Live<'_, '_> {
+    async fn substitution(&self, owner: AccountId) -> Option<ActionsSubstitution> {
+        if !self.0.cfg.enabled.contains(&AUTHZ_FORMAT_V15) {
+            return None;
         }
-    };
-    if !p.tags && p.pin_map.is_none() {
-        return Policy { tags: false, approved: None, known: None };
-    }
-    let b = match bucket(c).await {
-        Ok(b) => b,
-        Err(e) => {
-            console_error!("pin map: home bucket: {e}");
-            return Policy { tags: p.tags, approved: None, known: None };
-        }
-    };
-    let read = |key: String, want: Option<Digest>| {
-        let b = &b;
-        async move {
-            match stored(c, b, &key, want).await {
-                Ok(m) => m.map(|(_, m)| m),
-                Err(e) => {
-                    console_error!("pin map {key}: {e}");
-                    None
-                }
+        match crate::ident::authz_of(self.0, owner).await {
+            Ok(f) => f.map(|f| f.actions().more.substitution),
+            Err(e) => {
+                console_error!("pin map: owner {} Authz: {e}", owner.0.0);
+                None
             }
         }
-    };
-    let approved = match p.pin_map {
-        Some(d) => read(d.hex(), Some(d)).await,
-        None => None,
-    };
-    let known = read("current".into(), None).await;
+    }
+    async fn maps(&self, approved: Option<Digest>) -> (Option<PinMap>, Option<PinMap>) {
+        let c = self.0;
+        let b = match bucket(c).await {
+            Ok(b) => b,
+            Err(e) => {
+                console_error!("pin map: home bucket: {e}");
+                return (None, None);
+            }
+        };
+        let read = |key: String, want: Option<Digest>| {
+            let b = &b;
+            async move {
+                match stored(c, b, &key, want).await {
+                    Ok(m) => m.map(|(_, m)| m),
+                    Err(e) => {
+                        console_error!("pin map {key}: {e}");
+                        None
+                    }
+                }
+            }
+        };
+        let approved = match approved {
+            Some(d) => read(d.hex(), Some(d)).await,
+            None => None,
+        };
+        (approved, read("current".into(), None).await)
+    }
+    async fn login(&self, owner: AccountId) -> Option<String> {
+        crate::ident::login(self.0, owner).await
+    }
+}
+
+/// The policy of the org that owns the job's run (`owner`). A missing or unreadable map is no map: the pin then runs
+/// as written, which is GHES's behaviour, and the reason is logged. `known` asks for the install's current map even
+/// when the org has neither tags nor an approval: an unapproved pin is told apart from any other SHA only by it.
+pub(crate) async fn policy(c: &Ctx<'_>, owner: AccountId, known: bool) -> Policy {
+    policy_from(&Live(c), owner, known).await
+}
+
+pub(crate) async fn policy_from(r: &impl MapReads, owner: AccountId, known: bool) -> Policy {
+    let Some(p) = r.substitution(owner).await else { return Policy::off() };
+    if !p.tags && p.pin_map.is_none() && !known {
+        return Policy::off();
+    }
+    let (approved, known) = r.maps(p.pin_map).await;
     Policy { tags: p.tags, approved, known }
 }
 
@@ -141,20 +171,30 @@ pub(crate) fn substitute(p: &Policy, asked: &[ActionRef]) -> Vec<(ActionRef, Sub
 /// The annotations `completejob` commits: the Graftyard annotation for each unapproved v4+ pin a step ran, then the
 /// runner's own, capped (`graftyard_actions::annotations::job_annotations`).
 pub(crate) async fn annotations(c: &Ctx<'_>, owner: AccountId, b: &Value) -> Vec<CheckAnnotation> {
+    annotations_from(&Live(c), owner, b, &format!("https://{}", c.cfg.host)).await
+}
+
+pub(crate) async fn annotations_from(
+    r: &impl MapReads,
+    owner: AccountId,
+    b: &Value,
+    web: &str,
+) -> Vec<CheckAnnotation> {
     use graftyard_actions::annotations as an;
     let runner = an::from_complete(b);
     let steps = an::step_actions(b);
     let mut first = Vec::new();
     if steps.iter().any(|(name, _)| name.split_once('/').is_some_and(|(o, r)| pin_map::fork_of(o, r).is_some())) {
-        let p = policy(c, owner).await;
-        let org = crate::ident::login(c, owner).await.unwrap_or_default();
-        let web = format!("https://{}", c.cfg.host);
+        // The current map is read whatever the policy: with tags off and no approval, the gate's state, it is the only
+        // thing that makes a pin `Unapproved` (BF-76 r1, check run 1972519, had no Graftyard annotation).
+        let p = policy_from(r, owner, true).await;
+        let org = r.login(owner).await.unwrap_or_default();
         for (name, version) in steps {
-            let Some((o, r)) = name.split_once('/') else { continue };
+            let Some((o, rp)) = name.split_once('/') else { continue };
             if let Substitution::Unapproved { fork, fork_sha: Some(fork_sha) } =
-                pin_map::substitute(o, r, &version, p.tags, p.approved.as_ref(), p.known.as_ref())
+                pin_map::substitute(o, rp, &version, p.tags, p.approved.as_ref(), p.known.as_ref())
             {
-                first.push(an::pin_map_annotation(&name, &version, &fork, &fork_sha, &web, &org));
+                first.push(an::pin_map_annotation(&name, &version, &fork, &fork_sha, web, &org));
             }
         }
     }
@@ -295,4 +335,103 @@ async fn put_map(c: &Ctx<'_>, body: &Value) -> Reply {
         }
     }
     Reply::json(201, json!({ "digest": digest.hex() }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use futures_util::FutureExt;
+    use graftyard_actions::pin_map::{Pin, PinMap};
+    use graftyard_git::issues::AnnotationLevel;
+    use graftyard_identity::ActionsSubstitution;
+    use graftyard_types::{AccountId, DbId, Digest};
+    use serde_json::json;
+
+    use super::{MapReads, annotations_from};
+
+    const UP: &str = "ea165f8d65b6e75b540449e92b4886f43607fa02";
+    const FORK: &str = "aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e";
+
+    /// The org's policy, the install's current map (the vendor's, never approved here), and how often the maps were read.
+    struct Fake {
+        policy: ActionsSubstitution,
+        maps_read: Cell<u8>,
+    }
+
+    fn map() -> PinMap {
+        PinMap {
+            version: 1,
+            pins: vec![Pin {
+                upstream: "actions/upload-artifact".into(),
+                upstream_sha: UP.into(),
+                fork: "graftyard-actions/upload-artifact".into(),
+                fork_sha: FORK.into(),
+                tag: "v4.6.2".into(),
+            }],
+        }
+    }
+
+    impl MapReads for Fake {
+        async fn substitution(&self, _: AccountId) -> Option<ActionsSubstitution> {
+            Some(self.policy)
+        }
+        async fn maps(&self, approved: Option<Digest>) -> (Option<PinMap>, Option<PinMap>) {
+            self.maps_read.set(self.maps_read.get() + 1);
+            (approved.map(|_| map()), Some(map()))
+        }
+        async fn login(&self, _: AccountId) -> Option<String> {
+            Some("m3org".into())
+        }
+    }
+
+    fn complete(action: &str, reference: &str) -> serde_json::Value {
+        json!({ "conclusion": "failed", "stepResults": [
+            { "action_name": action, "ref": reference, "annotations": [
+                { "level": "FAILURE", "message": "@actions/artifact v2.0.0+ ... not currently supported on GHES.",
+                  "startLine": 18, "endLine": 18 } ] } ] })
+    }
+
+    fn run(policy: ActionsSubstitution, body: &serde_json::Value) -> (Vec<graftyard_git::issues::CheckAnnotation>, u8) {
+        let f = Fake { policy, maps_read: Cell::new(0) };
+        let a =
+            annotations_from(&f, AccountId(DbId(7100003)), body, "https://g.example").now_or_never().expect("ready");
+        (a, f.maps_read.get())
+    }
+
+    /// BF-76 r1 (check run 1972519): with tag substitution off and no approval, the gate's state, a step pinned to the
+    /// upstream commit of a pin in the install's current map got only the runner's annotation, because the policy read
+    /// returned before it read the current map. Now the current map is read whatever the org's policy, and Graftyard's
+    /// failure annotation, naming the approval page and the fork's SHA, comes before the runner's.
+    #[test]
+    fn an_unapproved_pin_gets_the_pin_map_annotation_with_tags_off_and_nothing_approved() {
+        let (a, read) =
+            run(ActionsSubstitution { tags: false, pin_map: None }, &complete("actions/upload-artifact", UP));
+        assert_eq!(read, 1, "the current map is read with tags off and nothing approved");
+        assert_eq!(a.len(), 2, "{a:?}");
+        assert_eq!(a[0].title.as_deref(), Some("Pinned action needs the Graftyard pin map"));
+        assert_eq!(a[0].level, AnnotationLevel::Failure);
+        assert!(
+            a[0].message.contains("https://g.example/organizations/m3org/settings/actions/pin-map"),
+            "{}",
+            a[0].message
+        );
+        assert!(a[0].message.contains(&format!("graftyard-actions/upload-artifact@{FORK}")), "{}", a[0].message);
+        assert_eq!(a[1].start_line, 18, "the runner's own annotation follows");
+
+        // Tags on changes nothing for a SHA pin; an approval of a map holding the pin does, and so does a tag.
+        let (a, _) = run(ActionsSubstitution { tags: true, pin_map: None }, &complete("actions/upload-artifact", UP));
+        assert_eq!(a.len(), 2);
+        let (a, _) = run(
+            ActionsSubstitution { tags: false, pin_map: Some(Digest([5; 32])) },
+            &complete("actions/upload-artifact", UP),
+        );
+        assert_eq!(a.len(), 1, "an approved pin runs the fork: no Graftyard annotation");
+        let (a, _) =
+            run(ActionsSubstitution { tags: false, pin_map: None }, &complete("actions/upload-artifact", "v4"));
+        assert_eq!(a.len(), 1, "a tag is not a pin");
+        // A job that ran no forked action reads no map.
+        let (a, read) = run(ActionsSubstitution { tags: false, pin_map: None }, &complete("actions/checkout", UP));
+        assert_eq!((a.len(), read), (1, 0));
+    }
 }

@@ -861,3 +861,12 @@ ops `ac4cd9a5` (schedules `[]`) and sites `eb5c77f2`, `c6b12562`, `3a1ea21b`, an
 - The private half is kept in `~/.graft-m4a/hosted/app.pem` (0600) and staged for LM-1's copy of the install material.
   `tests/am1/results/install-m4a.md` records the SPKI prefix.
 - `m3org/hrak-jobs` is deleted (204), and the job service is stopped.
+
+## HostedRunnersAppKey: key 2 restored after `runners init` v3 (2026-11-26, the runner account)
+
+R23 M3's `runners init` wrote App 1835008's retired key 1 into the store at 07:41:51Z, and every graft-runners pass got
+401 on `access_tokens` (`raw/hrak/restore/state.log`, the passes at 07:55:39Z and 08:00:38Z). Key 2 went back from
+`~/.graft-m4a/hosted/app.pem` (SPKI `35a71a94b701f6a2`) through this row's `put` call at 08:02:13Z, from a copy whose
+guard wants key 2 alone (the record has listed only key 2 since r1's `only`). The first pass after it, at 08:05:49Z, logged
+no `access_tokens` error. `tests/m4/results/m4-wp4.md`, "Hosted result r1", has the incident, and `init-key-guard`
+(plant275) makes `init` verify the key before it writes.

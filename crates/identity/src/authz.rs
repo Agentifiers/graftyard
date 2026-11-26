@@ -1376,9 +1376,38 @@ pub enum AuthzOp {
     /// written in one decision. An org admin's.
     SetActionsSubstitution {
         tags: Option<bool>,
-        /// `Some(None)` withdraws the approval.
+        /// `Some(None)` withdraws the approval. In JSON (the edge's command to the site) that is `"withdraw"`, since
+        /// serde writes it as `null`, which reads back as `None`, keep (BF-76 r1); postcard and canon are unchanged.
+        #[serde(default, with = "pin_map_change")]
         pin_map: Option<Option<Digest>>,
     },
+}
+
+/// `SetActionsSubstitution.pin_map` in a text format: `null` keeps, a digest approves, and `"withdraw"` withdraws.
+/// A binary format (postcard, canon) keeps the derived form, so stored entries and their tags do not change.
+mod pin_map_change {
+    use graftyard_types::Digest;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    const WITHDRAW: &str = "withdraw";
+
+    pub fn serialize<S: Serializer>(v: &Option<Option<Digest>>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(None) if s.is_human_readable() => s.serialize_str(WITHDRAW),
+            _ => v.serialize(s),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<Digest>>, D::Error> {
+        if !d.is_human_readable() {
+            return Option::<Option<Digest>>::deserialize(d);
+        }
+        match Option::<serde_json::Value>::deserialize(d)? {
+            None => Ok(None),
+            Some(serde_json::Value::String(w)) if w == WITHDRAW => Ok(Some(None)),
+            Some(v) => serde_json::from_value(v).map(|d| Some(Some(d))).map_err(serde::de::Error::custom),
+        }
+    }
 }
 
 /// The largest `init` a `CreateRepoWith` carries [guess: a `RepoSettings` with a description and twenty topics is
