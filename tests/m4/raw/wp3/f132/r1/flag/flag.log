@@ -1,0 +1,25 @@
+2026-11-26T05:20:10Z
+017813496
+kept as live: --var GRAFTYARD_REUSABLE=1
+2026-11-26T05:20:10Z
+017813496
+5
+1
+2026-11-26T05:20:10Z
+017813496
+before {"script":"graft-m4a-site-a","created_on":"2026-11-26T03:06:21.972628Z","versions":["0468914e 100"]}
+before {"script":"graft-m4a-site-b","created_on":"2026-11-26T03:06:31.313344Z","versions":["eb767201 100"]}
+before {"script":"graft-m4a-site-c","created_on":"2026-11-26T03:06:40.701437Z","versions":["36a43cdc 100"]}
+deploy exit 0
+Current Version ID: 17fc8794-5bc7-4488-9ab3-d7b44c76a58e
+Current Version ID: 29b7e0da-6fcb-4c4e-a9cf-1b4736e144a2
+Current Version ID: 47aa9d56-4ec0-4a92-8ca2-683817334d25
+Current Version ID: f1acdb8d-5e75-41d7-8293-315c9f1377cc
+Current Version ID: dea1ba74-0882-4a78-a890-ff3ae904765b
+Current Version ID: 75d0330a-2142-4549-a4b2-ec972ac954c2
+{"graft-m4a-site-a":[]}
+after {"script":"graft-m4a-site-a","created_on":"2026-11-26T05:20:52.198096Z","versions":["f1acdb8d 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_PUSH_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
+{"graft-m4a-site-b":[]}
+after {"script":"graft-m4a-site-b","created_on":"2026-11-26T05:21:00.914773Z","versions":["dea1ba74 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_PUSH_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
+{"graft-m4a-site-c":[]}
+after {"script":"graft-m4a-site-c","created_on":"2026-11-26T05:21:09.53422Z","versions":["75d0330a 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_PUSH_TRIGGER=1","GRAFTYARD_REUSABLE=1"]

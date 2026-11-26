@@ -46,10 +46,17 @@ async function retry503(what, call) {
 
 if (del) {
   let ok = true;
+  // Both are public, so an anonymous read may be served from the edge's read cache for a few seconds after the delete
+  // (r1: 200 at once, 404 by 15 s): read again until 404, for up to two minutes.
   for (const x of [R, S]) {
     const d = await api("DELETE", `/api/v3/repos/${x}`, admin);
-    const after = await api("GET", `/api/v3/repos/${x}`, null);
-    log(`${x}: DELETE ${d.status}, anonymous read after ${after.status}`);
+    const t0 = Date.now();
+    let after = await api("GET", `/api/v3/repos/${x}`, null);
+    while (after.status !== 404 && Date.now() - t0 < 120_000) {
+      await sleep(5000);
+      after = await api("GET", `/api/v3/repos/${x}`, null);
+    }
+    log(`${x}: DELETE ${d.status}, anonymous read ${after.status} after ${Math.round((Date.now() - t0) / 1000)} s`);
     ok &&= [204, 404].includes(d.status) && after.status === 404;
   }
   process.exit(ok ? 0 : 1);
