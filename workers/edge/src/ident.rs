@@ -220,7 +220,7 @@ fn token_request(body: &Value) -> std::result::Result<AccessTokenRequest, Reply>
 }
 
 /// The App's owner and record from the owner's `Authz` fold, reached through `NameKey::App` on `Names`.
-async fn app_record(c: &Ctx<'_>, app: AppId) -> std::result::Result<Option<(AccountId, AppRecord)>, Reply> {
+pub(crate) async fn app_record(c: &Ctx<'_>, app: AppId) -> std::result::Result<Option<(AccountId, AppRecord)>, Reply> {
     let unavailable = |e: String| crate::api::unavailable(&e);
     let v = system_read(c, ChainId::Names(name_shard(&NameKey::App(app))), json!({ "app": app.0.0 }))
         .await

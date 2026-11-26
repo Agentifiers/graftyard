@@ -11716,3 +11716,32 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/m0carried/plant270.py`, 5 of 5 caught; `tests/m0carried/plant271.py`, 7 of 7 caught.
 
 **Flip.** A real stall, an entry its leader could not commit, that a report saw before the entry was CALL_DEADLINE old and that no later mark (a re-send, the campaign) covered, so a lease lapsed early on a holder that was renewing on time. Or a fold change found by a daily refold of an unmoved chain that the idle comparison and the corpus missed (`audit-moved`'s flip).
+
+### `app-bot`: REST issue create, and an installation token's commit status as its App's bot account, in repository format 32.29, 2026-11-26
+
+**Status.** Built on branch `bf77-routes` (BF-77's token half, `tests/m4/results/m4-wp3.md`, "BF-75 and BF-77 hosted: the result"); native, local bed and plaindiff at $0. Its hosted proof is BF-77's token-half rerun on graft-m4a after a site day and an edge day.
+
+**Decision.**
+- `POST /repos/{o}/{r}/issues` plans GraphQL `createIssue`'s `IssueOp::OpenIssue` from GHES 3.22's body (`rest::plan_create_issue`): `title` (string or integer) required; `labels` by name or `{name}`; `assignee` and `assignees` by login, read from their login rows when the tiers name none. `milestone`, `type`, `parent_issue_id` and `issue_field_values` answer 422, as `createIssue` refuses what it does not serve, and so does an unknown label or login (F135). It commits through `commit_issue` and `decide`, so an installation token needs `issues: write` as `createIssue`'s does. The member renders the 201 from `&Acked` (`What::IssueCreated`, appended): the pinned `issue` object with `Location`. An App's REST issue is authored by its bot account (`decide_in`'s `bot_author`, set only for 32.29), so `user` is `{slug}[bot]` as GHES shows it; an App's GraphQL `createIssue` (32.9) keeps its author-less bytes. Refusals are `rest::write_refused`'s.
+- An installation token's `POST .../statuses/{sha}` is accepted. Its creator is the App's bot account, `AppId::bot`: the App's id negated, as `actions_installation` and `HookId::app` negate theirs, so no account `Ids` assigns takes it. `decide`'s `app_needs` asks `statuses: write` of an App's `RecordStatus` (a user's token still asks for none), and the creator rule takes the App's bot as an App's own. `simple_user` renders a negative account as GitHub's bot: `login` `{slug}[bot]` from the App's record, `github-actions[bot]` for `ACTIONS_APP`, which has none; `id` the App's; `type` `Bot`; a `BOT_` node id (`NodeType::Bot`, appended); `html_url` `/apps/{slug}`. A status's `write_mark` counts toward its App. A token without the permission gets 403 "Resource not accessible by integration", which `release::refused` already answered.
+- Both ride repository format 32.29 (`call::REPO_FORMAT_ROUTES`): a REST issue create (`IssueCall::rest_issue`) and an App's `RecordStatus`. They are laid out as 32.9 for an App and 32.5 for a user, and a member that reads up to 32.28 refuses them before they commit. A user's status keeps 32.5 and its bytes. The edge serves the issue route, and lets an App's status through, only once `FormatsEnable` enabled 32.29. Until then both answer as main did: 404, and 401 "Requires authentication".
+
+**Why.**
+- GHES 3.22 grants `GITHUB_TOKEN` `issues` and `statuses` [doc: GHES 3.22, "Permissions required for GitHub Apps"]. BF-77's token half measured a 404 for every issue create and a 401 for every `ghs_` status.
+- `StatusUpdate.creator` stays an `AccountId`, so the row's postcard bytes, `CheckSource::Status`, `row_account` and the login index keep their shapes, and a bot account needs no new record. The id negated is the codebase's existing way to name a second kind of thing in an id space whose assigned ids are all positive.
+- The format is needed even though no event changes shape. A 32.28 member would commit an App's status and then refuse it (`app_needs` asked nothing), and it would commit a REST issue and then answer 500 because it cannot decode `What::IssueCreated`. A failed render after a commit is a 5xx for a write that landed. The format makes an older member refuse the command before it commits.
+
+**What it beat.**
+- A new `StatusCreator` enum on `StatusUpdate`: it changes the stored row and every reader of it, for one bot shape.
+- The App's own id as the bot's account: `Ids` assigns accounts and Apps from one space, so it would not collide. But nothing tells a renderer it is a bot without reading the install's App rows, and the Actions App's id 2 is beside the install account's id 1 in block 0.
+- Rendering the issue on the edge: that breaks "every 2xx renderer takes `&Acked`".
+- Answering 201 to a status under any App permission: GHES requires `statuses: write`.
+
+**Evidence.**
+- `crates/git/tests/issues.rs`, `an_installation_token_sets_a_status_as_its_apps_bot_with_statuses_write`, which fails on main (403 for every App status).
+- `crates/api/tests/surfaces.rs`, `rest_issue_create_and_a_bot_status_render_ghes_shapes`.
+- `tests/bf77bed/run.sh`, the edge's own wasm in local workerd with 32.29 enabled: the base edge (main `01781349`) answers every job token issue 404 and status 401, as graft-m4a did; the head answers `rw` 201 and 201 with `github-actions[bot]` as the issue's `user` and the status's `creator`, and `default` and `ro` 403 and 403.
+- `tests/plaindiff/run.sh`: 7 request pairs, 0 unexpected differences.
+- `tests/m0carried/plant259.py`: 10 of 10 caught.
+
+**Flip.** If GHES renders a `GITHUB_TOKEN` status's creator otherwise, change `bot_user`, not the stored id. If an App's bot account ever needs a profile (followers, `GET /users/{slug}[bot]`), give it a login row on `Names` under the negated id. If GHES 3.22 is shown to create a missing label or drop an unknown assignee for a writer, change `plan_create_issue` (F135).

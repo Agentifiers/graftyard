@@ -991,7 +991,11 @@ impl Fold for RepoFold {
             | RepoEvent::LfsLock(LfsLockEvent::Deleted { actor: a, .. })
             | RepoEvent::Invitation(I::Sent { inviter: a, .. } | I::Cancelled { actor: a, .. }) => by(a),
             RepoEvent::LfsLock(LfsLockEvent::Created { owner, .. }) => account(*owner),
-            RepoEvent::Status(s) => account(s.creator),
+            // An App's status names its bot account (`AppId::bot`, format 32.29), which counts toward its App.
+            RepoEvent::Status(s) => match graftyard_identity::AppId::of_bot(s.creator) {
+                Some(a) => app(a),
+                None => account(s.creator),
+            },
             RepoEvent::CheckRun(c) => app(c.app),
             RepoEvent::CheckSuite(c) => app(c.app),
             RepoEvent::Merged { by: u, .. } | RepoEvent::Queue(QueueEvent::Enqueued { actor: u, .. }) => account(u.0),

@@ -1332,6 +1332,98 @@ fn an_installation_tokens_issue_writes_follow_its_app_permissions() {
     c.agree();
 }
 
+/// BF-77's token half (`decisions/DECISIONS.md`, "`app-bot`"): an installation token sets a commit status with
+/// `statuses: write` (a `GITHUB_TOKEN`'s), as its App's bot account, in format 32.29. Without the permission it is 403,
+/// and naming another creator (a user, or another App's bot) is refused. On main every App's status was 403: the
+/// `statuses` permission was never asked and an App has no account to be the creator.
+#[test]
+fn an_installation_token_sets_a_status_as_its_apps_bot_with_statuses_write() {
+    use graftyard_git::issue_ops::call::{IssueCall, REPO_FORMAT_ROUTES};
+    use graftyard_identity::Access::{Read, Write};
+    let mut c = setup(3, 90);
+    c.commit(OWNER, protect("main", &["ci"])).unwrap();
+    c.push("refs/heads/main", oid(7));
+    install(&mut c, &[("statuses", Write), ("contents", Write), ("metadata", Read)]);
+    let app = graftyard_identity::AppId(DbId(APP));
+    let status = |creator: AccountId, state| {
+        IssueOp::RecordStatus(StatusUpdate {
+            id: StatusId(DbId(1_000)),
+            sha: oid(7),
+            context: "ci".into(),
+            state,
+            target_url: None,
+            description: None,
+            creator,
+        })
+    };
+    // Through the binding: an App's status is 32.29 with its claims, and a user's keeps 32.5.
+    let cmd = |claims: &graftyard_identity::stateless::InstallationClaims, op: IssueOp| {
+        let blobless = op.map_blob(|_| Err::<graftyard_git::blob::BlobRef, ()>(())).expect("no blob");
+        let call =
+            IssueCall::new(blobless, Principal::installation(claims), RequestId(Ulid(78)), serde_json::json!({}));
+        assert_eq!(call.format(), REPO_FORMAT_ROUTES);
+        let back: IssueCall = serde_json::from_value(serde_json::to_value(&call).unwrap()).unwrap();
+        assert_eq!(back.actor, Principal::installation(claims));
+        IssueCmd {
+            op: back.op.map_blob(|_| Err::<_, ()>(())).expect("no blob"),
+            actor: back.actor,
+            request: back.request,
+        }
+    };
+    let user = IssueCall::new(
+        status(AccountId(DbId(WRITER)), StatusState::Success).map_blob(|_| Err::<_, ()>(())).expect("no blob"),
+        who(WRITER),
+        RequestId(Ulid(79)),
+        serde_json::json!({}),
+    );
+    assert_eq!(user.format(), graftyard_git::issue_ops::call::REPO_FORMAT_ISSUES, "a user's status keeps its bytes");
+    let run = |c: &mut Chain, cmd: IssueCmd| c.commit_all(&[cmd]).pop().unwrap();
+
+    let rw = claims(&[("statuses", Write), ("contents", Write), ("metadata", Read)]);
+    assert!(matches!(run(&mut c, cmd(&rw, status(app.bot(), StatusState::Success))), Ok(IssueOut::Id(_))));
+    assert_eq!(
+        c.required(oid(7)),
+        vec![("ci".into(), Some(CheckConclusion::Success))],
+        "it counts as a required check"
+    );
+    // The bot's id is the App's negated: no account `Ids` assigns.
+    assert!(app.bot().0.0 < 0 && graftyard_identity::AppId::of_bot(app.bot()) == Some(app));
+    // A creator other than its own bot: a user, or another App's bot.
+    let other = graftyard_identity::AppId(DbId(APP + 1)).bot();
+    for creator in [AccountId(DbId(WRITER)), other] {
+        let r = run(&mut c, cmd(&rw, status(creator, StatusState::Failure)));
+        assert!(matches!(r, Err(IssueErr::Invalid(_))), "{creator:?}: {r:?}");
+    }
+    // Without `statuses: write`, as BF-77's `default` and `ro` jobs: 403, GitHub's "Resource not accessible by
+    // integration".
+    for perms in [&[("contents", Read), ("metadata", Read)][..], &[("statuses", Read), ("contents", Write)][..]] {
+        let r = run(&mut c, cmd(&claims(perms), status(app.bot(), StatusState::Failure)));
+        assert_eq!(r, Err(IssueErr::Forbidden), "{perms:?}");
+    }
+    assert_eq!(c.required(oid(7)), vec![("ci".into(), Some(CheckConclusion::Success))], "no refused status landed");
+
+    // A REST issue create by the App (32.29, `decide_in`'s `bot_author`) is authored by its bot, as GHES shows
+    // `github-actions[bot]` as `user`; the same `OpenIssue` from GraphQL `createIssue` (32.9) keeps no author.
+    install(&mut c, &[("issues", Write), ("statuses", Write), ("contents", Write), ("metadata", Read)]);
+    let w = claims(&[("issues", Write), ("metadata", Read)]);
+    let open =
+        IssueOp::OpenIssue { title: "t".into(), body: "".into(), labels: SmallVec::new(), assignees: SmallVec::new() };
+    let cmd = app_cmd(&w, open);
+    let m = &c.members[0];
+    let view = RepoView::new(tiers(), &m.core, &m.meta, c.now);
+    let mut needed: Vec<ChainId> = cmd.deps(&view).into_iter().collect();
+    needed.dedup();
+    let d: Vec<_> = needed.iter().map(|ch| c.deps.iter().find(|(k, _)| k == ch).expect("a dep").clone()).collect();
+    let author = |bot: bool| match cmd.decide_in(&view, &d, false, None, false, false, bot).unwrap().0[0] {
+        RepoEvent::IssueOpened { ref capture, .. } => capture.author,
+        ref e => panic!("{e:?}"),
+    };
+    assert_eq!(author(true), Some(app.bot()), "REST: the App's bot");
+    assert_eq!(author(false), None, "GraphQL: no author, as before");
+    drop(view);
+    c.agree();
+}
+
 /// `rest:repos`' create (format 32.13): `InitRepo` writes the chain's first settings and `Created` once, needs Admin,
 /// names the chain's own owner, and a re-sent create commits nothing.
 #[test]

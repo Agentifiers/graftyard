@@ -12,6 +12,9 @@ use crate::view::{Directory, Repo};
 /// GitHub's `simple-user` for an account, or `None` for a host bot with no account.
 pub fn simple_user(h: &Host, dir: &dyn Directory, id: Option<AccountId>) -> Value {
     let Some(id) = id else { return Value::Null };
+    if let Some(app) = graftyard_identity::AppId::of_bot(id) {
+        return bot_user(h, dir, id, app);
+    }
     let login = dir.login(id).unwrap_or_else(|| "ghost".into());
     let (api, web) = (h.api(), h.web());
     json!({
@@ -28,6 +31,35 @@ pub fn simple_user(h: &Host, dir: &dyn Directory, id: Option<AccountId>) -> Valu
         "events_url": format!("{api}/users/{login}/events{{/privacy}}"),
         "received_events_url": format!("{api}/users/{login}/received_events"),
         "type": if dir.is_org(id) { "Organization" } else { "User" }, "site_admin": false,
+    })
+}
+
+/// GitHub's `simple-user` for an App's bot account (`AppId::bot`), as GitHub renders `github-actions[bot]`: `type`
+/// `Bot`, a `BOT_` node id, `html_url` the App's page, and the login percent-encoded in the API URLs. `id` is the
+/// App's id, positive as every GHES id is. The login is the one the directory holds (`{slug}[bot]`, which the edge
+/// reads from the App's record); the install's Actions App, which has no record, is `github-actions[bot]` on every
+/// surface, and any other App whose login was not read renders as `ghost[bot]` (`decisions/DECISIONS.md`, "`app-bot`").
+fn bot_user(h: &Host, dir: &dyn Directory, id: AccountId, app: graftyard_identity::AppId) -> Value {
+    let login = dir.login(id).unwrap_or_else(|| {
+        if app == graftyard_identity::stateless::ACTIONS_APP { "github-actions[bot]" } else { "ghost[bot]" }.into()
+    });
+    let slug = login.strip_suffix("[bot]").unwrap_or(&login).to_owned();
+    let path = login.replace('[', "%5B").replace(']', "%5D");
+    let (api, web) = (h.api(), h.web());
+    json!({
+        "login": login, "id": app.0.0, "node_id": NodeId::top(NodeType::Bot, app.0.0).encode(),
+        "avatar_url": format!("{web}/identicons/app/{slug}.png"), "gravatar_id": "",
+        "url": format!("{api}/users/{path}"), "html_url": format!("{web}/apps/{slug}"),
+        "followers_url": format!("{api}/users/{path}/followers"),
+        "following_url": format!("{api}/users/{path}/following{{/other_user}}"),
+        "gists_url": format!("{api}/users/{path}/gists{{/gist_id}}"),
+        "starred_url": format!("{api}/users/{path}/starred{{/owner}}{{/repo}}"),
+        "subscriptions_url": format!("{api}/users/{path}/subscriptions"),
+        "organizations_url": format!("{api}/users/{path}/orgs"),
+        "repos_url": format!("{api}/users/{path}/repos"),
+        "events_url": format!("{api}/users/{path}/events{{/privacy}}"),
+        "received_events_url": format!("{api}/users/{path}/received_events"),
+        "type": "Bot", "site_admin": false,
     })
 }
 

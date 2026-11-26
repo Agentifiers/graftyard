@@ -18,6 +18,21 @@ use crate::names::NameError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AppId(pub DbId);
 
+impl AppId {
+    /// The App's bot account, which GHES names `{slug}[bot]` (`github-actions[bot]` for a `GITHUB_TOKEN`), as the
+    /// creator of a commit status the App sets: the App's id negated, as `actions_installation` and `HookId::app`
+    /// negate theirs. Every id `Ids` assigns is positive, so no account takes it, and its sign tells a renderer it is a
+    /// bot (`decisions/DECISIONS.md`, "`app-bot`").
+    pub fn bot(self) -> graftyard_types::AccountId {
+        graftyard_types::AccountId(DbId(-self.0.0))
+    }
+
+    /// The App whose bot account `a` is (`bot`); `None` for every account `Ids` assigns.
+    pub fn of_bot(a: graftyard_types::AccountId) -> Option<AppId> {
+        (a.0.0 < 0).then(|| AppId(DbId(-a.0.0)))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct InstallationId(pub DbId);
 

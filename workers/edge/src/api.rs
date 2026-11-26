@@ -1041,8 +1041,11 @@ async fn commit_issue_rid(
             REPO_FORMAT_ISSUES.family, REPO_FORMAT_ISSUES.version
         )));
     }
+    let rest_issue = what == What::IssueCreated;
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let mut call = IssueCall::new(op, who.clone(), rid, serde_json::to_value(&render)?);
+    // 32.29 (`bf77-routes`) for a REST issue create, whose reply only a member of that release renders.
+    call.rest_issue = rest_issue && !matches!(call.op, IssueOp::OpenPr { .. });
     // Format 32.8, once `FormatsEnable` enabled it, only for a command that can write an agent event: a pull request
     // opened by an App or with a user-to-server token (`AgentMeta` when its App is an `AgentApp`), and a review of a
     // pull request that has `AgentMeta` (`AgentGate`). Every other command keeps its format and its bytes; under a
@@ -1795,6 +1798,7 @@ fn rest_decided(method: &Method, tail: &[&str]) -> bool {
             | (Method::Patch, ["releases", _])
             | (Method::Delete, ["releases", _] | ["releases", "assets", _])
             | (Method::Post, ["statuses", _])
+            | (Method::Post, ["issues"])
             | (Method::Put | Method::Delete, ["branches", .., "protection"])
             | (Method::Post, ["git", "refs"])
             | (Method::Patch, ["git", "refs", ..])
@@ -1904,7 +1908,14 @@ pub(crate) async fn account_logins(
     let at = crate::now();
     let mut out = std::collections::BTreeMap::new();
     let mut by_shard: std::collections::BTreeMap<_, Vec<i64>> = Default::default();
-    for a in accounts {
+    // An App's bot account (`AppId::bot`, a status's creator) has no login row: its login is `{slug}[bot]`.
+    let bots = accounts.iter().filter_map(|a| graftyard_identity::AppId::of_bot(*a));
+    for (id, l) in
+        futures_util::future::join_all(bots.map(|app| async move { (app.bot().0.0, bot_login(c, app).await) })).await
+    {
+        out.extend(l.map(|l| (id, l)));
+    }
+    for a in accounts.iter().filter(|a| graftyard_identity::AppId::of_bot(**a).is_none()) {
         match crate::rcache::get(&crate::rcache::ACCOUNT_LOGINS, &a.0.0, at, c.read_class.get()) {
             Some(l) => {
                 out.insert(a.0.0, l);
@@ -1924,6 +1935,17 @@ pub(crate) async fn account_logins(
         }
     }
     out
+}
+
+/// An App's bot login, `{slug}[bot]`, from its record (`crate::ident::app_record`); `github-actions[bot]` for the
+/// install's Actions App, which has no record. `None` when the record could not be read (`decisions/DECISIONS.md`,
+/// "`app-bot`").
+pub(crate) async fn bot_login(c: &Ctx<'_>, app: graftyard_identity::AppId) -> Option<String> {
+    if app == graftyard_identity::stateless::ACTIONS_APP {
+        return Some("github-actions[bot]".into());
+    }
+    let (_, rec) = crate::ident::app_record(c, app).await.ok()??;
+    Some(format!("{}[bot]", rec.slug.as_str()))
 }
 
 /// Test installs' logins by account id, from `LOGINS` (`{"<id>": "<login>"}`), for accounts whose `AccountLogin` row
@@ -1949,7 +1971,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // neither needs the other. A write used to resolve after its token, untimed (`merge-p99`).
     c.read_class.set(method == Method::Get);
     c.write.set(method != Method::Get);
-    c.decided.set(rest_decided(&method, tail));
+    // A REST issue create is a route only once 32.29 is enabled (`bf77-routes`); until then it reads fresh, as before.
+    let routes_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ROUTES);
+    c.decided.set(rest_decided(&method, tail) && (routes_on || tail != ["issues"]));
     let merge_of = rest_merge(&method, tail);
     c.leader_reads.set(merge_of.is_some());
     // A REST merge reads its rows and the owner's `Authz`, both fresh, for the repository it guesses the name names
@@ -2063,6 +2087,29 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     if graftyard_api::trust::opted_in(agent_accept.as_deref()) {
         rd.dir.install = crate::install_authz(c).await;
     }
+    // A status an App sets, or an issue it opens through REST, names its bot account, which the tiers do not name yet.
+    if routes_on
+        && let (Method::Post, ["statuses", _] | ["issues"], Some(Actor::App { app, .. })) =
+            (&method, tail, who.as_ref().map(|w| w.actor))
+        && let Some(l) = bot_login(c, app).await
+    {
+        rd.dir.logins.insert(app.bot().0.0, l);
+    }
+    // A REST issue create's body, read before the view borrows `rd`: an assignee login the tiers do not name is read
+    // into the directory, so the plan resolves it and the leader renders it.
+    let issue_body = if routes_on && method == Method::Post && tail == ["issues"] {
+        let b = serde_json::from_slice::<Value>(&req.bytes().await?).unwrap_or(Value::Null);
+        for login in rest::issue_create_logins(&b) {
+            if graftyard_api::view::Directory::by_login(&rd.dir, &login).is_none()
+                && let Ok(Some(a)) = crate::account_of(c, &login).await
+            {
+                rd.dir.logins.insert(a.0.0, login);
+            }
+        }
+        Some(b)
+    } else {
+        None
+    };
     let r = rd.view(host);
     let need = |w: &Option<Principal>| -> std::result::Result<Principal, Reply> {
         w.clone().ok_or_else(|| Reply::error(401, "Requires authentication", "rest"))
@@ -2250,14 +2297,35 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Ok(w) => w,
                 Err(x) => return Ok(x),
             };
-            let Actor::User(me) = who.actor else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
+            // An installation token's status (a `GITHUB_TOKEN` with `statuses: write`) is its App's bot account's
+            // (`AppId::bot`); `decide` checks the App's `statuses` permission (`decisions/DECISIONS.md`, "`app-bot`").
+            // Until `FormatsEnable` enabled 32.29 it answers 401 as before.
+            let me = match who.actor {
+                Actor::User(u) => u.0,
+                Actor::App { app, .. } if routes_on => app.bot(),
+                _ => return Ok(Reply::error(401, "Requires authentication", "rest")),
+            };
             let id = graftyard_types::DbId(js_sys::Date::now() as i64);
-            match rest::plan_create_status(sha, &body(req.bytes().await?), me.0, id) {
+            match rest::plan_create_status(sha, &body(req.bytes().await?), me, id) {
                 Ok(op) => {
                     let IssueOp::RecordStatus(st) = &op else { unreachable!("a status") };
                     let what = What::StatusCreated { sha: st.sha, id: id.0 };
                     commit_issue(c, &rd, &who, to_wire(op), what).await?
                 }
+                Err(x) => x,
+            }
+        }
+        // GHES's REST issue create (`bf77-routes`): GraphQL `createIssue`'s `OpenIssue` and `decide`, which needs
+        // `issues: write` of an installation token.
+        // It is served only once `FormatsEnable` enabled 32.29, whose members render its 201 (even for a command a
+        // task claim puts in 32.12); until then it is 404, as before.
+        (Method::Post, ["issues"]) if routes_on => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_create_issue(&r, issue_body.as_ref().unwrap_or(&Value::Null)) {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::IssueCreated).await?,
                 Err(x) => x,
             }
         }
@@ -2674,6 +2742,7 @@ mod tests {
             (Delete, "releases/4"),
             (Delete, "releases/assets/9"),
             (Post, "statuses/abc"),
+            (Post, "issues"),
             (Put, "branches/main/protection"),
             (Delete, "branches/rel/v1/protection"),
             (Post, "git/refs"),
