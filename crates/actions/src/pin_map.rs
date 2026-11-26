@@ -8,6 +8,8 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::launch::ActionRef;
+
 /// A signed mapping from upstream action commits to their Graftyard forks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PinMap {
@@ -136,6 +138,19 @@ pub enum Substitution {
     /// An upstream v4+ SHA pin the approved map does not cover, or no map is approved: resolve as written (the
     /// upstream bytes fail in their own step, as on GHES) and annotate with the fork SHA when a known map names it.
     Unapproved { fork: String, fork_sha: Option<String> },
+}
+
+/// The action the launch service resolves instead of `a` under `s`: the fork at the same tag for `Tag`, the fork at its
+/// pinned commit for `Pin`, and `a` itself otherwise. The key, name, and version stay as written, so the runner files
+/// the download under the action it asked for; `resolved` names the fork for the reply's `resolved_name`.
+pub fn redirect(a: &ActionRef, s: &Substitution) -> ActionRef {
+    let (fork, version) = match s {
+        Substitution::Tag { fork } => (fork, a.version.clone()),
+        Substitution::Pin { fork, fork_sha } => (fork, fork_sha.clone()),
+        Substitution::AsWritten | Substitution::Unapproved { .. } => return a.clone(),
+    };
+    let (owner, repo) = fork.split_once('/').expect("a fork is owner/repo");
+    ActionRef { owner: owner.into(), repo: repo.into(), version, resolved: Some(fork.clone()), ..a.clone() }
 }
 
 /// Decide a tag substitution or approved SHA pin without changing an unrecognised reference.
@@ -334,6 +349,44 @@ mod tests {
             substitute("actions", "upload-artifact", UPSTREAM_SHA, false, None, Some(&old)),
             Substitution::AsWritten
         );
+    }
+
+    #[test]
+    fn redirect_resolves_the_fork_but_keeps_the_key_name_and_version() {
+        let a = crate::launch::requested(&serde_json::json!({ "actions": [
+            { "action": "actions/upload-artifact", "version": UPSTREAM_SHA },
+        ]}))
+        .unwrap()
+        .remove(0);
+        let pin = Substitution::Pin { fork: "graftyard-actions/upload-artifact".into(), fork_sha: FORK_SHA.into() };
+        let r = redirect(&a, &pin);
+        assert_eq!(
+            (r.owner.as_str(), r.repo.as_str(), r.version.as_str()),
+            ("graftyard-actions", "upload-artifact", FORK_SHA)
+        );
+        assert_eq!((&r.key, &r.name), (&a.key, &a.name));
+        assert_eq!(r.resolved.as_deref(), Some("graftyard-actions/upload-artifact"));
+        let tag = redirect(
+            &ActionRef { version: "v4".into(), ..a.clone() },
+            &Substitution::Tag { fork: "graftyard-actions/upload-artifact".into() },
+        );
+        assert_eq!((tag.owner.as_str(), tag.version.as_str()), ("graftyard-actions", "v4"));
+        let unapproved = Substitution::Unapproved { fork: "graftyard-actions/upload-artifact".into(), fork_sha: None };
+        assert_eq!(redirect(&a, &unapproved), a);
+        // The reply names the fork as `resolved_name` and keeps the written name, so the runner's download line reads
+        // \"Download action repository 'actions/upload-artifact@<sha>' (SHA:<fork sha>)\".
+        let found = crate::launch::Found::Commit {
+            sha: graftyard_git::refs::ObjectId::parse_hex(FORK_SHA.as_bytes()).unwrap(),
+            tar_url: "t".into(),
+            zip_url: "z".into(),
+        };
+        let (status, v) = crate::launch::reply(&[(r, found)]);
+        let one = &v["actions"][format!("actions/upload-artifact@{UPSTREAM_SHA}")];
+        assert_eq!(status, 200);
+        assert_eq!(one["name"], "actions/upload-artifact");
+        assert_eq!(one["resolved_name"], "graftyard-actions/upload-artifact");
+        assert_eq!(one["version"], UPSTREAM_SHA);
+        assert_eq!(one["resolved_sha"], FORK_SHA);
     }
 
     #[test]

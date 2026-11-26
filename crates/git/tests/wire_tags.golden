@@ -773,6 +773,7 @@ actions::shard::ActionsEvent 16 SubTemplateSet 10000000
 actions::shard::ActionsEvent 17 RunPlanned 11020000
 actions::shard::ActionsEvent 18 JobOutputs 120200
 actions::shard::ActionsEvent 19 RunEvent 13020161
+actions::shard::ActionsEvent 20 JobAnnotations 140200
 actions::shard::ActionsOp 0 CreateRun 0002020161016101010101010101010101010101010101010101010161067265706f3a310101000000
 actions::shard::ActionsOp 1 Job 01020100
 actions::shard::ActionsOp 2 ExpireLeases 02
@@ -798,6 +799,7 @@ actions::shard::ActionsOp 21 SetSubTemplate 15000000
 actions::shard::ActionsOp 22 CreateRunPlanned 1602020161016101010101010101010101010101010101010101010161067265706f3a310101000000000000000000
 actions::shard::ActionsOp 23 FinishWith 1702010000
 actions::shard::ActionsOp 24 CreateRunPush 1802020161016101010101010101010101010101010101010101010161067265706f3a3101010000000000016100
+actions::shard::ActionsOp 25 FinishAnnotated 190201000000
 actions::shard::ActionsActor 0 Operator 00
 actions::shard::ActionsActor 1 Admin 0102
 actions::shard::ActionsActor 2 Runner 0202

@@ -62,6 +62,7 @@ pub fn rest_serves(tail: &[&str]) -> bool {
             | ["commits", _, "check-runs"]
             | ["commits", _, "statuses"]
             | ["check-runs", _]
+            | ["check-runs", _, "annotations"]
             | ["commits", _]
             | ["releases", "tags", _]
             | ["tarball" | "zipball", _]
@@ -83,6 +84,7 @@ pub fn rest_get(r: &Repo<'_>, tail: &[&str], query: &str, index: Index) -> Optio
         ["commits", reference, "check-runs"] => rest::list_check_runs_for_ref(r, reference, query),
         ["commits", reference, "statuses"] => rest::list_commit_statuses(r, reference, Page::parse(query)),
         ["check-runs", id] => rest::get_check_run(r, id),
+        ["check-runs", id, "annotations"] => rest::list_check_run_annotations(r, id, query),
         ["releases", "tags", tag] => release::get_by_tag(r, tag),
         ["releases", n] => release::get(r, n.parse().ok()?),
         [kind @ ("tarball" | "zipball"), reference] => {

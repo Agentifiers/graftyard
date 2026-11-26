@@ -36,6 +36,9 @@ pub fn job_of_path(path: &str, grant: Option<Grant>) -> Option<JobId> {
 }
 
 /// One action the runner asks for: `name` is `owner/repo` as the workflow wrote it, `key` is `{name}@{version}`.
+/// `resolved` is the repository whose bytes the reply names instead, when an org's substitution policy chose a
+/// `graftyard-actions` fork (`crate::pin_map::redirect`); the reply keeps `name` and `version` as written, so the
+/// runner files the download under the action it asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionRef {
     pub key: String,
@@ -43,6 +46,7 @@ pub struct ActionRef {
     pub owner: String,
     pub repo: String,
     pub version: String,
+    pub resolved: Option<String>,
 }
 
 /// The actions a request names, once each by key, in order; `None` for a body that is not the runner's
@@ -61,7 +65,7 @@ pub fn requested(body: &Value) -> Option<Vec<ActionRef>> {
             Some((o, r)) if !o.is_empty() && !r.is_empty() && !r.contains('/') => (o.to_owned(), r.to_owned()),
             _ => (String::new(), String::new()),
         };
-        out.push(ActionRef { key, name, owner, repo, version });
+        out.push(ActionRef { key, name, owner, repo, version, resolved: None });
     }
     Some(out)
 }
@@ -128,8 +132,13 @@ pub fn reply(found: &[(ActionRef, Found)]) -> (u16, Value) {
     for (a, f) in found {
         let why = match f {
             Found::Commit { sha, tar_url, zip_url } => {
-                let info = json!({ "name": a.name, "resolved_name": a.name, "resolved_sha": sha.hex(),
-                                   "tar_url": tar_url, "zip_url": zip_url, "version": a.version });
+                // `name` and `version` as written (the key's halves), which the runner files the download under and
+                // later loads from (`ActionManager.cs:1193`, `:1420`); `resolved_name` the repository whose bytes these
+                // are, a fork when substituted.
+                let resolved = a.resolved.as_deref().unwrap_or(&a.name);
+                let version = &a.key[a.name.len() + 1..];
+                let info = json!({ "name": a.name, "resolved_name": resolved, "resolved_sha": sha.hex(),
+                                   "tar_url": tar_url, "zip_url": zip_url, "version": version });
                 actions.insert(a.key.clone(), info);
                 continue;
             }

@@ -73,7 +73,7 @@ async fn authz_commit(
     commit_as(c, owner, record, graftyard_types::CredentialShard::NONE, op).await
 }
 
-async fn commit_as(
+pub(crate) async fn commit_as(
     c: &Ctx<'_>,
     owner: AccountId,
     record: &PlacementRecord,
