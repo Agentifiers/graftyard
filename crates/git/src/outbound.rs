@@ -83,11 +83,23 @@ pub enum Cred {
     Agent(Scheme),
     /// `graftyard-workspace`'s installation token for the push target.
     Workspace(Scheme),
-    /// The model key, as `Bearer`.
+    /// The model key, as Anthropic's API takes it: `x-api-key: <key>` with `anthropic-version` (`MODEL_VERSION`), the
+    /// headers every request to it must carry [doc: Anthropic API, "Getting started", Authentication].
     ModelKey,
     /// Nothing: a registry.
     None,
 }
+
+impl Cred {
+    /// The model arm's headers for the model key: `x-api-key` and `anthropic-version`. Every other credential is one
+    /// `Authorization` value, which the host builds from its installation token.
+    pub fn model_headers(key: &str) -> [(&'static str, String); 2] {
+        [("x-api-key", key.to_owned()), ("anthropic-version", MODEL_VERSION.to_owned())]
+    }
+}
+
+/// The `anthropic-version` the host sends on the model arm; the Sandbox's is dropped.
+pub const MODEL_VERSION: &str = "2023-06-01";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scheme {
@@ -246,7 +258,8 @@ pub fn outbound(req: OutReq<'_>, route: &Route) -> Result<Forward, Refused> {
                 return Err(refuse("ModelPayload", why));
             }
             let mut f = fwd(Arm::ModelInference, Cred::ModelKey, Some(serde_json::to_vec(&body).expect("a Value")));
-            f.headers.retain(|(k, _)| k != "content-type");
+            // The key and the API version are the host's (`Cred::ModelKey`), so the Sandbox picks neither.
+            f.headers.retain(|(k, _)| !matches!(k.as_str(), "content-type" | "x-api-key" | "anthropic-version"));
             f.headers.push(("content-type".into(), "application/json".into()));
             Ok(f)
         }

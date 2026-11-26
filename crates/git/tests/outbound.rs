@@ -98,6 +98,23 @@ fn l0_02_positive_controls_forward_with_the_hosts_credential_and_never_the_sandb
         f.body.as_deref(),
         Some(&br#"{"messages":[],"model":"m","tools":[{"type":"function"},{"name":"c"}]}"#[..])
     );
+    // The Sandbox picks neither the key nor the API version: its `x-api-key`, `anthropic-version` and
+    // `Authorization` are dropped, and the host sets Anthropic's two headers, never `Authorization: Bearer`.
+    let own = hdrs(&[
+        ("authorization", "Bearer sk-sandbox"),
+        ("x-api-key", "sk-ant-sandbox"),
+        ("anthropic-version", "2099-01-01"),
+        ("anthropic-beta", "b1"),
+    ]);
+    let body = br#"{"model":"m","messages":[]}"#;
+    let f = outbound(OutReq { method: "POST", url: &format!("https://{MODEL}/v1/messages"), headers: &own, body }, &r)
+        .unwrap();
+    let names: Vec<&str> = f.headers.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(names, ["anthropic-beta", "content-type"], "only the Sandbox's other headers pass");
+    assert_eq!(
+        Cred::model_headers("sk-ant-host"),
+        [("x-api-key", "sk-ant-host".to_owned()), ("anthropic-version", "2023-06-01".to_owned())]
+    );
     // The listed Go module, and a plain registry GET.
     assert_eq!(go("GET", &format!("https://{GO}/github.com/graftyard/known/@latest"), b"").cred, Cred::None);
     assert_eq!(go("GET", "https://npm.mirror.test/left-pad", b"").arm, Arm::Registry);

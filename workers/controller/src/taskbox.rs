@@ -461,7 +461,12 @@ impl TaskBox {
         for (k, v) in &fwd.headers {
             h.set(k, v)?;
         }
-        if let Some(auth) = self.credential(fwd.cred, &s).await? {
+        if fwd.cred == Cred::ModelKey {
+            let key = self.env.secret_store("MODEL_KEY")?.get().await?.ok_or_else(|| err("MODEL_KEY is empty"))?;
+            for (k, v) in Cred::model_headers(&key) {
+                h.set(k, &v)?;
+            }
+        } else if let Some(auth) = self.credential(fwd.cred, &s).await? {
             h.set("authorization", &auth)?;
         }
         let sent = fwd.body.unwrap_or(body);
@@ -593,14 +598,11 @@ impl TaskBox {
         self.save(&s).await
     }
 
-    /// The `Authorization` value for `cred`, minting the task's installation token when none is cached.
+    /// The `Authorization` value for an installation token's `cred`, minting the task's token when none is cached. The
+    /// model key is no `Authorization` value (`Cred::model_headers`), and neither it nor `None` gets one.
     async fn credential(&self, cred: Cred, s: &Stored) -> Result<Option<String>> {
         let (scheme, app, inst) = match cred {
-            Cred::None => return Ok(None),
-            Cred::ModelKey => {
-                let key = self.env.secret_store("MODEL_KEY")?.get().await?.ok_or_else(|| err("MODEL_KEY is empty"))?;
-                return Ok(Some(format!("Bearer {key}")));
-            }
+            Cred::None | Cred::ModelKey => return Ok(None),
             Cred::Agent(sc) => (sc, "AGENT", &s.start.agent),
             Cred::Workspace(sc) => (sc, "WORKSPACE", &s.start.workspace),
         };
