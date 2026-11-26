@@ -49,8 +49,18 @@ thread_local! {
 const WARM_ASK: Duration = Duration::from_secs(10);
 const WARM_ASK_WAIT_S: u64 = 5;
 
+/// The move's warm ask of `repo`'s network shard, with the record already URI-encoded: a start (`warm=start`), not a
+/// client's request.
+fn warm_url(repo: graftyard_types::RepoId, record: &str) -> String {
+    format!("https://shard/catchup?warm=start&repo={}&record={record}&wait={WARM_ASK_WAIT_S}&next=1", repo.0.0)
+}
+
 /// Whether `to`'s first git cache shard of `repo`'s network answered its catch-up 200. Anything else, `warming`, an
-/// error or no answer in WARM_ASK, is not warm. The call is a client's, so it starts a stopped container.
+/// error or no answer in WARM_ASK, is not warm. The call starts a stopped container but is no client's request
+/// (`warm_url`, `graftyard_git::Caller::Start`), so a shard no client then reads stops `PROMOTE_LAPSE` after the
+/// move's last ask. As a client's call each kept its shard up a day: after m6aL2's `ReplaceMember` 50 network shards
+/// ran on the spare and 6 elsewhere with no load, $9.17 of the row's $10.03 (`tests/m6/results/m6-wp1.md`, "m6aL2";
+/// OPEN-QUESTIONS R67).
 async fn shard_warm(
     env: &Env,
     site: &SiteEnv,
@@ -62,11 +72,7 @@ async fn shard_warm(
         let rec = serde_json::to_string(record).ok()?;
         let name = format!("git#{}#net:{}", to.0, repo.0.0);
         let st = crate::fanout::stub(env, &site.sites, to, &name).ok()?;
-        let url = format!(
-            "https://shard/catchup?repo={}&record={}&wait={WARM_ASK_WAIT_S}&next=1",
-            repo.0.0,
-            worker::js_sys::encode_uri_component(&rec)
-        );
+        let url = warm_url(repo, &String::from(worker::js_sys::encode_uri_component(&rec)));
         let mut init = RequestInit::new();
         init.with_method(Method::Post);
         let r = st.fetch_with_request(Request::new_with_init(&url, &init).ok()?).await.ok()?;
@@ -3860,6 +3866,27 @@ async fn repo_owner_row(env: &Env, repo: graftyard_types::RepoId) -> std::result
 
 #[cfg(test)]
 mod tests {
+    /// R67: the move's warm ask is a start, not a client's request. The shard reads it as `Caller::Start` (`caller`
+    /// over the URL's path and `warm`), starts a stopped container for it, does not count it as a request, and sets
+    /// `PROMOTE_LAPSE` on a shard no client has read in `WARM_FOR`, so it stops 10 minutes after the move, not a day.
+    #[test]
+    fn a_moves_warm_ask_starts_the_shard_but_keeps_it_no_longer_than_promote_lapse() {
+        use graftyard_git::{Caller, PROMOTE_LAPSE, Serve, caller, promote_lapse, serve};
+
+        use super::warm_url;
+        let u = warm_url(graftyard_types::RepoId(graftyard_types::DbId(7001)), "%7B%7D");
+        let (path, query) = u.strip_prefix("https://shard").and_then(|r| r.split_once('?')).expect("a shard URL");
+        let q = |k: &str| query.split('&').find_map(|p| p.strip_prefix(k)?.strip_prefix('='));
+        let c = caller(path, q("warm"));
+        assert_eq!(c, Caller::Start, "{u}");
+        assert_eq!(serve(c, false), Serve::Run { touch: false }, "it starts a stopped shard, as no request");
+        let now = graftyard_types::Timestamp(1_795_655_000_000);
+        assert_eq!(promote_lapse(c, now, None), Some(PROMOTE_LAPSE), "a shard no client read lapses after the move");
+        let client_an_hour_ago = graftyard_types::Timestamp(now.0 - 3_600_000);
+        assert_eq!(promote_lapse(c, now, Some(client_an_hour_ago)), None, "a shard a client reads keeps its day");
+        assert_eq!((path, q("next"), q("repo")), ("/catchup", Some("1"), Some("7001")));
+    }
+
     /// The lifeboat front's credential read (`{"lifeboat": hash}`) names an account only for a `LifeboatRead` row: a
     /// main-host token's `Stored` row, which the lifeboat holds with every other token row's metadata, is no lifeboat
     /// credential, and the same read of it answers null (D1, `decisions/DECISIONS.md`, "`lifeboat-bundle`").
