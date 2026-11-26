@@ -14,8 +14,8 @@ use graftyard_api::graphql::{
     render_merge, route,
 };
 use graftyard_api::rest::{
-    commit_not_found, get_check_run, get_commit, get_pull, list_check_runs_for_ref, list_commit_statuses,
-    list_issue_comments, list_review_comments, list_reviews,
+    commit_not_found, get_check_run, get_commit, get_pull, list_check_run_annotations, list_check_runs_for_ref,
+    list_commit_statuses, list_issue_comments, list_review_comments, list_reviews,
 };
 use graftyard_api::view::Repo;
 use graftyard_api::wire::Page;
@@ -24,9 +24,9 @@ use graftyard_fold::store::META;
 use graftyard_fold::{MemStore, fold_digest, meta};
 use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
 use graftyard_git::issues::{
-    AppId, CheckConclusion, CheckOutput, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CommentTarget,
-    DiffSide, Grouping, IssueNumber, LabelName, LineAnchor, MergeMethod, Protection, RepoSettings, RequiredChecks,
-    ReviewState, StatusId, StatusState, StatusUpdate, Url, Visibility,
+    AnnotationLevel, AppId, CheckAnnotation, CheckConclusion, CheckOutput, CheckRunId, CheckRunUpdate, CheckStatus,
+    CheckSuiteId, CommentTarget, DiffSide, Grouping, IssueNumber, LabelName, LineAnchor, MergeMethod, Protection,
+    RepoSettings, RequiredChecks, ReviewState, StatusId, StatusState, StatusUpdate, Url, Visibility,
 };
 use graftyard_raft::{EntryBody, TierSet};
 use graftyard_types::{AccountId, DbId, Tier, Timestamp};
@@ -1453,7 +1453,7 @@ fn an_oversized_tier_read_stops_at_its_byte_budget() {
 fn rest_reads_of_the_trust_resources_render_ghes_shapes() {
     let mut c = Chain::new(1);
     c.push("refs/heads/main", oid(1));
-    c.push("refs/heads/f", oid(2));
+    c.push("refs/heads/f", oid(20));
     c.push("refs/heads/other", oid(3));
     c.commit(OWNER, IssueOp::Settings(settings())).unwrap();
     c.commit(
@@ -1475,7 +1475,8 @@ fn rest_reads_of_the_trust_resources_render_ghes_shapes() {
         head_sha,
         base_sha: oid(1),
     };
-    c.commit(WRITER, open_pr("refs/heads/f", "a pull request", oid(2))).unwrap();
+    // The head carries runs 40 and 41 below, so the GraphQL rollup can render their annotations too.
+    c.commit(WRITER, open_pr("refs/heads/f", "a pull request", oid(20))).unwrap();
     let id = |out: IssueOut| match out {
         IssueOut::Id(id) => id.0,
         other => panic!("{other:?}"),
@@ -1575,7 +1576,24 @@ fn rest_reads_of_the_trust_resources_render_ghes_shapes() {
         title: "test output".into(),
         summary: "one failure".into(),
         text: Some("details".into()),
-        annotations: vec![],
+        annotations: vec![
+            CheckAnnotation {
+                path: ".github".into(),
+                start_line: 9,
+                end_line: 9,
+                level: AnnotationLevel::Failure,
+                message: "boom".into(),
+                title: Some("t1".into()),
+            },
+            CheckAnnotation {
+                path: "src/a.rs".into(),
+                start_line: 3,
+                end_line: 5,
+                level: AnnotationLevel::Warning,
+                message: "warn".into(),
+                title: None,
+            },
+        ],
     });
     c.commit(WRITER, detailed).unwrap();
     c.commit(WRITER, run(42, 21, "other", Some(CheckConclusion::Success))).unwrap();
@@ -1660,11 +1678,115 @@ fn rest_reads_of_the_trust_resources_render_ghes_shapes() {
         (200, &json!(41), &json!("one failure"))
     );
     keep_rest("trust-check-run", "/repos/{owner}/{repo}/check-runs/{check_run_id}", &one);
+    assert_eq!(one.value()["output"]["annotations_count"], 2);
     assert_eq!(get_check_run(&r, "999999").status, 404);
     let missing = list_check_runs_for_ref(&r, "does-not-exist", "");
     assert_eq!(missing.status, 422);
     assert_eq!(missing.value()["message"], "No commit found for SHA: does-not-exist");
     assert_eq!(commit_not_found("does-not-exist").value()["message"], "No commit found for SHA: does-not-exist");
+
+    let sha = oid(20).hex();
+    let expected = json!([
+        {
+            "path": ".github",
+            "blob_href": format!("{}/o/r/blob/{sha}/.github", r.host.web()),
+            "start_line": 9,
+            "end_line": 9,
+            "start_column": null,
+            "end_column": null,
+            "annotation_level": "failure",
+            "title": "t1",
+            "message": "boom",
+            "raw_details": null,
+        },
+        {
+            "path": "src/a.rs",
+            "blob_href": format!("{}/o/r/blob/{sha}/src/a.rs", r.host.web()),
+            "start_line": 3,
+            "end_line": 5,
+            "start_column": null,
+            "end_column": null,
+            "annotation_level": "warning",
+            "title": null,
+            "message": "warn",
+            "raw_details": null,
+        },
+    ]);
+    let annotations = list_check_run_annotations(&r, "41", "");
+    assert_eq!(annotations.status, 200);
+    assert_eq!(annotations.value(), &expected);
+    assert_eq!(list_check_run_annotations(&r, "40", "").value(), &json!([]), "no output means no annotations");
+    let page = list_check_run_annotations(&r, "41", "per_page=1&page=2");
+    assert_eq!(page.status, 200);
+    assert_eq!(page.value(), &json!([expected[1].clone()]));
+    let url =
+        |page| format!("{}/repositories/{}/check-runs/41/annotations?per_page=1&page={page}", r.host.api(), REPO.0.0);
+    assert_eq!(page.header("link"), Some(format!("<{}>; rel=\"prev\", <{}>; rel=\"first\"", url(1), url(1)).as_str()));
+    assert_eq!(list_check_run_annotations(&r, "999999", "").status, 404);
+    assert_eq!(list_check_run_annotations(&r, "not-a-number", "").status, 404);
+
+    let d = Doc {
+        name: "CheckRunAnnotations".into(),
+        query: r#"query($id: ID!) {
+            node(id: $id) {
+                ... on PullRequest {
+                    commits(last: 1) {
+                        nodes {
+                            commit {
+                                statusCheckRollup {
+                                    contexts(first: 10) {
+                                        nodes {
+                                            ... on CheckRun {
+                                                name
+                                                annotations(first: 10) {
+                                                    totalCount
+                                                    nodes {
+                                                        annotationLevel path title message
+                                                        location { start { line column } end { line } }
+                                                        blobUrl
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"#
+        .into(),
+        variables: json!({ "id": "PR_1" }).as_object().cloned(),
+    };
+    let v = ask(&r, &d, with_ids(&d, &r));
+    assert!(v.get("errors").is_none(), "{v}");
+    let contexts = v["data"]["node"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+        .as_array()
+        .unwrap();
+    let test = contexts.iter().find(|n| n["name"] == "test").unwrap();
+    assert_eq!(test["annotations"]["totalCount"], 2);
+    assert_eq!(
+        test["annotations"]["nodes"],
+        json!([
+            {
+                "annotationLevel": "FAILURE",
+                "path": ".github",
+                "title": "t1",
+                "message": "boom",
+                "location": { "start": { "line": 9, "column": null }, "end": { "line": 9 } },
+                "blobUrl": format!("{}/o/r/blob/{sha}/.github", r.host.web()),
+            },
+            {
+                "annotationLevel": "WARNING",
+                "path": "src/a.rs",
+                "title": null,
+                "message": "warn",
+                "location": { "start": { "line": 3, "column": null }, "end": { "line": 5 } },
+                "blobUrl": format!("{}/o/r/blob/{sha}/src/a.rs", r.host.web()),
+            },
+        ])
+    );
 
     let tree = oid(30);
     let parents = [oid(31), oid(32)];
@@ -1721,6 +1843,28 @@ fn rest_reads_of_the_trust_resources_render_ghes_shapes() {
     );
     assert_eq!(views("/repos/o/r/check-runs/41", &one), [t("test output\n\none failure\n\ndetails", false)]);
     assert_eq!(views("/repos/o/r/commits/x", &commit), [t("commit subject\n\ncommit body", false)]);
+}
+
+#[test]
+fn actions_empty_check_run_output_title_and_summary_are_null() {
+    let mut c = seeded();
+    let empty = |id, app| {
+        let mut op = run(id, 2, "job", Some(CheckConclusion::Success));
+        let IssueOp::RecordCheck(update) = &mut op else { unreachable!() };
+        update.app = app;
+        update.output = Some(CheckOutput { title: "".into(), summary: "".into(), text: None, annotations: vec![] });
+        op
+    };
+    c.commit(WRITER, empty(43, graftyard_git::run_checks::ACTIONS_APP)).unwrap();
+    c.commit(WRITER, empty(44, AppId(DbId(5)))).unwrap();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let actions = get_check_run(&r, "43");
+    assert!(actions.value()["output"]["title"].is_null());
+    assert!(actions.value()["output"]["summary"].is_null());
+    let other = get_check_run(&r, "44");
+    assert_eq!(other.value()["output"]["title"], "");
+    assert_eq!(other.value()["output"]["summary"], "");
 }
 
 /// lf4-rest-2: `POST pulls/{n}/comments` and `POST check-runs` plan a command from GHES 3.22's body, commit it, and

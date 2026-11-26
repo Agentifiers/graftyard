@@ -1,0 +1,11 @@
+name: f133-paths
+# F133: a branch push only when the push's two-dot diff changes `src/`: from `before` for an existing branch (a force
+# push included), from the merge base with the default branch for a new one.
+on:
+  push:
+    paths: ['src/**']
+jobs:
+  p:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: echo "context event=${{ github.event_name }} ref=${{ github.ref }}"

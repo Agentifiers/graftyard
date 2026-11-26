@@ -160,10 +160,20 @@ graftyard_identity::tail_serde!(PlanRows {
     outputs: BTreeMap<JobId, crate::reusable::Outputs>,
 } more: PushRows);
 
-/// Format 0x15.12's rows (BF-78): each `push` run's `github.event`, the push payload as JSON.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Format 0x15.12's rows (BF-78): each `push` run's `github.event`, the push payload as JSON. BF-76's annotation rows
+/// (0x15.10) are a trailing part of their own, so a fold with none keeps 0x15.12's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PushRows {
     pub events: BTreeMap<RunId, Box<str>>,
+    pub more: AnnotationRows,
+}
+
+graftyard_identity::tail_serde!(PushRows { events: BTreeMap<RunId, Box<str>>, } more: AnnotationRows);
+
+/// Format 0x15.10's rows (BF-76): each finished job's check-run annotations (`ActionsEvent::JobAnnotations`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnnotationRows {
+    pub annotations: BTreeMap<JobId, Vec<graftyard_git::issues::CheckAnnotation>>,
 }
 
 impl CacheRows {

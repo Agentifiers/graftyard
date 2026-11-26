@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 
+use graftyard_git::issues::CheckAnnotation;
 use graftyard_identity::PermissionSet;
 use graftyard_raft::{Command, EntryBody, ExtendLeases, Fold, Format, LogEntry, Record, Scratch, TierSet};
 use graftyard_types::{AccountId, ChainId, DbId, IdBlock, Index, RepoId, RequestId, Timestamp};
@@ -67,17 +68,22 @@ pub const ACTIONS_FORMAT_CLAIMS: Format = Format { family: 0x15, version: 8 };
 /// `FormatsEnable` enabled 0x15.9 sends either, after the site day that shipped this reader to every member
 /// (`decisions/DECISIONS.md`, "`reusable`").
 pub const ACTIONS_FORMAT_REUSABLE: Format = Format { family: 0x15, version: 9 };
+/// BF-76's `FinishAnnotated`, whose entry records the job's check-run annotations (`ActionsEvent::JobAnnotations`)
+/// beside its `Finished`. Only an edge whose `FORMATS_ENABLED` holds 0x15.10 sends one, after the site day that shipped
+/// this reader to every member (`decisions/DECISIONS.md`, "`pin-map`").
+pub const ACTIONS_FORMAT_ANNOTATIONS: Format = Format { family: 0x15, version: 10 };
 /// BF-78's `on: push` (`crate::trigger::push_events`): `CreateRunPush`, whose entry records the run's actor (the
 /// pusher), its number, and its `github.event` (`ActionsEvent::RunEvent`) beside the run, and any `CreateRun` of a
 /// `push` run, whose run key names its ref (`WorkflowRun::key`), so one entry that moves several refs starts a run for
 /// each. Only a site whose site day set `GRAFTYARD_PUSH_TRIGGER` sends one, after the day that shipped this reader to
-/// every member (`decisions/DECISIONS.md`, "`push-trigger`"). 0x15.10 and 0x15.11 are other branches'.
+/// every member (`decisions/DECISIONS.md`, "`push-trigger`"). 0x15.11 is another branch's.
 pub const ACTIONS_FORMAT_PUSH: Format = Format { family: 0x15, version: 12 };
 /// Every Actions format this release reads, which a member's `reads()` is: a format a command can be sent as and a
 /// member does not list is refused `Unsupported` on every site, as 0x15.7 was on main 46ea4200
 /// (`every_command_format_is_read`).
-pub const ACTIONS_FORMATS: [Format; 10] = [
+pub const ACTIONS_FORMATS: [Format; 11] = [
     ACTIONS_FORMAT,
+    ACTIONS_FORMAT_ANNOTATIONS,
     ACTIONS_FORMAT_MERGE_GROUP,
     ACTIONS_FORMAT_OWNER_MATCH,
     ACTIONS_FORMAT_PULL_REQUEST,
@@ -288,6 +294,11 @@ pub enum ActionsEvent {
         run: RunId,
         payload: Box<str>,
     },
+    /// BF-76 (0x15.10): the job's check-run annotations, in the entry of its `Finished`.
+    JobAnnotations {
+        job: JobId,
+        annotations: Vec<graftyard_git::issues::CheckAnnotation>,
+    },
 }
 
 impl Record for ActionsEvent {
@@ -421,6 +432,8 @@ trait Tables {
     fn put_outputs(&mut self, _job: JobId, _outputs: &[(Box<str>, Box<str>)]) {}
     /// A `push` run's payload, which `decide` never reads.
     fn put_event(&mut self, _run: RunId, _payload: &str) {}
+    /// A finished job's annotations, which `decide` never reads either.
+    fn put_annotations(&mut self, _job: JobId, _a: &[CheckAnnotation]) {}
 }
 
 fn is_queued(s: &JobState) -> bool {
@@ -500,6 +513,7 @@ fn apply_event(t: &mut impl Tables, ev: &ActionsEvent, at: Timestamp) {
         ActionsEvent::RunPlanned { run, plan } => t.put_plan(*run, plan),
         ActionsEvent::JobOutputs { job, outputs } => t.put_outputs(*job, outputs),
         ActionsEvent::RunEvent { run, payload } => t.put_event(*run, payload),
+        ActionsEvent::JobAnnotations { job, annotations } => t.put_annotations(*job, annotations),
     }
 }
 
@@ -601,6 +615,9 @@ impl Tables for ActionsFold {
     }
     fn put_event(&mut self, run: RunId, payload: &str) {
         self.more.more.more.more.more.more.events.insert(run, payload.into());
+    }
+    fn put_annotations(&mut self, job: JobId, a: &[CheckAnnotation]) {
+        self.more.more.more.more.more.more.more.annotations.insert(job, a.to_vec());
     }
     fn put_number(&mut self, run: RunId, number: u64) {
         let Some(row) = self.runs.get(&run) else { return };
@@ -716,6 +733,10 @@ impl ActionsFold {
     /// A job's committed outputs (`ActionsEvent::JobOutputs`).
     pub fn job_outputs(&self, j: JobId) -> Option<&[(Box<str>, Box<str>)]> {
         self.more.more.more.more.more.outputs.get(&j).map(Vec::as_slice)
+    }
+    /// A finished job's check-run annotations (`ActionsEvent::JobAnnotations`, BF-76).
+    pub fn job_annotations(&self, j: JobId) -> &[CheckAnnotation] {
+        self.more.more.more.more.more.more.more.annotations.get(&j).map_or(&[], Vec::as_slice)
     }
     /// The run of a running job, which a cache call acts for.
     pub fn cache_run(&self, job: JobId) -> Result<&WorkflowRun, ActionsErr> {
@@ -1015,6 +1036,14 @@ impl Scratch for ActionsScratch<'_> {
             ActionsEvent::JobOutputs { job, .. } if self.job(*job).and_then(|j| j.state.completed()).is_none() => {
                 Err("outputs for a job that did not finish".into())
             }
+            ActionsEvent::JobAnnotations { job, .. } if self.job(*job).and_then(|j| j.state.completed()).is_none() => {
+                Err("annotations for a job that did not finish".into())
+            }
+            ActionsEvent::JobAnnotations { annotations, .. }
+                if annotations.is_empty() || !crate::annotations::fits(annotations) =>
+            {
+                Err("annotations past the job's caps".into())
+            }
             _ => Ok(()),
         }
     }
@@ -1223,6 +1252,15 @@ pub enum ActionsOp {
         actor: Option<(AccountId, Box<str>)>,
         event: Box<str>,
         plan: Option<crate::reusable::RunPlan>,
+    },
+    /// BF-76 (0x15.10): a `completejob` with annotations: the `Finished` a `Job` op commits, the outputs as `FinishWith`
+    /// records them when non-empty, and the annotations (`ActionsEvent::JobAnnotations`) when non-empty.
+    FinishAnnotated {
+        job: JobId,
+        version: u64,
+        conclusion: crate::job::Conclusion,
+        outputs: Vec<(Box<str>, Box<str>)>,
+        annotations: Vec<graftyard_git::issues::CheckAnnotation>,
     },
 }
 
@@ -1542,6 +1580,7 @@ impl Command for ActionsCmd {
             ActionsOp::CreateRunFrom { .. } => ACTIONS_FORMAT_HEAD_REF,
             ActionsOp::CreateRunAs { .. } | ActionsOp::SetSubTemplate { .. } => ACTIONS_FORMAT_CLAIMS,
             ActionsOp::CreateRunPlanned { .. } | ActionsOp::FinishWith { .. } => ACTIONS_FORMAT_REUSABLE,
+            ActionsOp::FinishAnnotated { .. } => ACTIONS_FORMAT_ANNOTATIONS,
             _ => ACTIONS_FORMAT,
         }
     }
@@ -1653,6 +1692,28 @@ impl Command for ActionsCmd {
                 let size: usize = outputs.iter().map(|(k, v)| k.len() + v.len()).sum();
                 if !outputs.is_empty() && size <= crate::reusable::OUTPUTS_MAX {
                     evs.push(ActionsEvent::JobOutputs { job: *job, outputs: outputs.clone() });
+                }
+                Ok((evs, out))
+            }
+            ActionsOp::FinishAnnotated { job, version, conclusion, outputs, annotations } => {
+                // `FinishWith`'s events, then the annotations beside them.
+                let with = ActionsOp::FinishWith {
+                    job: *job,
+                    version: *version,
+                    conclusion: *conclusion,
+                    outputs: outputs.clone(),
+                };
+                let (mut evs, out) = ActionsCmd { actor: self.actor.clone(), op: with }.decide(s, &[])?;
+                if !annotations.is_empty() {
+                    if !crate::annotations::fits(annotations) {
+                        return Err(ActionsErr::Illegal("the annotations are past the job's caps".into()));
+                    }
+                    let finished = evs.iter().any(|ev| {
+                        matches!(ev, ActionsEvent::Job { job: finished, event: JobEvent::Finished(_), .. } if finished == job)
+                    });
+                    if finished {
+                        evs.push(ActionsEvent::JobAnnotations { job: *job, annotations: annotations.clone() });
+                    }
                 }
                 Ok((evs, out))
             }
@@ -1934,6 +1995,17 @@ mod tests {
             f: ActionsFold,
             at: u64,
             n: u64,
+        }
+
+        fn check_annotation(message: &str) -> CheckAnnotation {
+            CheckAnnotation {
+                path: ".github".into(),
+                start_line: 1,
+                end_line: 1,
+                level: graftyard_git::issues::AnnotationLevel::Failure,
+                message: message.into(),
+                title: None,
+            }
         }
 
         fn run(id: i64, head_ref: &str, event: &str) -> WorkflowRun {
@@ -2419,6 +2491,121 @@ mod tests {
             assert_eq!(back, sh.f);
         }
 
+        /// BF-76's own job token records its annotations beside its `Finished`; an empty list adds no row or event.
+        #[test]
+        fn finish_annotated_records_the_jobs_annotations_in_the_same_entry() {
+            let mut sh = Shard::new();
+            let job = JobId(DbId(101));
+            let annotations = vec![check_annotation("the step failed")];
+            let op = ActionsOp::FinishAnnotated {
+                job,
+                version: 2,
+                conclusion: Conclusion::Failure,
+                outputs: vec![("result".into(), "failure".into())],
+                annotations: annotations.clone(),
+            };
+            let cmd = ActionsCmd { actor: ActionsActor::Job(job), op: op.clone() };
+            assert_eq!(cmd.format(), ACTIONS_FORMAT_ANNOTATIONS);
+            let (evs, _) = cmd.decide(&sh.f.scratch_at(Timestamp(sh.at), TierSet::CORE), &[]).unwrap();
+            assert_eq!(evs.len(), 3);
+            assert!(
+                matches!(evs[0], ActionsEvent::Job { job: j, event: JobEvent::Finished(Conclusion::Failure), .. } if j == job)
+            );
+            assert!(matches!(evs[1], ActionsEvent::JobOutputs { job: j, .. } if j == job));
+            assert_eq!(evs[2], ActionsEvent::JobAnnotations { job, annotations: annotations.clone() });
+            sh.run(ActionsActor::Job(job), op).unwrap();
+            assert_eq!(sh.f.job_annotations(job), annotations);
+
+            let other = JobId(DbId(103));
+            let empty = ActionsOp::FinishAnnotated {
+                job: other,
+                version: 2,
+                conclusion: Conclusion::Success,
+                outputs: Vec::new(),
+                annotations: Vec::new(),
+            };
+            let cmd = ActionsCmd { actor: ActionsActor::Job(other), op: empty };
+            let (evs, _) = cmd.decide(&sh.f.scratch_at(Timestamp(sh.at), TierSet::CORE), &[]).unwrap();
+            assert!(!evs.iter().any(|ev| matches!(ev, ActionsEvent::JobAnnotations { .. })));
+            sh.run(cmd.actor, cmd.op).unwrap();
+            assert!(sh.f.job_annotations(other).is_empty());
+        }
+
+        /// Another job's token cannot finish it or leave annotations behind.
+        #[test]
+        fn finish_annotated_refuses_another_jobs_token() {
+            let mut sh = Shard::new();
+            let job = JobId(DbId(101));
+            let before = sh.n;
+            let op = ActionsOp::FinishAnnotated {
+                job,
+                version: 2,
+                conclusion: Conclusion::Failure,
+                outputs: Vec::new(),
+                annotations: vec![check_annotation("not mine")],
+            };
+            assert_eq!(sh.run(ActionsActor::Job(JobId(DbId(103))), op), Err(ActionsErr::Forbidden));
+            assert_eq!(sh.n, before);
+            assert!(sh.f.job_annotations(job).is_empty());
+            assert_eq!(sh.f.job(job).unwrap().state.completed(), None);
+        }
+
+        /// An over-cap completion commits nothing at all, so its job remains in progress.
+        #[test]
+        fn finish_annotated_refuses_fifty_one_annotations() {
+            let mut sh = Shard::new();
+            let job = JobId(DbId(101));
+            let op = ActionsOp::FinishAnnotated {
+                job,
+                version: 2,
+                conclusion: Conclusion::Failure,
+                outputs: Vec::new(),
+                annotations: vec![check_annotation("x"); crate::annotations::ANNOTATIONS_MAX + 1],
+            };
+            assert!(matches!(sh.run(ActionsActor::Job(job), op), Err(ActionsErr::Illegal(_))));
+            assert_eq!(sh.f.job(job).unwrap().state.completed(), None);
+            assert!(sh.f.job_annotations(job).is_empty());
+        }
+
+        /// A follower accepts annotations only on a completed job and only within both caps.
+        #[test]
+        fn a_follower_checks_job_annotations_against_the_job_and_caps() {
+            let mut sh = Shard::new();
+            let job = JobId(DbId(101));
+            let ev = |annotations| ActionsEvent::JobAnnotations { job, annotations };
+            let sc = sh.f.scratch_at(Timestamp(sh.at), TierSet::CORE);
+            assert_eq!(
+                sc.check(&ev(vec![check_annotation("unfinished")])).unwrap_err(),
+                "annotations for a job that did not finish".into()
+            );
+            sh.run(
+                ActionsActor::Job(job),
+                ActionsOp::Job { job, version: 2, event: JobEvent::Finished(Conclusion::Success) },
+            )
+            .unwrap();
+            let sc = sh.f.scratch_at(Timestamp(sh.at), TierSet::CORE);
+            assert_eq!(sc.check(&ev(vec![check_annotation("ok")])), Ok(()));
+            for annotations in [Vec::new(), vec![check_annotation("x"); crate::annotations::ANNOTATIONS_MAX + 1]] {
+                assert_eq!(sc.check(&ev(annotations)).unwrap_err(), "annotations past the job's caps".into());
+            }
+        }
+
+        /// No annotation row writes the pre-BF-76 push rows byte for byte; a row adds a round-tripping trailing part.
+        #[test]
+        fn push_rows_keep_their_bytes_until_an_annotation_row() {
+            let events: BTreeMap<RunId, Box<str>> = [(RunId(DbId(100)), "{\"ref\":\"main\"}".into())].into();
+            let mut rows = crate::cache::PushRows { events: events.clone(), more: Default::default() };
+            let bare = postcard::to_allocvec(&events).unwrap();
+            assert_eq!(postcard::to_allocvec(&rows).unwrap(), bare);
+            assert_eq!(postcard::from_bytes::<crate::cache::PushRows>(&bare).unwrap(), rows);
+
+            rows.more.annotations.insert(JobId(DbId(101)), vec![check_annotation("kept")]);
+            let mut f = ActionsFold::default();
+            f.more.more.more.more.more.more = rows;
+            let bytes = postcard::to_allocvec(&f).unwrap();
+            assert_eq!(postcard::from_bytes::<ActionsFold>(&bytes).unwrap(), f);
+        }
+
         /// F122: a repository's `sub` setting over the owner's template, as GHES documents it: the default until the
         /// repository opts out of it, its own keys over the owner's, and the owner's once it opts out with none.
         /// `SetSubTemplate` takes an admin and refuses a key GHES refuses.
@@ -2511,6 +2698,13 @@ mod tests {
                 conclusion: crate::job::Conclusion::Success,
                 outputs: Vec::new(),
             },
+            ActionsOp::FinishAnnotated {
+                job: JobId(DbId(1)),
+                version: 0,
+                conclusion: crate::job::Conclusion::Success,
+                outputs: Vec::new(),
+                annotations: Vec::new(),
+            },
             ActionsOp::CreateRunPush {
                 run: WorkflowRun { event: "push".into(), ..r },
                 jobs: j,
@@ -2529,9 +2723,10 @@ mod tests {
             let f = ActionsCmd { actor: ActionsActor::Operator, op: op.clone() }.format();
             assert!(ACTIONS_FORMATS.contains(&f), "{op:?} is sent as {f:?}, which no member reads");
         }
-        // 0x15.10 and 0x15.11 are other branches' (the lead's reservation); each joins this list as it merges.
-        let versions: Vec<u16> = ACTIONS_FORMATS.iter().map(|f| f.version).collect();
-        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 12]);
+        // 0x15.11 is another branch's (the lead's reservation); it joins this list as it merges.
+        let mut versions: Vec<u16> = ACTIONS_FORMATS.iter().map(|f| f.version).collect();
+        versions.sort_unstable();
+        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12]);
     }
 
     /// A recorded stall moves a live lease and a queued job's `since` by exactly its length, through the fold and

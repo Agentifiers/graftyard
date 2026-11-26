@@ -1,0 +1,14 @@
+name: f133-any
+# F133 (`tests/m4/wp3/f133/push.mjs`): every push, with no filter. Its job writes `github.event` to
+# F133_OUT/event-<run>.json on the runner's host (the orb).
+on: push
+permissions:
+  contents: read
+jobs:
+  any:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: |
+          echo "context event=${{ github.event_name }} ref=${{ github.ref }} sha=${{ github.sha }}"
+          umask 077
+          cat "$GITHUB_EVENT_PATH" >"$F133_OUT/event-${{ github.run_id }}.json"

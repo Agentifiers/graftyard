@@ -1,0 +1,8 @@
+{"script":"graft-m6a-bf50","versions":["2da06d2c","1264b557","6d833bce","e33dc9ba","d3bdfe5c"]}
+{"script":"graft-m6a-edge","versions":["4e6852bb"]}
+{"script":"graft-m6a-ops","versions":["ccda1395"]}
+{"script":"graft-m6a-site-a","versions":["8fae5383","f8ec4eaf","83602ede","4d476c84","8f277acd","4bdd01a6","d49598f3","f8a9444d","181f478f","ccea9e6e"]}
+{"script":"graft-m6a-site-b","versions":["fe929410","e145d7b1","24334eec","f37dac08","762a12a8","38a8f551","6c7af76a","d61fd1fb","f1b85aeb","8f6580f3"]}
+{"script":"graft-m6a-site-c","versions":["f28c7f4b","66089c2a","d3cb9259","386d8cb6","708221f8","5e46a2a9","ac696673","acd52ee1","c81dd822"]}
+{"script":"graft-m6a-spare-wnam","versions":["b2d9ce8b","835c7586","f741ecb1","e0fe5eef","5e377dd1","317b64d3","0548717f","9bb716f9"]}
+{"script":"graft-m6a-workflows","versions":["b1a6a928","ed42f9a7","f7bc3b1e","f5e20fc4"]}

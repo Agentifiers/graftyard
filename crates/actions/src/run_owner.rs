@@ -19,7 +19,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use graftyard_git::issues::{CheckConclusion, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CheckSuiteUpdate};
+use graftyard_git::issues::{
+    CheckAnnotation, CheckConclusion, CheckOutput, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId,
+    CheckSuiteUpdate,
+};
 use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_git::run_checks::{ACTIONS_APP, RunChecksCmd, RunChecksOut};
 use graftyard_git::workflow_job::{JobAction, WorkflowJobUpdate};
@@ -168,7 +171,11 @@ pub fn round(
         }
         let (suites, checks) = by_repo.entry(row.run.repo).or_default();
         suites.push(suite(row));
-        checks.extend(fold.run_jobs(*r).into_iter().map(|j| check_run(row, &j.spec.name, j.spec.id.0, &j.state)));
+        checks.extend(
+            fold.run_jobs(*r)
+                .into_iter()
+                .map(|j| check_run(row, &j.spec.name, j.spec.id, &j.state, fold.job_annotations(j.spec.id))),
+        );
         then.push(ActionsOp::SetRunStatus { run: *r });
     }
     then.push(ActionsOp::OwnerCursor { through });
@@ -283,14 +290,27 @@ fn suite(row: &RunRow) -> CheckSuiteUpdate {
 }
 
 /// A job's check run: its id is the job's, so one (job, attempt) is always one row.
-fn check_run(row: &RunRow, name: &str, job: graftyard_types::DbId, s: &JobState) -> CheckRunUpdate {
+fn check_run(
+    row: &RunRow,
+    name: &str,
+    job: crate::JobId,
+    s: &JobState,
+    annotations: &[CheckAnnotation],
+) -> CheckRunUpdate {
     let (status, c, completed) = match s {
         JobState::Pending { .. } | JobState::Queued { .. } => (CheckStatus::Queued, None, None),
         JobState::Assigned { .. } | JobState::InProgress { .. } => (CheckStatus::InProgress, None, None),
         JobState::Completed { conclusion: k, at } => (CheckStatus::Completed, Some(conclusion(*k)), Some(*at)),
     };
+    // Only a finished job holds annotations (`ActionsFold::check`), so only a completed check run carries an output.
+    let output = (!annotations.is_empty()).then(|| CheckOutput {
+        title: "".into(),
+        summary: "".into(),
+        text: None,
+        annotations: annotations.to_vec(),
+    });
     CheckRunUpdate {
-        run: CheckRunId(job),
+        run: CheckRunId(job.0),
         suite: CheckSuiteId(row.run.id.0),
         app: ACTIONS_APP,
         head_sha: ObjectId(row.run.head_sha),
@@ -302,6 +322,6 @@ fn check_run(row: &RunRow, name: &str, job: graftyard_types::DbId, s: &JobState)
         completed,
         external_id: None,
         details_url: None,
-        output: None,
+        output,
     }
 }

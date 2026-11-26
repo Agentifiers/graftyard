@@ -4727,6 +4727,11 @@ async fn serve(
     {
         return agents::respond(&c, r);
     }
+    if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX)
+        && let Some(r) = actions::pinmap::graftyard_route(&c, &mut req, rest).await?
+    {
+        return agents::respond(&c, r.with("content-type", "application/json; charset=utf-8"));
+    }
     if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX).filter(|r| r.starts_with('/'))
         && graftyard_api::agents::route(rest).is_some()
     {

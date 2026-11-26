@@ -25,8 +25,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use common::Group;
 use graftyard_actions::run_owner::{ChecksAnswer, checks_answer, record_owner, round, steps, touched};
 use graftyard_actions::shard::{
-    ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST, ActionsActor, ActionsCmd, ActionsErr, ActionsEvent, ActionsFold,
-    ActionsOp, ActionsOut, JobSpec, RunnerRecord, RunnerScope, WorkflowRun,
+    ACTIONS_FORMAT, ACTIONS_FORMAT_ANNOTATIONS, ACTIONS_FORMAT_PULL_REQUEST, ActionsActor, ActionsCmd, ActionsErr,
+    ActionsEvent, ActionsFold, ActionsOp, ActionsOut, JobSpec, RunnerRecord, RunnerScope, WorkflowRun,
 };
 use graftyard_actions::{Conclusion, JobEvent, JobId, JobState, LabelSet, RunId, RunStatus, RunnerId};
 use graftyard_git::issues::{
@@ -131,7 +131,12 @@ impl World {
         let now = Timestamp(1_000_000);
         let mut shard = Group::new(
             ChainId::Actions(OWNER, 3),
-            vec![ACTIONS_FORMAT, ACTIONS_FORMAT_PULL_REQUEST, graftyard_actions::shard::ACTIONS_FORMAT_TOKENS],
+            vec![
+                ACTIONS_FORMAT,
+                ACTIONS_FORMAT_PULL_REQUEST,
+                graftyard_actions::shard::ACTIONS_FORMAT_TOKENS,
+                ACTIONS_FORMAT_ANNOTATIONS,
+            ],
             ActionsFold::default(),
             now,
         );
@@ -808,6 +813,55 @@ fn bf56_a_killed_run_owner_between_its_repository_writes_and_its_cursor() {
     assert!(!w.owner_up, "RunOwner died after writing checks and before its cursor");
     assert_eq!(w.fold().owner_cursor, Index(0));
     bf56_finish(w, a, b);
+}
+
+/// BF-76: `RunOwner` attaches a completed job's stored annotations at check-run version 3, and no output while it runs.
+#[test]
+fn a_finish_annotated_round_writes_the_check_run_annotations() {
+    use graftyard_git::issues::{AnnotationLevel, CheckAnnotation, CheckStatus};
+    let mut w = World::new();
+    w.register(1);
+    let run = w.create_run(oid(11), "refs/heads/a", 2, vec![spec("build", &[])]);
+    let job = w.fold().run(run).unwrap().jobs[0];
+    w.runners_step();
+    let f = w.fold();
+    assert!(matches!(f.job(job).unwrap().state, JobState::InProgress { .. }));
+    let checks = |w: &World, f: &ActionsFold| {
+        round(w.shard.chain, f, &BTreeSet::from([run]), w.shard.commit_index(), &BTreeSet::new(), &[], &[])
+            .checks
+            .remove(0)
+            .1
+            .runs
+            .remove(0)
+    };
+    let running = checks(&w, &f);
+    assert_eq!((running.version, running.status), (2, CheckStatus::InProgress));
+    assert_eq!(running.output, None);
+
+    let annotation = CheckAnnotation {
+        path: "src/main.rs".into(),
+        start_line: 9,
+        end_line: 9,
+        level: AnnotationLevel::Failure,
+        message: "the step failed".into(),
+        title: Some("build".into()),
+    };
+    let finish = ActionsCmd {
+        actor: ActionsActor::Job(job),
+        op: ActionsOp::FinishAnnotated {
+            job,
+            version: 2,
+            conclusion: Conclusion::Failure,
+            outputs: Vec::new(),
+            annotations: vec![annotation.clone()],
+        },
+    };
+    assert!(matches!(w.shard_cmd(finish), Some(Ok(_))));
+    let completed = checks(&w, &w.fold());
+    assert_eq!((completed.version, completed.status), (3, CheckStatus::Completed));
+    let output = completed.output.expect("the completed check run carries its annotations");
+    assert_eq!((&*output.title, &*output.summary, output.text.as_deref()), ("", "", None));
+    assert_eq!(output.annotations, [annotation]);
 }
 
 // ---- one runner at a time ----

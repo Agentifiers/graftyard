@@ -699,11 +699,66 @@ pub fn get_check_run(r: &Repo<'_>, id: &str) -> Reply {
     }
 }
 
+/// `GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations`.
+pub fn list_check_run_annotations(r: &Repo<'_>, id: &str, query: &str) -> Reply {
+    let Some(id) = id.parse::<i64>().ok() else { return Reply::not_found() };
+    let Some(t) = r.check_run(CheckRunId(DbId(id))) else { return Reply::not_found() };
+    let c = &t.rec;
+    let annotations = c.output.as_ref().map_or(&[][..], |o| o.annotations.as_slice());
+    let page = Page::parse(query);
+    let more = annotations.len() > page.end();
+    let (web, head_sha) = (r.host.web(), c.head_sha.hex());
+    let (o, name) = (&r.at.owner, &r.at.name);
+    let items: Vec<Value> = annotations
+        .iter()
+        .skip(page.skip())
+        .take(page.per_page)
+        .map(|a| {
+            json!({
+                "path": &*a.path,
+                "blob_href": format!("{web}/{o}/{name}/blob/{head_sha}/{}", a.path),
+                "start_line": a.start_line,
+                "end_line": a.end_line,
+                "start_column": null,
+                "end_column": null,
+                "annotation_level": match a.level {
+                    AnnotationLevel::Notice => "notice",
+                    AnnotationLevel::Warning => "warning",
+                    AnnotationLevel::Failure => "failure",
+                },
+                "title": a.title.as_deref(),
+                "message": &*a.message,
+                "raw_details": null,
+            })
+        })
+        .collect();
+    let link = graftyard_wire::link(
+        &r.host.api(),
+        r.at.id.0.0,
+        &format!("/check-runs/{id}/annotations"),
+        &[],
+        page,
+        more,
+        None,
+    );
+    let reply = Reply::json(200, Value::Array(items));
+    match link {
+        Some(l) => reply.with("link", l),
+        None => reply,
+    }
+}
+
 /// The pinned `check-run` schema's object, shared with its webhook.
 pub fn check_run_json(r: &Repo<'_>, c: &CheckRunUpdate, at: Timestamp) -> Value {
     let (api, web) = (r.host.api(), r.host.web());
     let (o, name) = (&r.at.owner, &r.at.name);
     let id = c.run.0.0;
+    let actions = c.app == graftyard_git::run_checks::ACTIONS_APP;
+    fn output_text(text: &str, actions: bool) -> Option<&str> {
+        (!text.is_empty() || !actions).then_some(text)
+    }
+    let title = c.output.as_ref().and_then(|x| output_text(&x.title, actions));
+    let summary = c.output.as_ref().and_then(|x| output_text(&x.summary, actions));
     json!({
         "id": id, "node_id": scoped(NodeType::CheckRun, r, id), "head_sha": c.head_sha.hex(), "name": &*c.name,
         "url": format!("{api}/repos/{o}/{name}/check-runs/{id}"),
@@ -719,7 +774,7 @@ pub fn check_run_json(r: &Repo<'_>, c: &CheckRunUpdate, at: Timestamp) -> Value 
             "created_at": iso(at), "updated_at": iso(at),
         },
         "output": {
-            "title": c.output.as_ref().map(|x| &*x.title), "summary": c.output.as_ref().map(|x| &*x.summary),
+            "title": title, "summary": summary,
             "text": c.output.as_ref().and_then(|x| x.text.as_deref()),
             "annotations_count": c.output.as_ref().map_or(0, |x| x.annotations.len()),
             "annotations_url": format!("{api}/repos/{o}/{name}/check-runs/{id}/annotations"),

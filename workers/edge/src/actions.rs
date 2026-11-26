@@ -37,6 +37,7 @@ use crate::Ctx;
 use crate::api::{Read, read, unavailable};
 
 mod oidc;
+pub(crate) mod pinmap;
 pub(crate) mod sub;
 
 pub const SERVICES: &str = "/_services/";
@@ -196,7 +197,15 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
         }
         (Method::Post, "run/completejob", Some((chain, g @ Grant::Job { .. }))) => {
             // `reusable`: the outputs the runner evaluated, which a planned run's job commits with its `Finished`.
-            let body = json!({ "op": "complete", "grant": g, "conclusion": b["conclusion"], "outputs": b["outputs"] });
+            let mut body =
+                json!({ "op": "complete", "grant": g, "conclusion": b["conclusion"], "outputs": b["outputs"] });
+            // BF-76 (0x15.10): the job's check-run annotations, the runner's and Graftyard's pin-map line, committed
+            // with its `Finished` (`pinmap::annotations`).
+            if let ChainId::Actions(owner, _) = chain
+                && c.cfg.enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_ANNOTATIONS)
+            {
+                body["annotations"] = json!(pinmap::annotations(c, owner, &b).await);
+            }
             answer(c, chain, body).await
         }
         (Method::Post, r, Some((chain, Grant::Job { job, .. }))) if r.starts_with("results/") => {
@@ -226,11 +235,29 @@ pub fn launch_job(c: &Ctx<'_>, req: &Request, path: &str) -> Option<JobId> {
 /// the install's own repositories as an anonymous reader would see them (`crate::api::launch_resolve`), all at once.
 pub async fn launch(c: &Ctx<'_>, mut req: Request) -> Result<Response> {
     use graftyard_actions::launch;
+    let token = bearer(&req);
     let b: Value = serde_json::from_str(&req.text().await.unwrap_or_default()).unwrap_or(Value::Null);
     let Some(asked) = launch::requested(&b) else { return service_error(400) };
     let Ok(host) = graftyard_wire::Host::new(&c.cfg.host, false) else { return service_error(503) };
-    let found = futures_util::future::join_all(asked.iter().map(|a| crate::api::launch_resolve(c, &host, a))).await;
-    let (status, v) = launch::reply(&asked.into_iter().zip(found).collect::<Vec<_>>());
+    // BF-76: the run owner's substitution policy picks a `graftyard-actions` fork for a tag or an approved pin; any
+    // other action, an unapproved pin among them, resolves as written (`pinmap`).
+    let owner = token
+        .zip(public_key(c))
+        .and_then(|(t, k)| runsvc::verify_token(&t, &k, crate::now()))
+        .and_then(|(chain, _)| if let ChainId::Actions(o, _) = chain { Some(o) } else { None });
+    let policy = match owner {
+        Some(o) => pinmap::policy(c, o).await,
+        None => pinmap::Policy { tags: false, approved: None, known: None },
+    };
+    let chosen = pinmap::substitute(&policy, &asked);
+    let found =
+        futures_util::future::join_all(chosen.iter().map(|(a, _)| crate::api::launch_resolve(c, &host, a))).await;
+    for ((a, s), f) in chosen.iter().zip(&found) {
+        if let (Some(fork), launch::Found::Commit { sha, .. }) = (&a.resolved, f) {
+            console_log!("launch substitution ({s:?}): {} -> {fork}@{} (SHA:{})", a.key, a.version, sha.hex());
+        }
+    }
+    let (status, v) = launch::reply(&chosen.into_iter().map(|(a, _)| a).zip(found).collect::<Vec<_>>());
     if status != 200 {
         console_error!("launch {status}: {v}");
     }
