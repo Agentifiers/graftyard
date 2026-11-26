@@ -261,6 +261,21 @@ pub fn effective(t: &TaskCore, owner: &dyn AuthzRead, repo: RepoId, at: Timestam
     }
 }
 
+/// The Graftyard-run tasks of issue `n` whose stored state is not final, for the host pause and its resume
+/// (`decisions/DECISIONS.md`, "`host-pause`"): the open tasks whose metadata row names the issue.
+pub fn issue_runs(
+    core: &(impl Read + ?Sized),
+    meta: &(impl Read + ?Sized),
+    n: IssueNumber,
+) -> Vec<(SessionId, TaskCore)> {
+    open_ids(core)
+        .into_iter()
+        .filter(|id| task_meta(meta, id).is_some_and(|m| m.issue == Some(n)))
+        .filter_map(|id| task_core(core, &id).map(|t| (id, t)))
+        .filter(|(_, t)| t.kind == TaskKind::GraftyardRun)
+        .collect()
+}
+
 /// The open tasks that count against a new task's caps: (for this requester, or this App when there is none; in the
 /// repository).
 pub fn open_counts(
@@ -835,6 +850,18 @@ pub(crate) fn write_updated_core(w: &mut dyn Rows, s: &SessionId, state: Option<
     if t.state.is_final() {
         w.delete("agent_task_open", &task_key(s));
     }
+}
+
+/// `TaskResumed`'s core row: the paused task is `queued` again.
+pub(crate) fn write_resumed_core(w: &mut dyn Rows, s: &SessionId, at: Timestamp) {
+    write_updated_core(w, s, Some(TaskApiState::Queued), at);
+}
+
+/// `TaskResumed`'s metadata row: the issue snapshot moves to the resuming entry's.
+pub(crate) fn write_resumed_meta(w: &mut dyn Rows, s: &SessionId, snapshot: Index) {
+    let Some(mut m) = task_meta(w, s) else { return };
+    m.snapshot = snapshot;
+    put_rec(w, "agent_task_meta", task_key(s), &m);
 }
 
 pub(crate) fn write_updated_meta(w: &mut dyn Rows, s: &SessionId, pr: Option<IssueNumber>, summary: Option<&str>) {

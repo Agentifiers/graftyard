@@ -32,6 +32,8 @@
 //!   `TOKEN_SLACK_MS` before it expires.
 //! - **Alarm.** The container's state, this object's version (`VERSION`), and the pointer go to `TaskBox::on`, and the
 //!   host does what it answers.
+//! - **The host pause.** `POST /base` (from `follow`, never the Internet) with the base's task state goes to
+//!   `TaskBox::on` as `Input::Base`: a pause stops the Sandbox, and a resume starts a new one.
 //!
 //! No request path calls the Cloudflare API, and nothing logs a token, a key, or a body.
 
@@ -43,6 +45,7 @@ use futures_util::future::{Either, select};
 use graftyard_git::controller::{Delivery, Resume, SandboxId, TASK_WALL, Task, TaskBudget, TaskEvent};
 use graftyard_git::outbound::{Allowed, Cred, OutReq, Route, Scheme, outbound};
 use graftyard_git::session_log::{self as sl, LogReport, Pushed};
+use graftyard_git::task::TaskApiState;
 use graftyard_git::taskbox::{self as tb, Act, HEARTBEAT, Input, Pointer, Report, acked_pushes};
 use graftyard_identity::appauth::{app_key, sign_app_jwt};
 use graftyard_identity::{AppId, SessionId, WorkspaceMode};
@@ -109,16 +112,32 @@ pub async fn deliver(env: &Env, payload: &Value) -> Result<Response> {
 /// host's `decide` reads the issue's latest `Assigned` entry and takes its actor as the requester, or refuses. The
 /// answer is the create's.
 pub async fn assigned(env: &Env, payload: &Value) -> Result<Response> {
+    let Some((host, full, n, h)) = issue_call(env, payload).await? else {
+        return reply(422, json!({ "message": "not an issue assignment delivery" }));
+    };
+    let mut init = RequestInit::new();
+    let body = json!({ "issue_number": n });
+    init.with_method(Method::Post).with_headers(h).with_body(Some(body.to_string().into()));
+    let url = format!("https://{host}/api/graftyard/v1/repos/{full}/tasks");
+    let mut r = Fetch::Request(Request::new_with_init(&url, &init)?).send().await?;
+    let code = r.status_code();
+    let v: Value = r.json().await.unwrap_or(Value::Null);
+    console_log!("graft-controller: create from {full}#{n}: {code}");
+    reply(code, v)
+}
+
+/// The host, the repository's `owner/name`, the issue's number, and headers carrying a `graftyard-agent` installation
+/// token for the repository minted without `graftyard_task`, for an `issues` delivery; `None` when the payload names no
+/// installation, repository, or issue.
+async fn issue_call(env: &Env, payload: &Value) -> Result<Option<(String, String, u64, Headers)>> {
     let (Some(installation), Some(full), Some(n)) = (
         payload["installation"]["id"].as_i64(),
         payload["repository"]["full_name"].as_str(),
         payload["issue"]["number"].as_u64(),
     ) else {
-        return reply(422, json!({ "message": "not an issue assignment delivery" }));
+        return Ok(None);
     };
-    let Some((_, repo)) = full.split_once('/') else {
-        return reply(422, json!({ "message": "not an issue assignment delivery" }));
-    };
+    let Some((_, repo)) = full.split_once('/') else { return Ok(None) };
     let host = env.var("GRAFTYARD_HOST")?.to_string();
     let jwt = app_jwt(env, "AGENT").await?;
     let h = Headers::new();
@@ -136,15 +155,41 @@ pub async fn assigned(env: &Env, payload: &Value) -> Result<Response> {
         return Err(err(format!("AGENT access_tokens: {} {}", r.status_code(), v["message"])));
     };
     h.set("authorization", &format!("token {token}"))?;
+    Ok(Some((host, full.to_owned(), n, h)))
+}
+
+/// The host pause (`decisions/DECISIONS.md`, "`host-pause`"): a signed `issues.edited` or `issues.assigned` delivery
+/// is a trigger to read the base. The issue's Graftyard-run tasks that are not final, from `GET
+/// /api/graftyard/v1/repos/{o}/{r}/tasks?issue_number=n` under `graftyard-agent`'s token, each go to their box as `POST
+/// /base` with the state the base gives, and the box follows it (`Input::Base`). The controller checks no permission
+/// itself: only the base decides whether an edit paused a task or a reassignment resumed it. Returns how many open
+/// tasks the issue has, so an assignment of the bot to an issue with one creates no second task.
+pub async fn follow(env: &Env, payload: &Value) -> Result<usize> {
+    let Some((host, full, n, h)) = issue_call(env, payload).await? else { return Ok(0) };
     let mut init = RequestInit::new();
-    let body = json!({ "issue_number": n });
-    init.with_method(Method::Post).with_headers(h).with_body(Some(body.to_string().into()));
-    let url = format!("https://{host}/api/graftyard/v1/repos/{full}/tasks");
+    init.with_method(Method::Get).with_headers(h);
+    let url = format!("https://{host}/api/graftyard/v1/repos/{full}/tasks?issue_number={n}&per_page=100");
     let mut r = Fetch::Request(Request::new_with_init(&url, &init)?).send().await?;
-    let code = r.status_code();
-    let v: Value = r.json().await.unwrap_or(Value::Null);
-    console_log!("graft-controller: create from {full}#{n}: {code}");
-    reply(code, v)
+    if r.status_code() != 200 {
+        return Err(err(format!("tasks of {full}#{n}: {}", r.status_code())));
+    }
+    let tasks: Vec<Value> = r.json().await?;
+    let mut open = 0;
+    for t in tasks.iter().filter(|t| t["kind"] == "graftyard_run") {
+        let (Some(id), Some(state)) = (t["id"].as_str(), t["state"].as_str().and_then(TaskApiState::parse)) else {
+            continue;
+        };
+        if state.is_final() {
+            continue;
+        }
+        open += 1;
+        let stub = env.durable_object("TASKBOX")?.get_by_name(id)?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(Some(json!({ "state": state.as_str() }).to_string().into()));
+        let code = stub.fetch_with_request(Request::new_with_init("https://taskbox/base", &init)?).await?.status_code();
+        console_log!("graft-controller: task {id} follows the base's {} from {full}#{n}: {code}", state.as_str());
+    }
+    Ok(open)
 }
 
 /// `graftyard-workspace`'s installation on the task's push target, the base in-repo: `GET
@@ -659,6 +704,22 @@ impl DurableObject for TaskBox {
                 self.state.storage().set_alarm(HEARTBEAT).await?;
                 self.report_base().await?;
                 reply(201, json!({ "state": s.b.task.state }))
+            }
+            (Method::Post, "/base") => {
+                let Some(mut s) = self.load().await? else { return reply(404, json!({ "message": "no box" })) };
+                let body: Value = req.json().await?;
+                let Some(state) = body["state"].as_str().and_then(TaskApiState::parse) else {
+                    return reply(422, json!({ "message": "no task state" }));
+                };
+                let act = s.b.on(Input::Base { state, version: version(&self.env) }, now_ms()).map_err(err)?;
+                self.save(&s).await?;
+                self.act(&act, &s).await?;
+                if matches!(act, Act::Start { .. }) {
+                    self.state.storage().set_alarm(HEARTBEAT).await?;
+                    self.report_base().await?;
+                }
+                console_log!("graft-controller: task {} base {}: {:?}", s.b.task.id.text(), state.as_str(), act);
+                reply(200, json!({ "state": s.b.task.state }))
             }
             (Method::Get, "/cancel") => {
                 let Some(mut s) = self.load().await? else { return reply(404, json!({ "message": "no box" })) };

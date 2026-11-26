@@ -5,7 +5,7 @@
 answer given up at once, a refusal retried for ever, the harness's `pushes` kept over the host's, a secret shape or a
 minted token not redacted, a secret matched inside a word, the per-step cap not marking `truncated`, the whole-log cap
 skipped, another task's stored log served, a session page that does not escape, `fields=prompt` served without
-`contents: read`, and a 4xx push answer retried. Run from the repository root:
+`contents: read`, a 4xx push answer retried, and a host pause that keeps an unpushed log or drops a pushed one. Run from the repository root:
 
     python3 tests/m0carried/plant279.py          # every mutant
     python3 tests/m0carried/plant279.py 0 2      # by number
@@ -57,6 +57,11 @@ MUTANTS = [
      '            \'<\' => o.push_str("&lt;"),\n', '', TI),
     ("fields=prompt is served without contents: read", TA,
      '    if prompt && !reader.contents {\n', '    if prompt && !reader.metadata {\n', TI),
+    ("a host pause keeps a log it has not pushed, so the paused task's push is refused and the resumed log lost", TB,
+     '                        if self.log != LogState::Done(Pushed::Ok) {\n                            self.log = LogState::Unreported;\n',
+     '                        if false {\n                            self.log = LogState::Unreported;\n', TG),
+    ("a host pause drops a log already pushed, so the resumed Sandbox pushes a second", TB,
+     '                        if self.log != LogState::Done(Pushed::Ok) {\n', '                        if true {\n', TG),
     ("a 4xx answer to the log push is tried again", SL,
      '        Some(s) if !(200..300).contains(&s) => return Pushed::Refused,\n', '', TG),
 ]

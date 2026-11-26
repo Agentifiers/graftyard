@@ -574,7 +574,7 @@ impl IssueCmd {
         v: &RepoView<'_>,
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
-        self.decide_in(v, deps, false, None, false, false, false)
+        self.decide_in(v, deps, false, None, false, false, false, None)
     }
 
     /// `decide`, where `agent` says the command is format 32.8 (`crate::repo::REPO_FORMAT_AGENT`), so its entry may
@@ -582,7 +582,10 @@ impl IssueCmd {
     /// `reviews` says it is format 32.22 (`call::REPO_FORMAT_REVIEWS`), so a review comment outside a review submits
     /// its review as `ReviewEvent::SingleComment`. `bot_author` says it is format 32.29 (`call::REPO_FORMAT_ROUTES`) or
     /// 32.32 (`call::REPO_FORMAT_ISSUE_COMMENT`), so an App's `OpenIssue` or issue `Comment` is authored by its bot
-    /// account (`AppId::bot`).
+    /// account (`AppId::bot`). `pause` says it is format 32.33 (`call::REPO_FORMAT_HOST_PAUSE`) and holds the index the
+    /// entry follows: a title or body edit by a caller below write pauses the issue's live Graftyard-run tasks, and a
+    /// human writer's `Assign` that adds the controller's bot resumes its paused ones with that index as their snapshot,
+    /// each in the command's own events.
     #[expect(clippy::too_many_arguments, reason = "each flag is one format the call's entry already decided")]
     pub fn decide_in(
         &self,
@@ -593,6 +596,7 @@ impl IssueCmd {
         leases: bool,
         reviews: bool,
         bot_author: bool,
+        pause: Option<graftyard_types::Index>,
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
         let cred = self.actor.credential_shard();
         let app = match (&self.actor.actor, &self.actor.credential) {
@@ -810,6 +814,20 @@ impl IssueCmd {
                     let lv = crate::lease::LeaseView { core: v.core(), owner, repo: v.tiers.repo, at: v.at };
                     evs.extend(crate::lease::plan_events(&lv, &self.actor, self.credential_app(deps), *n, b));
                 }
+                // The host pause (32.33): a title or body edit by a caller below write, the issue's author with read
+                // or a triager, sets the issue's live Graftyard-run tasks `waiting_for_user` in the same command.
+                if pause.is_some()
+                    && matches!(change, IssueChange::Title(_) | IssueChange::Body(_))
+                    && perm < Some(RepoPermission::Write)
+                    && let (Some(owner), Some(actor)) = (authz, crate::task::TaskActor::of(&self.actor))
+                {
+                    for (session, t) in crate::task::issue_runs(v.core(), v.meta(), *n) {
+                        if crate::task::effective(&t, owner, v.tiers.repo, v.at).is_live() {
+                            let state = Some(crate::task::TaskApiState::WaitingForUser);
+                            evs.push(RepoEvent::TaskUpdated { session, state, pr: None, summary: None, actor });
+                        }
+                    }
+                }
                 Ok((evs, IssueOut::Done))
             }
             IssueOp::Comment { on, body, reply_to } => {
@@ -1021,7 +1039,28 @@ impl IssueCmd {
                     Actor::App { app, .. } => Some(app.bot()),
                     _ => me,
                 };
-                Ok((one(RepoEvent::Assigned { n: *n, add: add_now, remove: remove_now, actor }), IssueOut::Done))
+                // The resume (32.33): a human writer's add of the controller's bot, never an App's or an `AgentApp`'s
+                // user-to-server token, queues the issue's paused Graftyard-run tasks again with this entry's snapshot.
+                let human = matches!(self.actor.actor, Actor::User(_))
+                    && !self.credential_app(deps).is_some_and(|a| crate::agent::agent_app(install, a).is_some());
+                let mut resumed = SmallVec::<[RepoEvent; 4]>::new();
+                if let Some(snapshot) = pause
+                    && human
+                    && perm >= Some(RepoPermission::Write)
+                    && bot.is_some_and(|b| add_now.contains(&b))
+                    && let Some(owner) = authz
+                {
+                    for (session, t) in crate::task::issue_runs(v.core(), v.meta(), *n) {
+                        if crate::task::effective(&t, owner, v.tiers.repo, v.at)
+                            == crate::task::TaskApiState::WaitingForUser
+                        {
+                            resumed.push(RepoEvent::TaskResumed { session, snapshot });
+                        }
+                    }
+                }
+                let mut evs = one(RepoEvent::Assigned { n: *n, add: add_now, remove: remove_now, actor });
+                evs.extend(resumed);
+                Ok((evs, IssueOut::Done))
             }
             IssueOp::ApplyLabels { n, add, remove } => {
                 issue(*n)?;
@@ -1685,7 +1724,10 @@ impl IssueCmd {
                 RepoEvent::Status(st) => return IssueOut::Id(st.id.0),
                 RepoEvent::CheckRun(c) if matches!(self.op, IssueOp::CreateCheck(_)) => return IssueOut::Id(c.run.0),
                 RepoEvent::TaskCreated(t) => return IssueOut::Task(t.session.clone()),
-                RepoEvent::TaskUpdated { session, state, .. } => return crate::task::replay(&self.op, session, *state),
+                // A title or body edit's pause (32.33) is not its reply: only a task command replays as its task.
+                RepoEvent::TaskUpdated { session, state, .. } if self.op.is_task() => {
+                    return crate::task::replay(&self.op, session, *state);
+                }
                 RepoEvent::LeaseAcquire { lease, .. } if self.op.is_lease() => return IssueOut::Lease(lease.id),
                 RepoEvent::LeaseRenew { id, .. } if self.op.is_lease() => return IssueOut::Lease(*id),
                 RepoEvent::Hook { id, record: Some(_), .. } => return IssueOut::Id(id.0),

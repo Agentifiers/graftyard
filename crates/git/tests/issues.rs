@@ -1414,7 +1414,7 @@ fn an_installation_token_sets_a_status_as_its_apps_bot_with_statuses_write() {
     let mut needed: Vec<ChainId> = cmd.deps(&view).into_iter().collect();
     needed.dedup();
     let d: Vec<_> = needed.iter().map(|ch| c.deps.iter().find(|(k, _)| k == ch).expect("a dep").clone()).collect();
-    let author = |bot: bool| match cmd.decide_in(&view, &d, false, None, false, false, bot).unwrap().0[0] {
+    let author = |bot: bool| match cmd.decide_in(&view, &d, false, None, false, false, bot, None).unwrap().0[0] {
         RepoEvent::IssueOpened { ref capture, .. } => capture.author,
         ref e => panic!("{e:?}"),
     };
@@ -1484,7 +1484,7 @@ fn a_rest_issue_comment_rides_32_32_and_an_apps_is_its_bots() {
     let mut needed: Vec<ChainId> = cmd.deps(&view).into_iter().collect();
     needed.dedup();
     let d: Vec<_> = needed.iter().map(|ch| c.deps.iter().find(|(k, _)| k == ch).expect("a dep").clone()).collect();
-    let author = |bot: bool| match &cmd.decide_in(&view, &d, false, None, false, false, bot).unwrap().0[0] {
+    let author = |bot: bool| match &cmd.decide_in(&view, &d, false, None, false, false, bot, None).unwrap().0[0] {
         RepoEvent::Comment(graftyard_git::issues::CommentEvent::Created { author, .. }) => *author,
         e => panic!("{e:?}"),
     };
