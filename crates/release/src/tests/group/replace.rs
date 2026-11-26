@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 use super::ops::{Ops, upload_all};
 use super::*;
 use crate::gate::Verdict;
+use crate::group::RESTORE_GATE_FROM;
 use crate::ops::{self, Action, Dwell, MoveRun, MoveSpec, Signer};
+use crate::view::Replica;
 
 fn next(o: &Ops) -> Action {
     ops::next(&o.g.f, &o.world(), Dwell::default())
@@ -172,8 +174,22 @@ fn a_restore_inside_the_drain_window_is_refused_and_a_halted_one_resumes_only_un
     o.g.ok(b);
     assert!(o.g.f.drained.is_empty(), "the SiteLost drains nothing");
     let restore = Intent::RestorePlacement { site: SiteId(1) };
+    // The next entry is stamped exactly RESTORE_GATE_FROM, the first instant the rule holds.
+    o.g.at = Timestamp(RESTORE_GATE_FROM.0 - 60_000);
     let b = o.g.intent(60, restore.clone(), &[], &CUSTOMER);
     assert!(matches!(o.g.no(b), Refusal::Rejected(m) if m.contains("lost and not yet replaced")));
+    // After the gate, the same site once replaced, recovered and undrained restores.
+    o.act();
+    assert_eq!(replace_of(&o.act()), Some((1, 3)));
+    o.act();
+    o.moves = MoveRun::Done;
+    o.finish();
+    assert_eq!(o.g.f.replaced.get(&1), Some(&3));
+    o.health = BTreeMap::from([(1, v(true, false, true))]);
+    o.act();
+    assert!(o.g.f.drained.is_empty());
+    let b = o.g.intent(61, restore.clone(), &[], &CUSTOMER);
+    o.g.ok(b);
 
     // The restore as m6aL2 committed it, on the fold before this rule: halted under the replace once it is done.
     let mut h = Ops::new(G::new());
@@ -204,6 +220,38 @@ fn a_restore_inside_the_drain_window_is_refused_and_a_halted_one_resumes_only_un
     let b = resume(&h.g);
     h.g.ok(b);
     assert!(matches!(h.g.f.current.as_deref().unwrap().state, IntentState::Running { .. }));
+}
+
+/// m6aL2's committed history, stamped before RESTORE_GATE_FROM: `SiteLost`, a restore before the drain, the drain, then
+/// the `ReplaceMember`. A replica replays every entry, as a follower and every view isolate must, and `graft-ops` on it
+/// starts the move: on a history cut at the restore it signed a drain on a stale prev every pass, so the
+/// `ReplaceMember`'s `IntentDone` never committed (the m6aL2 continuation, `tests/m6/results/m6-wp1.md`).
+#[test]
+fn a_restore_committed_before_the_gate_replays_and_graft_ops_moves_on_from_it() {
+    let mut h = Ops::new(G::new());
+    upload_all(&mut h.g, 1);
+    for s in 0..4 {
+        let b = h.g.entry(ReleaseEntry::SiteRelease { site: SiteId(s), release: rel(1).0 }, &[&EXECUTOR]);
+        h.g.ok(b);
+    }
+    // m6aL2's times: `SiteLost` at index 11 (2026-11-26T01:13:39Z), the restore at 12, 42 s later; each entry here is
+    // a minute after the last, all before RESTORE_GATE_FROM.
+    h.g.at = Timestamp(1_795_655_619_107 - 60_000);
+    let b = h.g.entry(ReleaseEntry::SiteLost { site: SiteId(1) }, &[&CUSTOMER]);
+    h.g.ok(b);
+    let b = h.g.intent(60, Intent::RestorePlacement { site: SiteId(1) }, &[], &CUSTOMER);
+    h.g.ok(b);
+    h.act();
+    assert!(h.g.f.drained.contains_key(&1), "graft-ops drained the lost site");
+    assert_eq!(replace_of(&h.act()), Some((1, 3)));
+    assert!(h.g.at < RESTORE_GATE_FROM);
+    let n = h.g.log.len();
+    let mut r = Replica::default();
+    assert_eq!(r.extend(&h.g.a, 0, &page(&h.g, 0, n)).unwrap(), n as u64);
+    assert_eq!(r.fold, h.g.f);
+    let w = h.world();
+    let a = ops::next(&r.fold, &w, Dwell::default());
+    assert!(matches!(a, Action::StartMove { spec, .. } if spec.from == SiteId(1) && spec.to == SiteId(3)), "{a:?}");
 }
 
 /// A `RestorePlacement` of a site no `ReplaceMember` moved has nothing to move back: one step, no Workflow.

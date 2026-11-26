@@ -11332,6 +11332,26 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **Flip.** If a move's next leader site's shard is stopped by the lapse while that move's later steps still wait on it, so steps go cold that would have been warm: then the coordinator keeps the warm alive until its group is `Done`.
 
+### `restore-gate-from`: a new `decide` refusal takes an activation time, so committed history still replays, 2026-11-26
+
+**Decision.** `restore-gate`'s refusal of a `RestorePlacement` whose site is lost and not yet replaced holds only for an entry stamped at or after `RESTORE_GATE_FROM`, 2026-11-27T12:00Z (`crates/release/src/group.rs`, `check_intent`). The refusal while the site is drained and the refusal of a `Resume` while drained are unchanged. A new refusal in any group's `decide` is introduced the same way, or shown to hold on every committed history (AGENTS.md, "Conventions").
+
+**Why.** OPEN-QUESTIONS R72. `decide` is also the check a follower runs on an entry it verifies and the check every view replica runs on each committed entry it replays (`Replica::extend`). As 265 first shipped, the rule refused m6aL2's restore at index 12, committed between the `SiteLost` and the drain. graft-m6a-ops on main 4cf538d9 replayed its view to 12 of 15 entries. That cut fold held site 0 lost but not drained, so `auto_drain` signed a `Drain{0}` on a stale `prev` and met 409 on all 32 passes of each run, and the `ReplaceMember`'s `IntentDone` could not commit (`tests/m6/results/m6-wp1.md`, "m6aL2 continuation"; `tests/m6/raw/m6a/m6aL2/cont-replay.txt`). Every edge and site built from that main would have stopped there too, and a follower on the new release would refuse an entry a leader on the old one accepted.
+
+The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to about 01:00Z on 11-27, and the rolls after it end near 06:45Z. Hazard: a wall-clock activation is safe only if no `RestorePlacement` is posted between `RESTORE_GATE_FROM` and the last member's upgrade to a release that carries the rule. If one were, an old-release leader could accept it and a new-release follower or view would refuse it, and the views would stall as above. The drill's ordering guarantees this: the prep site day puts the rule on every site, spares included, before noon on 11-27; no restore is posted on 11-27; the drill's first restore is posted on 11-28, inside the span.
+
+**What it beat.**
+- **Gating on a release marker (`SiteRelease` on every site, or a `FormatsEnable`):** the fold records which release each site runs and which formats that release reads, not which rules it carries, so the marker would have to be a new format number for a refusal that stores nothing. graft-m6a's fold also holds no `SiteRelease` (no `ReleaseUploaded` has committed there), and the prep site day deploys outside graft-ops' rolls, so nothing in the fold would mark the rule's arrival until the drill's rolls end.
+- **Reverting the arm:** the gap m6aL2 found comes back, and the drill could not show its refusal.
+- **Replaying committed entries with integrity checks only (bound, `prev`, signers):** it drops the body rules from every view, including the ones that keep a leaked executor key off a healthy site.
+
+**Evidence.**
+- `a_restore_committed_before_the_gate_replays_and_graft_ops_moves_on_from_it` (`crates/release/src/tests/group/replace.rs`) commits m6aL2's order at m6aL2's times, replays it through `Replica::extend`, and asks `ops::next`. It fails on main (the replay refuses the restore) and passes with the activation time. `a_restore_inside_the_drain_window_is_refused_and_a_halted_one_resumes_only_undrained` posts its restore at exactly `RESTORE_GATE_FROM`, and it is refused.
+- graft-m6a's real 15 pages, replayed through `Replica::extend` and `ops::next` on this branch at $0: count 15, `replaced {0: 3}`, and graft-ops' next action is the move (`StartMove`, then `IntentStep`), with no `Drain`. History holds no `Resume`, so the `Resume` arm is not reached by it.
+- `tests/m0carried/plant272.py`: 3 mutants, all caught. `plant265.py`'s anchors follow the new line.
+
+**Flip.** If a `RestorePlacement` must be posted on graft-m6a before the prep site day ends, or another install runs a release without the rule past `RESTORE_GATE_FROM`: then the time moves, or the rule takes a release marker the fold holds on that install.
+
 #### `controller-task`: the controller's `Task` is a pure state machine in `graftyard_git::controller` (2026-11-24)
 
 **Status.** Code-only (AM3-WP1's second slice); no controller runs it yet.

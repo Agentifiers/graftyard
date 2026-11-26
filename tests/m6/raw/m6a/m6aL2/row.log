@@ -10,3 +10,4 @@
 {"at":"2026-11-26T01:14:09Z","phase":"restore1","restore":"restore1: {\"digest\":\"23ff115daff08f38ce5443d95276adebc509dc9f9da281bdd200c1f868a73a20\",\"index\":43,\"status\":201} \n"}
 {"at":"2026-11-26T01:14:10Z","phase":"watch","view":{"count":13,"current":{"intent":"RestorePlacement { site: SiteId(0) }","next":0,"since":1795655661200,"state":"Running { step: 0 }"},"drained":[]}}
 {"at":"2026-11-26T01:22:23Z","phase":"watch","view":{"count":15,"current":{"intent":"ReplaceMember { lost: SiteId(0), spare: SiteId(3) }","next":0,"since":1795655694794,"state":"Running { step: 0 }"},"drained":[0]}}
+{"at":"2026-11-26T05:07:03Z","phase":"continuation","stopped":"graft-ops baee86af (main 4cf538d9) replays the Release view only to 12: restore-gate refuses committed entry 12 (restore1); its Drain{0} meets 409 StalePrev each pass; cron off, nothing committed"}
