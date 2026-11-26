@@ -121,6 +121,14 @@ impl OwnerApps {
     fn targets(&self, repo: RepoId) -> Vec<git::sequencer::AppTarget> {
         git::sequencer::app_targets(&self.installations, repo, |a| self.apps.get(&a))
     }
+
+    /// Writes the login of every installed App's bot account (`AppId::bot`) into `logins`: `{slug}[bot]`, as the edge
+    /// renders it (`decisions/DECISIONS.md`, "`app-bot`").
+    fn name_bots(&self, logins: &mut BTreeMap<i64, String>) {
+        for (app, r) in &self.apps {
+            logins.insert(app.bot().0.0, format!("{}[bot]", r.slug.as_str()));
+        }
+    }
 }
 
 thread_local! {
@@ -424,6 +432,15 @@ async fn round(
                 d
             }
         };
+        // The directory may have been read before these entries (`DIR_FOR_MS`), and `directory` names a bot only while
+        // a row names it, so a bot assigned when no issue had it rendered as `ghost[bot]` and the controller made no
+        // task (F143). Every installed App's bot is named from the App rows the round holds: `decide` assigns no other.
+        let mut dir = dir;
+        OWNER_APPS.with(|m| {
+            if let Some((_, a)) = m.borrow().get(&owner) {
+                a.name_bots(&mut dir.logins);
+            }
+        });
         {
             let core = h.core.borrow();
             let c = core.as_ref().ok_or("not joined")?;
@@ -613,18 +630,11 @@ pub(crate) async fn directory(
     named.insert(owner);
     let mut logins = BTreeMap::new();
     // An App's bot account (`AppId::bot`, F20's assignee) has no login row: its login is `{slug}[bot]`, from the
-    // record of an App installed on the owner, as the edge renders it (`decisions/DECISIONS.md`, "`app-bot`").
-    let bots: Vec<_> = named.iter().filter_map(|a| graftyard_identity::AppId::of_bot(*a)).collect();
-    if !bots.is_empty() {
-        let held = OWNER_APPS.with(|m| m.borrow().get(&owner).map(|(_, a)| a.apps.clone()));
-        let apps = match held {
-            Some(a) => a,
-            None => read_owner_apps(env, owner, record).await?.apps,
-        };
-        for app in bots {
-            if let Some(r) = apps.get(&app) {
-                logins.insert(app.bot().0.0, format!("{}[bot]", r.slug.as_str()));
-            }
+    // record of an App installed on the owner (`OwnerApps::name_bots`).
+    if named.iter().any(|a| graftyard_identity::AppId::of_bot(*a).is_some()) {
+        match OWNER_APPS.with(|m| m.borrow().get(&owner).map(|(_, a)| a.clone())) {
+            Some(a) => a.name_bots(&mut logins),
+            None => read_owner_apps(env, owner, record).await?.name_bots(&mut logins),
         }
     }
     let mut by_shard: BTreeMap<_, Vec<i64>> = BTreeMap::new();
@@ -1425,5 +1435,53 @@ async fn lane_post(env: &Env, hook: HookId, run: &[Lane]) -> Vec<Sent> {
         Some(Ok(_)) => failed(false, Some("the delivery lane sent nothing".into())),
         Some(Err(e)) => failed(false, Some(format!("the delivery lane failed: {e}"))),
         None => failed(true, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use graftyard_identity::{AppId, AppRecord, ClientId, PermissionSet, Slug};
+
+    fn app(id: i64, slug: &str) -> (AppId, AppRecord) {
+        let a = AppId(DbId(id));
+        let rec = AppRecord {
+            id: a,
+            slug: Slug::parse(slug).unwrap(),
+            name: slug.into(),
+            client: ClientId::for_app(a),
+            keys: Default::default(),
+            permissions: PermissionSet::default(),
+            events: Default::default(),
+            webhook: None,
+            webhook_secret: None,
+            client_secrets: Default::default(),
+            callbacks: Default::default(),
+            public: false,
+        };
+        (a, rec)
+    }
+
+    /// F143's first assignment: the round's directory was read before any row named `graftyard-agent`'s bot, so it
+    /// holds the owner's login and no bot's. With the App rows the round holds, the assignee renders as
+    /// `graftyard-agent[bot]` with the App's id; a bot whose App is not installed on the owner still reads `ghost[bot]`.
+    #[test]
+    fn a_directory_read_before_the_bot_was_named_renders_it_from_the_app_rows() {
+        let owner = AccountId(DbId(7_100_001));
+        let (agent, rec) = app(3_801_088, "graftyard-agent");
+        let apps = OwnerApps { apps: [(agent, rec)].into(), ..OwnerApps::default() };
+        let mut dir = HostedDir { logins: [(owner.0.0, "m3org".to_owned())].into(), ..HostedDir::default() };
+        let host = graftyard_api::wire::Host::new("ghes.example.com", false).unwrap();
+        let user = |d: &HostedDir, a: AccountId| graftyard_api::wire::simple_user(&host, d, Some(a));
+
+        assert_eq!(user(&dir, agent.bot())["login"], "ghost[bot]", "the directory as read: F143's payload");
+        apps.name_bots(&mut dir.logins);
+        let who = user(&dir, agent.bot());
+        assert_eq!(
+            (&who["login"], &who["id"], &who["type"]),
+            (&json!("graftyard-agent[bot]"), &json!(3_801_088), &json!("Bot"))
+        );
+        assert_eq!(user(&dir, owner)["login"], "m3org");
+        assert_eq!(user(&dir, AppId(DbId(42)).bot())["login"], "ghost[bot]");
     }
 }
