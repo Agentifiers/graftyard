@@ -650,6 +650,13 @@ impl ReleaseFold {
                 let IntentState::Halted { .. } = c.state else {
                     return Err(Refusal::BadState("only a halted intent resumes"));
                 };
+                // A restore halted under a `ReplaceMember` resumes only once its site has recovered and undrained,
+                // as a new `RestorePlacement` would be accepted.
+                if let Intent::RestorePlacement { site } = c.intent.intent
+                    && self.drained.contains_key(&site.0)
+                {
+                    return Err(refuse("a RestorePlacement resumes only once its site is undrained"));
+                }
                 // A vendor-signed intent whose key is gone resumes only on an undo list the customer re-signed.
                 if c.vendor_signed && self.keys().vendor.is_none_or(|v| v != c.undo_key) && undo.is_empty() {
                     return Err(refuse("resuming a vendor intent after the vendor key left needs a re-signed undo"));
@@ -775,6 +782,12 @@ impl ReleaseFold {
                 self.known_site(*site)?;
                 if self.drained.contains_key(&site.0) {
                     return Err(refuse("RestorePlacement is refused while its site is drained"));
+                }
+                // A customer-signed `SiteLost` drains nothing; graft-ops drains the site on its next run. Until the
+                // site is replaced, a restore is the same restore while drained (m6aL2: committed 42 s after the
+                // `SiteLost`, before the drain, and halted under the `ReplaceMember`).
+                if self.lost.contains(&site.0) && !self.replaced.contains_key(&site.0) {
+                    return Err(refuse("RestorePlacement is refused while its site is lost and not yet replaced"));
                 }
             }
             Intent::FrontRoll { .. } if !i.undo.is_empty() => {

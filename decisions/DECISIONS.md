@@ -11298,6 +11298,23 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **Flip.** If a hosted cold isolate takes longer to reach the view than VIEW_CALL_MS because of the registry reads, or reads a row's member that is not in the group: then ask the rows' members only after the record's names have failed.
 
+### `restore-gate`: a `RestorePlacement` waits for its lost site's replace, and a halted one for its undrain, 2026-11-26
+
+**Decision.** The `Release` group refuses a `RestorePlacement { site }` while `site` is in `lost` and not in `replaced`, as well as while it is drained, and refuses a `Resume` of a halted `RestorePlacement` while its site is drained (`crates/release/src/group.rs`, `check_intent` and the `Resume` check).
+
+**Why.** m6aL2 on graft-m6a (`tests/m6/results/m6-wp1.md`, "m6aL2"). A customer-signed `SiteLost` drains nothing: graft-ops' `auto_drain` drains the site on its next cron run. The group refused a restore only while its site was drained, so the restore posted 42 s after the `SiteLost` (index 12) committed before the drain (index 13). The `ReplaceMember` (index 14) committed over it and halted it, so the gate line "RestorePlacement refused until undrained" failed. In m6aL the drain had landed within 56 s, before its restore, which the group refused with 422 `IntentCurrent`. The halted restore's `Resume` had no drain check, so a `Resume` before the undrain would move groups onto a faulted site.
+
+**What it beat.**
+- **graft-ops draining the site inside the `SiteLost`'s own commit:** a `SiteLost` is the customer's entry, and the drain key's entry is graft-ops'. One commit cannot carry both signers' entries.
+- **Refusing every `RestorePlacement` while `lost` holds the site:** `RestorePlacement` is what clears `lost`, at its `IntentDone`, so the site could never be restored.
+
+**Evidence.**
+- `a_restore_inside_the_drain_window_is_refused_and_a_halted_one_resumes_only_undrained` (`crates/release/src/tests/group/replace.rs`) runs m6aL2's order. It fails on main, and also with only the `Resume` rule removed; it passes with both rules.
+- `tests/m0carried/plant265.py`: 3 mutants, all caught (over the replace tests).
+- The CLI's `a_resume_entry_resumes_the_halted_intent` now commits its restore before its `SiteLost`, as the new rule needs.
+
+**Flip.** If a site that graft-ops never replaces (no spare on its continent) needs a restore after its `SiteLost`: then that site's loss needs its own route, since `replaced` never names it.
+
 #### `controller-task`: the controller's `Task` is a pure state machine in `graftyard_git::controller` (2026-11-24)
 
 **Status.** Code-only (AM3-WP1's second slice); no controller runs it yet.
