@@ -11924,3 +11924,57 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/plaindiff/run.sh`, base main `b65e6812`: 10 request pairs. `rest-pulls` answers 404 on the base and 200 `[]` on the head (named in `CHANGED`), and the other 9 are byte-identical: git, `GET /repos/{o}/{r}`, `GET /pulls/1` (404 on both, since the bed has no pull request), `GET /issues`, a label write, and GraphQL.
 
 **Flip.** A GHES 3.22 reply that differs from this one on the same rows, for example a `long-running` list limited by age, which F136 leaves open because the view has no clock, or a `head` without `owner:` that filters.
+
+### `forks-before-workspace`: base forks are built as their own package before AM3-WP3's fork mode, and in-repo mode is AM3-WP3's done state until then, 2026-11-26
+
+**Status.** Ruled by the lead (T-01a17bda), 2026-11-26: option (B), with (C) as the interim state. It is a plan change only and changes no design text. The package is `build/BUILD-PLAN.md`, AM3-WP2a, assigned to B0-02's thread, with AM3-WP3's owner reviewing the parts the workspace endpoint sits on. Repository format 32.31 and plant 277, held for AM3-WP3's fork mode, move to AM3-WP2a. The lead's rulings for the package (2026-11-26, on B0-02's sizing), which follow the design as written, are in AM3-WP2a's text: a network chain family with `ForkAdded` and the network takedown, the network read from `Names`' `RepoOwner` (0x10.4), the commit point on `Authz` `CreateRepoWith` with `fork_of` (0x12.16), the shard's catch-up of every member chain with namespaced refs, the export scope below ("`fork-pack-scope`"), formats 32.31, 0x12.16, 0x10.4 and network 0x21.1, and two slices.
+
+**Decision.**
+- Base forks are built first, as `design/SHARED.md` already specifies them, in a new package placed before AM3-WP3's fork mode (`build/BUILD-PLAN.md`, AM3-WP2a). That covers:
+  - the "Fork" multi-chain operation: the name on the fork owner's `Authz` chain as the commit point, then `ForkAdded` on the network chain and `Genesis { fork_of }` on the fork's chain, both idempotent by repository id;
+  - packs, the git cache shard, the clone cache, the vault and the purge gate keyed by the repository's network, not by its id;
+  - the fork group's `decide` reading the base chain where SHARED says it does;
+  - pull requests whose `HeadSpec.repo` is another repository of the same network, and the fork merge;
+  - `POST /repos/{owner}/{repo}/forks` and `forks_count`.
+- AM3-WP3 then builds `POST /api/graftyard/v1/repos/{owner}/{repo}/workspace` and fork mode on top of it.
+- Until AM3-WP2a merges, in-repo mode is AM3-WP3's done state:
+  - `decide` keeps refusing a Graftyard-run create under `agents_workspace: Fork` with 422 (`TaskErr::ForkMode`), as on main.
+  - LF-9's fork lines and LF-10 wait on AM3-WP2a.
+  - Every other AM3-WP3 clause is built and run in-repo.
+
+**Why.**
+- No code builds forks. Every push and pack path keys the network by the repository's own id (`NetworkId(repo.id.0)`, about 70 sites). Nothing writes `ForkAdded`, `Genesis.fork_of` or a cross-repository `HeadSpec`, and `forks_count` renders 0.
+- Two decisions say so. "`repo-purge`" assumes no route opens a fork, so a network holds one repository. The vault's `network_of` reads `network:<id>` from the repository's id. M2-WP6 recorded journey 2's fork as not built (`tests/m2/results/m2-wp6.md`).
+- The design already specifies base forks (`design/SHARED.md`, "Multi-chain operations", Fork, and "Fork networks"; `design/DESIGN.md`, journey 2), but no `build/BUILD-PLAN.md` package builds them. That is a plan gap, not a design change.
+- A workspace fork is a base fork into `<org>-agents`. Building it inside AM3-WP3 would build the base's fork mechanics in an agent package, behind an agent route, with none of the base's own gates.
+
+**What it beat.**
+- (A) Detached workspace forks: a new network with its objects copied at creation. SHARED allows that only for a residency boundary ("Residency"), and it rules that "every fork joins its network". A pull request from a detached fork back to its base would cross networks, which SHARED's network rule forbids, and each task's fork would copy the base's packs.
+- (C) alone, deferring fork mode with no package to build forks. Fork mode is the design's default workspace (`OrgPolicy.agents_workspace` defaults to `Fork`), so leaving it unplanned leaves the default undeliverable.
+
+**Evidence.**
+- `rg -n "NetworkId\(" crates workers --type rust`: every push, pack, clone-cache and archive path keys the network as `NetworkId(repo.id.0)`.
+- `workers/vault/src/lib.rs`, `network_of`, with the comment "forks into a shared network are not built"; DECISIONS "`vault-worker`", Flip ("Forks share a network").
+- `crates/git/src/purge.rs`, `network`; DECISIONS "`repo-purge`", Assumptions and Flip ("A fork route").
+- `crates/api/src/repos.rs`: `"forks_count": 0`.
+- `crates/git/src/task.rs`, `TaskErr::ForkMode`.
+
+**Flip.**
+- If AM3-WP2a finds that SHARED's fork rules cannot be built as written, for example because the network chain's first-touch completion cannot be made idempotent, follow "How to change the design" in `AGENTS.md` and settle the design before AM3-WP3 builds on it.
+- If an operator decides that agents run in-repo only, retire fork mode instead (`FRAME.md` decision), and AM3-WP2a stays a base package for `gh repo fork`.
+
+### `fork-pack-scope`: an export token for any member repository of a network, or any member's owner, reads the network's packs, 2026-11-26
+
+**Status.** Ruled by the lead (T-01a17bda), 2026-11-26, for AM3-WP2a (`build/BUILD-PLAN.md`). Not built.
+
+**Decision.** `GET export/packs/...` names a network (`export::Route::Pack`, whose chain is `ChainId::Network`). An export token's scope covers that chain when it covers any member repository of the network: `Scope::Repo(r)` for a member `r`, `Scope::Owner(a)` for the owner of any member, and `Scope::Install`. The edge reads the members from `RepoOwner`'s network (Names 0x10.4). A network with one repository, every network on main, is covered exactly as today.
+
+**Why.** Packs are shared by construction: a fork stores no copy of its base's packs, and each new pack lands once under the network's prefix. A fork's owner already reads every base object through the fork's own clone, so the pack route shows them nothing new. If the scope were the root's alone, an org scoped to a fork's owner could not export the packs its own repository's entries name, and its vault or lifeboat would restore entries whose objects it cannot fetch.
+
+**What it beat.**
+- The root's owner only, which is today's `covers` with one owner per network. It leaves a fork's export without its objects.
+- Per-repository pack prefixes inside a network: a pack shared by two members would need copying or reference counting, and SHARED shares packs by network.
+
+**Evidence.** `crates/release/src/view.rs`, `covers` (`Scope::Owner` over `ChainId::Network` today checks one owner); `crates/git/src/export.rs`, `Route::chain`; `design/SHARED.md`, "Fork networks"; `design/DESIGN.md`, journey 2 ("its packs share the network's prefix").
+
+**Flip.** A private fork network in which the root's owner must not read a fork's own objects, such as a private fork of a public repository with commits the root's owner may not see. Then a member's export reads only the packs its own chain's entries name, and `covers` takes the pack's naming chain, not the network. Open in OPEN-QUESTIONS R73.
