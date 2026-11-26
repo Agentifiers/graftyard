@@ -11956,7 +11956,7 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 
 ### `forks-before-workspace`: base forks are built as their own package before AM3-WP3's fork mode, and in-repo mode is AM3-WP3's done state until then, 2026-11-26
 
-**Status.** Ruled by the lead (T-01a17bda), 2026-11-26: option (B), with (C) as the interim state. It is a plan change only and changes no design text. The package is `build/BUILD-PLAN.md`, AM3-WP2a, assigned to B0-02's thread, with AM3-WP3's owner reviewing the parts the workspace endpoint sits on. Repository format 32.31 and plant 277, held for AM3-WP3's fork mode, move to AM3-WP2a. The lead's rulings for the package (2026-11-26, on B0-02's sizing), which follow the design as written, are in AM3-WP2a's text: a network chain family with `ForkAdded` and the network takedown, the network read from `Names`' `RepoOwner` (0x10.4), the commit point on `Authz` `CreateRepoWith` with `fork_of` (0x12.16), the shard's catch-up of every member chain with namespaced refs, the export scope below ("`fork-pack-scope`"), formats 32.31, 0x12.16, 0x10.4 and network 0x21.1, and two slices.
+**Status.** Ruled by the lead (T-01a17bda), 2026-11-26: option (B), with (C) as the interim state. It is a plan change only and changes no design text. The package is `build/BUILD-PLAN.md`, AM3-WP2a, assigned to B0-02's thread, with AM3-WP3's owner reviewing the parts the workspace endpoint sits on. Repository format 32.31 and plant 277, held for AM3-WP3's fork mode, move to AM3-WP2a. The lead's rulings for the package (2026-11-26, on B0-02's sizing), which follow the design as written, are in AM3-WP2a's text: a network chain family with `ForkAdded` and the network takedown, the network read from `Names`' `RepoOwner` (0x10.4; on the `o/r` path the lead then ruled (B), the access rows, "`fork-network-read`"), the commit point on `Authz` `CreateRepoWith` with `fork_of` (0x12.16), the shard's catch-up of every member chain with namespaced refs, the export scope below ("`fork-pack-scope`"), formats 32.31, 0x12.16, 0x10.4 and network 0x21.1, and two slices.
 
 **Decision.**
 - Base forks are built first, as `design/SHARED.md` already specifies them, in a new package placed before AM3-WP3's fork mode (`build/BUILD-PLAN.md`, AM3-WP2a). That covers:
@@ -12007,6 +12007,22 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 **Evidence.** `crates/release/src/view.rs`, `covers` (`Scope::Owner` over `ChainId::Network` today checks one owner); `crates/git/src/export.rs`, `Route::chain`; `design/SHARED.md`, "Fork networks"; `design/DESIGN.md`, journey 2 ("its packs share the network's prefix").
 
 **Flip.** A private fork network in which the root's owner must not read a fork's own objects, such as a private fork of a public repository with commits the root's owner may not see. Then a member's export reads only the packs its own chain's entries name, and `covers` takes the pack's naming chain, not the network. Open in OPEN-QUESTIONS R73.
+
+### `fork-network-read`: on the `o/r` path the edge learns a fork's network from the access rows it already reads; `RepoOwner` carries it for id-only routes, 2026-11-26
+
+**Status.** Ruled by the lead (T-01a17bda), 2026-11-26, option (B), for AM3-WP2a (`build/BUILD-PLAN.md`). Built in AM3-WP2a's head 1 at $0 (repository format 32.31, Names 0x10.4). Not hosted.
+
+**Decision.** A fork's chain holds one core `fork` row, written by its `RepoEvent::Genesis { network, fork_of }` (`graftyard_git::tiers::fork`). `TierRows::access_rows` serves it beside `settings` and `collaborator`, so the read gate's fresh read and every tier read carry it, and the edge keeps what it learns in an isolate map by repository (`nets` in `workers/edge/src/lib.rs`), at any age, since a network never changes. A shared gate entry carries the fork's network as `net`, so a request served from a data-center copy keys by it too. A `Genesis` whose network is the chain's own id writes no row, so a root's rows, access answer, digests and gate entry keep main's bytes. `NamesEvent::ForkOwner`, which `NamesOp::RepoOwnerIn` writes for a fork (Names 0x10.4), carries the network for the id-only routes (`/repositories/{id}`, export member scope, purge, the sweep's home), which read it through `repo_by_id`; a root's `RepoOwnerIn` writes the old `RepoOwner`.
+
+**Why.** No extra read: the gate already reads the access rows on every `o/r` request, and the network rides them.
+
+**What it beat.**
+- (A) The network from `RepoOwner` on every `o/r` request. It adds a `Names` read to every fetch and push, on the shard that B0-29 run 5 saw slow: 1,869 edge upload-packs waited LOOKUP_FOR (20 s) on `names:708` and threw when every upload-pack read `RepoOwner` there (`tests/m0/results/merge-tail.md`, "Why the shard threw").
+- The network on `Authz`'s `Live` name: it changes the `Authz` fold's rows for every repository, root or fork.
+
+**Evidence.** `crates/api/src/hosted.rs`, `access_rows`; `workers/edge/src/lib.rs`, `fresh_gate_on` and `nets`; `workers/edge/src/colo.rs`, `gate_body`; tests `a_fork_chain_names_its_network_and_a_roots_rows_do_not_move`, `access_rows_include_a_forks_network_row_but_no_root_row`, `a_forks_network_is_learned_from_its_rows_and_a_root_keeps_its_own_id`, `a_gate_entry_carries_a_forks_network_and_a_roots_keeps_its_bytes`, and `a_forks_repo_owner_row_carries_its_network_and_a_roots_keeps_its_bytes`.
+
+**Flip.** If the access rows ever stop being read on every request, such as a gate served wholly from a cache that carries no rows and no `net`: then the `o/r` path reads the network from `RepoOwner` (A) or carries it in the resolve.
 
 ### `issue-routes`: `GET /repos/{o}/{r}/issues/{n}` reads the issue through the narrow read, and `POST .../issues/{n}/comments` commits `addComment`'s `Comment` in repository format 32.32, 2026-11-26
 

@@ -624,6 +624,48 @@ fn a_merge_plans_from_its_rows_as_from_both_tiers() {
     assert!(rest_on(&core2, &meta2, "2").is_err(), "a merged pull request is refused by number too");
 }
 
+/// A fork's network reaches the edge with the access rows it already reads; a root adds no row and no bytes.
+#[test]
+fn access_rows_include_a_forks_network_row_but_no_root_row() {
+    use graftyard_api::hosted::TierRows;
+    use graftyard_git::repo::{RepoEvent, RepoFold};
+    use graftyard_raft::{EntryBody, Fold, Format, LogEntry, PREV_ZERO, Term};
+    use graftyard_types::{Index, NetworkId, RepoId};
+
+    let repo = RepoId(DbId(7));
+    let owner = AccountId(DbId(1));
+    let network = NetworkId::of_root(RepoId(DbId(3)));
+    let fork_of = Some((RepoId(DbId(3)), Index(9)));
+    let mut fork = RepoFold::new(repo, owner);
+    fork.apply_entry(&LogEntry {
+        term: Term(2),
+        index: Index(1),
+        prev: PREV_ZERO,
+        format: Format { family: 0x20, version: 31 },
+        tiers: TierSet::CORE,
+        at: Timestamp(1_000),
+        requests: Default::default(),
+        extend: None,
+        body: EntryBody::Events(vec![RepoEvent::Genesis {
+            owner,
+            network,
+            name: graftyard_identity::RepoName::parse("fork").unwrap(),
+            fork_of,
+        }]),
+    });
+    let rows = TierRows::access_rows(&fork.core);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "fork");
+    assert!(rows[0].1.is_empty());
+    assert_eq!(
+        graftyard_git::tiers::fork(&TierRows::store(&rows)),
+        Some(graftyard_git::tiers::ForkRow { network, fork_of })
+    );
+
+    let root = RepoFold::new(repo, owner);
+    assert!(TierRows::access_rows(&root.core).is_empty());
+}
+
 /// An agent push reads its policy and every task, and no settings, open-task index, ref, or issue rows. The narrow
 /// store answers the policy and session lookups exactly as the full tiers do.
 #[test]

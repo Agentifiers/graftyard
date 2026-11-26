@@ -196,12 +196,15 @@ impl TierRows {
     }
 
     /// The core rows `graftyard_identity::authorize_read` reads through `graftyard_git::issue_ops::Access`: `settings`
-    /// for the visibility and every `collaborator` row. The member answers them alone to `{"rows": {"access": true}}`,
-    /// which a member built before it answers with every row, so the edge's read gate works on both.
+    /// for the visibility and every `collaborator` row, and a fork's `fork` row, which names its network
+    /// (`decisions/DECISIONS.md`, "`fork-network-read`"); a root has none, so its answer keeps its bytes. The member
+    /// answers them alone to `{"rows": {"access": true}}`, which a member built before it answers with every row, so the
+    /// edge's read gate works on both.
     pub fn access_rows(core: &dyn Read) -> Vec<(String, Key, Vec<Val>)> {
         let mut c: Vec<_> =
             core.get("settings", &[]).map(|cols| ("settings".to_owned(), Vec::new(), cols)).into_iter().collect();
         c.extend(core.prefix("collaborator", &[]).into_iter().map(|(k, cols)| ("collaborator".to_owned(), k, cols)));
+        c.extend(core.get("fork", &[]).map(|cols| ("fork".to_owned(), Vec::new(), cols)));
         c
     }
 

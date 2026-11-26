@@ -23,9 +23,9 @@
 use graftyard_fold::{Read, Rows, Schema, TableDef, Tiered, Val, has};
 use graftyard_identity::IdCursor;
 use graftyard_raft::{Format, TierSet};
-use graftyard_types::{AccountId, DbId, IdBlock, Index, RepoId, Tier, Timestamp};
-use serde::Serialize;
+use graftyard_types::{AccountId, DbId, IdBlock, Index, NetworkId, RepoId, Tier, Timestamp};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::blob::BlobRef;
 use crate::issues::{AssetRecord, LfsLockEvent, ReleaseRecord, RepoReleaseId};
@@ -88,7 +88,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Created { .. } | RepoEvent::Deleted { .. } => TierSet::CORE,
         RepoEvent::LeaseAcquire { .. } | RepoEvent::LeaseRenew { .. } | RepoEvent::LeaseRelease { .. } => TierSet::CORE,
         RepoEvent::PathSet(_) => TierSet::METADATA,
-        RepoEvent::Fanout { .. } => TierSet::CORE,
+        RepoEvent::Fanout { .. } | RepoEvent::Genesis { .. } => TierSet::CORE,
         RepoEvent::Hook { .. } | RepoEvent::HookCursor(_) => TierSet::CORE,
         RepoEvent::Watchers(_) => TierSet::METADATA,
         RepoEvent::Split(x) => crate::split::tiers(x),
@@ -169,6 +169,8 @@ pub const CORE: Schema = Schema {
         // roll-up, 32.25: every `Promoted` committed in a 32.25 entry by its `from`, and every `Compacted` by its `from`.
         t("promoted_log", &["from"]),
         t("compacted", &["from"]),
+        // AM3-WP2a, 32.31: a fork's network and where it was cut (`RepoEvent::Genesis`); a root has no row.
+        t("fork", &[]),
     ],
 };
 
@@ -252,6 +254,21 @@ pub(crate) fn source_key(s: &CheckSource) -> Val {
 /// When the repository was created over the API (format 32.13), if it was.
 pub fn created(core: &(impl Read + ?Sized)) -> Option<Timestamp> {
     get_rec(core, "created", &[])
+}
+
+/// A fork's core row (`RepoEvent::Genesis`, format 32.31): its network, and the repository and index it was cut from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkRow {
+    pub network: NetworkId,
+    pub fork_of: Option<(RepoId, Index)>,
+}
+/// The repository's network as its chain names it: a fork's `fork` row, else the repository's own id.
+pub fn network(core: &(impl Read + ?Sized), repo: RepoId) -> NetworkId {
+    get_rec::<ForkRow>(core, "fork", &[]).map_or(NetworkId::of_root(repo), |f| f.network)
+}
+/// The fork's row, `None` for a root.
+pub fn fork(core: &(impl Read + ?Sized)) -> Option<ForkRow> {
+    get_rec(core, "fork", &[])
 }
 
 /// The repository's `Deleted` tombstone: kept until this time, and who deleted it.
@@ -924,6 +941,11 @@ impl RepoTiers {
             }
             RepoEvent::PathSet(_) => {}
             RepoEvent::Fanout { k } => put_rec(w, "fanout", Vec::new(), k),
+            RepoEvent::Genesis { network, fork_of, .. } => {
+                if network.root() != self.repo {
+                    put_rec(w, "fork", Vec::new(), &ForkRow { network: *network, fork_of: *fork_of })
+                }
+            }
             RepoEvent::Split(x) => crate::split::write_core(w, x, at),
             RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => crate::secrets::write_core(w, ev),
             RepoEvent::WorkflowJob(_) | RepoEvent::Assigned { .. } => {}
