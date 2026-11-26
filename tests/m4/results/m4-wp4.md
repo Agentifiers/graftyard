@@ -1398,6 +1398,27 @@ The gate: M2 has run a day at 100% with no stale runners. Version `13193b05` has
 5. **Rollback.** None to a class. M2's version `13193b05` binds the `SANDBOX_STD*` namespaces that `v3` deletes, so it cannot be redeployed after M3 [inference: a version cannot bind a deleted class]. That is why the refusal and step 1 come first. M3 changes no start logic (`box.mjs` is M2's but for comments, and `worker.rs` now always takes M2's `RunnerBox` path), so a burst failure is fixed forward with a new version. As `r23-runnerbox` says, re-adding the classes would need a new migration.
 6. **Cost.** R23's M1 burst cost $0.00 on the runner account and $0.06 on m4a, and its rerun cost about the same. Expect under $0.20. Stop at $1 by `tests/fanout/acctcost.py` on both accounts.
 
+### Hosted result r1 (2026-11-26): M3 is deployed; the burst failed because `init` wrote a retired App key
+
+The lead gave GO with a $1 stop. The row ran after LM-1's BF-76 done line (07:39Z) through `tests/m4/wp4/m3.sh`. The raws are in `tests/m4/raw/wp4/m3/` and `tests/m4/raw/wp4/runners-init.log`.
+
+| Step | Time (Z) | Result |
+| --- | --- | --- |
+| `before` | 07:41:32 | 0 `SandboxStd3` and 0 `SandboxStd4` events since 06:00Z. 0 armed with no end. Applications: `sandboxstd3` 36 `inactive`, `sandboxstd4` 4 `inactive`, `runnerbox` 15 `stopped` and 11 `failed`. `v2`, `13193b05` at 100%. `stop` false |
+| `init` | 07:41:41 | exit 0. `HostedRunnersAppKey` was written, both Sandbox applications were deleted after the upload, `graft-runners` was deployed with the `*/5` sweep, and `graft-runners-runnerbox` exists |
+| `burst` | 07:43:08 to 07:46:40 | **FAIL**. Run 1713073: all 8 jobs stayed `queued` for 210 s, with no `RunnerBox` started. Stopped by hand at 07:46:40Z, the run was cancelled (8 of 8 `cancelled`), and the shard teardown tore down 0 |
+| `after` | 07:49:55 | pass: only `graft-runners-runnerbox` is listed, `v3`, version `5129a092` at 100%, 0 live |
+
+**Why no runner started.** Every pass since the deploy logged `m3org: demand: access_tokens: 401 ... A JSON web token could not be decoded (no key of the App verifies the signature)` and `started 0` (Workers Logs, 07:43:14Z, 8 webhook passes).
+
+`runners init` writes `HostedRunnersAppKey` from `--app-key` every time it runs (`cli/src/runners.rs`, `init_with`). This orb's `~/.graft-m4a/hosted/app.pem` still holds App 1835008's key 1 (SPKI sha256 `31e2cc5bbbbd0dd9`). The HostedRunnersAppKey rotation row (2026-11-25, `tests/m5/results/raw/hrak/r1/`) made key 2 (`35a71a94b701f6a2`) the App's only key and PATCHed the store with it. Key 2's private half lives in that row's own orb. So M3's `init` put a retired key back into the store, and `graft-runners` has minted no installation token since 07:41:41Z.
+
+M3 itself did what the plan says: migration `v3`, no Sandbox application left, and `RunnerBox` alone. M3 changes no start logic.
+
+**Not yet shown hosted:** 8 of 8 Success on `RunnerBox` under `v3`, and PID 1 as `run.sh`. That needs `HostedRunnersAppKey` restored to key 2, then the burst again.
+
+**Cost.** Runner account $0.00. graft-m4a $0.04 for 07:41Z to 07:51Z (`acctcost.py`; the same window's $0.86 on `graft-m6a-site-a-gitshard` is not this row's).
+
 ## Spend against the $25 stop
 
 | Account | Window | Metered |

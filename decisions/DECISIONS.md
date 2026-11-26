@@ -4845,7 +4845,7 @@ Plants 99 to 105 (`tests/m4/wp4/plant.py`): a cursor past an unfinished event (9
 
 ### `r23-m3`: release M3 deletes the Sandbox SDK classes and their applications, so `RunnerBox` alone runs hosted runners, 2026-11-26
 
-**Status.** Code-only, on branch `r23-m3`, not deployed. The hosted half (one `graftyard runners init` on the runner account and an 8-job burst on graft-m4a, $1 stop) waits for the lead's GO. Ends R23 (`decisions/OPEN-QUESTIONS.md`) as `r23-runnerbox` planned it.
+**Status.** Deployed on the runner account on 2026-11-26 at 07:41:41Z: `graftyard runners init` from main `d301d866` moved `graft-runners` from `v2` to `v3` (version `5129a092`) and deleted both Sandbox applications. The 8-job burst has not passed. `init` rewrote `HostedRunnersAppKey` from a retired App key, so no runner started (`tests/m4/results/m4-wp4.md`, "Hosted result r1"). R23 (`decisions/OPEN-QUESTIONS.md`) stays open until the burst passes.
 
 **Decision.**
 - **Code.** `graft-runners` exports only `RunnerBox` (`workers/runners/entry.mjs`). `launch.mjs`, its test, `@cloudflare/sandbox` 0.12.14 (with `package.json` and its lock), the `SANDBOX_STD3`/`SANDBOX_STD4` bindings, `RUNNER_BOX_ON` and `runners.json`'s `runner_box` and `max_instances` are deleted. The Worker arms and destroys only `RunnerBox` (`workers/runners/src/worker.rs`), so `Host::destroy` no longer takes an instance type. `nodejs_compat` went with the SDK, whose bundle alone needed it. The runner image keeps the Sandbox base image, because every hosted run so far measured it. `RunnerBox` bypasses the base image's server, and a new base is a new image with its own canary.
