@@ -1,0 +1,17 @@
+2026-11-26T12:27:24Z
+2bf216fa3
+2026-11-26T12:27:30.270Z {"delete":"m3org/batch-r1","status":204}
+runner scripts: ["graft-runners"]
+runner store secrets named graft-agents-m4a-: []
+runner buckets: []
+agents container applications: [{"app":"graft-agents-m4a-controller-taskbox","running":0}]
+{"delete_app":true,"errors":[]}
+{"torn_down": 1, "codes": {"200": 1}}
+sweep: no shard container running
+agents apps after: []
+kill-row teardown exit 0
+  File "/usr/lib/python3.14/subprocess.py", line 1819, in _posix_spawn
+    self.pid = os.posix_spawn(executable, args, env, **kwargs)
+               ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '~/lmr/tests/m0/node_modules/.bin/wrangler'
+sweep exit 1

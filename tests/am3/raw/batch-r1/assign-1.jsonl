@@ -1,0 +1,22 @@
+{"t":1795694314795,"issue":"assign rest","status":201,"number":6}
+{"t":1795694316809,"rest_add":201,"assignees":["graftyard-agent[bot]"]}
+{"t":1795694316809,"check":"REST add answers 201 with the bot assigned","ok":true}
+{"t":1795694502373,"timeout":"task from #6","ms":180000}
+{"t":1795694502374,"rest_create":6}
+{"t":1795694502374,"check":"the controller's create from the REST assignment names the assigner (m3-admin) as requester","ok":null}
+{"t":1795694504350,"issue":"assign graphql","status":201,"number":7}
+{"t":1795694507338,"graphql_add":200,"assignees":[]}
+{"t":1795694507896,"check":"GraphQL add assigns the bot","ok":false}
+{"t":1795694516388,"graphql_create":7,"task":"01a217bb-f165-8e8e-b820-7b45045c0814","requester":"m3-admin","state":"queued"}
+{"t":1795694516389,"check":"the controller's create from the GraphQL assignment names the assigner","ok":true}
+{"t":1795694517803,"rest_remove":200,"assignees":[]}
+{"t":1795694517803,"check":"REST remove answers 200 without the bot","ok":true}
+{"t":1795694519556,"patch":200,"assignees":["graftyard-agent[bot]","m3-admin"]}
+{"t":1795694519557,"check":"an assignees-only PATCH answers 200 and sets the bot","ok":true}
+{"t":1795694521822,"issue":"assign by reader","status":201,"number":8}
+{"t":1795694527259,"reader_add":201,"assignees":[]}
+{"t":1795694528378,"check":"a reader's assignment of the bot is dropped","ok":true}
+{"t":1795694560112,"reader_tasks":1}
+{"t":1795694560112,"check":"no task from a reader's assignment","ok":false}
+{"t":1795694565399,"other_app_create":403,"message":"Only a person who can push to the repository creates a Graftyard-run task, never an App's token"}
+{"t":1795694565399,"check":"another App's create is 403","ok":true}

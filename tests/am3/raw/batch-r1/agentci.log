@@ -1,0 +1,30 @@
+2026-11-26T11:55:43Z
+2bf216fa3
+2026-11-26T11:55:52.069Z {"policy":200,"ci":"approve"}
+2026-11-26T11:55:59.821Z {"pr":"claude/held-152075","status":200,"number":3}
+2026-11-26T11:56:07.266Z {"held_run":{"event":"pull_request","head_ref":"refs/pull/3/merge","head_sha":"0eea6ab36fa5c19ec72ddbfae7031bad94c9ba28","id":1194873,"status":"Held","trigger":84,"workflow":".github/workflows/ci.yml"}}
+2026-11-26T11:56:30.260Z {"held_shape":{"status":"completed","conclusion":"action_required","jobs":0,"fork":true,"states":["Held","Held"]}}
+2026-11-26T11:56:30.260Z {"check":"a held run reads completed / action_required","ok":true}
+2026-11-26T11:56:30.260Z {"check":"a held run lists no jobs","ok":true}
+2026-11-26T11:56:30.260Z {"check":"every job of the run is Held in the shard","ok":true}
+2026-11-26T11:56:30.569Z {"held_checks":200,"total":0}
+2026-11-26T11:56:30.569Z {"check":"a held run has no check run on its head","ok":true}
+2026-11-26T11:56:33.496Z {"approve_agent":403,"message":"Resource not accessible by integration"}
+2026-11-26T11:56:33.497Z {"check":"the Agent's token gets 403 Resource not accessible by integration","ok":true}
+2026-11-26T11:56:36.136Z {"approve_writer":201,"body":{}}
+2026-11-26T11:56:36.136Z {"check":"the writer's approval answers 201","ok":true}
+2026-11-26T11:56:38.662Z {"approved_shape":{"status":"queued","conclusion":null,"jobs":2,"fork":true,"states":["Queued","Pending"]}}
+2026-11-26T11:56:38.662Z {"check":"after approval the run reads queued, its first job Queued and its dependent Pending","ok":true}
+2026-11-26T11:56:38.662Z {"check":"the approved run stays fork","ok":true}
+2026-11-26T11:56:40.325Z {"approve_again":409,"message":"This run is not waiting for approval."}
+2026-11-26T11:56:40.325Z {"check":"a second approval is 409","ok":true}
+2026-11-26T11:56:41.682Z {"policy_put":200,"ci":"auto_read_only"}
+2026-11-26T11:56:49.255Z {"pr":"claude/auto-201682","status":200,"number":4}
+2026-11-26T11:56:57.240Z {"auto_run":{"event":"pull_request","head_ref":"refs/pull/4/merge","head_sha":"47aaf51edf0b6d68756277ebf69e07d1ca67e379","id":1194876,"status":"Queued","trigger":110,"workflow":".github/workflows/ci.yml"},"auto_shape":{"status":"503","jobs":2,"fork":true,"states":["Queued","Pending"]}}
+2026-11-26T11:56:57.240Z {"check":"under AutoReadOnly the run reads queued at once with its jobs listed","ok":false}
+2026-11-26T11:56:57.240Z {"check":"the AutoReadOnly run is fork","ok":true}
+2026-11-26T11:56:58.188Z {"policy_back":200,"ci":"approve"}
+2026-11-26T11:56:59.488Z {"cancel":1194873,"status":202}
+2026-11-26T11:57:01.228Z {"cancel":1194876,"status":202}
+VERDICT agentci FAIL under AutoReadOnly the run reads queued at once with its jobs listed
+agentci exit 1

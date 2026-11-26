@@ -1,0 +1,8 @@
+{"t":1795695469340,"issue":"demote target","status":201,"number":14}
+{"t":1795695513963,"failed_writes":2,"first_failed_write":{"status":503}}
+{"t":1795695513964,"writes":65,"ms":44325}
+{"t":1795695513974,"check":"60 writes inside the window (65 in 44325 ms)","ok":true}
+{"t":1795695515323,"demoted_create":403,"message":"Only a person who can push to the repository creates a Graftyard-run task, never an App's token"}
+{"t":1795695515330,"check":"the create inside the window is 403 (NotWriter)","ok":true}
+{"t":1795695547608,"control_create":201,"id":"01a217cb-c022-8f96-ac98-40c104b2ee9b"}
+{"t":1795695547608,"check":"the control create after the window is 201","ok":true}

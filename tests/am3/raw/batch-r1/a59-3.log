@@ -1,0 +1,15 @@
+2026-11-26T12:24:05Z
+2bf216fa3
+2026-11-26T12:24:07.310Z {"create":"run","status":201,"id":"01a217d0-5684-82d7-bfcb-e2cba8868114","state":"queued"}
+2026-11-26T12:24:08.402Z {"create":"cancel","status":201,"id":"01a217d0-5df4-84c9-acbf-05f0c51cf9a0","state":"queued"}
+2026-11-26T12:24:08.402Z {"check":"both creates 201","ok":true}
+2026-11-26T12:24:26.994Z {"t1_running":"in_progress","box":{"Running":{"last_push":null,"sandbox":"01a217d0-5684-82d7-bfcb-e2cba8868114-1"}}}
+2026-11-26T12:24:26.994Z {"check":"the base reads in_progress while the box runs the task, with no PATCH by the row","ok":true}
+2026-11-26T12:24:28.222Z {"cancel":"01a217d0-5df4-84c9-acbf-05f0c51cf9a0","status":200,"state":"cancelled"}
+2026-11-26T12:24:28.222Z {"check":"the admin's cancel answers 200 cancelled","ok":true}
+2026-11-26T12:25:12.307Z {"t1_end":"completed","box":"Done","base_seen":"Completed"}
+2026-11-26T12:25:12.307Z {"check":"the base reads completed after the harness's Finished","ok":true}
+2026-11-26T12:26:48.534Z {"t2_after":"cancelled","box":"Cancelled"}
+2026-11-26T12:26:48.535Z {"check":"a cancelled task stays cancelled: the box sends no state over it","ok":true}
+VERDICT a59 PASS 
+a59 exit 0

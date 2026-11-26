@@ -1,0 +1,14 @@
+2026-11-26T11:54:25Z
+2bf216fa3
+2026-11-26T11:54:43.109Z {"pr":"f136-open-68277","status":200,"number":1}
+2026-11-26T11:54:44.629Z {"pr":"f136-merge-68277","status":200,"number":2}
+2026-11-26T11:54:45.511Z {"merge":200,"merged":true}
+2026-11-26T11:54:45.819Z {"list":"state=all","status":200,"numbers":[[2,"closed"],[1,"open"]],"missing":[]}
+2026-11-26T11:54:45.819Z {"check":"state=all answers 200 with pull-request-simple's required fields","ok":true}
+2026-11-26T11:54:45.820Z {"check":"state=all lists the open and the closed pull request","ok":true}
+2026-11-26T11:54:46.175Z {"list":"state=all&head=m3org:f136-open-68277","status":200,"numbers":[[1,"open"]],"missing":[]}
+2026-11-26T11:54:46.175Z {"check":"head=owner:branch lists only its pull request","ok":true}
+2026-11-26T11:54:46.701Z {"list":"state=closed&base=main","status":200,"numbers":[[2,"closed"]],"missing":[]}
+2026-11-26T11:54:46.706Z {"check":"base=main with state=closed lists the merged pull request only among closed","ok":true}
+VERDICT pulls PASS 
+pulls exit 0

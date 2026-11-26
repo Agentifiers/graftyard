@@ -1,0 +1,11 @@
+2026-11-26T12:12:48Z
+2bf216fa3
+2026-11-26T12:12:54.208Z {"issue":"demote target","status":201,"number":12}
+2026-11-26T12:13:18.032Z {"writes":0,"ms":23816}
+2026-11-26T12:13:18.034Z {"check":"60 writes inside the window (0 in 23816 ms)","ok":false}
+2026-11-26T12:13:19.287Z {"demoted_create":201,"id":"01a217c6-7587-8d64-8a26-73820a5f21e4"}
+2026-11-26T12:13:19.288Z {"check":"the create inside the window is 403 (NotWriter)","ok":false}
+2026-11-26T12:14:11.087Z {"control_create":201,"id":"01a217c7-3dca-8951-8544-b42e8b9a1b41"}
+2026-11-26T12:14:11.087Z {"check":"the control create after the window is 201","ok":true}
+VERDICT demote FAIL 60 writes inside the window (0 in 23816 ms); the create inside the window is 403 (NotWriter)
+demote exit 1

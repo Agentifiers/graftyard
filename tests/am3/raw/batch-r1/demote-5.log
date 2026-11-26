@@ -1,0 +1,12 @@
+2026-11-26T12:17:46Z
+2bf216fa3
+2026-11-26T12:17:49.340Z {"issue":"demote target","status":201,"number":14}
+2026-11-26T12:18:33.964Z {"failed_writes":2,"first_failed_write":{"status":503}}
+2026-11-26T12:18:33.964Z {"writes":65,"ms":44325}
+2026-11-26T12:18:33.974Z {"check":"60 writes inside the window (65 in 44325 ms)","ok":true}
+2026-11-26T12:18:35.323Z {"demoted_create":403,"message":"Only a person who can push to the repository creates a Graftyard-run task, never an App's token"}
+2026-11-26T12:18:35.330Z {"check":"the create inside the window is 403 (NotWriter)","ok":true}
+2026-11-26T12:19:07.608Z {"control_create":201,"id":"01a217cb-c022-8f96-ac98-40c104b2ee9b"}
+2026-11-26T12:19:07.608Z {"check":"the control create after the window is 201","ok":true}
+VERDICT demote PASS 
+demote exit 0

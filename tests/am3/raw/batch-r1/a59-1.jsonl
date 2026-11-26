@@ -1,0 +1,11 @@
+{"t":1795695583205,"create":"run","status":201,"id":"01a217cc-4f8e-8d5d-97cd-88a56d5442be","state":"queued"}
+{"t":1795695584303,"create":"cancel","status":201,"id":"01a217cc-5634-8784-a053-85d16ffc7618","state":"queued"}
+{"t":1795695584303,"check":"both creates 201","ok":"01a217cc-5634-8784-a053-85d16ffc7618"}
+{"t":1795695596190,"t1_running":"in_progress","box":{"Running":{"last_push":null,"sandbox":"01a217cc-4f8e-8d5d-97cd-88a56d5442be-1"}}}
+{"t":1795695596190,"check":"the base reads in_progress while the box runs the task, with no PATCH by the row","ok":true}
+{"t":1795695597473,"cancel":"01a217cc-5634-8784-a053-85d16ffc7618","status":200,"state":"cancelled"}
+{"t":1795695597473,"check":"the admin's cancel answers 200 cancelled","ok":true}
+{"t":1795695649619,"t1_end":"completed","box":"Done","base_seen":"Completed"}
+{"t":1795695649620,"check":"the base reads completed after the harness's Finished","ok":true}
+{"t":1795695747448,"box":"Cancelled"}
+{"t":1795695747448,"check":"a cancelled task stays cancelled: the box sends no state over it","ok":false}

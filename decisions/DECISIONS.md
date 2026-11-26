@@ -11824,7 +11824,7 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 
 ### `assign`: after an issue opens only `Assigned` moves its assignees, and the controller creates from the latest `Assigned` that added its bot, in repository format 32.30, 2026-11-26
 
-**Status.** Built on branch `am3-rest` (AM3-WP3's rest, part 3; closes OPEN-QUESTIONS F20) at $0, native. Its hosted proof is LM-3's batched row on graft-m4a after a site day and an edge day that enables 32.30.
+**Status.** Built on branch `am3-rest` (AM3-WP3's rest, part 3; closes OPEN-QUESTIONS F20) at $0, native. Its hosted proof is LM-3's batched row on graft-m4a after a site day and an edge day that enables 32.30. **Hosted PASS** in LM-3's batched row r1 on graft-m4a (2026-11-26, from main `2bf216fa`; `tests/am3/results/lm3-batch.md`): REST and GraphQL adds each led to one controller create naming the assigner, remove and an assignees-only `PATCH` answered 200, and another App's create got 403.
 
 **Decision.**
 - Ownership (F20): the base's `IssueChanged` owns title and body edits, and the agent block's `Assigned` owns every assignee change after an issue opens. `IssueOpened`'s capture still carries the assignees an issue opens with. The agent block's `IssueEdited` is dropped; its one reader, "a non-writer's title or body edit after assignment pauses the task", reads `IssueChanged`.
@@ -11851,13 +11851,13 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/m0carried/plant263.py`.
 - GHES 3.22 REST, "Add assignees to an issue" and "Remove assignees from an issue" [doc: https://docs.github.com/en/enterprise-server@3.22/rest/issues/assignees].
 
-**Note on the demoted-actor create's count (AM3-WP3's rest, part 2; the lead, 2026-11-26).** It counts writes in the replicated `Recent` window by their entry times, which are approximate across leaders (`crates/raft/src/admit.rs`, `between`) [inference]. That is fine for a 60-a-minute threshold.
+**Note on the demoted-actor create's count (AM3-WP3's rest, part 2; the lead, 2026-11-26).** It counts writes in the replicated `Recent` window by their entry times, which are approximate across leaders (`crates/raft/src/admit.rs`, `between`) [inference]. That is fine for a 60-a-minute threshold. Hosted PASS in LM-3's batched row r1 on graft-m4a (2026-11-26): 65 committed comments in 44 s, then the create got 403, and a control create after the window got 201.
 
 **Flip.** If GHES 3.22 is shown to answer an assignee without push access with 422 rather than dropping it, refuse in `plan_issue_assignees`. If GitHub lists a bot assignee in `Issue.assignees`, stop filtering it. If the controller needs to create from an issue assigned before 32.30 was enabled (an `IssueOpened` row), it cannot: such a row names no assigner, so a writer must reassign the bot.
 
 ### `agent-ci`: `AgentPolicy.ci` holds an agent's run as `action_required` until a writer approves it through a Graftyard route, in Actions format 0x15.13, 2026-11-26
 
-**Status.** Built on branch `am3-rest` (AM3-WP3's rest, part 4) at $0, native. The lead ruled the shape (option B), 2026-11-26. Its hosted proof needs a site day with `GRAFTYARD_AGENT_CI=1` after the day that ships 0x15.13's reader, and an edge day that enables 21.13.
+**Status.** Built on branch `am3-rest` (AM3-WP3's rest, part 4) at $0, native. The lead ruled the shape (option B), 2026-11-26. Its hosted proof needs a site day with `GRAFTYARD_AGENT_CI=1` after the day that ships 0x15.13's reader, and an edge day that enables 21.13. **Hosted PASS** in LM-3's batched row r1 on graft-m4a (2026-11-26, from main `2bf216fa`; `tests/am3/results/lm3-batch.md`), after a site day with the reader and a second one with the flag: held, the Agent token's 403, a writer's approve 201 then `queued`, a second approve 409, AutoReadOnly queued at once, `fork: true` throughout.
 
 **Decision.**
 - A run is an agent's when the ref it runs on (a `push` run's ref, or a same-repository pull request's head branch) is under `refs/heads/graftyard/` or any `AgentApp`'s `confine` (`trigger::agent_run`). A `Refs` entry names no App, so the ref is what the trigger can read, and an `ActorKind::Agent` may push nowhere else. A human's push under those prefixes is held too [inference: the safe side].
@@ -11890,7 +11890,7 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 
 ### `pulls-list`: `GET /repos/{o}/{r}/pulls` lists `pull-request-simple` from the fold, through the narrow read, 2026-11-26
 
-**Status.** Built at $0 on branch `pulls-list`. It is native-tested, edgeboot passed with test-faults and with PRODUCT, and plaindiff ran. Its hosted proof rides the next graft-m4a row that already does a site day and an edge day. Closes OPEN-QUESTIONS F136 once hosted.
+**Status.** Built at $0 on branch `pulls-list`. It is native-tested, edgeboot passed with test-faults and with PRODUCT, and plaindiff ran. Its hosted proof rides the next graft-m4a row that already does a site day and an edge day. Closes OPEN-QUESTIONS F136 once hosted. **Hosted PASS** in LM-3's batched row r1 on graft-m4a (2026-11-26, from main `2bf216fa`; `tests/am3/results/lm3-batch.md`): `state=all`, `head=owner:branch` and `state=closed&base=main` answered 200 with the right items and no required field missing. F136 is closed.
 
 **Decision.**
 - `rest::list_pulls` serves GHES 3.22's `pulls/list`:

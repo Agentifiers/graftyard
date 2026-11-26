@@ -1,0 +1,26 @@
+{"t":1795694152069,"policy":200,"ci":"approve"}
+{"t":1795694159821,"pr":"claude/held-152075","status":200,"number":3}
+{"t":1795694167266,"held_run":{"event":"pull_request","head_ref":"refs/pull/3/merge","head_sha":"0eea6ab36fa5c19ec72ddbfae7031bad94c9ba28","id":1194873,"status":"Held","trigger":84,"workflow":".github/workflows/ci.yml"}}
+{"t":1795694190260,"held_shape":{"status":"completed","conclusion":"action_required","jobs":0,"fork":true,"states":["Held","Held"]}}
+{"t":1795694190260,"check":"a held run reads completed / action_required","ok":true}
+{"t":1795694190260,"check":"a held run lists no jobs","ok":true}
+{"t":1795694190260,"check":"every job of the run is Held in the shard","ok":true}
+{"t":1795694190569,"held_checks":200,"total":0}
+{"t":1795694190569,"check":"a held run has no check run on its head","ok":true}
+{"t":1795694193496,"approve_agent":403,"message":"Resource not accessible by integration"}
+{"t":1795694193497,"check":"the Agent's token gets 403 Resource not accessible by integration","ok":true}
+{"t":1795694196136,"approve_writer":201,"body":{}}
+{"t":1795694196136,"check":"the writer's approval answers 201","ok":true}
+{"t":1795694198661,"approved_shape":{"status":"queued","conclusion":null,"jobs":2,"fork":true,"states":["Queued","Pending"]}}
+{"t":1795694198662,"check":"after approval the run reads queued, its first job Queued and its dependent Pending","ok":true}
+{"t":1795694198662,"check":"the approved run stays fork","ok":true}
+{"t":1795694200325,"approve_again":409,"message":"This run is not waiting for approval."}
+{"t":1795694200325,"check":"a second approval is 409","ok":true}
+{"t":1795694201682,"policy_put":200,"ci":"auto_read_only"}
+{"t":1795694209254,"pr":"claude/auto-201682","status":200,"number":4}
+{"t":1795694217239,"auto_run":{"event":"pull_request","head_ref":"refs/pull/4/merge","head_sha":"47aaf51edf0b6d68756277ebf69e07d1ca67e379","id":1194876,"status":"Queued","trigger":110,"workflow":".github/workflows/ci.yml"},"auto_shape":{"status":"503","jobs":2,"fork":true,"states":["Queued","Pending"]}}
+{"t":1795694217240,"check":"under AutoReadOnly the run reads queued at once with its jobs listed","ok":false}
+{"t":1795694217240,"check":"the AutoReadOnly run is fork","ok":true}
+{"t":1795694218188,"policy_back":200,"ci":"approve"}
+{"t":1795694219488,"cancel":1194873,"status":202}
+{"t":1795694221228,"cancel":1194876,"status":202}

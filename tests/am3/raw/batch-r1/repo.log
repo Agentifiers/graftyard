@@ -1,0 +1,20 @@
+2026-11-26T11:53:10Z
+2bf216fa3
+node:fs:624
+    return binding.readFileUtf8(path, stringToFlags(options.flag));
+                   ^
+
+Error: ENOENT: no such file or directory, open '~/.graft-m4a/kill/ctrl.token'
+    at readFileSync (node:fs:624:20)
+    at file://~/lmr/tests/am3/hosted/batch.mjs:24:35
+    at ModuleJobSync.run (node:internal/modules/esm/module_job:679:46)
+    at node:internal/modules/run_main:199:19
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:105:5) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '~/.graft-m4a/kill/ctrl.token'
+}
+
+Node.js v26.12.0
+repo exit 1
