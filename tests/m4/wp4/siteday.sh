@@ -14,5 +14,5 @@ cd "$tree"
   node workers/site/deploy.mjs ~/.graft-m4a/sites.json --anchor ~/.graft-m4a/install.toml --image "$IMG" \
     --vars ~/.graft-m4a/site-vars.json --skip-build --ops graft-m4a-ops \
     --var GRAFTYARD_HOST=graft-m4a-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev --var GRAFTYARD_ACTIVITY=1 --var GRAFTYARD_AUDIT=1 ${APP_HOOKS:+--var GRAFTYARD_APP_HOOKS=1} ${PR_TRIGGER:+--var GRAFTYARD_PR_TRIGGER=1} \
-    --audit-stream 2a0357004afd44d9a74cf410dd2c715a --run-key bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key
-  echo "exit $?"; date -u +%FT%TZ; } > "$log" 2>&1
+    --audit-stream 2a0357004afd44d9a74cf410dd2c715a --run-key ${CF_SECRETS_STORE_ID:?}/graft-m4a-run-service-key
+  echo "exit $?"; date -u +%FT%TZ; } 2>&1 | sed "s/${CF_SECRETS_STORE_ID:?}/<store>/g" > "$log"

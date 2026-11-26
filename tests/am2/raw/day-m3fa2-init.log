@@ -1,9 +1,9 @@
 2026-11-23T03:19:04Z
 8dc9b691
-  graft-m3f-MCP_APP_KEY_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4 (bfaa0c1573de4775b1b92a12fb89acb4); no copy kept
-  graft-m3f-MCP_CLIENT_SECRET_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4
-  graft-m3f-INSIGHTS_APP_KEY_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4 (bfaa0c1573de4775b1b92a12fb89acb4); no copy kept
-  graft-m3f-MCP_SEAL_KEY_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4
+  graft-m3f-MCP_APP_KEY_A: written to Secrets Store store <store> (<store>); no copy kept
+  graft-m3f-MCP_CLIENT_SECRET_A: written to Secrets Store store <store>
+  graft-m3f-INSIGHTS_APP_KEY_A: written to Secrets Store store <store> (<store>); no copy kept
+  graft-m3f-MCP_SEAL_KEY_A: written to Secrets Store store <store>
 wrote ~/.graft-m3f/apps/apps.json (public keys and the client secret's hash only)
 no operator route yet (R14): send the two ClaimSlug requests in ~/.graft-m3f/apps/apps-claims.request.json, then run `graftyard apps init --app-ids <graftyard-mcp id>,<graftyard-insights id> --out ~/.graft-m3f/apps`
 step exit 0

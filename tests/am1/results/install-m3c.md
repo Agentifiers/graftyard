@@ -20,7 +20,7 @@ All resources are in account `<cf-account-id>`. The work directory is `~/.graft-
 | Secrets Store | none of its own. `graftyard genesis` failed with `maximum_stores_exceeded` (the account has one store, which `graft-m2b` made), so it ran with `--offline-keys`: the drain and executor keys were not stored. The ops secret below is in that shared store | `graftyard genesis --offline-keys` |
 | Genesis | digest `0ec9dc705015…`, committed at `Release` index 3. Every system chain is `Tri` on sites 0, 1, and 2, with home 0. All 3,072 `Tokens` shard groups created (the first `install` hit its 30-min `timeout` in the precreation; the rerun answered "already installed" and finished it) | `genesis`, `sign`, `install --genesis` |
 | Git edge | `graft-m3c-edge`, `https://graft-m3c-edge.<workers-subdomain>.workers.dev`, a test-faults build with the install's anchor, no `LOGINS`; secret `BED_TOKEN` (`~/.graft-m3c/bed.token`). Built with `FORMATS_ENABLED=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3` and no `OPS`; since `lf4-rest` it has `OPS = graft-m3c-ops`, and since `lf4-rest-3` the same formats plus 32.18 | `tests/m1/integ/deploy-edge.mjs --test-faults --anchor [--ops graft-m3c-ops] --var FORMATS_ENABLED=…` |
-| Ops worker | `graft-m3c-ops` (version `ee85c0b0`), added by `lf4-rest` (`tests/am1/results/lf4-rest.md`): Secrets Store secret `graft-m3c-mint-wrap-key` in the account's one store `bfaa0c1573de4775b1b92a12fb89acb4`, bound as `MINT_WRAP_KEY`; `PutVerifyingKey` kid 1 on `tokens:0` at index 7; the private half shredded | `tests/m3/hosted/tools` `mintkey 1`, `workers/ops/deploy.mjs` |
+| Ops worker | `graft-m3c-ops` (version `ee85c0b0`), added by `lf4-rest` (`tests/am1/results/lf4-rest.md`): Secrets Store secret `graft-m3c-mint-wrap-key` in the account's one store `<store>`, bound as `MINT_WRAP_KEY`; `PutVerifyingKey` kid 1 on `tokens:0` at index 7; the private half shredded | `tests/m3/hosted/tools` `mintkey 1`, `workers/ops/deploy.mjs` |
 | Raw `/member` test edge | `graft-m3c-tools-edge`, `https://graft-m3c-tools-edge.<workers-subdomain>.workers.dev`, secret `TOKEN` (`~/.graft-m3c/tools.token`) | `tests/m1/wp7/deploy-edge.mjs` with `SITES`, `GENESIS`, and `EDGES` |
 | Seed | org `m3org` 7100001, `m3-member` 7100002, `m3-admin` 7100003, App `m3-ci` 131072 installed on `m3org` as 7190001, a PAT each for member and admin; repository `m3org/j4` = `repo:65536` | `tests/m3/hosted/setup.ts --out ~/.graft-m3c/m3` |
 | LF-13 repositories | `m3org/lf13-g` = `repo:65537` (gap), `m3org/lf13-i` = `repo:65538` (install) | `tests/am1/runs/mkrepos.mjs lf13-g lf13-i` |
@@ -85,7 +85,7 @@ Run these in order. Each step is safe to repeat.
 2. Delete the container applications `graft-m3c-site-{a,b,c}-gitshard` (`wrangler containers list`, then `wrangler containers delete <id>`).
 3. Empty and delete the buckets `graft-m3c-site-{a,b,c}-packs` (`wrangler r2 bucket delete <name>` after removing their objects).
 4. Delete the queues `graft-m3c-prsync-{a,b,c}` (`wrangler queues delete <name>`).
-5. Delete the secret `graft-m3c-mint-wrap-key` from store `bfaa0c1573de4775b1b92a12fb89acb4`. Do not delete the store: it holds other installs' secrets.
+5. Delete the secret `graft-m3c-mint-wrap-key` from store `<store>`. Do not delete the store: it holds other installs' secrets.
 6. Remove `~/.graft-m3c` and every staged copy of it. It holds the install's private keys and tokens.
 
 The git shard images live in `graft-m1`'s registry repository. Do not delete them.

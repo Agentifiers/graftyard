@@ -16,7 +16,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
 tag=${1:?tag}; step=${2:?step}
-STORE=bfaa0c1573de4775b1b92a12fb89acb4
+STORE=${CF_SECRETS_STORE_ID:?}
 APPS=$HOME/.graft-m3f/apps
 MCP_NAME=graft-m3f-mcp AUX_NAME=graft-m3f-mcp-aux
 export GRAFT_MCP=https://$MCP_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev GRAFT_AUX=https://$AUX_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev
@@ -56,5 +56,5 @@ wr() { npx --prefix tests/m0 wrangler "$@"; }
     *) echo "unknown step $step"; exit 2 ;;
   esac
   echo "step exit $?"; date -u +%FT%TZ; echo DONE
-} > "$L" 2>&1
+} 2>&1 | sed "s/${CF_SECRETS_STORE_ID:?}/<store>/g" > "$L"
 tail -3 "$L"

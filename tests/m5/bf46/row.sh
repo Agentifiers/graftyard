@@ -27,7 +27,7 @@ cd "$(dirname "$0")/../../.."
 TAG=${1:?tag}; PH=${2:?phase}
 O=tests/m5/results/raw/bf46/$TAG; mkdir -p "$O"
 W=$HOME/.graft-m4a; K=$W/bf46; mkdir -p "$K"; chmod 700 "$K"
-STORE=bfaa0c1573de4775b1b92a12fb89acb4
+STORE=${CF_SECRETS_STORE_ID:?}
 OPS=graft-m4a-ops
 G=${G:?the graftyard binary}
 MINTKEY=${MINTKEY:?tests/m3/hosted/tools mintkey}
@@ -35,7 +35,7 @@ export RELVIEW=${RELVIEW:?tests/m3/hosted/tools relview}
 B="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$B$1" "${@:2}"; }
 scrub() {
-  sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<install-subdomain>/g" \
+  sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<install-subdomain>/g" \
       -e "s/$CF_ZONE_ID/<zone-id>/g" -e "s#$PWD/#<checkout>/#g" -e "s#$HOME/#~/#g"
 }
 N=$(ls "$O" | grep -c "^$PH" || true)

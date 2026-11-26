@@ -43,8 +43,8 @@ Total Upload: 876.26 KiB / gzip: 294.17 KiB
 Worker Startup Time: 7 ms
 Your Worker has access to the following bindings:
 Binding                                                                                     Resource                     
-env.MCP_CLIENT_SECRET (bfaa0c1573de4775b1b92a12fb89acb4/graft-m3f-MCP_CLIENT_SECRET_A)      Secrets Store Secret         
-env.MCP_SEAL_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m3f-MCP_SEAL_KEY_A)                Secrets Store Secret         
+env.MCP_CLIENT_SECRET (<store>/graft-m3f-MCP_CLIENT_SECRET_A)      Secrets Store Secret         
+env.MCP_SEAL_KEY (<store>/graft-m3f-MCP_SEAL_KEY_A)                Secrets Store Secret         
 env.EDGE (graft-m3f-edge)                                                                   Worker                       
 env.VERSION                                                                                 Worker Version Metadata      
 env.MCP_CLIENT_ID ("Iv1.0000000000050000")                                                  Environment Variable         

@@ -46,7 +46,7 @@ TAG=${1:?tag}; PH=${2:?phase}
 O=tests/m5/results/raw/b07r2/$TAG; mkdir -p "$O"
 W=$HOME/.graft-m4a; K=$W/b07r2; mkdir -p "$K"; chmod 700 "$K"
 TREE=${TREE:?a worktree at merged main}; OUT=$K/out
-STORE=bfaa0c1573de4775b1b92a12fb89acb4
+STORE=${CF_SECRETS_STORE_ID:?}
 OPS=graft-m4a-ops; PARKED=ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef; BUCKET=graft-m4a-releases
 SCRATCH=graft-m4a-b07r2-edge; DEPLOY_TOKEN=graft-m4a-b07r2-deploy
 IMG=registry.cloudflare.com/$CLOUDFLARE_ACCOUNT_ID/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
@@ -56,7 +56,7 @@ E="https://$SCRATCH.$CF_WORKERS_SUBDOMAIN.workers.dev"
 STOP=${STOP_USD:-6}
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$B$1" "${@:2}"; }
 scrub() {
-  sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" \
+  sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" \
       -e "s#$ROOT/#<checkout>/#g" -e "s#$HOME/#~/#g"
 }
 N=$(ls "$O" | grep -c "^$PH" || true)

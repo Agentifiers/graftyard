@@ -62,7 +62,7 @@ W=$HOME/.graft-m4a; K=$W/$ROW; mkdir -p "$K"; chmod 700 "$K"
 P=graft-agents-m4a
 EDGE_NAME=graft-m4a-edge OPS=graft-m4a-ops
 CTRL=$P-controller FRONT=$P-front AOPS=$P-ops BUCKET=$P-releases PROBE=$P-probe
-RSTORE=2b564b906c40496ea9544799904bc93b ISTORE=bfaa0c1573de4775b1b92a12fb89acb4
+RSTORE=2b564b906c40496ea9544799904bc93b ISTORE=${CF_SECRETS_STORE_ID:?}
 EDGE_HOST=$EDGE_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev
 FRONT_URL=https://$FRONT.$CF_RUNNER_WORKERS_SUBDOMAIN.workers.dev
 PROBE_URL=https://$PROBE.$CF_RUNNER_WORKERS_SUBDOMAIN.workers.dev

@@ -43,7 +43,7 @@ The commit reply has no `files` or `stats`: both are optional in GHES 3.22's `co
 
 | Step | Result |
 | --- | --- |
-| `graft-m3c-ops` | `mintkey` kid 1; Secrets Store secret `graft-m3c-mint-wrap-key` in store `bfaa0c1573de4775b1b92a12fb89acb4`; script version `ee85c0b0`; `PutVerifyingKey` kid 1 on `tokens:0` at index 7; the private half shredded |
+| `graft-m3c-ops` | `mintkey` kid 1; Secrets Store secret `graft-m3c-mint-wrap-key` in store `<store>`; script version `ee85c0b0`; `PutVerifyingKey` kid 1 on `tokens:0` at index 7; the private half shredded |
 | Site day (`tests/am1/lf4/siteday.sh`, 00:58Z to 01:07Z) | `dd219a8` (now `4803fb9`) with `--test-faults`, the install's anchor, and the unchanged shard image `…git@sha256:172216ad…`: site a `d4874bbc`, b `6c69e111`, c `f4c0ca98` (were `9684ae63` / `c58c97c9` / `eadf3310`) |
 | Edge | `ad4c8460` (01:09Z), then `296cc2b0` (01:35Z, edge only, the `/_bed/identity` repo commit, in the second commit), each with `OPS = graft-m3c-ops` and the same `FORMATS_ENABLED` (was `ba54c862`, no `OPS`) |
 | Agent Apps (`tests/am1/rest/apps.mjs`) | `graftyard-workspace` 262144, `graftyard-agent` 327680, `Graftyard MCP` 393216, installations 7190011 to 7190013 on m3org; m3-ci given issues, pull requests, and checks write (`tests/am1/hosted/app-perms.mjs`) |

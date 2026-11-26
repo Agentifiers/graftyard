@@ -15,11 +15,11 @@ TREE=${1:?worktree}; PH=${2:?site|edge|check}
 REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
 O=$REPO/tests/m4/raw/wp3/bf72; mkdir -p "$O"
 W=$HOME/.graft-m4a
-STORE=bfaa0c1573de4775b1b92a12fb89acb4
+STORE=${CF_SECRETS_STORE_ID:?}
 IMG=registry.cloudflare.com/$CLOUDFLARE_ACCOUNT_ID/graft-m1-site-gitshard-git@sha256:e55ab2ad178a4d2b639bf53a3c4ca08694024e344343b2e251821368b1d21d41
 B="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$B$1" "${@:2}"; }
-scrub() { sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g"; }
+scrub() { sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g"; }
 log() { { date -u +%FT%TZ; git -C "$TREE" rev-parse --short HEAD; cat; } | scrub >"$O/day-$PH.log"; cat "$O/day-$PH.log"; }
 deployment() { api "/workers/scripts/$1/deployments" | jq -c --arg n "$1" '.result.deployments[0] | {script: $n, created_on, versions: [.versions[]? | "\(.version_id[0:8]) \(.percentage)"]}'; }
 vars() { api "/workers/scripts/$1/settings" | jq -c '[.result.bindings[] | select(.type == "plain_text" and (.name | test("^(GRAFTYARD_(OIDC|JOB|ACTIONS|PR|APP|ACTIVITY|AUDIT|HOST|CACHE|ARTIFACTS|REUSABLE)|FORMATS_ENABLED|RUN_SERVICE)"))) | "\(.name)=\(.text)"] | sort'; }
@@ -43,7 +43,7 @@ site)
       api "/workers/scripts/$n/schedules" -X PUT -H 'content-type: application/json' --data '[]' | jq -c --arg n $n '{($n): .result.schedules}'
       echo "after $(deployment $n) $(vars $n)"
     done
-    sed -i -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g" "$O/site-deploy.raw"
+    sed -i -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g" "$O/site-deploy.raw"
   } 2>&1 | log ;;
 edge)
   { [ -d /tmp/bf72web ] || { echo "no web build in /tmp/bf72web"; exit 1; }
@@ -70,7 +70,7 @@ edge)
     (cd "$TREE" && python3 tests/fanout/edgever.py "$O/edge-deploy.raw" graft-m4a-edge); echo "edgever exit $?"
     # The raws are committed: the account, the subdomain and the home directory come out after edgever has read them.
     for f in edge-deploy.raw edge-before.json edge-after.json; do
-      sed -i -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g" "$O/$f"; done
+      sed -i -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g" "$O/$f"; done
   } 2>&1 | log ;;
 check)
   { for n in $SITES graft-m4a-edge graft-m4a-ops; do echo "$(deployment $n) $(vars $n)"; done

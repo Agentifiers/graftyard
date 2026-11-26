@@ -42,8 +42,8 @@ env.BUCKET_0 (graft-m3f-site-a-packs)                                           
 env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                    
 env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                    
 env.EXPORT (graft-m3f-export)                                                     R2 Bucket                    
-env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret         
-env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret         
+env.SSH_HOST_KEY_A (<store>/SSH_HOST_KEY_A)              Secrets Store Secret         
+env.SSH_HOST_KEY_B (<store>/SSH_HOST_KEY_B)              Secrets Store Secret         
 env.SITE (graft-m3f-site-a)                                                       Worker                       
 env.EDGE (graft-m3f-edge)                                                         Worker                       
 env.VERSION                                                                       Worker Version Metadata      
@@ -104,8 +104,8 @@ env.PRSYNC (inherited)                                                          
 env.BUCKET_0 (graft-m3f-site-a-packs)                                             R2 Bucket                    
 env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                    
 env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                    
-env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret         
-env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret         
+env.SSH_HOST_KEY_A (<store>/SSH_HOST_KEY_A)              Secrets Store Secret         
+env.SSH_HOST_KEY_B (<store>/SSH_HOST_KEY_B)              Secrets Store Secret         
 env.SITE (graft-m3f-site-b)                                                       Worker                       
 env.EDGE (graft-m3f-edge)                                                         Worker                       
 env.VERSION                                                                       Worker Version Metadata      
@@ -166,8 +166,8 @@ env.PRSYNC (inherited)                                                          
 env.BUCKET_0 (graft-m3f-site-a-packs)                                             R2 Bucket                    
 env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                    
 env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                    
-env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret         
-env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret         
+env.SSH_HOST_KEY_A (<store>/SSH_HOST_KEY_A)              Secrets Store Secret         
+env.SSH_HOST_KEY_B (<store>/SSH_HOST_KEY_B)              Secrets Store Secret         
 env.SITE (graft-m3f-site-c)                                                       Worker                       
 env.EDGE (graft-m3f-edge)                                                         Worker                       
 env.VERSION                                                                       Worker Version Metadata      
@@ -239,8 +239,8 @@ env.BUCKET_0 (graft-m3f-site-a-packs)                                           
 env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                    
 env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                    
 env.EXPORT (graft-m3f-export)                                                     R2 Bucket                    
-env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret         
-env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret         
+env.SSH_HOST_KEY_A (<store>/SSH_HOST_KEY_A)              Secrets Store Secret         
+env.SSH_HOST_KEY_B (<store>/SSH_HOST_KEY_B)              Secrets Store Secret         
 env.SITE (graft-m3f-site-a)                                                       Worker                       
 env.EDGE (graft-m3f-edge)                                                         Worker                       
 env.VERSION                                                                       Worker Version Metadata      
@@ -311,8 +311,8 @@ env.PRSYNC (inherited)                                                          
 env.BUCKET_0 (graft-m3f-site-a-packs)                                             R2 Bucket                    
 env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                    
 env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                    
-env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret         
-env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret         
+env.SSH_HOST_KEY_A (<store>/SSH_HOST_KEY_A)              Secrets Store Secret         
+env.SSH_HOST_KEY_B (<store>/SSH_HOST_KEY_B)              Secrets Store Secret         
 env.SITE (graft-m3f-site-b)                                                       Worker                       
 env.EDGE (graft-m3f-edge)                                                         Worker                       
 env.VERSION                                                                       Worker Version Metadata      
@@ -383,8 +383,8 @@ env.PRSYNC (inherited)                                                          
 env.BUCKET_0 (graft-m3f-site-a-packs)                                             R2 Bucket                    
 env.BUCKET_1 (graft-m3f-site-b-packs)                                             R2 Bucket                    
 env.BUCKET_2 (graft-m3f-site-c-packs)                                             R2 Bucket                    
-env.SSH_HOST_KEY_A (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_A)              Secrets Store Secret         
-env.SSH_HOST_KEY_B (bfaa0c1573de4775b1b92a12fb89acb4/SSH_HOST_KEY_B)              Secrets Store Secret         
+env.SSH_HOST_KEY_A (<store>/SSH_HOST_KEY_A)              Secrets Store Secret         
+env.SSH_HOST_KEY_B (<store>/SSH_HOST_KEY_B)              Secrets Store Secret         
 env.SITE (graft-m3f-site-c)                                                       Worker                       
 env.EDGE (graft-m3f-edge)                                                         Worker                       
 env.VERSION                                                                       Worker Version Metadata      

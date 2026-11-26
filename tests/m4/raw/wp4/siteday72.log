@@ -38,7 +38,7 @@ env.PRSYNC (inherited)                                                          
 env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                    
 env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                    
 env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                    
-env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret         
+env.RUN_SERVICE_KEY (<store>/graft-m4a-run-service-key)             Secrets Store Secret         
 env.SITE (graft-m4a-site-a)                                                                  Worker                       
 env.OPS (graft-m4a-ops)                                                                      Worker                       
 env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                     
@@ -100,7 +100,7 @@ env.PRSYNC (inherited)                                                          
 env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                    
 env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                    
 env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                    
-env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret         
+env.RUN_SERVICE_KEY (<store>/graft-m4a-run-service-key)             Secrets Store Secret         
 env.SITE (graft-m4a-site-b)                                                                  Worker                       
 env.OPS (graft-m4a-ops)                                                                      Worker                       
 env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                     
@@ -162,7 +162,7 @@ env.PRSYNC (inherited)                                                          
 env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                    
 env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                    
 env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                    
-env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret         
+env.RUN_SERVICE_KEY (<store>/graft-m4a-run-service-key)             Secrets Store Secret         
 env.SITE (graft-m4a-site-c)                                                                  Worker                       
 env.OPS (graft-m4a-ops)                                                                      Worker                       
 env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                     
@@ -233,7 +233,7 @@ env.PRSYNC (inherited)                                                          
 env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                    
 env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                    
 env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                    
-env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret         
+env.RUN_SERVICE_KEY (<store>/graft-m4a-run-service-key)             Secrets Store Secret         
 env.SITE (graft-m4a-site-a)                                                                  Worker                       
 env.OPS (graft-m4a-ops)                                                                      Worker                       
 env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                     
@@ -305,7 +305,7 @@ env.PRSYNC (inherited)                                                          
 env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                    
 env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                    
 env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                    
-env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret         
+env.RUN_SERVICE_KEY (<store>/graft-m4a-run-service-key)             Secrets Store Secret         
 env.SITE (graft-m4a-site-b)                                                                  Worker                       
 env.OPS (graft-m4a-ops)                                                                      Worker                       
 env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                     
@@ -377,7 +377,7 @@ env.PRSYNC (inherited)                                                          
 env.BUCKET_0 (graft-m4a-site-a-packs)                                                        R2 Bucket                    
 env.BUCKET_1 (graft-m4a-site-b-packs)                                                        R2 Bucket                    
 env.BUCKET_2 (graft-m4a-site-c-packs)                                                        R2 Bucket                    
-env.RUN_SERVICE_KEY (bfaa0c1573de4775b1b92a12fb89acb4/graft-m4a-run-service-key)             Secrets Store Secret         
+env.RUN_SERVICE_KEY (<store>/graft-m4a-run-service-key)             Secrets Store Secret         
 env.SITE (graft-m4a-site-c)                                                                  Worker                       
 env.OPS (graft-m4a-ops)                                                                      Worker                       
 env.AUDIT_STREAM (2a0357004afd44d9a74cf410dd2c715a)                                          Pipeline                     

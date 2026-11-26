@@ -14,10 +14,10 @@ L=$O/day-$T.log
 A=${CLOUDFLARE_ACCOUNT_ID:?}
 IMG=${IMG:?the pinned shard image}
 SIMG=registry.cloudflare.com/$A/graft-m3f-sshfront@sha256:fc6eda91789c41db39323a7bb72d37176a6f09f05d42e8714ed05f641dcc40a0
-STORE=bfaa0c1573de4775b1b92a12fb89acb4
+STORE=${CF_SECRETS_STORE_ID:?}
 S="graft-m3f-site-a graft-m3f-site-b graft-m3f-site-c"
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$A$1" "${@:2}"; }
-scrub() { sed -e "s/$A/<cf-account-id>/g" -e "s/${CF_WORKERS_SUBDOMAIN:?}/<sub>/g" -e "s#$HOME/#~/#g"; }
+scrub() { sed -e "s/$A/<cf-account-id>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/${CF_WORKERS_SUBDOMAIN:?}/<sub>/g" -e "s#$HOME/#~/#g"; }
 live_formats() { api /workers/scripts/graft-m3f-edge/settings | jq -r '.result.bindings[] | select(.name == "FORMATS_ENABLED") | .text'; }
 { date -u +%FT%TZ; git rev-parse --short HEAD; git status --short -- workers crates containers | head -5
   echo "image ${IMG##*@}"
