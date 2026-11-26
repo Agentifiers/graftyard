@@ -58,6 +58,7 @@
     {"ActionsSecret": {"scope": "Repo", "name": "TOKEN", "record": {"sealed": [1, 2, 3], "key_id": "k1", "updated": 1500}, "actor": 5}},
     {"ActionsVariable": {"scope": "Repo", "name": "VAR", "record": {"value": "v", "updated": 1500}, "actor": 5}},
     {"WorkflowJob": {"job": 1301, "run": 1302, "attempt": 1, "action": "Queued", "name": "build", "workflow": "ci", "head_sha": "@oid:bb", "head_ref": "feature", "labels": [], "runner": null, "conclusion": null, "created": 1500, "started": null, "completed": null}},
-    {"Compacted": {"consumed": ["00000000000000000000000005"], "produced": {"stored": {"id": "00000000000000000000000007", "checksum": "@d:07", "bytes": 900, "sites": 7}}, "from": 1, "to": 17}}
+    {"Compacted": {"consumed": ["00000000000000000000000005"], "produced": {"stored": {"id": "00000000000000000000000007", "checksum": "@d:07", "bytes": 900, "sites": 7}}, "from": 1, "to": 17}},
+    {"Assigned": {"n": 1, "add": [9], "remove": [5], "actor": 5}}
   ]
 }

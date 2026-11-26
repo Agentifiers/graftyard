@@ -1973,6 +1973,8 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     c.write.set(method != Method::Get);
     // A REST issue create is a route only once 32.29 is enabled (`bf77-routes`); until then it reads fresh, as before.
     let routes_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ROUTES);
+    // F20's assignment routes are served only once 32.30 is enabled; until then they answer as before (404).
+    let assign_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ASSIGN);
     c.decided.set(rest_decided(&method, tail) && (routes_on || tail != ["issues"]));
     let merge_of = rest_merge(&method, tail);
     c.leader_reads.set(merge_of.is_some());
@@ -2110,6 +2112,28 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     } else {
         None
     };
+    // An assignment's body, read before the view borrows `rd`: a login the tiers do not name is read into the
+    // directory, so the plan resolves it and the leader renders it; a bot login (`{slug}[bot]`) resolves only to
+    // `graftyard-agent`'s bot account, which `decide` checks is installed.
+    let assign_body = match (assign_on, &method, tail) {
+        (true, Method::Post | Method::Delete, ["issues", _, "assignees"]) | (true, Method::Patch, ["issues", _]) => {
+            let b = serde_json::from_slice::<Value>(&req.bytes().await?).unwrap_or(Value::Null);
+            for login in rest::assignee_logins(&b) {
+                if graftyard_api::view::Directory::by_login(&rd.dir, &login).is_some() {
+                    continue;
+                }
+                if login.strip_suffix("[bot]") == Some(graftyard_git::task::AGENT_SLUG) {
+                    if let Some(app) = crate::run_agent(c).await {
+                        rd.dir.logins.insert(app.bot().0.0, login);
+                    }
+                } else if let Ok(Some(a)) = crate::account_of(c, &login).await {
+                    rd.dir.logins.insert(a.0.0, login);
+                }
+            }
+            Some(b)
+        }
+        _ => None,
+    };
     let r = rd.view(host);
     let need = |w: &Option<Principal>| -> std::result::Result<Principal, Reply> {
         w.clone().ok_or_else(|| Reply::error(401, "Requires authentication", "rest"))
@@ -2206,6 +2230,32 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             let now = Timestamp(js_sys::Date::now() as u64);
             match rest::plan_create_check_run(&body(req.bytes().await?), app, now) {
                 Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::CheckRunCreated { id: 0 }).await?,
+                Err(x) => x,
+            }
+        }
+        // F20: `issues/{n}/assignees` add and remove, and an issue `PATCH` that sets only `assignees`.
+        (m @ (Method::Post | Method::Delete | Method::Patch), ["issues", n] | ["issues", n, "assignees"])
+            if assign_body.is_some()
+                && let Some(plan) = rest::plan_issue_assignees(
+                    &r,
+                    match m {
+                        Method::Post => "POST",
+                        Method::Delete => "DELETE",
+                        _ => "PATCH",
+                    },
+                    n,
+                    assign_body.as_ref().unwrap_or(&Value::Null),
+                ) =>
+        {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match plan {
+                Ok(op) => {
+                    let what = What::IssueAssigned { n: n.parse().unwrap_or(0), created: m == Method::Post };
+                    commit_issue(c, &rd, &who, to_wire(op), what).await?
+                }
                 Err(x) => x,
             }
         }

@@ -778,3 +778,89 @@ fn the_graftyard_task_delivery_reaches_only_graftyard_agent() {
         "only graftyard-agent's hook, once per create and cancel"
     );
 }
+
+// ---- F20: assignment and the controller's create ----
+
+fn open_issue(w: &mut World) -> u32 {
+    let op = IssueOp::OpenIssue {
+        title: "assign me".into(),
+        body: "".into(),
+        labels: Default::default(),
+        assignees: Default::default(),
+    };
+    match w.commit(issue(user(WRITER), op)) {
+        Ok(RepoOut::Issue(c)) => match c.out {
+            IssueOut::Number(n) => n.0,
+            o => panic!("{o:?}"),
+        },
+        o => panic!("{o:?}"),
+    }
+}
+
+fn assign(w: &mut World, who: Principal, n: u32, add: &[AccountId], remove: &[AccountId]) {
+    let op = IssueOp::Assign {
+        n: IssueNumber(n),
+        add: add.iter().copied().collect(),
+        remove: remove.iter().copied().collect(),
+    };
+    let o = w.commit(issue(who, op));
+    assert!(o.is_ok(), "{o:?}");
+}
+
+fn assigned(w: &mut World, n: u32) -> Vec<AccountId> {
+    let mut a = tiers::assignees(&*w.fold().meta, IssueNumber(n));
+    a.sort();
+    a
+}
+
+/// F20: only `Assigned` moves an issue's assignees, and drops what the caller may not set as GHES 3.22 does; the
+/// controller's `graftyard-agent` token creates a task only from an issue whose bot a user assigned, for that user.
+#[test]
+fn the_controller_creates_a_run_task_only_from_an_issue_a_user_assigned_its_bot() {
+    use graftyard_identity::WorkspaceMode::InRepo;
+    let mut w = run_world();
+    agents(&mut w, true, InRepo);
+    let n = open_issue(&mut w);
+    let bot = RUN.bot();
+    // Nothing assigned: refused.
+    assert_eq!(task_err(&run_create(&mut w, app(RUN), Some(n), None)), Some(TaskErr::NotWriter));
+    // A reader changes nothing, and answers as GHES does.
+    assign(&mut w, user(READER), n, &[bot, uid(WRITER).0], &[]);
+    assert_eq!(assigned(&mut w, n), []);
+    // A writer's add keeps only the writer and `graftyard-agent`'s bot: a reader and another App's bot are dropped.
+    assign(&mut w, user(WRITER), n, &[bot, uid(READER).0, CLAUDE.bot(), uid(WRITER2).0], &[]);
+    assert_eq!(assigned(&mut w, n), [bot, uid(WRITER2).0]);
+    // Another App, a task-claimed token, and a create without the issue are refused.
+    for who in [app(CLAUDE), claimed(RUN, Some(&run_task()))] {
+        assert_eq!(task_err(&run_create(&mut w, who.clone(), Some(n), None)), Some(TaskErr::NotWriter), "{who:?}");
+    }
+    assert_eq!(task_err(&run_create(&mut w, app(RUN), None, Some("x"))), Some(TaskErr::NotWriter));
+    // The controller's create: its requester is the user who assigned the bot, not the App.
+    let IssueOut::Task(s) = task_out(&run_create(&mut w, app(RUN), Some(n), None)) else { panic!() };
+    let t = stored(&mut w, &s);
+    assert_eq!((t.requester, t.app), (Some(uid(WRITER)), RUN));
+    let m = task::task_meta(&*w.fold().meta, &s).unwrap();
+    assert_eq!(
+        (m.issue, m.creator),
+        (Some(IssueNumber(n)), TaskActor::App { app: RUN, installation: claims(RUN).installation })
+    );
+    // Unassigned: refused again. Re-added by the App itself: still refused, since no user assigned it.
+    assign(&mut w, user(WRITER2), n, &[], &[bot]);
+    assert_eq!(assigned(&mut w, n), [uid(WRITER2).0]);
+    assert_eq!(task_err(&run_create(&mut w, app(RUN), Some(n), None)), Some(TaskErr::NotWriter));
+    assign(&mut w, app(RUN), n, &[bot], &[]);
+    assert_eq!(assigned(&mut w, n), [bot, uid(WRITER2).0]);
+    assert_eq!(task_err(&run_create(&mut w, app(RUN), Some(n), None)), Some(TaskErr::NotWriter));
+    // A user's later add of the bot names that user; a repeated add by someone else keeps them.
+    assign(&mut w, user(WRITER), n, &[], &[bot]);
+    assign(&mut w, user(WRITER2), n, &[bot], &[]);
+    assign(&mut w, user(WRITER), n, &[bot], &[]);
+    let IssueOut::Task(s) = task_out(&run_create(&mut w, app(RUN), Some(n), None)) else { panic!() };
+    assert_eq!(stored(&mut w, &s).requester, Some(uid(WRITER2)));
+    // Without `graftyard-workspace` installed, the bot is not assignable.
+    let id = claims(WS).installation;
+    w.ident.owner.apply(&AuthzEvent::Installation { id, row: None, not_before: w.now });
+    assign(&mut w, user(WRITER), n, &[], &[bot]);
+    assign(&mut w, user(WRITER), n, &[bot], &[]);
+    assert_eq!(assigned(&mut w, n), [uid(WRITER2).0]);
+}

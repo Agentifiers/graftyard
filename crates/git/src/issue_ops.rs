@@ -334,6 +334,15 @@ pub enum IssueOp<B = DurableBlob> {
     /// `POST /api/graftyard/v1/repos/{o}/{r}/tasks` without `kind`: a Graftyard-run task, by a human writer
     /// (`crate::task::decide`).
     CreateRun(crate::task::NewRun),
+    // ---- F20, format 32.30 (`call::REPO_FORMAT_ASSIGN`) ----
+    /// REST `POST`/`DELETE .../issues/{n}/assignees`, a `PATCH` of the issue's `assignees`, and GraphQL
+    /// `addAssigneesToAssignable`/`removeAssigneesFromAssignable`: accounts to add and remove, each a user or an App's
+    /// bot account (`AppId::bot`). `decide` drops what the caller may not change, as GHES 3.22 does.
+    Assign {
+        n: IssueNumber,
+        add: SmallVec<[AccountId; 2]>,
+        remove: SmallVec<[AccountId; 2]>,
+    },
 }
 
 impl<B> IssueOp<B> {
@@ -403,6 +412,7 @@ impl<B> IssueOp<B> {
             }
             O::DeleteActionsVariable { scope, name } => O::DeleteActionsVariable { scope, name },
             O::CreateRun(n) => O::CreateRun(n),
+            O::Assign { n, add, remove } => O::Assign { n, add, remove },
         })
     }
 
@@ -550,6 +560,10 @@ impl IssueCmd {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
         d.extend(crate::repo::authz_chains(Some(view.owner()), view.settings().and_then(|s| s.enterprise)));
         crate::repo::with_install(&mut d, &self.actor);
+        let install = ChainId::Authz(graftyard_identity::install_account());
+        if matches!(self.op, IssueOp::Assign { .. }) && !d.contains(&install) {
+            d.push(install);
+        }
         d
     }
 
@@ -973,6 +987,40 @@ impl IssueCmd {
                 need(RepoPermission::Write)?;
                 get_rec::<LabelRow>(v.meta(), "label", &[int(id.0.0)]).ok_or(IssueErr::NotFound)?;
                 Ok((one(RepoEvent::Labels(LabelEvent::Deleted { id: *id })), IssueOut::Done))
+            }
+            IssueOp::Assign { n, add, remove } => {
+                issue(*n)?;
+                // GHES 3.22 "silently ignores" assignees a caller without push access sets, and logins that cannot be
+                // assigned: such a request changes nothing and answers the issue as it stands.
+                if perm < Some(RepoPermission::Triage) {
+                    return Ok((SmallVec::new(), IssueOut::Done));
+                }
+                let have = crate::tiers::assignees(v.meta(), *n);
+                // The one assignable bot: `graftyard-agent`'s, where it and `graftyard-workspace` are installed.
+                let bot = authz_fold(deps, graftyard_identity::install_account())
+                    .zip(authz_fold(deps, owner))
+                    .and_then(|(i, o)| crate::task::run_apps(i, o, v.tiers.repo))
+                    .map(|(app, _)| app.bot());
+                let assignable = |a: &AccountId| match graftyard_identity::AppId::of_bot(*a) {
+                    Some(_) => Some(*a) == bot,
+                    None => permission(&user_principal(*a), v, &folds) >= Some(RepoPermission::Write),
+                };
+                let mut add_now: SmallVec<[AccountId; 2]> = SmallVec::new();
+                for a in add.iter().filter(|a| !have.contains(a) && assignable(a)) {
+                    if !add_now.contains(a) && have.len() + add_now.len() < ASSIGNEES_MAX {
+                        add_now.push(*a);
+                    }
+                }
+                let remove_now: SmallVec<[AccountId; 2]> =
+                    remove.iter().filter(|a| have.contains(a)).copied().collect();
+                if add_now.is_empty() && remove_now.is_empty() {
+                    return Ok((SmallVec::new(), IssueOut::Done));
+                }
+                let actor = match self.actor.actor {
+                    Actor::App { app, .. } => Some(app.bot()),
+                    _ => me,
+                };
+                Ok((one(RepoEvent::Assigned { n: *n, add: add_now, remove: remove_now, actor }), IssueOut::Done))
             }
             IssueOp::ApplyLabels { n, add, remove } => {
                 issue(*n)?;
@@ -1460,18 +1508,18 @@ impl IssueCmd {
                 let agent_token =
                     self.credential_app(deps).is_some_and(|a| crate::agent::agent_app(install, a).is_some());
                 let human = app.is_none() && own == Decision::Allow && !agent_token;
-                let fold = |o: AccountId| {
-                    deps.iter().find_map(|(c, d)| match (c, d) {
-                        (ChainId::Authz(x), IdentityDep::Authz(f)) if *x == o && f.owner == Some(o) => Some(f),
-                        _ => None,
-                    })
-                };
-                let run = fold(graftyard_identity::install_account())
-                    .zip(fold(owner))
+                let run = authz_fold(deps, graftyard_identity::install_account())
+                    .zip(authz_fold(deps, owner))
                     .and_then(|(i, o)| crate::task::run_apps(i, o, v.tiers.repo));
                 (human, run)
             }
             _ => (false, None),
+        };
+        let assigner = match (&self.op, self.actor.actor) {
+            (IssueOp::CreateRun(r), Actor::App { app, .. }) => {
+                r.issue.and_then(|n| crate::tiers::assigned_by(v.meta(), n, app.bot()))
+            }
+            _ => None,
         };
         let ctx = crate::task::TaskCtx {
             repo: v.tiers.repo,
@@ -1485,6 +1533,7 @@ impl IssueCmd {
             human_writer,
             run,
             writes,
+            assigner,
         };
         crate::task::decide(&self.op, &self.actor, v.core(), &ctx).map_err(IssueErr::Task)
     }
@@ -1569,7 +1618,10 @@ impl IssueCmd {
             IssueOp::Comment { on: CommentTarget::Review { .. }, .. } => smallvec![w("pull_requests")],
             IssueOp::Comment { on: CommentTarget::Commit { .. }, .. } => smallvec![w("contents")],
             IssueOp::EditComment { id, .. } | IssueOp::DeleteComment { id } => comment(id),
-            IssueOp::DefineLabel { .. } | IssueOp::DeleteLabel { .. } | IssueOp::ApplyLabels { .. } => {
+            IssueOp::DefineLabel { .. }
+            | IssueOp::DeleteLabel { .. }
+            | IssueOp::ApplyLabels { .. }
+            | IssueOp::Assign { .. } => {
                 smallvec![w("issues"), w("pull_requests")]
             }
             IssueOp::SetRule { .. }
@@ -1762,6 +1814,28 @@ impl RepoAccess for Access<'_> {
         collaborator(self.core, user.0)
     }
 }
+
+/// Account `o`'s own `Authz` fold among the deps.
+fn authz_fold(deps: &[(ChainId, IdentityDep)], o: AccountId) -> Option<&graftyard_identity::AuthzFold> {
+    deps.iter().find_map(|(c, d)| match (c, d) {
+        (ChainId::Authz(x), IdentityDep::Authz(f)) if *x == o && f.owner == Some(o) => Some(f),
+        _ => None,
+    })
+}
+
+/// A user as `permission` reads one for an assignee: no token limits and no SSO session, so access an org grants
+/// only under enforced SSO does not count [inference: GHES lists as assignable those with push access].
+fn user_principal(a: AccountId) -> Principal {
+    Principal {
+        actor: Actor::User(UserId(a)),
+        scopes: graftyard_identity::ScopeSet(1),
+        credential: Credential::Stored([0; 32]),
+        sso_orgs: Default::default(),
+    }
+}
+
+/// GitHub's cap on an issue's assignees: "Adds up to 10 assignees" (GHES 3.22 REST, `issues/add-assignees`) [doc].
+pub const ASSIGNEES_MAX: usize = 10;
 
 /// The actor's permission on the repository through identity's `permission` over the owner's `Authz` fold and the
 /// core tier's collaborator rows, and `Read` for anyone signed in on a public repository.

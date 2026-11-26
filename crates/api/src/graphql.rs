@@ -51,7 +51,7 @@ pub fn route(req: &Request<'_>) -> Result<Option<Target>, GqlError> {
             // GHES names `dequeuePullRequest`'s pull request `id`.
             "dequeuePullRequest" => a.get("input").and_then(|i| i.get("id")).and_then(Value::as_str).and_then(route_id),
             _ => a.get("input").and_then(|i| {
-                ["repositoryId", "subjectId", "pullRequestId", "labelableId"]
+                ["repositoryId", "subjectId", "pullRequestId", "labelableId", "assignableId"]
                     .iter()
                     .find_map(|k| i.get(*k).and_then(Value::as_str))
                     .and_then(route_id)
@@ -353,6 +353,39 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
                 if field == "addLabelsToLabelable" { (labels, SmallVec::new()) } else { (SmallVec::new(), labels) };
             planned(Plan::Issue(Box::new(IssueOp::ApplyLabels { n, add, remove })), Some(n))
         }
+        // F20's assignment changes: `Assign`, whose `decide` drops an assignee without push access, as REST does.
+        // `assigneeIds` are `User` node ids, or the `BOT_` id of `graftyard-agent`'s bot account (`AppId::bot`).
+        "addAssigneesToAssignable" | "removeAssigneesFromAssignable" => {
+            if input.get("agentAssignment").is_some_and(|v| !v.is_null()) {
+                return Err(unprocessable(field, "agentAssignment is not served"));
+            }
+            let n = s("assignableId")
+                .and_then(|id| item_of(r, id))
+                .ok_or_else(|| not_found(field, "Could not resolve to a node with that global id."))?;
+            let mut who: SmallVec<[AccountId; 2]> = SmallVec::new();
+            for v in input.get("assigneeIds").and_then(Value::as_array).into_iter().flatten() {
+                let id = v.as_str().unwrap_or("");
+                let a = match NodeId::parse(id) {
+                    Some(x) if x.ty == NodeType::User => AccountId(DbId(x.id())),
+                    Some(x) if x.ty == NodeType::Bot => graftyard_identity::AppId(DbId(x.id())).bot(),
+                    _ => {
+                        return Err(not_found(
+                            field,
+                            format!("Could not resolve to a node with the global id of '{id}'."),
+                        ));
+                    }
+                };
+                if !who.contains(&a) {
+                    who.push(a);
+                }
+            }
+            if who.is_empty() {
+                return Err(unprocessable(field, "assigneeIds can't be blank"));
+            }
+            let (add, remove) =
+                if field == "addAssigneesToAssignable" { (who, SmallVec::new()) } else { (SmallVec::new(), who) };
+            planned(Plan::Issue(Box::new(IssueOp::Assign { n, add, remove })), Some(n))
+        }
         // `gh pr review`: `PullRequestReviewAdd` with `event` and `body`, a review at the pull request's head.
         "addPullRequestReview" => {
             let n = s("pullRequestId")
@@ -542,6 +575,8 @@ impl Obj for Payload<'_> {
             "convertPullRequestToDraft" => "ConvertPullRequestToDraftPayload",
             "addLabelsToLabelable" => "AddLabelsToLabelablePayload",
             "removeLabelsFromLabelable" => "RemoveLabelsFromLabelablePayload",
+            "addAssigneesToAssignable" => "AddAssigneesToAssignablePayload",
+            "removeAssigneesFromAssignable" => "RemoveAssigneesFromAssignablePayload",
             _ => "AddCommentPayload",
         }
     }
@@ -562,6 +597,14 @@ impl Obj for Payload<'_> {
             }
             ("labelable", IssueOut::Done)
                 if matches!(self.root.p.field.as_str(), "addLabelsToLabelable" | "removeLabelsFromLabelable") =>
+            {
+                node(self.root.p.subject?)
+            }
+            ("assignable", IssueOut::Done)
+                if matches!(
+                    self.root.p.field.as_str(),
+                    "addAssigneesToAssignable" | "removeAssigneesFromAssignable"
+                ) =>
             {
                 node(self.root.p.subject?)
             }

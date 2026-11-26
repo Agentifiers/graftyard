@@ -1464,6 +1464,19 @@ pub(crate) async fn install_authz(c: &Ctx<'_>) -> Option<graftyard_identity::Aut
     got
 }
 
+/// The install's `graftyard-agent`: the `GraftyardRun` `AgentApp` on its own `Authz` chain whose slug is
+/// `graftyard-agent`, the one App whose bot account an issue may be assigned to (F20). `None` when it is not
+/// registered or the chain could not be read.
+pub(crate) async fn run_agent(c: &Ctx<'_>) -> Option<graftyard_identity::AppId> {
+    use graftyard_identity::AuthzRead;
+    let install = install_authz(c).await?;
+    install.more.more.agent_apps.values().find_map(|r| {
+        (r.kind == graftyard_identity::AgentKind::GraftyardRun
+            && install.app(r.app).is_some_and(|a| a.slug.as_str() == graftyard_git::task::AGENT_SLUG))
+        .then_some(r.app)
+    })
+}
+
 /// `install_authz`'s two reads: the fold read on the guessed record beside the `Placement` read, kept when the row
 /// differs from the guess only in `at` (`kept_guess`), else read again on the row, as `link` does.
 async fn install_link<T, E, F1, F2>(

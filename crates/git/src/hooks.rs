@@ -348,6 +348,13 @@ pub enum Subject {
         n: IssueNumber,
         actor: Option<graftyard_types::AccountId>,
     },
+    /// An `issues` or `pull_request` `assigned` or `unassigned`: one per assignee an `Assigned` entry added or removed,
+    /// which the payload names as `assignee`, as GHES 3.22 sends one delivery per assignee.
+    Assignee {
+        n: IssueNumber,
+        assignee: graftyard_types::AccountId,
+        actor: Option<graftyard_types::AccountId>,
+    },
     Comment {
         n: IssueNumber,
         id: crate::issues::CommentId,
@@ -471,6 +478,13 @@ pub fn webhooks(core: &dyn Read, repo: RepoId, e: &LogEntry<RepoEvent>) -> Vec<W
                     } else {
                         w("issues", Some(a), Subject::Issue { n: *n, actor: *actor })
                     });
+                }
+            }
+            RepoEvent::Assigned { n, add, remove, actor } => {
+                let event = if pull_head(core, *n).is_some() { "pull_request" } else { "issues" };
+                let each = add.iter().map(|a| ("assigned", a)).chain(remove.iter().map(|a| ("unassigned", a)));
+                for (action, a) in each {
+                    out.push(w(event, Some(action), Subject::Assignee { n: *n, assignee: *a, actor: *actor }));
                 }
             }
             RepoEvent::Comment(CommentEvent::Created { id, on: CommentTarget::Issue(n), author, .. }) => {

@@ -55,6 +55,11 @@ pub const REPO_FORMAT_REVIEWS: Format = Format { family: 0x20, version: 22 };
 /// and as 32.5 for a user. A member that cannot read it refuses it before it commits, and the edge sends it only once
 /// `FormatsEnable` enabled it; a command already in 32.8, 32.12, 32.14 or 32.28 keeps that format.
 pub const REPO_FORMAT_ROUTES: Format = Format { family: 0x20, version: 29 };
+/// F20's assignment changes (`decisions/DECISIONS.md`, "`assign`"): `IssueOp::Assign` (tag 46) and its event
+/// `RepoEvent::Assigned` (tag 48), which a release that reads only up to 32.29 cannot decode. An `Assign` always takes
+/// it, whoever sends it: it carries an App's claims, a task's included, or none for a user. The edge sends it only once
+/// `FormatsEnable` enabled it.
+pub const REPO_FORMAT_ASSIGN: Format = Format { family: 0x20, version: 30 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
@@ -114,6 +119,10 @@ impl IssueCall {
         // 32.23 likewise: a secret or variable command is never an agent, task, or lease command.
         if self.op.is_secret() {
             return crate::secrets::REPO_FORMAT_SECRETS;
+        }
+        // 32.30 likewise: an assignment change is never an agent, task, lease, or review command.
+        if matches!(self.op, IssueOp::Assign { .. }) {
+            return REPO_FORMAT_ASSIGN;
         }
         if self.reviews {
             return REPO_FORMAT_REVIEWS;
@@ -272,6 +281,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             crate::secrets::REPO_FORMAT_SECRETS,
             crate::repo::REPO_FORMAT_RUNS,
             REPO_FORMAT_ROUTES,
+            REPO_FORMAT_ASSIGN,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
@@ -294,13 +304,19 @@ impl<'de> Deserialize<'de> for IssueCall {
         let secrets = fmt(crate::secrets::REPO_FORMAT_SECRETS);
         // 32.29 carries an App's claims, or none for a user, as 32.16 does.
         let routes = fmt(REPO_FORMAT_ROUTES);
+        // 32.30 carries an App's claims, a task claim included, or none for a user.
+        let assign = fmt(REPO_FORMAT_ASSIGN);
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
-        if !tasks && (w.agent_session.is_some() || w.claims.as_ref().is_some_and(|c| c.task.is_some())) {
+        let task_claim = w.claims.as_ref().is_some_and(|c| c.task.is_some());
+        if !tasks && (w.agent_session.is_some() || (task_claim && !assign)) {
             return Err(serde::de::Error::custom("a task claim or a session rides only in format 32.12"));
         }
-        let actor = match (app || agent || tasks || hooks || checks || reviews || secrets || routes, w.claims) {
+        let actor = match (app || agent || tasks || hooks || checks || reviews || secrets || routes || assign, w.claims)
+        {
             (true, Some(c)) => Principal::installation(&c),
-            (false, Some(_)) | (true, None) if !agent && !tasks && !hooks && !reviews && !secrets && !routes => {
+            (false, Some(_)) | (true, None)
+                if !agent && !tasks && !hooks && !reviews && !secrets && !routes && !assign =>
+            {
                 return Err(serde::de::Error::custom(
                     "claims ride only in format 32.8 or 32.9, and 32.9 always has them",
                 ));
@@ -343,7 +359,8 @@ impl IssueCall {
         d.extend(crate::repo::authz_chains(fold.authz_owner(), fold.authz_enterprise()));
         crate::repo::with_install(&mut d, &self.actor);
         let install = ChainId::Authz(graftyard_identity::install_account());
-        if self.agent_events() && !d.contains(&install) {
+        // An assignment reads the install's `AgentApp` rows for the one assignable bot.
+        if (self.agent_events() || matches!(self.op, IssueOp::Assign { .. })) && !d.contains(&install) {
             d.push(install);
         }
         d

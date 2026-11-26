@@ -23,7 +23,8 @@ GATES = ['cargo', '-p', 'graftyard-git', '--test', 'lease_gates', 'ring']
 
 MUTANTS = [
     ('gql: addLabelsToLabelable not routed by labelableId', GQL,
-     '["repositoryId", "subjectId", "pullRequestId", "labelableId"]', '["repositoryId", "subjectId", "pullRequestId"]',
+     '["repositoryId", "subjectId", "pullRequestId", "labelableId", "assignableId"]',
+     '["repositoryId", "subjectId", "pullRequestId", "assignableId"]',
      SURF),
     ('feed: a ring fed past a hole serves cursors from before it', FEED,
      '        if self.first.is_some() && index.0 > self.through.0 + 1 {',

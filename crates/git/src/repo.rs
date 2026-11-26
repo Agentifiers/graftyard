@@ -421,6 +421,15 @@ pub enum RepoEvent {
     /// Core. A roll of the chain's oldest consecutive promoted packs (`crate::pack::Compacted`), committed by the
     /// leader in an entry of its own; `verify` checks it against the fold's `promoted_log`.
     Compacted(crate::pack::Compacted),
+    // F20, format 32.30 (`crate::issue_ops::call::REPO_FORMAT_ASSIGN`): tag 48.
+    /// Metadata. The agent block's `Assigned`: issue `n`'s assignees after it opened, each an account or an App's bot
+    /// account (`AppId::bot`). `actor` is who changed them, an App's bot for an installation token.
+    Assigned {
+        n: IssueNumber,
+        add: SmallVec<[AccountId; 2]>,
+        remove: SmallVec<[AccountId; 2]>,
+        actor: Option<AccountId>,
+    },
 }
 
 impl RepoEvent {
@@ -977,6 +986,10 @@ impl Fold for RepoFold {
             | RepoEvent::Hook { actor, .. }
             | RepoEvent::ActionsSecret { actor, .. }
             | RepoEvent::ActionsVariable { actor, .. } => by(actor),
+            RepoEvent::Assigned { actor: Some(a), .. } => match AppId::of_bot(*a) {
+                Some(x) => app(x),
+                None => account(*a),
+            },
             RepoEvent::Comment(
                 C::Created { author: a, .. } | C::Edited { actor: a, .. } | C::Deleted { actor: a, .. },
             )
@@ -2004,6 +2017,8 @@ impl Record for RepoEvent {
             // R24, 32.24: tag 46.
             RepoEvent::WorkflowJob(u) => return tagged(out, 46, u),
             RepoEvent::Compacted(c) => return tagged(out, 47, c),
+            // F20, 32.30: tag 48.
+            RepoEvent::Assigned { n, add, remove, actor } => return tagged(out, 48, &(n, add, remove, actor)),
         };
         e.u8(0);
         e.u128(push.0.0);

@@ -96,6 +96,50 @@ pub async fn deliver(env: &Env, payload: &Value) -> Result<Response> {
     stub.fetch_with_request(Request::new_with_init("https://taskbox/start", &init)?).await
 }
 
+/// A signed `issues.assigned` delivery naming `graftyard-agent`'s bot (`worker.rs`): the controller's one create,
+/// `POST /api/graftyard/v1/repos/{o}/{r}/tasks` with the issue's number under a `graftyard-agent` installation token
+/// minted without `graftyard_task` (AGENT-LAYER, "Tasks and the activity feed"). The payload is a trigger only: the
+/// host's `decide` reads the issue's latest `Assigned` entry and takes its actor as the requester, or refuses. The
+/// answer is the create's.
+pub async fn assigned(env: &Env, payload: &Value) -> Result<Response> {
+    let (Some(installation), Some(full), Some(n)) = (
+        payload["installation"]["id"].as_i64(),
+        payload["repository"]["full_name"].as_str(),
+        payload["issue"]["number"].as_u64(),
+    ) else {
+        return reply(422, json!({ "message": "not an issue assignment delivery" }));
+    };
+    let Some((_, repo)) = full.split_once('/') else {
+        return reply(422, json!({ "message": "not an issue assignment delivery" }));
+    };
+    let host = env.var("GRAFTYARD_HOST")?.to_string();
+    let jwt = app_jwt(env, "AGENT").await?;
+    let h = Headers::new();
+    h.set("authorization", &format!("Bearer {jwt}"))?;
+    h.set("accept", "application/vnd.github+json")?;
+    h.set("content-type", "application/json")?;
+    h.set("user-agent", "graft-controller")?;
+    let mut init = RequestInit::new();
+    let body = json!({ "repositories": [repo] });
+    init.with_method(Method::Post).with_headers(h.clone()).with_body(Some(body.to_string().into()));
+    let url = format!("https://{host}/api/v3/app/installations/{installation}/access_tokens");
+    let mut r = Fetch::Request(Request::new_with_init(&url, &init)?).send().await?;
+    let v: Value = r.json().await.unwrap_or(Value::Null);
+    let Some(token) = v["token"].as_str().filter(|_| r.status_code() == 201) else {
+        return Err(err(format!("AGENT access_tokens: {} {}", r.status_code(), v["message"])));
+    };
+    h.set("authorization", &format!("token {token}"))?;
+    let mut init = RequestInit::new();
+    let body = json!({ "issue_number": n });
+    init.with_method(Method::Post).with_headers(h).with_body(Some(body.to_string().into()));
+    let url = format!("https://{host}/api/graftyard/v1/repos/{full}/tasks");
+    let mut r = Fetch::Request(Request::new_with_init(&url, &init)?).send().await?;
+    let code = r.status_code();
+    let v: Value = r.json().await.unwrap_or(Value::Null);
+    console_log!("graft-controller: create from {full}#{n}: {code}");
+    reply(code, v)
+}
+
 /// `graftyard-workspace`'s installation on the task's push target, the base in-repo: `GET
 /// /repos/{owner}/{repo}/installation` under its App JWT.
 async fn workspace_installation(env: &Env, host: &str, task: &Task) -> Result<i64> {

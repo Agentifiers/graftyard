@@ -92,7 +92,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Watchers(_) => TierSet::METADATA,
         RepoEvent::Split(x) => crate::split::tiers(x),
         RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => TierSet::CORE,
-        RepoEvent::WorkflowJob(_) => TierSet::METADATA,
+        RepoEvent::WorkflowJob(_) | RepoEvent::Assigned { .. } => TierSet::METADATA,
     }
 }
 
@@ -363,6 +363,28 @@ pub struct ReviewRow {
     pub body: Box<str>,
     pub dismissed: Option<Box<str>>,
     pub at: Timestamp,
+}
+
+/// Issue `n`'s assignees, from the metadata `issue_assignee` rows.
+pub fn assignees(meta: &(impl Read + ?Sized), n: IssueNumber) -> Vec<AccountId> {
+    meta.prefix("issue_assignee", &[n_key(n)])
+        .into_iter()
+        .filter_map(|(k, _)| match k.get(1) {
+            Some(Val::Int(a)) => Some(AccountId(graftyard_types::DbId(*a))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Who assigned `a` to issue `n` through the `Assigned` entry that added it, while `a` stays assigned: `None` when `a`
+/// is not assigned, was assigned by an App, or came with the issue's `IssueOpened`, whose rows record no one.
+pub fn assigned_by(meta: &(impl Read + ?Sized), n: IssueNumber, a: AccountId) -> Option<graftyard_identity::UserId> {
+    let row = meta.get("issue_assignee", &[n_key(n), int(a.0.0)])?;
+    let by: Option<AccountId> = match row.first() {
+        Some(Val::Blob(b)) => postcard::from_bytes(b).expect("a fold row this release wrote"),
+        _ => None,
+    };
+    by.filter(|b| graftyard_identity::AppId::of_bot(*b).is_none()).map(graftyard_identity::UserId)
 }
 
 /// The metadata `label` row.
@@ -902,7 +924,7 @@ impl RepoTiers {
             RepoEvent::Fanout { k } => put_rec(w, "fanout", Vec::new(), k),
             RepoEvent::Split(x) => crate::split::write_core(w, x, at),
             RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => crate::secrets::write_core(w, ev),
-            RepoEvent::WorkflowJob(_) => {}
+            RepoEvent::WorkflowJob(_) | RepoEvent::Assigned { .. } => {}
         }
     }
 
@@ -1225,6 +1247,16 @@ impl RepoTiers {
                 |u: &crate::workflow_job::WorkflowJobUpdate| u.action as u64,
             ),
             RepoEvent::Split(x) => crate::split::write_meta(w, x),
+            // An added assignee's row keeps who added it (`assigned_by`); an `IssueOpened` assignee's row is empty.
+            RepoEvent::Assigned { n, add, remove, actor } => {
+                for a in remove {
+                    w.delete("issue_assignee", &[n_key(*n), int(a.0.0)]);
+                }
+                for a in add {
+                    put_rec(w, "issue_assignee", vec![n_key(*n), int(a.0.0)], actor);
+                }
+                touch(w, *n, &|_| {});
+            }
             _ => {}
         }
     }

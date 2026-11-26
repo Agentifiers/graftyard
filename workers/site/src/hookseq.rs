@@ -611,11 +611,26 @@ pub(crate) async fn directory(
         graftyard_api::hosted::accounts(&f.core, &f.meta)
     };
     named.insert(owner);
+    let mut logins = BTreeMap::new();
+    // An App's bot account (`AppId::bot`, F20's assignee) has no login row: its login is `{slug}[bot]`, from the
+    // record of an App installed on the owner, as the edge renders it (`decisions/DECISIONS.md`, "`app-bot`").
+    let bots: Vec<_> = named.iter().filter_map(|a| graftyard_identity::AppId::of_bot(*a)).collect();
+    if !bots.is_empty() {
+        let held = OWNER_APPS.with(|m| m.borrow().get(&owner).map(|(_, a)| a.apps.clone()));
+        let apps = match held {
+            Some(a) => a,
+            None => read_owner_apps(env, owner, record).await?.apps,
+        };
+        for app in bots {
+            if let Some(r) = apps.get(&app) {
+                logins.insert(app.bot().0.0, format!("{}[bot]", r.slug.as_str()));
+            }
+        }
+    }
     let mut by_shard: BTreeMap<_, Vec<i64>> = BTreeMap::new();
-    for a in named {
+    for a in named.into_iter().filter(|a| graftyard_identity::AppId::of_bot(*a).is_none()) {
         by_shard.entry(graftyard_identity::account_shard(a)).or_default().push(a.0.0);
     }
-    let mut logins = BTreeMap::new();
     let reads = by_shard.into_iter().take(graftyard_api::narrow::LOGIN_SHARDS_MAX).map(|(shard, ids)| async move {
         let chain = ChainId::Names(shard);
         let record = crate::release::system_record(env, chain).await?;

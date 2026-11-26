@@ -97,6 +97,9 @@ fn deps() -> Vec<(ChainId, IdentityDep)> {
         }
     }
     out.push((ChainId::Authz(AccountId(DbId(OWNER))), IdentityDep::Authz(authz)));
+    // The install's chain, with no `AgentApp` rows: an assignment reads it for `graftyard-agent`'s bot.
+    let install = graftyard_identity::install_account();
+    out.push((ChainId::Authz(install), IdentityDep::Authz(AuthzFold::new(install))));
     out
 }
 

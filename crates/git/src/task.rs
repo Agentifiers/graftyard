@@ -558,6 +558,9 @@ pub struct TaskCtx<'a> {
     /// (`graftyard_raft::Scratch::set_actor_writes`): at DEMOTE_PER_MIN the actor is demoted, and a Graftyard-run
     /// create needs a human. Task commands are not counted in it.
     pub writes: u32,
+    /// For a create by an App naming an issue: the user whose `Assigned` entry added that App's bot account to the
+    /// issue, while the bot stays assigned (`crate::tiers::assigned_by`). The controller's exception reads it.
+    pub assigner: Option<UserId>,
 }
 
 type Decided = Result<(smallvec::SmallVec<[crate::repo::RepoEvent; 4]>, crate::issue_ops::IssueOut), TaskErr>;
@@ -645,16 +648,28 @@ pub fn decide(
             Ok((smallvec::smallvec![RepoEvent::TaskCreated(t)], IssueOut::Task(session)))
         }
         IssueOp::CreateRun(n) => {
-            // A human writer's create (`design/AGENT-LAYER.md`, Shape, "Tasks and the activity feed"). The controller's
-            // exception for an issue assigned to its bot, and fork mode, are AM3-WP3's rest.
-            let TaskActor::User(u) = actor else { return Err(TaskErr::NotWriter) };
-            if !ctx.human_writer || ctx.perm < Some(RepoPermission::Write) {
-                return Err(TaskErr::NotWriter);
-            }
-            // A demoted actor, past DEMOTE_PER_MIN at the create's own entry, is not a human for this rule.
-            if ctx.writes >= graftyard_raft::admit::DEMOTE_PER_MIN {
-                return Err(TaskErr::NotWriter);
-            }
+            // A human writer's create (`design/AGENT-LAYER.md`, Shape, "Tasks and the activity feed"), or the
+            // controller's: `graftyard-agent`'s own installation token, with no task claim, from an issue whose latest
+            // `Assigned` entry names its bot, for that entry's actor (F20). Fork mode is AM3-WP3's rest.
+            let u = match actor {
+                TaskActor::User(u) => {
+                    if !ctx.human_writer || ctx.perm < Some(RepoPermission::Write) {
+                        return Err(TaskErr::NotWriter);
+                    }
+                    // A demoted actor, past DEMOTE_PER_MIN at the create's own entry, is not a human for this rule.
+                    if ctx.writes >= graftyard_raft::admit::DEMOTE_PER_MIN {
+                        return Err(TaskErr::NotWriter);
+                    }
+                    u
+                }
+                TaskActor::App { app, installation } => {
+                    let controller = ctx.run == Some((app, installation)) && claim(p).is_none() && n.issue.is_some();
+                    match ctx.assigner {
+                        Some(u) if controller => u,
+                        _ => return Err(TaskErr::NotWriter),
+                    }
+                }
+            };
             let owner = ctx.owner.ok_or(TaskErr::NotYours)?;
             let policy = owner.policy();
             if !policy.agents_enabled {

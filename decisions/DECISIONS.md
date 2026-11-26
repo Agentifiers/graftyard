@@ -11797,3 +11797,36 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/m0carried/plant259.py`: 10 of 10 caught.
 
 **Flip.** If GHES renders a `GITHUB_TOKEN` status's creator otherwise, change `bot_user`, not the stored id. If an App's bot account ever needs a profile (followers, `GET /users/{slug}[bot]`), give it a login row on `Names` under the negated id. If GHES 3.22 is shown to create a missing label or drop an unknown assignee for a writer, change `plan_create_issue` (F135).
+
+### `assign`: after an issue opens only `Assigned` moves its assignees, and the controller creates from the latest `Assigned` that added its bot, in repository format 32.30, 2026-11-26
+
+**Status.** Built on branch `am3-rest` (AM3-WP3's rest, part 3; closes OPEN-QUESTIONS F20) at $0, native. Its hosted proof is LM-3's batched row on graft-m4a after a site day and an edge day that enables 32.30.
+
+**Decision.**
+- Ownership (F20): the base's `IssueChanged` owns title and body edits, and the agent block's `Assigned` owns every assignee change after an issue opens. `IssueOpened`'s capture still carries the assignees an issue opens with. The agent block's `IssueEdited` is dropped; its one reader, "a non-writer's title or body edit after assignment pauses the task", reads `IssueChanged`.
+- `IssueOp::Assign { n, add, remove }` (appended, tag 46) commits `RepoEvent::Assigned { n, add, remove, actor }` (appended, tag 48), metadata tier only. It is planned from REST `POST` and `DELETE /repos/{o}/{r}/issues/{n}/assignees`, a `PATCH` of the issue whose body sets only `assignees` (the set is replaced), and GraphQL `addAssigneesToAssignable` and `removeAssigneesFromAssignable`. GHES 3.22's answers are kept: 201 with the issue for `POST`, 200 otherwise. A `PATCH` that sets any other field is not this route and answers as before.
+- `decide` drops what the caller may not set, as GHES 3.22 does ("Only users with push access can add assignees to an issue. Assignees are silently ignored otherwise"). A caller below triage changes nothing and still gets the issue. An assignee is a user with write access, or `graftyard-agent`'s bot account (`AppId::bot`, "`app-bot`") where `graftyard-agent` and `graftyard-workspace` are both installed on the repository (`task::run_apps`). Any other login, another App's bot included, is dropped. At most 10 assignees are kept (`ASSIGNEES_MAX`). The REST plan resolves `graftyard-agent[bot]` only to that App's bot. GraphQL takes a `User` or `Bot` node id and refuses `agentAssignment`. `Issue.assignees`, a `UserConnection`, leaves bot accounts out.
+- Each `issue_assignee` row an `Assigned` adds stores its actor, an App's bot for an installation token. `tiers::assigned_by(n, bot)` reads the user who added the bot, while the bot stays assigned. A later add by someone else changes nothing, a removal deletes the row, and an `IssueOpened` row names no one.
+- The controller's exception: a `CreateRun` from `graftyard-agent`'s own installation token (`ctx.run`), with no `task` claim, naming an issue whose `assigned_by` for its bot is a user. That user is the task's `requester`, so the task counts toward their open-task cap. Everything else an App sends is `NotWriter`, as before.
+- `Assigned` delivers `issues.assigned` and `issues.unassigned` (`pull_request.*` for a pull request), one per assignee, with `assignee` as GitHub's simple user. The site's webhook directory names an App's bot `{slug}[bot]` from the owner's App records. `graft-controller` answers an `issues.assigned` naming `graftyard-agent[bot]` by minting a `graftyard-agent` token without `graftyard_task` and sending `POST /api/graftyard/v1/repos/{o}/{r}/tasks` with `issue_number`. The payload is only a trigger; `decide` reads the assignment from the fold.
+- Repository format 32.30 (`call::REPO_FORMAT_ASSIGN`) carries `Assign`: a member that reads up to 32.29 refuses it before it commits. The edge serves the routes only once `FormatsEnable` enabled 32.30; until then they answer as main did (404 for `.../assignees`, and an assignees-only `PATCH` falls through).
+
+**Why.**
+- F20 needed one owner per change. With `Assigned` alone owning assignees, the controller's rule "the latest `Assigned` entry names its bot" reads one row.
+- The actor stored on the row is the cheapest exact answer to "which user assigned the bot". Scanning the log for the latest entry is not a fold read, and adding the actor to the issue row would change its bytes.
+- A bot account with a negated id needs no new record (as in "`app-bot`").
+
+**What it beat.**
+- (b) of F20, `IssueEdited` owning assignment as well as edits: two events for one change.
+- A separate `Assignee` enum with a bot arm: it changes `issue_assignee`'s key and every reader of it, when `AppId::bot` already names a bot.
+- Taking the requester from the webhook payload: the payload is untrusted input, and the design says the controller treats it as a trigger only.
+
+**Evidence.**
+- `crates/git/tests/task_gates.rs`, `the_controller_creates_a_run_task_only_from_an_issue_a_user_assigned_its_bot`: a reader's assignment changes nothing; a writer's keeps only the writer and the bot; another App, a task-claimed token and a create without the issue are refused; the create's requester is the assigning user; a removal and the App's own add refuse; a later user's add names that user; with `graftyard-workspace` uninstalled, the bot is not assignable.
+- `crates/git/tests/wire_tags.golden` and `fold_corpus.golden`: tags 46 and 48 appended; the corpus's 902 earlier rows are unchanged, with versions 26 to 30 and `Assigned 30` added.
+- `tests/m0carried/plant263.py`.
+- GHES 3.22 REST, "Add assignees to an issue" and "Remove assignees from an issue" [doc: https://docs.github.com/en/enterprise-server@3.22/rest/issues/assignees].
+
+**Note on the demoted-actor create's count (AM3-WP3's rest, part 2; the lead, 2026-11-26).** It counts writes in the replicated `Recent` window by their entry times, which are approximate across leaders (`crates/raft/src/admit.rs`, `between`) [inference]. That is fine for a 60-a-minute threshold.
+
+**Flip.** If GHES 3.22 is shown to answer an assignee without push access with 422 rather than dropping it, refuse in `plan_issue_assignees`. If GitHub lists a bot assignee in `Issue.assignees`, stop filtering it. If the controller needs to create from an issue assigned before 32.30 was enabled (an `IssueOpened` row), it cannot: such a row names no assigner, so a writer must reassign the bot.
