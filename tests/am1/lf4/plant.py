@@ -34,7 +34,7 @@ MUTANTS = [
     ('pending reviews listed', REST,
      '    rows.retain(|(_, row)| row.state != ReviewState::Pending);\n', '', SURF),
     ('a dismissed review keeps its state', REST,
-     'let state = if row.dismissed.is_some() {', 'let state = if false {', SURF),
+     '    if row.dismissed.is_some() {\n        return "DISMISSED";', '    if false {\n        return "DISMISSED";', SURF),
     ('review comments of every pull request', VIEW,
      'matches!(row.on, CommentTarget::Review { n: on, .. } if on == n)',
      'matches!(row.on, CommentTarget::Review { .. })', SURF),

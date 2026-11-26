@@ -690,41 +690,264 @@ pub fn list_issue_comments(r: &Repo<'_>, n: &str, query: &str) -> Reply {
     paged_values(r, &format!("/issues/{}/comments", n.0), query, all)
 }
 
+/// `GET /repos/{owner}/{repo}/issues/{issue_number}/labels` (F137): the labels `GET issues/{n}` lists, paged.
+pub fn list_issue_labels(r: &Repo<'_>, n: &str, query: &str) -> Reply {
+    let Some(it) = n.parse::<u32>().ok().and_then(|n| r.item(IssueNumber(n))) else { return Reply::not_found() };
+    let all = r.labels_of(it.n).iter().map(|(id, l)| label_json(r, *id, l)).collect();
+    paged_values(r, &format!("/issues/{}/labels", it.n.0), query, all)
+}
+
+/// A merged pull request's `merged` issue event, the one event whose actor the fold records (F137): its id is the
+/// item's own id, as `ui::events` gives it, so `GET issues/events/{id}` finds it through `issue_by_id`. A close
+/// records no closer, and no other event kind has a row, so no other event is served (F137's gaps).
+fn merged_event(r: &Repo<'_>, it: &Item) -> Option<Value> {
+    let (_, head) = it.pull.as_ref()?;
+    let graftyard_git::issues::PrState::Merged { at, by, merge_commit, .. } = head.state else { return None };
+    let (api, o, name) = (r.host.api(), &r.at.owner, &r.at.name);
+    let id = it.row.id.0;
+    Some(json!({
+        "id": id, "node_id": scoped(NodeType::MergedEvent, r, id),
+        "url": format!("{api}/repos/{o}/{name}/issues/events/{id}"),
+        "actor": simple_user(r.host, r.dir, Some(by.0)), "event": "merged",
+        "commit_id": merge_commit.hex(), "commit_url": format!("{api}/repos/{o}/{name}/commits/{}", merge_commit.hex()),
+        "created_at": iso(at), "performed_via_github_app": null,
+    }))
+}
+
+/// `GET /repos/{owner}/{repo}/issues/{issue_number}/events` (F137): the item's `merged` event, if it has one.
+pub fn list_issue_events(r: &Repo<'_>, n: &str, query: &str) -> Reply {
+    let Some(it) = n.parse::<u32>().ok().and_then(|n| r.item(IssueNumber(n))) else { return Reply::not_found() };
+    let all = merged_event(r, &it).into_iter().collect();
+    paged_values(r, &format!("/issues/{}/events", it.n.0), query, all)
+}
+
+/// An `issue-event` with its `issue`, as the repository-wide routes render it.
+fn repo_issue_event(r: &Repo<'_>, it: &Item) -> Option<Value> {
+    let mut v = merged_event(r, it)?;
+    v["issue"] = issue_json(r, it);
+    Some(v)
+}
+
+/// `GET /repos/{owner}/{repo}/issues/events` (F137): every merged pull request's `merged` event, newest first. Which
+/// pull requests merged is a selection over every `pull_head` row (`Directory::pick`).
+pub fn list_repo_issue_events(r: &Repo<'_>, query: &str) -> Reply {
+    let page = Page::parse(query);
+    let mut select = || {
+        let mut all: Vec<(Timestamp, IssueNumber)> = r
+            .core
+            .prefix("pull_head", &[])
+            .into_iter()
+            .filter_map(|(k, _)| {
+                let Some(Val::Int(n)) = k.first() else { return None };
+                let n = IssueNumber(u32::try_from(*n).ok()?);
+                match graftyard_git::tiers::pull_head(r.core, n)?.state {
+                    graftyard_git::issues::PrState::Merged { at, .. } => Some((at, n)),
+                    _ => None,
+                }
+            })
+            .collect();
+        all.sort_unstable_by(|a, b| b.cmp(a));
+        let (total, more) = (all.len(), all.len() > page.end());
+        Pick::of_numbers(all.into_iter().skip(page.skip()).take(page.per_page).map(|(_, n)| n), total, more)
+    };
+    let pick = r.dir.pick(&format!("issues/events?{query}"), &mut select);
+    let items: Vec<Value> =
+        pick.numbers().into_iter().filter_map(|n| r.item(n)).filter_map(|it| repo_issue_event(r, &it)).collect();
+    let link = graftyard_wire::link(&r.host.api(), r.at.id.0.0, "/issues/events", &[], page, pick.more, None);
+    let reply = Reply::json(200, Value::Array(items));
+    match link {
+        Some(l) => reply.with("link", l),
+        None => reply,
+    }
+}
+
+/// `GET /repos/{owner}/{repo}/issues/events/{event_id}` (F137): a `merged` event by its id; any other id is 404.
+pub fn get_issue_event(r: &Repo<'_>, id: &str) -> Reply {
+    match id.parse::<i64>().ok().and_then(|id| r.item_by_id(DbId(id))).and_then(|it| repo_issue_event(r, &it)) {
+        Some(v) => Reply::json(200, v),
+        None => Reply::not_found(),
+    }
+}
+
+/// A review's REST `state`: upper case in `pulls/{n}/reviews`, lower case in an issue timeline, as GitHub serves it
+/// (github/rest-api-description#6345).
+fn review_state(row: &graftyard_git::tiers::ReviewRow) -> &'static str {
+    if row.dismissed.is_some() {
+        return "DISMISSED";
+    }
+    match row.state {
+        ReviewState::Approved => "APPROVED",
+        ReviewState::ChangesRequested => "CHANGES_REQUESTED",
+        ReviewState::Commented | ReviewState::Pending => "COMMENTED",
+    }
+}
+
+/// The pinned `pull-request-review` object, as `pulls/{n}/reviews` lists it.
+fn review_json(r: &Repo<'_>, num: IssueNumber, id: DbId, row: &graftyard_git::tiers::ReviewRow) -> Value {
+    let (api, web) = (r.host.api(), r.host.web());
+    let (o, name) = (&r.at.owner, &r.at.name);
+    let html = format!("{web}/{o}/{name}/pull/{}#pullrequestreview-{}", num.0, id.0);
+    let pull = format!("{api}/repos/{o}/{name}/pulls/{}", num.0);
+    json!({
+        "id": id.0, "node_id": scoped(NodeType::PullRequestReview, r, id.0),
+        "user": simple_user(r.host, r.dir, row.reviewer), "body": &*row.body, "state": review_state(row),
+        "html_url": html, "pull_request_url": pull,
+        "_links": { "html": { "href": html }, "pull_request": { "href": pull } },
+        "submitted_at": iso(row.at), "commit_id": row.commit.hex(),
+        "author_association": crate::wire::association(r, row.reviewer),
+    })
+}
+
+/// `GET /repos/{owner}/{repo}/issues/{issue_number}/timeline` (F137): the item's comments (`commented`), submitted
+/// reviews (`reviewed`), and `merged` event, oldest first, less any event `exclude` names. These are the events the
+/// fold records with their actor; a comment or review whose author is gone has no `actor` to render and is left out.
+pub fn list_timeline(r: &Repo<'_>, n: &str, query: &str) -> Reply {
+    let Some(it) = n.parse::<u32>().ok().and_then(|n| r.item(IssueNumber(n))) else { return Reply::not_found() };
+    let mut all: Vec<(Timestamp, i64, Value)> = Vec::new();
+    for (id, row) in r.comments_of(it.n) {
+        if row.author.is_none() {
+            continue;
+        }
+        let mut v = issue_comment_json(r, &it, id, &row);
+        v["event"] = json!("commented");
+        v["actor"] = v["user"].clone();
+        all.push((row.created, id.0.0, v));
+    }
+    let mut reviews = r.reviews_of(it.n);
+    reviews.retain(|(_, row)| row.state != ReviewState::Pending && row.reviewer.is_some());
+    for (id, row) in reviews {
+        let mut v = review_json(r, it.n, id, &row);
+        v["event"] = json!("reviewed");
+        v["state"] = json!(review_state(&row).to_lowercase());
+        all.push((row.at, id.0, v));
+    }
+    if let Some(v) = merged_event(r, &it) {
+        let at = it.pr_state().map_or(Timestamp(0), |s| match s {
+            graftyard_git::issues::PrState::Merged { at, .. } => at,
+            _ => Timestamp(0),
+        });
+        all.push((at, it.row.id.0, v));
+    }
+    let exclude: Vec<String> =
+        param(query, "exclude").map(|e| unpercent(e).split(',').map(str::to_owned).collect()).unwrap_or_default();
+    all.retain(|(_, _, v)| !exclude.iter().any(|x| v["event"] == x.as_str()));
+    all.sort_by_key(|(at, id, _)| (*at, *id));
+    let page = Page::parse(query);
+    let more = all.len() > page.end();
+    let items: Vec<Value> = all.into_iter().skip(page.skip()).take(page.per_page).map(|(_, _, v)| v).collect();
+    let keep: Vec<(&str, &str)> =
+        query.split('&').filter_map(|kv| kv.split_once('=')).filter(|(k, _)| *k == "exclude").collect();
+    let link = graftyard_wire::link(
+        &r.host.api(),
+        r.at.id.0.0,
+        &format!("/issues/{}/timeline", it.n.0),
+        &keep,
+        page,
+        more,
+        None,
+    );
+    let reply = Reply::json(200, Value::Array(items));
+    match link {
+        Some(l) => reply.with("link", l),
+        None => reply,
+    }
+}
+
+const REPO_COMMENTS_DOC: &str = "rest/issues/comments#list-issue-comments-for-a-repository";
+
+/// `GET /repos/{owner}/{repo}/issues/comments` (F137): every issue and pull request conversation comment, in
+/// ascending id order; with `sort` (`created` or `updated`), by that time in `direction` (`desc` unless `asc`); with
+/// `since`, only those updated at or after it. Any other `sort` or `direction`, or a `since` that is not ISO 8601, is
+/// 422. Which comments they are is a selection over every `comment` row (`Directory::pick`).
+pub fn list_repo_issue_comments(r: &Repo<'_>, query: &str) -> Reply {
+    let invalid = || Reply::error(422, "Validation Failed", REPO_COMMENTS_DOC);
+    let sort = param(query, "sort");
+    let asc = match (sort, param(query, "direction")) {
+        (Some("created" | "updated"), None | Some("desc")) => false,
+        (Some("created" | "updated"), Some("asc")) => true,
+        (None, None | Some("asc" | "desc")) => true,
+        _ => return invalid(),
+    };
+    let since = match param(query, "since").map(unpercent) {
+        None => None,
+        Some(s) => match graftyard_wire::parse_iso(&s) {
+            Some(t) => Some(t),
+            None => return invalid(),
+        },
+    };
+    let page = Page::parse(query);
+    let mut select = || {
+        let mut all: Vec<(Timestamp, i64)> = r
+            .meta
+            .prefix("comment", &[])
+            .into_iter()
+            .filter_map(|(k, _)| {
+                let Some(Val::Int(id)) = k.first() else { return None };
+                let row: CommentRow = graftyard_git::tiers::get_rec(r.meta, "comment", &k)?;
+                let keep = matches!(row.on, CommentTarget::Issue(_)) && since.is_none_or(|s| row.updated >= s);
+                let at = match sort {
+                    Some("updated") => row.updated,
+                    Some(_) => row.created,
+                    None => Timestamp(0),
+                };
+                keep.then_some((at, *id))
+            })
+            .collect();
+        all.sort_unstable();
+        if !asc {
+            all.reverse();
+        }
+        let (total, more) = (all.len(), all.len() > page.end());
+        let items = all.into_iter().skip(page.skip()).take(page.per_page);
+        Pick { items: items.map(|(_, id)| vec![graftyard_git::tiers::int(id)]).collect(), total, more }
+    };
+    let pick = r.dir.pick(&format!("issues/comments?{query}"), &mut select);
+    let items: Vec<Value> = pick
+        .items
+        .iter()
+        .filter_map(|k| {
+            let Some(Val::Int(id)) = k.first() else { return None };
+            issue_comment_by_id(r, *id)
+        })
+        .collect();
+    let keep: Vec<(&str, &str)> = query
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .filter(|(k, _)| matches!(*k, "sort" | "direction" | "since"))
+        .collect();
+    let link = graftyard_wire::link(&r.host.api(), r.at.id.0.0, "/issues/comments", &keep, page, pick.more, None);
+    let reply = Reply::json(200, Value::Array(items));
+    match link {
+        Some(l) => reply.with("link", l),
+        None => reply,
+    }
+}
+
+fn issue_comment_by_id(r: &Repo<'_>, id: i64) -> Option<Value> {
+    let row: CommentRow = graftyard_git::tiers::get_rec(r.meta, "comment", &[graftyard_git::tiers::int(id)])?;
+    let CommentTarget::Issue(n) = row.on else { return None };
+    Some(issue_comment_json(r, &r.item(n)?, CommentId(DbId(id)), &row))
+}
+
+/// `GET /repos/{owner}/{repo}/issues/comments/{comment_id}` (F137): a conversation comment; a review comment's id, or
+/// any other, is 404.
+pub fn get_issue_comment(r: &Repo<'_>, id: &str) -> Reply {
+    match id.parse::<i64>().ok().and_then(|id| issue_comment_by_id(r, id)) {
+        Some(v) => Reply::json(200, v),
+        None => Reply::not_found(),
+    }
+}
+
 /// `GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews`, in review id order.
 pub fn list_reviews(r: &Repo<'_>, n: &str, query: &str) -> Reply {
     let Some(num) = n.parse::<u32>().ok().map(IssueNumber) else { return Reply::not_found() };
     if r.item(num).is_none_or(|it| !it.is_pull()) {
         return Reply::not_found();
     }
-    let (api, web) = (r.host.api(), r.host.web());
-    let (o, name) = (&r.at.owner, &r.at.name);
     let mut rows = r.reviews_of(num);
     rows.retain(|(_, row)| row.state != ReviewState::Pending);
     rows.sort_by_key(|(id, _)| id.0);
-    let all = rows
-        .into_iter()
-        .map(|(id, row)| {
-            let state = if row.dismissed.is_some() {
-                "DISMISSED"
-            } else {
-                match row.state {
-                    ReviewState::Approved => "APPROVED",
-                    ReviewState::ChangesRequested => "CHANGES_REQUESTED",
-                    ReviewState::Commented | ReviewState::Pending => "COMMENTED",
-                }
-            };
-            let html = format!("{web}/{o}/{name}/pull/{}#pullrequestreview-{}", num.0, id.0);
-            let pull = format!("{api}/repos/{o}/{name}/pulls/{}", num.0);
-            json!({
-                "id": id.0, "node_id": scoped(NodeType::PullRequestReview, r, id.0),
-                "user": simple_user(r.host, r.dir, row.reviewer), "body": &*row.body, "state": state,
-                "html_url": html, "pull_request_url": pull,
-                "_links": { "html": { "href": html }, "pull_request": { "href": pull } },
-                "submitted_at": iso(row.at), "commit_id": row.commit.hex(),
-                "author_association": crate::wire::association(r, row.reviewer),
-            })
-        })
-        .collect();
+    let all = rows.into_iter().map(|(id, row)| review_json(r, num, id, &row)).collect();
     paged_values(r, &format!("/pulls/{}/reviews", num.0), query, all)
 }
 
