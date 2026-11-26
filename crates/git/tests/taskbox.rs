@@ -282,3 +282,34 @@ fn a_cancel_delivery_stops_the_box_and_refuses_its_sandbox() {
     assert_eq!(b.task.state, TaskState::Cancelled);
     assert_eq!(b.on(alarm(false, "v1"), HEARTBEAT.as_millis() as u64), Ok(Act::Keep), "a final box starts nothing");
 }
+
+/// OPEN-QUESTIONS A59: the base's task follows the box. A new box owes the base `in_progress`; each answered state is
+/// owed no more; a 5xx leaves it owed and a 4xx does not; the final state is owed after the Sandbox finishes; a cancel,
+/// which only the cancel endpoint sets, is never owed.
+#[test]
+fn the_base_task_is_sent_each_state_until_the_base_answers_it() {
+    use graftyard_git::task::TaskApiState::{Completed, Failed, InProgress};
+    let fresh = TaskBox::new(task());
+    assert_eq!(fresh.unreported(), None, "a queued box owes nothing: the base created it queued");
+    let mut b = started();
+    assert_eq!(b.unreported(), Some(InProgress));
+    b.answered(InProgress, 503);
+    assert_eq!(b.unreported(), Some(InProgress), "a 5xx is sent again at the next alarm");
+    b.answered(InProgress, 200);
+    assert_eq!(b.unreported(), None);
+    // A restart keeps the task running: nothing new to send.
+    assert!(matches!(b.on(alarm(false, "v1"), HEARTBEAT.as_millis() as u64), Ok(Act::Start { .. })));
+    assert_eq!(b.unreported(), None);
+    assert_eq!(b.on(Input::Report { from: sb(2), event: TaskEvent::Finished }, 1), Ok(Act::Stop));
+    assert_eq!(b.unreported(), Some(Completed));
+    b.answered(Completed, 422);
+    assert_eq!(b.unreported(), None, "a 4xx is final: the base already reads the task final");
+    // A failed task owes `failed`; a cancelled one owes nothing.
+    let mut f = started();
+    f.answered(InProgress, 200);
+    let _ = f.on(Input::Report { from: sb(1), event: TaskEvent::Failed { reason: "x".into() } }, 1);
+    assert_eq!(f.unreported(), Some(Failed));
+    let mut c = started();
+    c.cancel();
+    assert_eq!(c.unreported(), None);
+}

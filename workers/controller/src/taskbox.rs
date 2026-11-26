@@ -311,7 +311,10 @@ impl TaskBox {
         }
         self.save(&s).await?;
         self.act(&act, &s).await?;
-        if !s.b.task.state.is_final() {
+        self.report_base().await?;
+        // A final box keeps its alarm until the base answered its last state.
+        let unreported = self.load().await?.is_some_and(|s| s.b.unreported().is_some());
+        if !s.b.task.state.is_final() || unreported {
             self.state.storage().set_alarm(HEARTBEAT).await?;
         }
         Ok(())
@@ -391,6 +394,7 @@ impl TaskBox {
         match out {
             Ok(act) => {
                 self.act(&act, &s).await?;
+                self.report_base().await?;
                 reply(200, json!({ "state": s.b.task.state }))
             }
             Err(r) => refuse(&s.b, &r, &format!("{r:?}")),
@@ -427,6 +431,39 @@ impl TaskBox {
                 format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}")))
             }
         }))
+    }
+
+    /// Sends the base's task the state the box reached, if the base has not answered it (`tb::TaskBox::unreported`,
+    /// OPEN-QUESTIONS A59): `PATCH /api/graftyard/v1/repos/{owner}/{repo}/tasks/{id}` under `graftyard-agent`'s token,
+    /// the task's App. The box is loaded again after the request, as `heartbeat` does, so a report that came in while
+    /// it waited is kept; a failed request is left for the next alarm.
+    async fn report_base(&self) -> Result<()> {
+        let Some(s) = self.load().await? else { return Ok(()) };
+        let Some(state) = s.b.unreported() else { return Ok(()) };
+        let host = host(&s.start.route).ok_or_else(|| err("the route names no host"))?.to_owned();
+        let (o, n) = (s.b.task.base.owner.as_str(), s.b.task.base.name.as_str());
+        let url = format!("https://{host}/api/graftyard/v1/repos/{o}/{n}/tasks/{}", s.b.task.id.text());
+        let auth = self.credential(Cred::Agent(Scheme::Bearer), &s).await?.ok_or_else(|| err("no agent token"))?;
+        let h = Headers::new();
+        h.set("authorization", &auth)?;
+        h.set("accept", "application/vnd.github+json")?;
+        h.set("content-type", "application/json")?;
+        h.set("user-agent", "graft-controller")?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Patch)
+            .with_headers(h)
+            .with_body(Some(json!({ "state": state.as_str() }).to_string().into()));
+        let status = match Fetch::Request(Request::new_with_init(&url, &init)?).send().await {
+            Ok(r) => r.status_code(),
+            Err(e) => {
+                console_log!("graft-controller: task {} PATCH {}: {e}", s.b.task.id.text(), state.as_str());
+                return Ok(());
+            }
+        };
+        console_log!("graft-controller: task {} PATCH {}: {status}", s.b.task.id.text(), state.as_str());
+        let Some(mut s) = self.load().await? else { return Ok(()) };
+        s.b.answered(state, status);
+        self.save(&s).await
     }
 
     /// One installation token of `app` (`AGENT` or `WORKSPACE`) for `inst.repo`, claimed for the task.
@@ -473,6 +510,7 @@ impl DurableObject for TaskBox {
                 self.save(&s).await?;
                 self.act(&act, &s).await?;
                 self.state.storage().set_alarm(HEARTBEAT).await?;
+                self.report_base().await?;
                 reply(201, json!({ "state": s.b.task.state }))
             }
             (Method::Get, "/cancel") => {

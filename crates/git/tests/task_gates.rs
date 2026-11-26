@@ -272,6 +272,8 @@ fn run_world() -> World {
     let row = InstallationRow { app: WS, repos: c.repos.clone(), permissions: everything() };
     w.ident.owner.apply(&AuthzEvent::Installation { id: c.installation, row: Some(row), not_before: Timestamp(0) });
     w.flag(claude_row());
+    register_own(&mut w, MCP, "graftyard-mcp");
+    w.flag(AgentApp { app: MCP, kind: AgentKind::Mcp, confine: None });
     seed_run_task(&mut w, &run_task(), RUN, WRITER);
     w
 }
@@ -603,9 +605,9 @@ fn a_human_writer_creates_a_run_task_only_with_agents_enabled_in_repo() {
     agents(&mut w, true, Fork);
     assert_eq!(task_err(&run_create(&mut w, user(WRITER), None, Some("fix it"))), Some(TaskErr::ForkMode));
     agents(&mut w, true, InRepo);
-    // Never an App's installation token (the controller's own included), an `AgentApp`'s user-to-server token, a
-    // task-claimed token, or a reader.
-    for who in [app(RUN), app(CLAUDE), claimed(WS, Some(&run_task())), user(VIA_APP), user(READER)] {
+    // Never an App's installation token (the controller's own included), an `AgentApp`'s user-to-server token (an
+    // MCP token, `Graftyard MCP`'s, included), a task-claimed token, or a reader (L0-14).
+    for who in [app(RUN), app(CLAUDE), claimed(WS, Some(&run_task())), user(VIA_APP), user(VIA_MCP), user(READER)] {
         assert_eq!(task_err(&run_create(&mut w, who.clone(), None, Some("x"))), Some(TaskErr::NotWriter), "{who:?}");
     }
     // Neither an issue nor a prompt, or an issue that does not exist.

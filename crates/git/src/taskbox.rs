@@ -28,6 +28,10 @@
 //!   pointer is gone) releases it and starts the next Sandbox from the last acked push. An alarm that could not read a
 //!   caught-up view (`Pointer::Unread`) changes no hold, so a failed read neither holds a box nor releases one. A box
 //!   held for `HOLD_MAX` fails its task (DECISIONS "`controller-taskbox`", Versions).
+//! - **The base's task.** The base's `AgentTask` follows the box: after each change the host sends `PATCH
+//!   .../tasks/{id}` with the state `TaskState::api` gives, under `graftyard-agent`'s token, until the base answered it
+//!   (`TaskBox::unreported`, `TaskBox::answered`; OPEN-QUESTIONS A59). `Cancelled` is never sent: only the cancel
+//!   endpoint sets it, and it is what started the box's own cancel.
 
 use std::time::Duration;
 
@@ -37,6 +41,7 @@ use crate::agent::RefPattern;
 use crate::controller::{Resume, SandboxId, StepErr, Task, TaskEvent, TaskState};
 use crate::pkt::{Pkt, Reader};
 use crate::refs::ObjectId;
+use crate::task::TaskApiState;
 
 /// How often the alarm checks the container [guess]. Well inside a Sandbox's 6-hour inactivity stop, and short enough
 /// that a lost Sandbox restarts within the 2-minute loss bound plus one push interval.
@@ -62,6 +67,10 @@ pub struct TaskBox {
     pub late: u64,
     /// The pointer's version this box is held for, and since when (ms).
     pub hold: Option<(String, u64)>,
+    /// The state the base last answered for the task: `Queued` as created, then each `PATCH` it answered. A box stored
+    /// before A59 reads `None` and sends its state once.
+    #[serde(default)]
+    pub base: Option<TaskApiState>,
 }
 
 /// One input to the box.
@@ -110,7 +119,7 @@ pub enum Report {
 
 impl TaskBox {
     pub fn new(task: Task) -> TaskBox {
-        TaskBox { task, generation: 0, version: None, heard: 0, late: 0, hold: None }
+        TaskBox { task, generation: 0, version: None, heard: 0, late: 0, hold: None, base: Some(TaskApiState::Queued) }
     }
 
     fn next_id(&mut self) -> SandboxId {
@@ -167,6 +176,21 @@ impl TaskBox {
         let _ = self.task.step(TaskEvent::Cancelled);
         self.hold = None;
         Act::Stop
+    }
+
+    /// The state the base's task should read and has not answered: `TaskState::api`'s, unless the base already
+    /// answered it or the task is `Cancelled`.
+    pub fn unreported(&self) -> Option<TaskApiState> {
+        self.task.state.api().filter(|s| self.base != Some(*s))
+    }
+
+    /// The base answered the `PATCH` for `state` with `status`. A 2xx took it. A 4xx refused it for good, as for a task
+    /// the base already reads final, or a paused task its App may not resume (`crate::task::decide`, `UpdateTask`), so
+    /// the box does not send it again. A 5xx, like no answer, leaves it for the next alarm.
+    pub fn answered(&mut self, state: TaskApiState, status: u16) {
+        if status < 500 {
+            self.base = Some(state);
+        }
     }
 
     /// Takes one input at `now` (ms).

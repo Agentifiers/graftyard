@@ -50,6 +50,8 @@ pub const READER: i64 = 103;
 pub const SITE_ADMIN: i64 = 104;
 /// A user who signed in to `CLAUDE` and holds its user-to-server token.
 pub const VIA_APP: i64 = 105;
+/// A writer who holds `Graftyard MCP`'s user-to-server token for `MCP` (an MCP token).
+pub const VIA_MCP: i64 = 106;
 pub const CLAUDE: AppId = AppId(DbId(3));
 pub const RUN: AppId = AppId(DbId(4));
 pub const PLAIN: AppId = AppId(DbId(5));
@@ -146,21 +148,25 @@ impl Ident {
         let mut tokens = TokensFold::new(TokenShard(0));
         let mut owner = AuthzFold::new(AccountId(DbId(OWNER)));
         owner.apply(&AuthzEvent::Opened { kind: AccountKind::User, enterprise: None });
-        for a in [OWNER, WRITER, WRITER2, READER, SITE_ADMIN, VIA_APP] {
+        for a in [OWNER, WRITER, WRITER2, READER, SITE_ADMIN, VIA_APP, VIA_MCP] {
             let id = AccountId(DbId(a));
             names.apply(&NamesEvent::Account { id, suspended: false, sessions_not_before: Timestamp(0) });
             let (hash, kind, account, scopes, expires) = ([a as u8; 32], TokenKind::Pat, id, ScopeSet(1), None);
-            if a == VIA_APP {
-                let fields = Box::new(TokenFields { app: Some(CLAUDE), ..TokenFields::default() });
+            if a == VIA_APP || a == VIA_MCP {
+                let app = if a == VIA_APP { CLAUDE } else { MCP };
+                let fields = Box::new(TokenFields { app: Some(app), ..TokenFields::default() });
                 let kind = TokenKind::UserToServer;
                 tokens.apply(&TokensEvent::StoredWith { hash, kind, account, scopes, expires, fields });
             } else {
                 tokens.apply(&TokensEvent::Stored { hash, kind, account, scopes, expires });
             }
         }
-        for (a, p) in
-            [(WRITER, RepoPermission::Write), (WRITER2, RepoPermission::Write), (VIA_APP, RepoPermission::Write)]
-        {
+        for (a, p) in [
+            (WRITER, RepoPermission::Write),
+            (WRITER2, RepoPermission::Write),
+            (VIA_APP, RepoPermission::Write),
+            (VIA_MCP, RepoPermission::Write),
+        ] {
             owner.apply(&AuthzEvent::Grant { repo: REPO, grantee: UserId(AccountId(DbId(a))), permission: Some(p) });
         }
         owner.apply(&AuthzEvent::Grant {
