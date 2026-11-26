@@ -525,7 +525,7 @@ pub(crate) async fn read_repo(
     // `settings` and the `collaborator` rows. A private repository whose owner's `Authz` did not answer is 503, not a
     // 404 the caller would take as "no such repository".
     let core = TierRows::store(&rows.core);
-    crate::nets::learn_rows(repo.id, &core);
+    repo.fix(graftyard_git::tiers::fork(&core).map(|f| f.network));
     // A read-class request's owner `Authz` may be up to `READ_CACHE` old (`crate::rcache`): one that would hide the
     // repository is read again fresh first, so a grant shows at once and only a revocation waits out the cache.
     if gate == Gate::Readers
@@ -1439,7 +1439,7 @@ pub(crate) async fn task_claim(
     let Ok(Some(record)) = crate::placement(c, owner).await else {
         return Ok(Err(Reply::error(422, "no such repository", doc)));
     };
-    let repo = crate::Repo { id: repo, owner, record };
+    let repo = crate::Repo::new(repo, owner, record);
     // The task's own rows (`command-rows`): `token_task` reads only its `agent_task` row.
     let spec = CommandSpec { session: Some(session.clone()), owner: owner.0.0, ..CommandSpec::default() };
     let (rows, install) = futures_util::future::join(command_tier_rows(c, &repo, &spec), crate::install_authz(c)).await;
@@ -3081,7 +3081,7 @@ mod tests {
             moving_from: None,
             at: Timestamp(1),
         };
-        let repo = |id: i64, rec| crate::Repo { id: RepoId(DbId(id)), owner: AccountId(DbId(9)), record: rec };
+        let repo = |id: i64, rec| crate::Repo::new(RepoId(DbId(id)), AccountId(DbId(9)), rec);
         let g = repo(7, record(0, 1));
         let ahead = || Some(("rows", Ok::<_, ()>(Some("authz"))));
         let found = |r: crate::Repo| Some(Ok(Some(r)));

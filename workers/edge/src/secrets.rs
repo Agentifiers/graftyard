@@ -411,7 +411,7 @@ async fn owner_repos(
     let mut out = Vec::new();
     for (k, e) in &f.names {
         let graftyard_identity::RepoEntry::Live { repo, .. } = e else { continue };
-        let r = crate::Repo { id: *repo, owner, record: record.clone() };
+        let r = crate::Repo::new(*repo, owner, record.clone());
         let rows = crate::api::Rows::Core;
         match crate::api::read_repo(
             c,

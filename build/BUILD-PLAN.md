@@ -1665,7 +1665,7 @@ Added by the lead on 2026-11-26 (`decisions/DECISIONS.md`, "`forks-before-worksp
 - **A network chain** (`ChainId::Network`): a new group family on the site with a core-tier fold only ("Folds", Graft 5), `NetworkEvent` and its `decide`, placed under the root owner's `Placement` record, which `design/DESIGN.md` says covers "each network chain whose root repository it holds" (Shape, `Placement`). `ForkAdded` and the network-wide `Takedown` live there, not on the root's repository chain. It runs on the existing `Member` class, so it adds no Durable Object class. Its first format is network 0x21.1 (below).
 - **The fork operation** ("Multi-chain operations", Fork):
   - The commit point is `CreateRepoWith` on the fork owner's `Authz` chain, carrying `fork_of` (Authz 0x12.16).
-  - Whoever first touches the fork appends `ForkAdded` to the network chain, then `RepoEvent::Genesis { owner, network, name, fork_of }` on the fork's chain (repository 32.31). Both are idempotent by repository id, and `Audit` finishes a create cut after its commit point, as it finishes `CreateRepoWith` today (DECISIONS, "F59 closes: `Audit` finishes repository create and delete").
+  - Whoever first touches the fork appends `ForkAdded` to the network chain, then `RepoEvent::Genesis { owner, network, name, fork_of }` on the fork's chain (repository 32.34). Both are idempotent by repository id, and `Audit` finishes a create cut after its commit point, as it finishes `CreateRepoWith` today (DECISIONS, "F59 closes: `Audit` finishes repository create and delete").
   - A `ForkAdded` that meets a taken-down network makes the finisher tombstone the fork's name instead.
   - Fork creates count against the per-account hourly cap ("Public service concerns").
 - **Where the edge reads the network** (lead's ruling (B), 2026-11-26; DECISIONS "`fork-network-read`"): on the `o/r` path, from the repository chain's access rows, which the read gate already reads: a fork's `Genesis { network, fork_of }` writes a core `fork` row only when the network is not the repository's own id, and `access_rows` serves it, so a root's rows stay byte-identical and no read is added. A shared gate entry carries a fork's network as `net`. `NamesEvent::RepoOwner` still carries the network for the id-only routes (`/repositories/{id}`, export member scope, purge, the sweep's home): a fork's row is `NamesEvent::ForkOwner` (Names 0x10.4), and a root's stays `RepoOwner`, which reads as its own id. `design/DESIGN.md` already has `RepoOwner` serve `/repositories/{id}` "and a network's root". Not on `Authz`'s `Live` name.
@@ -1679,7 +1679,7 @@ Added by the lead on 2026-11-26 (`decisions/DECISIONS.md`, "`forks-before-worksp
 1. **Slice 1**: the network family and `ForkAdded`, network-keyed packs and shard (all ~40 derivations, the nine shard names, the two reverse maps), the shard's multi-chain catch-up with namespaced refs, `RepoOwner`'s network, `CreateRepoWith`'s `fork_of`, `Genesis.fork_of`, `POST /forks`, the fork fields, the cross-repository `OpenPr` and the fork merge, and the export scope. BF-79 runs on slice 1.
 2. **Slice 2**: the network-wide `Takedown` ("Public service concerns": first-touch completion copies it onto every member chain), and the purge gate refusing a network another repository still uses (DECISIONS "`repo-purge`", Flip).
 
-**Formats.** Repository 32.31 (`Genesis` with `fork_of`, the `POST /forks` path, `OpenPr`'s fork-head checks), Authz 0x12.16 (`CreateRepoWith`'s `fork_of`), Names 0x10.4 (`RepoOwner`'s network), and network 0x21.1, the network family's first. The families in use are 0x10 Names, 0x11 Tokens, 0x12 Authz, 0x13 Ids, 0x14 Identity, 0x15 Actions, 0x20 repository and 0x30 `Release`. 0x21 puts the network chain beside the repository family, whose packs it owns. Each format is read on a site day before `FormatsEnable` enables it. Every existing repository writes and reads as on main until then.
+**Formats.** Repository 32.34 (`Genesis` with `fork_of`; first numbered 32.31, moved by DECISIONS "`format-order`", since a repository format's number is main's highest plus one when it merges, the `POST /forks` path, `OpenPr`'s fork-head checks), Authz 0x12.16 (`CreateRepoWith`'s `fork_of`), Names 0x10.4 (`RepoOwner`'s network), and network 0x21.1, the network family's first. The families in use are 0x10 Names, 0x11 Tokens, 0x12 Authz, 0x13 Ids, 0x14 Identity, 0x15 Actions, 0x20 repository and 0x30 `Release`. 0x21 puts the network chain beside the repository family, whose packs it owns. Each format is read on a site day before `FormatsEnable` enables it. Every existing repository writes and reads as on main until then.
 
 **Beds.** `tests/edgeboot/run.sh` (test-faults and `PRODUCT=1`), `tests/exportbed`, and `tests/vaultbed`, since export and the vault read packs by network.
 
@@ -1745,6 +1745,8 @@ It also carries three clauses moved from LM-1 by the operator's decision of 2026
 
 It also carries LM-3's "the provenance row passes" (the rerun of L0-10).
 
+That clause is carried to BM-7 (M7-WP8) by the lead's ruling of 2026-11-26 (`decisions/DECISIONS.md`, "`l010-at-bm7`"): L0-10 ends with a vault restore, which M7-WP7 builds.
+
 ### AM3-WP5. AM3 gate
 
 **Build.** Nothing new.
@@ -1760,6 +1762,8 @@ It also carries LM-3's "the provenance row passes" (the rerun of L0-10).
 The rows rerun are L0-14, L0-02, L0-03, and L0-04. The provenance row is L0-10.
 
 **Gate ledger (2026-11-26, $0, `tests/am3/results/lm3-gate.md`).** Met hosted: a Sandbox killed mid-task resumes (`lm3-kill.md` r2, scripted harness) and a bad controller at 1% swaps back (`lm3.md` r2). In AM2's in-repo row, now running: A3 in-repo with its prompt-only task (without the draft leg, OPEN-QUESTIONS F140), L0-14, L0-04, and L0-03's base and no-live-task cells. Pending a row with no owner: L0-02 and L0-03's other in-repo cells, planned as one graft-m4a row waiting for the lead's GO. Pending code: every fork-mode line (AM3-WP2a), and L0-10's vault restore, which is M7-WP7's build (the ledger's contradiction 1).
+
+**L0-10 carried to BM-7 (the lead, 2026-11-26; `decisions/DECISIONS.md`, "`l010-at-bm7`").** LM-3's "the provenance row passes" is not run in AM3. L0-10 runs once, at BM-7: 10,000 replayed agent commits resolve 100% to a session or PR before BM-7's vault restore and 100% after it, with the row's text and its pass unchanged. AM3 closes with this clause carried, not met. LM-3's other clauses are unchanged.
 
 ## Milestone 6: region loss, SSH, and the lifeboat
 
@@ -1997,6 +2001,8 @@ Its oracle is also the `rest:migrations` export and import round trip in `design
 | Row | Gate (Pass) |
 | --- | --- |
 | BM-7 | A self-hosted install with no vendor key passes milestones 1 to 6 gates and enables a new format. A vault restore to a chosen cutoff and a lifeboat-export restore into new accounts each lose no entry up to their cutoff, and afterward a developer's PAT and SSH key, a user-owned repository, and an org name all work, while a PAT revoked after the cutoff fails. A `Solo` group moves to `Tri` under load with no failed write |
+
+It also carries L0-10 from LM-3 (AM3-WP5; `decisions/DECISIONS.md`, "`l010-at-bm7`"): 10,000 replayed agent commits on the restored install's source, resolved before the vault restore to the chosen cutoff and again after it, as one run. Pass: 100% resolve to a session or PR before and after. Fail: any lost.
 
 ## Work packages per milestone
 

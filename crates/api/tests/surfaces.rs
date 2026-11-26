@@ -641,7 +641,7 @@ fn access_rows_include_a_forks_network_row_but_no_root_row() {
         term: Term(2),
         index: Index(1),
         prev: PREV_ZERO,
-        format: Format { family: 0x20, version: 31 },
+        format: Format { family: 0x20, version: 34 },
         tiers: TierSet::CORE,
         at: Timestamp(1_000),
         requests: Default::default(),

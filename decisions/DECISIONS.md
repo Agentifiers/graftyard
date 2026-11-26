@@ -12010,9 +12010,9 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 
 ### `fork-network-read`: on the `o/r` path the edge learns a fork's network from the access rows it already reads; `RepoOwner` carries it for id-only routes, 2026-11-26
 
-**Status.** Ruled by the lead (T-01a17bda), 2026-11-26, option (B), for AM3-WP2a (`build/BUILD-PLAN.md`). Built in AM3-WP2a's head 1 at $0 (repository format 32.31, Names 0x10.4). Not hosted.
+**Status.** Ruled by the lead (T-01a17bda), 2026-11-26, option (B), for AM3-WP2a (`build/BUILD-PLAN.md`). Built in AM3-WP2a's head 1 at $0 (repository format 32.34, first numbered 32.31 and moved by "`format-order`"; Names 0x10.4). AM2's review of head 1 (T-01a1d805) fixed the request's network and the clone front's key. Not hosted.
 
-**Decision.** A fork's chain holds one core `fork` row, written by its `RepoEvent::Genesis { network, fork_of }` (`graftyard_git::tiers::fork`). `TierRows::access_rows` serves it beside `settings` and `collaborator`, so the read gate's fresh read and every tier read carry it, and the edge keeps what it learns in an isolate map by repository (`nets` in `workers/edge/src/lib.rs`), at any age, since a network never changes. A shared gate entry carries the fork's network as `net`, so a request served from a data-center copy keys by it too. A `Genesis` whose network is the chain's own id writes no row, so a root's rows, access answer, digests and gate entry keep main's bytes. `NamesEvent::ForkOwner`, which `NamesOp::RepoOwnerIn` writes for a fork (Names 0x10.4), carries the network for the id-only routes (`/repositories/{id}`, export member scope, purge, the sweep's home), which read it through `repo_by_id`; a root's `RepoOwnerIn` writes the old `RepoOwner`.
+**Decision.** A fork's chain holds one core `fork` row, written by its `RepoEvent::Genesis { network, fork_of }` (`graftyard_git::tiers::fork`). `TierRows::access_rows` serves it beside `settings` and `collaborator`, so the read gate's fresh read and every tier read carry it. The request that read it keys by it from then on (`Repo::fix` in `workers/edge/src/lib.rs`): the gate's fill, its isolate entry, a data-center entry's `net`, the request's own tier read, or `RepoOwner`'s row on an id-only route fixes the network on the request, and nothing after reads the isolate's map. The isolate also keeps what it learns in a map by repository (`nets`), only as the guess the lookups ahead of the gate use (the upload front's clone key, a resolve's rows read beside the front); `upload_pack` builds a front's key again on the fixed network and looks it up again when they differ. Each gate entry, in the isolate and in the data center, holds the network its own fill or match named, so a map that overflows and starts empty moves neither a request's packs nor what its entry shares. A shared gate entry carries a fork's network as `net` under gate key version 2: an edge before forks put a fork's `Allow` as a bare `{"at"}`, which reads as a root's. A second `Genesis` on a fork's chain may repeat its network and is refused if it names another, since every edge keeps a network at any age. A `Genesis` whose network is the chain's own id writes no row, so a root's rows, access answer, digests and gate entry keep main's bytes. `NamesEvent::ForkOwner`, which `NamesOp::RepoOwnerIn` writes for a fork (Names 0x10.4), carries the network for the id-only routes (`/repositories/{id}`, export member scope, purge, the sweep's home), which read it through `repo_by_id`; a root's `RepoOwnerIn` writes the old `RepoOwner`.
 
 **Why.** No extra read: the gate already reads the access rows on every `o/r` request, and the network rides them.
 
@@ -12020,9 +12020,23 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - (A) The network from `RepoOwner` on every `o/r` request. It adds a `Names` read to every fetch and push, on the shard that B0-29 run 5 saw slow: 1,869 edge upload-packs waited LOOKUP_FOR (20 s) on `names:708` and threw when every upload-pack read `RepoOwner` there (`tests/m0/results/merge-tail.md`, "Why the shard threw").
 - The network on `Authz`'s `Live` name: it changes the `Authz` fold's rows for every repository, root or fork.
 
-**Evidence.** `crates/api/src/hosted.rs`, `access_rows`; `workers/edge/src/lib.rs`, `fresh_gate_on` and `nets`; `workers/edge/src/colo.rs`, `gate_body`; tests `a_fork_chain_names_its_network_and_a_roots_rows_do_not_move`, `access_rows_include_a_forks_network_row_but_no_root_row`, `a_forks_network_is_learned_from_its_rows_and_a_root_keeps_its_own_id`, `a_gate_entry_carries_a_forks_network_and_a_roots_keeps_its_bytes`, and `a_forks_repo_owner_row_carries_its_network_and_a_roots_keeps_its_bytes`.
+**Evidence.** `crates/api/src/hosted.rs`, `access_rows`; `workers/edge/src/lib.rs`, `Repo::fix`, `fresh_gate_on`, `nets`, `front_key`; `workers/edge/src/colo.rs`, `gate_body` and `GATE_KEY_VERSION`; `crates/git/src/repo.rs`, the `Genesis` check; tests `a_fork_chain_names_its_network_and_a_roots_rows_do_not_move`, `access_rows_include_a_forks_network_row_but_no_root_row`, `a_forks_network_is_fixed_by_its_own_read_and_a_root_keeps_its_own_id`, `a_clone_key_built_before_the_gate_fixed_a_forks_network_is_built_again`, `a_gate_entry_carries_a_forks_network_and_a_roots_keeps_its_bytes`, and `a_forks_repo_owner_row_carries_its_network_and_a_roots_keeps_its_bytes`; plant277.
 
 **Flip.** If the access rows ever stop being read on every request, such as a gate served wholly from a cache that carries no rows and no `net`: then the `o/r` path reads the network from `RepoOwner` (A) or carries it in the resolve.
+
+### `format-order`: a new repository event's format is main's highest repository format plus one when it merges, 2026-11-26
+
+**Status.** Ruled by the lead (T-01a17bda), 2026-11-26, on AM2's review of AM3-WP2a's head 1 (T-01a1d805). Built at $0 in the same head: `Genesis` moved from 32.31 to 32.34 (`call::REPO_FORMAT_FORKS`), and `crates/git/tests/fold_corpus.rs` checks the order.
+
+**Decision.** A repository format's final number is main's highest repository format plus one at the moment it merges; any number allocated earlier is tentative and moves if another format merged first. So the version that introduces a `RepoEvent` tag never falls as the tag rises, and `a_new_events_format_is_above_every_format_on_main` in `crates/git/tests/fold_corpus.rs` fails otherwise, saying "a new event's format must be above every format on main". AM3-WP2a's forks merge first and take 32.34, which M4-WP4's atomic issue update had held; M4-WP4 takes the next number when it merges.
+
+**Why.** An entry's format is the highest of its commands' (`crates/raft/src/member/leader.rs`, `format.max(q.cmd.format())`), and a member refuses an entry only by that one format (`crates/raft/src/member/log.rs`). A `Genesis` at 32.31 batched with a 32.33 command would commit as 32.33, and a member that reads 32.32 and 32.33 but not 32.31 would pass the format check and then fail to decode tag 50. A command is refused before commit only by its own format at admission (`leader.rs`, `admit`), which this does not cover.
+
+**What it beat.** A raft rule that refuses to batch a command below an entry's format outside a reader's set: it changes `crates/raft`, and every family would carry the check where a numbering rule in one family is enough.
+
+**Evidence.** AM2's review of head 1; `crates/git/tests/fold_corpus.rs`, `a_new_events_format_is_above_every_format_on_main`, which fails with tag 50 at 32.31 under tag 49's 32.33 (plant277). Nothing had shipped 32.31, so the move needed no activation point; `fold_corpus.golden` drops the `Genesis 31` to `33` rows no release committed.
+
+**Flip.** If an entry ever takes a format other than its commands' highest, or members refuse an event by its own format rather than its entry's: then numbering by merge order is no longer what keeps a reader safe.
 
 ### `issue-routes`: `GET /repos/{o}/{r}/issues/{n}` reads the issue through the narrow read, and `POST .../issues/{n}/comments` commits `addComment`'s `Comment` in repository format 32.32, 2026-11-26
 
@@ -12090,7 +12104,7 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 
 **Decision.**
 - `rest::plan_issue_edit` plans `PATCH /repos/{o}/{r}/issues/{n}` only when the body names exactly one of `title` and `body`: `IssueOp::Change { n, Title | Body }`, one command and so one entry, which `decide` already checks (the author or triage, 32.33's pause for a caller below write). A numeric `title` is its text, as on create; a `null` body clears it, as GHES allows; another type is 422; a missing item 404.
-- Any other body is not this route and keeps its earlier answer: two fields, `state`, or anything else. GHES 3.22 commits an issue update all or nothing, and two `Change` commands for one request would not be atomic. M4-WP4 builds that update as one multi-op command in 32.35 (lead, 2026-11-26), and widens this route then. An assignees-only body stays F20's `Assign`.
+- Any other body is not this route and keeps its earlier answer: two fields, `state`, or anything else. GHES 3.22 commits an issue update all or nothing, and two `Change` commands for one request would not be atomic. M4-WP4 builds that update as one multi-op command in the repository format it takes when it merges (lead, 2026-11-26; "`format-order`"), and widens this route then. An assignees-only body stays F20's `Assign`.
 - Its 200 is the issue after the entry, the reply an assignees-only `PATCH` already renders (`What::IssueAssigned { created: false }`), so a member needs no new render variant.
 - The edge serves it only once `FormatsEnable` enabled 32.33 (`call::REPO_FORMAT_HOST_PAUSE`), the format `IssueCall::pausable` already marks a title or body `Change` with, so a member that cannot read the pause never receives one. No new format.
 
@@ -12107,7 +12121,7 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/edgeboot/run.sh`: PASS with 0 wasm traps under test-faults (the single-field PATCH answers 503 with 32.33 off), and PASS with 0 traps for the product build.
 - `tests/plaindiff/diff.mjs`: 21 request pairs, 0 unexpected differences. `rest-issue-1-patch-title` and `rest-issue-1-patch-two` answer the same as main's with 32.33 off.
 
-**Flip.** M4-WP4's 32.35 atomic update lands: then `issues/update` is that command for every body, and this single-field plan is removed with its route.
+**Flip.** M4-WP4's atomic update lands: then `issues/update` is that command for every body, and this single-field plan is removed with its route.
 
 ### `session-log`: the controller host builds, redacts, and pushes a task's session log before its final state, and the base's page reads it from the base or the workspace fork, 2026-11-26
 
@@ -12137,6 +12151,32 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/m0carried/plant279.py`: 19 mutants. The first is main's 404 for a metadata-only reader; two are the host pause keeping an unpushed log or dropping a pushed one.
 
 **Flip.** A GHES-compatible client that relies on 404 for a metadata-only `/log` read; or a harness whose session log routinely needs more than 1 MiB, which would need a larger blob read than `/ui/blob` gives; or a need to keep logs of cancelled tasks.
+
+### `l010-at-bm7`: LM-3's provenance clause (L0-10) runs once, at BM-7, before and after BM-7's vault restore, 2026-11-26
+
+**Status.** The lead's ruling (T-01a17bda, 2026-11-26), on contradiction 1 of `tests/am3/results/lm3-gate.md`. Nothing built; this moves where a gate clause runs, not what it says.
+
+**Decision.**
+- LM-3's "the provenance row passes" (AM3-WP4 carries it, AM3-WP5 gates it) is carried whole to BM-7 (M7-WP8).
+- L0-10 runs there as one run: 10,000 replayed agent commits, resolved before BM-7's vault restore to its chosen cutoff and again after it.
+- The row's text and its pass stay as written: "100% resolve to a session or PR before and after", fail on any lost.
+- AM3 closes with this clause carried, not met. LM-3's other clauses are unchanged.
+
+**Why.**
+- L0-10 ends with "then a vault restore". The restore is M7-WP7's build ("The five-step restore from the vault or from a lifeboat export into new accounts"), and M5-WP5 says "The vault's restore is gated by BM-7 (M7-WP8)". AM3 depends on M5, not M7, so LM-3 could not close as ordered.
+- BM-7 already runs a vault restore to a chosen cutoff. Resolving the same 10,000 commits on both sides of that restore tests provenance through the restore the design ships, not a stand-in.
+
+**What it beat.**
+- Running the before half now on graft-m4a (option B in `lm3-gate.md`, $2.5 to $5): BM-7 would repeat it, and the half alone cannot pass the row.
+- A one-chain restore built early for AM3, as M0-WP16's prototype did: a second restore path beside M7-WP7's, which owns the restore.
+- Holding AM3 open until M7: every other AM3 clause would wait on an unrelated milestone.
+
+**Evidence.**
+- `build/BUILD-PLAN.md`: L0-10's row (Milestone 0), AM3-WP4 ("It also carries LM-3's 'the provenance row passes'"), M5-WP5, M7-WP7, M7-WP8.
+- `tests/m0/results/m0-wp16.md`, L0-10: the prototype's pass on a one-chain restore (10,489 of 10,489 before and after).
+- `tests/am3/results/lm3-gate.md`, line 10 and contradiction 1.
+
+**Flip.** If M7-WP7 is dropped or moved after a release that needs agent provenance proven through a restore, run L0-10 on whatever restore exists then. If a design change makes provenance resolve through rows a restore does not carry, run the row again where that change lands.
 
 ### `issue-writes`: F137's REST issue writes: a multi-field issue `PATCH` is one `Edit` that commits whole or not at all, and comment edits and lock changes ride repository format 32.35, 2026-11-26
 

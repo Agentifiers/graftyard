@@ -15,7 +15,7 @@ use graftyard_raft::{EntryBody, Fold, Format, LogEntry, PREV_ZERO, Term, digest}
 use graftyard_types::{AccountId, DbId, Index, RepoId, Tier, Timestamp};
 use serde_json::Value;
 
-/// The newest repository format: version 34, F137's REST edits (`REPO_FORMAT_ISSUE_EDIT`).
+/// The newest repository format: version 35, F137's REST edits (`REPO_FORMAT_ISSUE_EDIT`).
 const NEWEST: u16 = 35;
 
 /// The first format version a kind can be committed at, by wire tag: the version that introduced it
@@ -36,7 +36,8 @@ fn first_version(tag: usize) -> u16 {
         47 => 25,
         48 => 30,
         49 => 33,
-        _ => 31,
+        50 => 34,
+        _ => panic!("RepoEvent tag {tag}: name the format version that introduced it in first_version"),
     }
 }
 
@@ -134,6 +135,31 @@ fn rows(streamed: bool) -> (Vec<String>, Vec<String>) {
         }
     }
     (out, skipped)
+}
+
+/// An entry's format is the highest of its commands' (`graftyard_raft`'s leader, `format.max`), so an event introduced
+/// below a format already on main can commit inside an entry of that higher format, where a member that reads the
+/// higher format but not the event's own passes the entry's format check and then meets a tag it cannot decode.
+/// `first_version` therefore never falls as the tag rises (`decisions/DECISIONS.md`, "`format-order`"). AM3-WP2a's
+/// `Genesis` first took 32.31 at tag 50, below `TaskResumed`'s 32.33 at tag 49; this check would have failed it.
+#[test]
+fn a_new_events_format_is_above_every_format_on_main() {
+    let corpus: Value = serde_json::from_str(include_str!("fold_corpus.json")).expect("the corpus is JSON");
+    let kinds = corpus["events"].as_array().unwrap().len();
+    for tag in 1..kinds {
+        let (before, now) = (first_version(tag - 1), first_version(tag));
+        assert!(
+            now >= before,
+            "RepoEvent tag {tag} is introduced at 32.{now}, below tag {}'s 32.{before}: a new event's format must be \
+             above every format on main, so take main's highest repository format plus one when it merges",
+            tag - 1
+        );
+    }
+    // A format may add no event kind (32.35, F137's REST edits, adds an `IssueOp` only), so the newest kind's format is
+    // at most `NEWEST`, not always it.
+    assert!(first_version(kinds - 1) <= NEWEST, "the newest tag's format is above NEWEST");
+    let forks = graftyard_git::issue_ops::call::REPO_FORMAT_FORKS;
+    assert_eq!((forks.family, forks.version), (0x20, first_version(50)), "Genesis (tag 50) rides REPO_FORMAT_FORKS");
 }
 
 #[test]

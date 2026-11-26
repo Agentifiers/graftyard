@@ -636,14 +636,14 @@ fn a_root_repositorys_network_names_and_keys_are_mains() {
     assert_eq!(R2Key::pack_prefix(n), "pack/131171/");
 }
 
-/// AM3-WP2a, 32.31: a fork's `Genesis` names its network in one core row. A root has no such event, and its own
+/// AM3-WP2a, 32.34: a fork's `Genesis` names its network in one core row. A root has no such event, and its own
 /// network id is a no-op rather than a row that would move every root's rows (`decisions/DECISIONS.md`,
 /// "`fork-network-read`").
 #[test]
 fn a_fork_chain_names_its_network_and_a_roots_rows_do_not_move() {
     use graftyard_git::repo::{RepoEvent, RepoFold};
     use graftyard_git::tiers::{self, ForkRow};
-    use graftyard_raft::{EntryBody, Fold, Format, LogEntry, PREV_ZERO, Term, TierSet};
+    use graftyard_raft::{EntryBody, Fold, Format, LogEntry, PREV_ZERO, Scratch, Term, TierSet};
     use graftyard_types::{AccountId, Index, RepoId, Tier};
 
     let repo = RepoId(DbId(7));
@@ -661,7 +661,7 @@ fn a_fork_chain_names_its_network_and_a_roots_rows_do_not_move() {
             term: Term(2),
             index: Index(1),
             prev: PREV_ZERO,
-            format: Format { family: 0x20, version: 31 },
+            format: Format { family: 0x20, version: 34 },
             tiers,
             at: Timestamp(1_000),
             requests: Default::default(),
@@ -693,6 +693,16 @@ fn a_fork_chain_names_its_network_and_a_roots_rows_do_not_move() {
     );
     assert_eq!(tiers::network(&*root.core, repo), NetworkId::of_root(repo));
     assert_eq!(tiers::fork(&*root.core), None);
+
+    // A network never changes: a later `Genesis` on the fork's chain may repeat it, never name another, which a
+    // follower's verify refuses before the row could move.
+    let s = fork.scratch_at(Timestamp(2_000), TierSet::CORE);
+    assert!(s.check(&genesis(network)).is_ok(), "the fork's own network again");
+    assert!(s.check(&genesis(NetworkId::of_root(RepoId(DbId(4))))).is_err(), "a Genesis naming another network");
+    assert!(
+        empty.scratch_at(Timestamp(2_000), TierSet::CORE).check(&genesis(network)).is_ok(),
+        "a chain's first Genesis"
+    );
 }
 
 /// A site's report of its k shards: the most loaded one's CPU, not their sum or mean, and their queues summed.
