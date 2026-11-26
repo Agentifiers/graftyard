@@ -184,7 +184,7 @@ pub async fn create(c: &Ctx<'_>, req: &mut Request, via: Via, body: Value) -> Re
         Ok(None) => return Ok(Reply::not_found()),
         Err(e) => return Ok(unavailable(&e)),
     };
-    let r = crate::Repo { id: repo, owner, record };
+    let r = crate::Repo::new(repo, owner, record);
     // 3. The README commit, then the settings, whose leader renders the reply.
     if body.get("auto_init").and_then(Value::as_bool) == Some(true) {
         let sig = graftyard_git::init::Signature {

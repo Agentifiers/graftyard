@@ -38,8 +38,8 @@ MUTANTS = [
      '    let (id, _) = graftyard_identity::AuthzRead::resolve(&rcache::get(&rcache::AUTHZ, &account, now(), true)?, &name.key())?;\n',
      TEST),
     ('the merge guess names the repository on another record', LIB,
-     '    Some(Repo { id, owner: account, record })\n}\n',
-     '    Some(Repo { id, owner: account, record: PlacementRecord { generation: record.generation + 1, ..record } })\n}\n',
+     '    Some(Repo::new(id, account, record))\n}\n',
+     '    Some(Repo::new(id, account, PlacementRecord { generation: record.generation + 1, ..record }))\n}\n',
      TEST),
 ]
 
