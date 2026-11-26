@@ -1655,11 +1655,34 @@ It also carries LM-3's "a Sandbox killed mid-task resumes" (the row above, after
 
 **Built at $0 (2026-11-25, branch `am3-outbound`, step S1 of the lead's plan for LM-3's kill row).** `graftyard_git::outbound`: `outbound`, `Allowed`, and `Route::of` from the controller's `Task`, ported from the M0-WP14 prototype (`tests/m0/src/wp14/router.ts`). It returns the forward (URL without userinfo, headers without the Sandbox's credentials, the credential the host attaches, the model body re-serialized) or the refusal's rule, so no token enters the pure code. `crates/git/tests/outbound.rs` replays every L0-02 variant that reaches the router, in fork mode and in-repo, beside the positive controls; plant240 (14 mutants, one a rule). The Workers host, the Sandbox, and the hosted reruns of L0-02 and L0-03 follow with S2 to S4.
 
+### AM3-WP2a. Base forks in their network
+
+Added by the lead on 2026-11-26 (`decisions/DECISIONS.md`, "`forks-before-workspace`"). The design specifies base forks, but no earlier package built them. M2-WP6 recorded journey 2's fork as not built (`tests/m2/results/m2-wp6.md`). AM3-WP3's fork mode, a workspace fork into `<org>-agents`, is a base fork and sits on this package. It holds repository format 32.31 and plant 277.
+
+**Build.** A fork as `design/SHARED.md` specifies it:
+- **The fork operation** ("Multi-chain operations", Fork): the fork's `RepoName` on the fork owner's `Authz` chain is the commit point. Whoever first touches the fork appends `NetworkEvent::ForkAdded` to the network chain (`ChainId::Network`), then `RepoEvent::Genesis { owner, network, name, fork_of }` on the fork's chain, both idempotent by repository id. A `ForkAdded` that meets a taken-down network makes the finisher tombstone the fork's name instead. Fork creates count against the per-account hourly cap ("Public service concerns").
+- **The network as the key**: packs, `.idx`, the git cache shard, the clone cache, compose chains and archive caches are keyed by the repository's network (`design/DESIGN.md`, Shape, `R2Key`, `shards_for`, `CloneKey`, `IngestCursor`), which `Genesis.network` names, not by `NetworkId(repo.id)`. That covers the vault's `network_of` (DECISIONS "`vault-worker`", Flip) and the purge gate, which must refuse a network another repository still uses (DECISIONS "`repo-purge`", Flip).
+- **Reads across the network**: the fork group's `decide` reads the base chain where SHARED says it does. An open pull request's head is the head branch's ref in the fork's fresh core tier ("Issues and pull requests").
+- **Pull requests across forks**: `HeadSpec.repo` may name another repository of the same network, and only of the same network ("Fork networks"). The fork merge: the plan proves the fork head fresh and pins its SHA, and `Merged` goes on the base chain alone ("Fork merge"; `design/DESIGN.md`, journey 2).
+- **The surface**: `POST /repos/{owner}/{repo}/forks` (`rest:repos`, `gh repo fork`) and the fork fields of the repository object: `fork`, `parent`, `source`, `forks_count`, `network_count`.
+
+**Depends on.** M2, M3, M5-WP5 (the vault and the export endpoints that read networks).
+
+**Acceptance.**
+
+| Row | Measurement | Pass | Fail |
+| --- | --- | --- | --- |
+| BF-79 | On graft-m4a, `gh repo fork` of a repository with history into another owner, 10 times. Then journey 2 from each fork: a push to the fork, `gh pr create` to the base, a review and a required check, and `gh pr merge`, with one more push to the fork between plan and commit in 5 of the 10. Then a fork create whose edge is stopped after the name commits, and a pull request from a repository of another network | Each fork is 201 with `fork: true` and `parent` the base, and `forks_count` counts it. Each create stores no copy of the base's packs, and a fork clone reads them from the network. Each merge lands at the reviewed head, and a push after the plan is not merged. The stopped create reaches `Genesis` through the finisher. The pull request from another network gets 422 | A pack copied at fork time, a merge of a head pushed after the plan, a stopped create left without `Genesis`, or a cross-network pull request accepted |
+
+It also carries the rerun of journey 2 with a fork, which M2-WP6 ran from a branch only.
+
 ### AM3-WP3. Graftyard-run tasks and workspaces
 
 **Build.** `POST .../tasks` for `GraftyardRun` tasks, which returns 422 while `OrgPolicy.agents_enabled` is off, with the creation rules and the controller's exception for issues assigned to its bot (`design/DESIGN.md`, Shape, "Agent load and agent safety"; `design/AGENT-LAYER.md`, Shape, "Tasks and the activity feed"). The first-party-only task delivery on the event pipeline, with the event name, payload, and signing secret in `design/AGENT-LAYER.md`, "API reference". Workspace forks (`Workspace::Fork`, `<org>-agents/<repo>`), created through `POST /api/graftyard/v1/repos/{owner}/{repo}/workspace`, which only `graftyard-workspace` may call, and in-repo mode. Only `graftyard-workspace` pushes, and `graftyard-agent` keeps `contents: read`. The base chain sits in `Push::deps()` for fork-mode tokens. `AgentPolicy.ci` with `Approve` by default and `AutoReadOnly` opt-in.
 
-**Depends on.** AM1-WP3, M4-WP1, AM3-WP1.
+**Depends on.** AM1-WP3, M4-WP1, AM3-WP1; AM3-WP2a for fork mode only.
+
+**State (2026-11-26, `decisions/DECISIONS.md`, "`forks-before-workspace`").** In-repo mode is this package's done state until AM3-WP2a merges. A Graftyard-run create under `agents_workspace: Fork` keeps its 422 (`TaskErr::ForkMode`). LF-9's fork lines (a `graftyard-agent` token pushing to the fork, a `graftyard-workspace` token pushing to the base in fork mode) and AM3-WP4's LF-10 wait on AM3-WP2a. The workspace endpoint, the fork-mode token rules and `Push::deps()`'s base chain are then built here on top of it.
 
 **Acceptance.**
 
@@ -1966,15 +1989,15 @@ Its oracle is also the `rest:migrations` export and import round trip in `design
 | M4 | M4-WP1 to M4-WP6 | 6 |
 | M5 | M5-WP1 to M5-WP7 | 7 |
 | AM2 | AM2-WP1 to AM2-WP4 | 4 |
-| AM3 | AM3-WP1 to AM3-WP5 | 5 |
+| AM3 | AM3-WP1 to AM3-WP5, and AM3-WP2a | 6 |
 | M6 | M6-WP1 to M6-WP4 | 4 |
 | AM4 | AM4-WP1 to AM4-WP4 | 4 |
 | M7 | M7-WP1 to M7-WP8 | 8 |
-| Total | | 80 |
+| Total | | 81 |
 
 ## Coverage table
 
-Every gate row in `design/DESIGN.md`, "Build order from zero", and `design/AGENT-LAYER.md`, "Build order", appears here once, with the one work package that owns it. Reruns are named in the owning milestone's gate work package and are not counted again. There are 151 rows: 38 B0, 7 BM, 68 BF, 16 L0, 4 LM, and 18 LF.
+Every gate row in `design/DESIGN.md`, "Build order from zero", and `design/AGENT-LAYER.md`, "Build order", appears here once, with the one work package that owns it. Reruns are named in the owning milestone's gate work package and are not counted again. There are 152 rows: 38 B0, 7 BM, 69 BF, 16 L0, 4 LM, and 18 LF.
 
 | Row | Source table | Measurement (abbreviated) | Work package |
 | --- | --- | --- | --- |
@@ -2103,6 +2126,7 @@ Every gate row in `design/DESIGN.md`, "Build order from zero", and `design/AGENT
 | BF-76 | M4-WP3, GitHub Actions parity (FRAME, operator decision 2026-11-25) | `upload-artifact@v4` and `download-artifact@v4` through the forks and the pin map | M4-WP3 |
 | BF-77 | M4-WP3, GitHub Actions parity (FRAME, operator decision 2026-11-25) | A repository delete drops its cache, and `GITHUB_TOKEN` permissions hosted | M4-WP3 |
 | BF-78 | M4-WP3, GitHub Actions parity (FRAME, operator decision 2026-11-25; added by the lead) | `on: push` with branch, tag, and path filters, and the pusher as actor | M4-WP3 |
+| BF-79 | DECISIONS, "`forks-before-workspace`" (2026-11-26; added by the lead) | `gh repo fork`, journey 2 from a fork, a stopped fork create, and a cross-network pull request | AM3-WP2a |
 | L0-01 | AGENT-LAYER, Milestone 0 rows | Gray enam during the A1 replay | M0-WP12 |
 | L0-02 | AGENT-LAYER, Milestone 0 rows | Sandbox containment | M0-WP14 |
 | L0-03 | AGENT-LAYER, Milestone 0 rows | Token ceilings with raw tokens | M0-WP13 |
@@ -2132,7 +2156,7 @@ Every gate row in `design/DESIGN.md`, "Build order from zero", and `design/AGENT
 | LF-7 | AGENT-LAYER, after the final pass (AM3) | `ControllerPointer` pin with `release/entries` blackholed | AM3-WP1 |
 | LF-8 | AGENT-LAYER, after the final pass (AM3) | Forged `release/entries` refused | AM3-WP1 |
 | LF-9 | AGENT-LAYER, after the final pass (AM3) | Token ceilings by App and repository | AM3-WP3 |
-| LF-10 | AGENT-LAYER, after the final pass (AM3) | Fork-mode session URL | AM3-WP4 |
+| LF-10 | AGENT-LAYER, after the final pass (AM3) | Fork-mode session URL (waits on AM3-WP2a) | AM3-WP4 |
 | LF-11 | AGENT-LAYER, after the final pass (AM4) | `graftyard apps init` without an agents account | AM4-WP2 |
 | LF-12 | AGENT-LAYER, after the final pass (M0) | 5,000 held feed polls on followers, then after `place_learners` | M0-WP12 |
 | LF-13 | AGENT-LAYER, after the final pass (M0) | Held polls on a follower that stops following | M0-WP12 |
