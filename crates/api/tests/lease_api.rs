@@ -269,8 +269,14 @@ fn the_lease_endpoints_serve_the_reference_shape() {
     );
     assert_eq!(leases::list(&r, &w.ident.owner, w.now, "", false, "/x").status, 404, "needs contents: read");
     // The task GET lists the task's live leases.
-    let g =
-        tasks::get(&r, &w.ident.owner, w.now, &format!("{}.a", CLAUDE.0.0), Reader { metadata: true, contents: true });
+    let g = tasks::get(
+        &r,
+        &w.ident.owner,
+        w.now,
+        &format!("{}.a", CLAUDE.0.0),
+        "",
+        Reader { metadata: true, contents: true },
+    );
     let tl = &json_of(&g)["leases"];
     assert_eq!(tl.as_array().unwrap().len(), 1);
     assert_eq!(tl[0]["paths"], json!(["pkg/auth/**"]));
@@ -291,7 +297,7 @@ fn the_lease_endpoints_serve_the_reference_shape() {
     // Read past its expiry, before any entry prunes the row: the task GET and the list leave it out.
     let task_a = format!("{}.a", CLAUDE.0.0);
     let later = Timestamp(w.now.0 + 1_300_000);
-    let g = tasks::get(&r, &w.ident.owner, later, &task_a, Reader { metadata: true, contents: true });
+    let g = tasks::get(&r, &w.ident.owner, later, &task_a, "", Reader { metadata: true, contents: true });
     assert_eq!(json_of(&g)["leases"], json!([]), "an expired lease is not listed");
     let all = leases::list(&r, &w.ident.owner, later, "", true, "/repos/o/r/leases");
     assert!(json_of(&all).as_array().unwrap().iter().all(|l| l["id"] != json!(id.text())));
@@ -300,8 +306,14 @@ fn the_lease_endpoints_serve_the_reference_shape() {
     let f = w.fold();
     let r = Repo { host: &h, at: here(), core: &f.core, meta: &f.meta, dir: &d };
     assert_eq!(leases::render_ok(&r, &w.ident.owner, w.now, &out(&a), false).status, 204);
-    let g =
-        tasks::get(&r, &w.ident.owner, w.now, &format!("{}.a", CLAUDE.0.0), Reader { metadata: true, contents: true });
+    let g = tasks::get(
+        &r,
+        &w.ident.owner,
+        w.now,
+        &format!("{}.a", CLAUDE.0.0),
+        "",
+        Reader { metadata: true, contents: true },
+    );
     assert_eq!(json_of(&g)["leases"], json!([]));
     // Every route sits under `/api/graftyard/v1`; nothing under `/api/v3/agents`.
     assert_eq!(leases::route("/repos/o/r/leases"), Some(Route::Leases { owner: "o", repo: "r" }));

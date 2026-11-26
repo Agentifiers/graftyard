@@ -100,11 +100,54 @@ fn list_all(w: &mut World, query: &str, reader: Reader) -> Vec<Value> {
     }
 }
 
+/// The stored `session.json` serves only as task `sid`'s schema 1 log; the page serves it as JSON or as HTML with
+/// every harness string escaped.
+fn session_log_reads(r: &Repo<'_>, sid: &SessionId) {
+    use graftyard_git::session_log::{Harness, LogReport, Step, StepKind, build, encode};
+    let evil = "</pre><script>alert(1)</script>";
+    let report = LogReport {
+        issue_snapshot: Some(json!({ "visible": evil })),
+        plan: evil.into(),
+        steps: vec![Step {
+            at: 1_793_000_000_000,
+            kind: StepKind::Test,
+            tool: Some(evil.into()),
+            input: "cargo test".into(),
+            output: evil.into(),
+            truncated: true,
+        }],
+        prs: vec![graftyard_git::issues::IssueNumber(4)],
+        harness: Harness { name: evil.into(), version: "1".into(), model: "m".into() },
+    };
+    let log = build(sid.clone(), &[ObjectId([5; 20])], report, &[]);
+    let text = String::from_utf8(encode(&log)).unwrap();
+    let stored = tasks::stored_log(sid, Some(&text)).expect("the task's own log");
+    assert_eq!(stored, log);
+    let other = SessionId::parse("3.other", None).unwrap();
+    assert_eq!(tasks::stored_log(&other, Some(&text)), None, "another task's log is not this task's");
+    assert_eq!(tasks::stored_log(sid, Some(&text.replace("\"schema\":1", "\"schema\":2"))), None, "schema 2");
+    assert_eq!(tasks::stored_log(sid, None), None);
+    let j = tasks::log(Some(&stored));
+    assert_eq!(
+        (j.status, json_of(&j)["schema"].clone(), json_of(&j)["id"].clone()),
+        (200, json!(1), json!(sid.text()))
+    );
+    assert_eq!(json_of(&tasks::session_page(r, Some(&stored), true)), json_of(&j));
+    let page = tasks::session_page(r, Some(&stored), false);
+    assert_eq!((page.status, page.header("content-type")), (200, Some("text/html; charset=utf-8")));
+    let Body::Bytes(b) = &page.body else { panic!("HTML is bytes") };
+    let html = String::from_utf8(b.clone()).unwrap();
+    assert!(!html.contains("<script>"), "every harness string is escaped");
+    assert_eq!(html.matches("&lt;script&gt;").count(), 5, "snapshot, plan, tool, output, harness name");
+    assert!(html.contains(&format!("/o/r7/commit/{}", ObjectId([5; 20]).hex())) && html.contains("/o/r7/pull/4"));
+    assert!(html.contains("(truncated)"));
+}
+
 fn get(w: &mut World, id: &str, reader: Reader) -> Reply {
     let f = w.fold();
     let (h, d) = (host(), Dir);
     let r = Repo { host: &h, at: at(w.current), core: &f.core, meta: &f.meta, dir: &d };
-    tasks::get(&r, &w.ident.owner, w.now, id, reader)
+    tasks::get(&r, &w.ident.owner, w.now, id, "", reader)
 }
 
 /// CLAUDE's claims, reaching every LF-1 repository.
@@ -366,9 +409,23 @@ fn the_read_endpoints_serve_the_reference_shape() {
     );
     assert_eq!(tasks::parse_filter("state=bogus", &|_| None).unwrap_err().status, 422);
     assert_eq!(tasks::parse_filter("after=zz", &|_| None).unwrap_err().status, 422);
-    // `/log`: 404 until AM3 pushes the session log, and 404 without `contents: read`.
-    assert_eq!(tasks::log(&r, &id, ALL).status, 404);
-    assert_eq!(tasks::log(&r, &id, Reader { metadata: true, contents: false }).status, 404);
+    // `/log` and the session page (AM3-WP4, L0-15): 404 without `metadata: read` or for no such task, 403 with
+    // `metadata: read` alone, and for a reader with `contents: read` 404 until the log is pushed, then the log.
+    let meta_only = Reader { metadata: true, contents: false };
+    assert_eq!(tasks::log_reader(&r, &id, Reader { metadata: false, contents: false }).unwrap_err().status, 404);
+    assert_eq!(tasks::log_reader(&r, "3.nope", ALL).unwrap_err().status, 404);
+    assert_eq!(tasks::log_reader(&r, &id, meta_only).unwrap_err().status, 403);
+    let sid = tasks::log_reader(&r, &id, ALL).expect("a reader with contents: read");
+    assert_eq!(tasks::log(None).status, 404);
+    assert_eq!(tasks::session_page(&r, None, false).status, 404);
+    // `?fields=prompt` without `contents: read` is 403; a plain read is 200 without `prompt`.
+    let f2 = w.fold();
+    let r2 = Repo { host: &h, at: at(REPO), core: &f2.core, meta: &f2.meta, dir: &d };
+    assert_eq!(tasks::get(&r2, &w.ident.owner, w.now, &id, "fields=prompt", meta_only).status, 403);
+    assert_eq!(tasks::get(&r2, &w.ident.owner, w.now, &id, "per_page=1&fields=prompt", ALL).status, 200);
+    let plain = tasks::get(&r2, &w.ident.owner, w.now, &id, "", meta_only);
+    assert!(plain.status == 200 && json_of(&plain).get("prompt").is_none());
+    session_log_reads(&r2, &sid);
     // Refusals render as the reference names them.
     use graftyard_git::task::TaskErr;
     let status = |e: TaskErr| tasks::refused(&IssueErr::Task(e)).status;

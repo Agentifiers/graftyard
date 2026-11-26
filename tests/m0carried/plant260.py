@@ -15,14 +15,14 @@ from plant121 import run  # noqa: E402
 B = 'crates/git/src/taskbox.rs'
 T = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'taskbox']
 MUTANTS = [
-    ("the box owes the base nothing", B, '        self.task.state.api().filter(|s| self.base != Some(*s))',
-     '        self.task.state.api().filter(|_| false)', T),
+    ("the box owes the base nothing", B, '        let s = self.task.state.api().filter(|s| self.base != Some(*s))?;',
+     '        let s = self.task.state.api().filter(|_| false)?;', T),
     ("a 5xx is taken as answered", B, '        if status < 500 {\n            self.base = Some(state);',
      '        if status < 600 {\n            self.base = Some(state);', T),
     ("a 4xx is sent again", B, '        if status < 500 {\n            self.base = Some(state);',
      '        if status < 300 {\n            self.base = Some(state);', T),
-    ("a new box owes the base its queued state", B, 'hold: None, base: Some(TaskApiState::Queued) }',
-     'hold: None, base: None }', T),
+    ("a new box owes the base its queued state", B, '            base: Some(TaskApiState::Queued),\n            pushes',
+     '            base: None,\n            pushes', T),
 ]
 
 if __name__ == '__main__':

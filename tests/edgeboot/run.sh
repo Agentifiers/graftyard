@@ -57,6 +57,15 @@ echo "GET openid-configuration: $c $(head -c 100 "$B/body")"
 { [ "$c" = 200 ] && grep -q '"jwks_uri":"https://edgeboot.example/_services/token/.well-known/jwks"' "$B/body"; } || { echo "  FAIL: discovery"; ok=0; }
 c=$(curl -s -m 30 -o "$B/body" -w '%{http_code}' "http://127.0.0.1:$P/_services/token/.well-known/jwks")
 echo "GET jwks: $c"; [ "$c" = 503 ] || { echo "  FAIL: jwks with no site is not 503"; ok=0; }
+# AM3-WP4: the session page (on the install's host) and `/log` reach their own routes, which answer 503 while
+# FormatsEnable has not enabled 32.12, never a 500, a trap, or git's fallback.
+for p in "/o/r/_graftyard/sessions/0e6a1b2c-0000-4000-8000-000000000001" \
+  "/api/graftyard/v1/repos/o/r/tasks/0e6a1b2c-0000-4000-8000-000000000001/log"; do
+  c=$(curl -s -m 30 -o "$B/body" -w '%{http_code}' -H 'host: edgeboot.example' -H 'accept: application/json' \
+    "http://127.0.0.1:$P$p")
+  echo "GET $p: $c $(head -c 120 "$B/body" | tr -d '\n')"
+  { [ "$c" = 503 ] && grep -q 'need[s]* record format 32.12' "$B/body"; } || { echo "  FAIL: want the route's 32.12 503"; ok=0; }
+done
 for p in "/api/v3/repos/o/r" "/api/v3/repos/o/r/pulls?state=all&per_page=5" "/api/v3/repos/o/r/issues/1" \
   "/api/v3/repos/o/r/issues/1/comments" "/api/v3/repos/o/r/issues/comments?sort=updated" \
   "/api/v3/repos/o/r/issues/events" "/api/v3/repos/o/r/issues/1/timeline" "/api/graftyard/v1/release/entries?after=0" "/o/r.git/info/refs?service=git-upload-pack" \

@@ -314,6 +314,62 @@ fn the_base_task_is_sent_each_state_until_the_base_answers_it() {
     assert_eq!(c.unreported(), None);
 }
 
+/// AM3-WP4: a reported session log holds the final `PATCH` until the host's push of it is answered, since `decide`
+/// takes the session ref only while the base reads the task live. A push with no answer is tried again, and after
+/// `LOG_TRIES` with none the task is let go; a refusal lets it go at once; a second report is refused. A state that is
+/// not final is never held, and a box with no log owes its final state at once, as before. The log's `pushes` are the
+/// heads the host saw acked, in order.
+#[test]
+fn a_reported_session_log_holds_the_final_state_until_its_push_is_answered() {
+    use graftyard_git::session_log::{LOG_TRIES, Pushed};
+    use graftyard_git::task::TaskApiState::{Completed, InProgress};
+    use graftyard_git::taskbox::LogState;
+    let (h1, h2) = (ObjectId([1; 20]), ObjectId([2; 20]));
+    let mut b = started();
+    assert!(b.log_reported(), "the first report");
+    assert_eq!(b.unreported(), Some(InProgress), "a state that is not final is not held");
+    b.answered(InProgress, 200);
+    b.on(pushed(sb(1), h1), 1).unwrap();
+    b.on(pushed(sb(1), h2), 2).unwrap();
+    assert_eq!(b.pushes, [h1, h2]);
+    assert_eq!(b.on(Input::Report { from: sb(1), event: TaskEvent::Finished }, 3), Ok(Act::Stop));
+    assert_eq!(b.unreported(), None, "held while the log's push is owed");
+    assert!(!b.log_reported(), "a second report is refused");
+    for i in 1..LOG_TRIES {
+        b.log_answered(Pushed::Retry);
+        assert_eq!(b.log, LogState::Pending { tries: i });
+        assert_eq!(b.unreported(), None, "try {i}: still held");
+    }
+    b.log_answered(Pushed::Retry);
+    assert_eq!(b.log, LogState::Done(Pushed::Retry));
+    assert_eq!(b.unreported(), Some(Completed), "let go after LOG_TRIES tries with no answer");
+    b.log_answered(Pushed::Ok);
+    assert_eq!(b.log, LogState::Done(Pushed::Retry), "an answer after the box gave up changes nothing");
+
+    for answer in [Pushed::Ok, Pushed::Refused] {
+        let mut b = started();
+        b.answered(InProgress, 200);
+        b.log_reported();
+        b.on(Input::Report { from: sb(1), event: TaskEvent::Finished }, 3).unwrap();
+        assert_eq!(b.unreported(), None);
+        b.log_answered(Pushed::Retry);
+        b.log_answered(answer);
+        assert_eq!(b.log, LogState::Done(answer));
+        assert_eq!(b.unreported(), Some(Completed), "{answer:?} lets the final state go");
+    }
+    let mut b = started();
+    b.answered(InProgress, 200);
+    b.on(Input::Report { from: sb(1), event: TaskEvent::Finished }, 3).unwrap();
+    assert_eq!(b.unreported(), Some(Completed), "no log reported: nothing held");
+    // A box stored before AM3-WP4 has no `pushes` or `log`, and reads as one with neither.
+    let mut v = serde_json::to_value(started()).unwrap();
+    let o = v.as_object_mut().unwrap();
+    o.remove("pushes");
+    o.remove("log");
+    let old: TaskBox = serde_json::from_value(v).unwrap();
+    assert_eq!((old.pushes.len(), old.log), (0, LogState::Unreported));
+}
+
 /// The host pause: the box follows the base's task after an issue delivery. A paused base stops the Sandbox, whose
 /// later reports are late; a resumed base starts a new Sandbox from the base and owes the base `in_progress`; any other
 /// base state, or a final box, moves nothing.
@@ -341,4 +397,54 @@ fn the_box_follows_the_base_s_pause_and_resume() {
     c.cancel();
     assert_eq!(c.on(base(WaitingForUser), 1), Ok(Act::Keep));
     assert_eq!(c.task.state, TaskState::Cancelled);
+}
+
+/// AM3-WP4 with the host pause: a paused and resumed task still gets exactly one log, pushed before its final PATCH.
+/// A log the old Sandbox reported but the host had not pushed is dropped at the pause, since `decide` refuses the
+/// session ref while the task is paused, and the resumed Sandbox's report is the one log; a log pushed before the
+/// pause stays the one log, and the resumed Sandbox's report is refused.
+#[test]
+fn a_paused_and_resumed_task_gets_one_log_before_its_final_state() {
+    use graftyard_git::session_log::Pushed;
+    use graftyard_git::task::TaskApiState::{Completed, InProgress, Queued, WaitingForUser};
+    use graftyard_git::taskbox::LogState;
+    let base = |state| Input::Base { state, version: "v1".into() };
+    let finish = |b: &mut TaskBox, n| b.on(Input::Report { from: sb(n), event: TaskEvent::Finished }, 9);
+
+    // Reported, its push unanswered, then paused: dropped; the resumed Sandbox's log is the one pushed.
+    let mut b = started();
+    b.answered(InProgress, 200);
+    assert!(b.log_reported());
+    b.log_answered(Pushed::Retry);
+    assert_eq!(b.on(base(WaitingForUser), 10), Ok(Act::Stop));
+    assert_eq!(b.log, LogState::Unreported, "nothing is pushed while paused");
+    assert!(!b.log_due());
+    assert!(matches!(b.on(base(Queued), 20), Ok(Act::Start { .. })));
+    b.answered(InProgress, 200);
+    assert!(b.log_reported(), "the resumed Sandbox's log is taken");
+    assert_eq!(finish(&mut b, 2), Ok(Act::Stop));
+    assert_eq!(b.unreported(), None, "the final state waits for the one log");
+    b.log_answered(Pushed::Ok);
+    assert_eq!(b.unreported(), Some(Completed));
+
+    // Pushed before the pause: it stays the one log, and the resumed Sandbox cannot add another.
+    let mut b = started();
+    b.answered(InProgress, 200);
+    b.log_reported();
+    b.log_answered(Pushed::Ok);
+    b.on(base(WaitingForUser), 10).unwrap();
+    b.on(base(Queued), 20).unwrap();
+    b.answered(InProgress, 200);
+    assert!(!b.log_reported(), "a second log is refused");
+    finish(&mut b, 2).unwrap();
+    assert_eq!(b.unreported(), Some(Completed));
+
+    // No log before the pause: the resumed Sandbox's report holds the final state as for any task.
+    let mut b = started();
+    b.on(base(WaitingForUser), 10).unwrap();
+    b.on(base(Queued), 20).unwrap();
+    b.answered(InProgress, 200);
+    b.log_reported();
+    finish(&mut b, 2).unwrap();
+    assert_eq!(b.unreported(), None);
 }

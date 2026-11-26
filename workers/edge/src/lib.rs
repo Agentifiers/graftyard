@@ -2515,7 +2515,10 @@ async fn receive_pack(
         }
         // Inline only when the pack fits INLINE_MAX and the push with it stays under COMMAND_MAX. A pack that streams
         // has more than INLINE_MAX.
-        let inline = tail.is_none() && pack.len() <= INLINE_MAX && alone + pack.len() + 16 < COMMAND_MAX;
+        // A session log is always a stored pack (`design/AGENT-LAYER.md`, Shape, `SESSION_REFS`), however small.
+        let session =
+            push.updates.iter().any(|u| u.name.as_bytes().starts_with(graftyard_git::agent::SESSION_REFS.as_bytes()));
+        let inline = tail.is_none() && !session && pack.len() <= INLINE_MAX && alone + pack.len() + 16 < COMMAND_MAX;
         // A group whose leader asked this isolate to stage within HOT_WINDOW, or an Agent pack past
         // AGENT_INLINE_ENTRY: stage now rather than after a refused commit (`hot`). Any other push keeps its inline
         // pack. A Human push classes without a read, and `admission` reads the install's `Authz` once per request.
@@ -4762,6 +4765,15 @@ async fn serve(
     let authority = url.host_str().unwrap_or_default().to_owned();
     let host = graftyard_wire::Host::new(&cfg.host, false).ok();
     let endpoint = host.as_ref().and_then(|h| h.endpoint(&authority, &path));
+    // A session page on the base (`api::session_page`), before the web app's shell: no GHES repository route starts
+    // with `_`.
+    if let Some(graftyard_wire::Endpoint::Repo { owner, repo, rest }) = endpoint
+        && let Some(id) = rest.strip_prefix("_graftyard/sessions/").filter(|i| !i.is_empty() && !i.contains('/'))
+        && req.method() == Method::Get
+    {
+        let r = api::session_page(&c, &req, owner, repo, id).await?;
+        return agents::respond(&c, r);
+    }
     if let (Some(host), Some(e)) = (&host, endpoint)
         && api::serves(&e)
     {
