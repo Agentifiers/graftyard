@@ -187,3 +187,29 @@ r1 started at 00:09Z from main fa8db187 after every pre-check passed: the day's 
 - **The B chains:** the current home voter on B led and committed one `warm=1` put into each of m6aL's 8 B-homed groups. Its key is `warm`, so m6aL's `bf50` writes, and the results judged from them, are unchanged.
 - **The fix** (`bf50-row.sh`): each row takes its own `BASE` (default 6000, m6aL2 7000). `create` refuses a range in which any chain has a registry row or a joined generation-1 member, and lists the chains it made in `regs.json`. `load` and `home`'s read take their register chains from that list instead of the regex `^repo:6[0-9]{3}$`, which on m6aL's rows also matched `repo:6099` and `repo:6201` to `6204`. m6aL's chains stay in the snapshots and are judged like the precreated ones.
 - Replayed on m6aL's before-rows (the dry `jq` selection): `BASE=6000` finds all 36 ids in use and, live on the bench (read-only `/joined`), 108 of 108 generation-1 members joined, so `create` refuses, and selects exactly its 36 register chains. `BASE=7000` finds 0 in use, none of its 108 generation-1 member names in m6aL's rows, and 0 of 108 joined live. Any answer but "not joined" (an error or no answer) also refuses.
+
+## m6aL2 (2026-11-26): loss by SiteLost on fresh chains, stopped at $10 before `IntentDone`
+
+r2 of m6aL2 ran from main ba4c4928 with `BASE=7000`. The Resume tool came from 457b9da1. The phases ran create, seed, load, before, fault, sitelost, restore1 and watch. The row stopped at its $10 stop at 02:56Z, after the move but before the `ReplaceMember`'s `IntentDone`, as ruled. Raws are under `tests/m6/raw/m6a/m6aL2/`.
+
+- **Create and seed.** `create` made 24 A-homed, 8 B-homed and 4 control chains, `repo:7001` to `7214`, each with a warm leader. `seed` made the R66 owner, its PAT and repository `r66` (`repo:65536`). The owner was seeded through the bench's test-only `/op`, not a product route (R14), and the repository through the edge's `POST /api/v3/user/repos` (201, 36.3 s).
+- **Load and before.** The load acked 356 puts across all 36 register chains, with 24 notLeader redirects. `before` read 12,587 rows over 3,157 chains, 3,151 of them with a voter on A. Its first `/joined` pass found 53 chains with a member that gave no answer. A second pass (`joined-before-again.json`) found all 201 of those members joined. That leaves the two known exclusions: `tokens:953` (site 1 member) and `repo:6201` (`#1#f0` on sites 0 and 1).
+- **Fault and loss.** The fault went on at 01:10:36Z. Release entries, from index 11:
+  - 11: `SiteLost{0}`, customer, at 01:13:27Z.
+  - 12: `RestorePlacement{0}`, customer, at 01:14:09Z.
+  - 13: `SiteMode` Drain{0}, drain key.
+  - 14: `ReplaceMember{0→3}`, executor, since 01:14:54Z.
+
+| Line | Verdict | Evidence |
+| --- | --- | --- |
+| RestorePlacement refused until undrained | **FAIL** (product bug) | restore1 committed at index 12 (201). It was posted 42 s after `SiteLost`, before graft-ops' `auto_drain` drained A at index 13. `decide` refuses `RestorePlacement` only while its site is in `drained` (`crates/release/src/group.rs`). In m6aL the drain landed first, and restore1 got 422 `IntentCurrent`. The `ReplaceMember` committed over the restore, which now sits Halted under it. Fix ruled: refuse while the site is lost and not replaced, and refuse `Resume` of a restore while its site is drained (plant 265). |
+| Line 3 | PASS | 453 coordinator steps. Registry rows were read from sites 1 and 2, 64 shards each. The single-copy refill ran before the full one. |
+| Move | groups done | The coordinator completed at 02:43:50Z with `{groups: 3157, unmoved: [repo:0, tokens:953]}`. Both unmoved chains read "no leader after 720 asks: no live joined voter quorum without site 0" and are the known pre-row faults. 9,393 group instances completed across the install's three moves, with 0 errored and 0 running. |
+| Signers | not finished | The path so far is index 14 only, executor-signed. `IntentDone` did not commit. |
+| Line 2, campaign | not judged | These need `after`'s config read of about 3,157 chains, which runs only after `IntentDone`. The stop came first. |
+
+- **Why `IntentDone` did not land.** From 02:44Z every graft-ops cron run logged `view: release#4#fN: no answer` (`ops-tail.jsonl`). A cold graft-ops isolate starts from the genesis record. That record now comes from site 0's registry row for `release`, the first site it reads, which is generation 4, a leftover of m6aL's `home`. Its bootstrap names are `release#4#f0` on A, which answers 503 under the fault, and `release#4#f1` and `#4#f2`, which were never joined and answer 409. The group's real voters are `release#5#f0` on the spare, `#2#f1` and `#1#f2`. All three answer a `/view` (count 15, term 8, no leader). An idle Release group with no leader cannot help either, and its next campaign comes only from a request. [inference: from the logs and the rows; the code path is `crates/lookup/src/view.rs` `members` and `crates/lookup/src/lib.rs` `registry_record`. A fix needs its own analysis.]
+- **The stop** ($10.03 on acctcost since 00:34:53Z; containers $9.17).
+  - At 02:37Z every gitshard container was stopped through each shard's own `/teardown`, with `bf50-teardown.sh`'s "no config names the spare" guard overridden (orchestrator ruling, as for the drill's ruling B). 56 of 56 answered 200. The list went from 50 on the spare, 4 on b and 1 each on a and c to 0 active (`stop-teardown.log`, `teardown.jsonl`).
+  - Nothing was lifted, no Resume was signed, and the Release group is left as it stands: the `ReplaceMember` current and Running at step 0, the `RestorePlacement` Halted under it, A drained, and the fault on until 2026-11-27T01:10Z.
+  - Spend: the m6a day is $10.05, and the install's total since creation is $41.41.

@@ -1,0 +1,3 @@
+{"teardown":{"before":{"graft-m6a-spare-wnam-gitshard":50,"graft-m6a-site-c-gitshard":1,"graft-m6a-site-b-gitshard":4,"graft-m6a-site-a-gitshard":1},"after":{"graft-m6a-spare-wnam-gitshard":14,"graft-m6a-site-c-gitshard":1,"graft-m6a-site-b-gitshard":4,"graft-m6a-site-a-gitshard":1},"codes":{
+  "200": 56
+}}}

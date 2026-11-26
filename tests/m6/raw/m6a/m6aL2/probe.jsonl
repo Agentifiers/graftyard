@@ -1,0 +1,9 @@
+{"at":"2026-11-26T00:35:09.400Z","step":"op","chain":"names:24","op":"PutAccount","ok":true,"refused":null,"error":null}
+{"at":"2026-11-26T00:35:10.577Z","step":"op","chain":"names:24","op":"InitPlacement","ok":true,"refused":null,"error":null}
+{"at":"2026-11-26T00:35:11.743Z","step":"op","chain":"names:24","op":"ClaimLogin","ok":true,"refused":null,"error":null}
+{"at":"2026-11-26T00:35:12.910Z","step":"op","chain":"names:24","op":"SetAccountLogin","ok":true,"refused":null,"error":null}
+{"at":"2026-11-26T00:35:22.678Z","step":"create","chain":"authz:8184446","joins":[200,200,200],"role":"leader"}
+{"at":"2026-11-26T00:35:23.775Z","step":"op","chain":"authz:8184446","op":"Open","ok":true,"refused":null,"error":null}
+{"at":"2026-11-26T00:35:26.880Z","step":"op","chain":"tokens:217","op":"Store","ok":true,"refused":null,"error":null}
+{"at":"2026-11-26T00:36:03.220Z","step":"repo","status":201,"ms":36338,"full_name":"r66-m6al2-1092/r66","id":65536,"message":null}
+{"at":"2026-11-26T00:36:03.221Z","step":"seeded","owner":8184446,"login":"r66-m6al2-1092","repo":"r66","full_name":"r66-m6al2-1092/r66","chains":["repo:65536","authz:8184446","tokens:217","names:24","names:195"]}
