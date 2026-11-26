@@ -438,7 +438,7 @@ pub enum RepoEvent {
         session: SessionId,
         snapshot: graftyard_types::Index,
     },
-    // AM3-WP2a, format 32.31 (`crate::issue_ops::call::REPO_FORMAT_FORKS`): tag 50.
+    // AM3-WP2a, format 32.34 (`crate::issue_ops::call::REPO_FORMAT_FORKS`): tag 50.
     /// Core. SHARED's `Genesis { owner, network, name, fork_of }`: the chain's first event for a fork, appended by
     /// whoever first touches it after `ForkAdded` (`design/SHARED.md`, "Multi-chain operations", Fork). `fork_of` is
     /// the repository forked and the index of its chain the fork was cut at. A root's chain is created by `InitRepo`
@@ -911,6 +911,16 @@ impl Scratch for RepoScratch<'_> {
                 return check_archived(self.base.repo, prev.as_ref(), promoted.as_ref(), a);
             }
             RepoEvent::Split(x) => return crate::split::check(&self.core, self.base.repo, self.base.child, x),
+            // A network never changes, and the edge keeps what it learned at any age (`crate::tiers::fork`), so a
+            // second `Genesis` may repeat the fork's network but never name another.
+            RepoEvent::Genesis { network, .. } => {
+                return match crate::tiers::fork(&self.core) {
+                    Some(f) if f.network != *network => {
+                        Err(format!("the fork's network is {:?}, the Genesis names {network:?}", f.network).into())
+                    }
+                    _ => Ok(()),
+                };
+            }
             _ => return Ok(()),
         };
         let mut seen: BTreeMap<&RefName, Option<ObjectId>> = BTreeMap::new();
@@ -2040,7 +2050,7 @@ impl Record for RepoEvent {
             RepoEvent::Assigned { n, add, remove, actor } => return tagged(out, 48, &(n, add, remove, actor)),
             // AM3-WP3's host pause, 32.33: tag 49.
             RepoEvent::TaskResumed { session, snapshot } => return tagged(out, 49, &(session, snapshot)),
-            // AM3-WP2a, 32.31: tag 50.
+            // AM3-WP2a, 32.34: tag 50.
             RepoEvent::Genesis { owner, network, name, fork_of } => {
                 return tagged(out, 50, &(owner, network, name, fork_of));
             }

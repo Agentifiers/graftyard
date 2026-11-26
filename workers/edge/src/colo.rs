@@ -25,6 +25,9 @@ pub(crate) const COLO_MATCH_WITHIN: Duration = Duration::from_millis(50);
 pub(crate) const COLO_AHEAD: Duration = Duration::from_secs(5);
 /// The keys' version: an edge whose key rule changes bumps it, so it never reads another rule's entries.
 const KEY_VERSION: u8 = 1;
+/// The gate keys' own version. 2: an entry carries a fork's network as `net`, and an edge before forks put a fork's
+/// `Allow` as a bare `{"at"}`, which this rule would read as a root's (`gate_body`); its entries are under 1.
+const GATE_KEY_VERSION: u8 = 2;
 /// The keys' origin: fixed, since through a service binding a request's URL carries the caller's hostname, and no
 /// request ever reaches it (`tests/am1/results/b034-colo.md`).
 const ORIGIN: &str = "https://colo.graftyard.invalid";
@@ -197,7 +200,7 @@ pub(crate) fn gate_url(
 ) -> String {
     let mut h = Sha256::new();
     h.update(b"graftyard-colo-gate\0");
-    h.update([KEY_VERSION]);
+    h.update([GATE_KEY_VERSION]);
     h.update(repo.0.0.to_be_bytes());
     match credential {
         Some(c) => {
@@ -242,11 +245,11 @@ const LINK_KEEP: Duration = Duration::from_secs(3600);
 /// The data center's link guess at `url`.
 pub(crate) async fn match_link(url: &str) -> Option<crate::Repo> {
     let v: serde_json::Value = serde_json::from_str(&match_text(url).await?).ok()?;
-    Some(crate::Repo {
-        id: serde_json::from_value(v["id"].clone()).ok()?,
-        owner: serde_json::from_value(v["owner"].clone()).ok()?,
-        record: serde_json::from_value(v["record"].clone()).ok()?,
-    })
+    Some(crate::Repo::new(
+        serde_json::from_value(v["id"].clone()).ok()?,
+        serde_json::from_value(v["owner"].clone()).ok()?,
+        serde_json::from_value(v["record"].clone()).ok()?,
+    ))
 }
 
 /// Puts the repository a fresh `resolve` answered as `url`'s link guess.

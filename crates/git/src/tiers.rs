@@ -169,7 +169,7 @@ pub const CORE: Schema = Schema {
         // roll-up, 32.25: every `Promoted` committed in a 32.25 entry by its `from`, and every `Compacted` by its `from`.
         t("promoted_log", &["from"]),
         t("compacted", &["from"]),
-        // AM3-WP2a, 32.31: a fork's network and where it was cut (`RepoEvent::Genesis`); a root has no row.
+        // AM3-WP2a, 32.34: a fork's network and where it was cut (`RepoEvent::Genesis`); a root has no row.
         t("fork", &[]),
     ],
 };
@@ -256,7 +256,7 @@ pub fn created(core: &(impl Read + ?Sized)) -> Option<Timestamp> {
     get_rec(core, "created", &[])
 }
 
-/// A fork's core row (`RepoEvent::Genesis`, format 32.31): its network, and the repository and index it was cut from.
+/// A fork's core row (`RepoEvent::Genesis`, format 32.34): its network, and the repository and index it was cut from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForkRow {
     pub network: NetworkId,

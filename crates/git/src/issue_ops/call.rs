@@ -64,20 +64,23 @@ pub const REPO_FORMAT_ASSIGN: Format = Format { family: 0x20, version: 30 };
 /// `What::IssueCommentCreated` cannot render after the entry commits, and which an App's token authors as its bot
 /// account (`AppId::bot`), as 32.29 does for an issue. It carries an App's claims, a task's included, or none for a
 /// user, as 32.30 does. A member that cannot read it refuses it before it commits, and the edge sends it only once
-/// `FormatsEnable` enabled it. 32.31 is AM3-WP2a's forks (`REPO_FORMAT_FORKS`).
+/// `FormatsEnable` enabled it.
 pub const REPO_FORMAT_ISSUE_COMMENT: Format = Format { family: 0x20, version: 32 };
 /// AM3-WP3's host pause (`decisions/DECISIONS.md`, "`host-pause`"): a title or body `Change` or an `Assign`
 /// (`IssueCall::pausable`) whose entry may carry the pause (`TaskUpdated` to `waiting_for_user`) or the resume
 /// (`RepoEvent::TaskResumed`, tag 49) of the issue's Graftyard-run tasks, which a release that reads only up to 32.30
 /// cannot decode. Once `FormatsEnable` enabled it the edge marks every such command, whether or not the issue has a
 /// task, so a task created after the edge's read is still paused. It carries an App's claims, a task's included, or
-/// none for a user, as 32.30 does, and a body edit's lease events, as 32.14 does. 32.31 is AM3-WP2a's forks, and 32.32 F137's
+/// none for a user, as 32.30 does, and a body edit's lease events, as 32.14 does. 32.31 is unused, and 32.32 is F137's
 /// issue comments.
 pub const REPO_FORMAT_HOST_PAUSE: Format = Format { family: 0x20, version: 33 };
 /// AM3-WP2a, base forks (`build/BUILD-PLAN.md`): `RepoEvent::Genesis` (tag 50), whose fork's core `fork` row names the
 /// repository's network. A member that cannot read it refuses it before it commits, and the edge sends it only once
-/// `FormatsEnable` enabled it.
-pub const REPO_FORMAT_FORKS: Format = Format { family: 0x20, version: 31 };
+/// `FormatsEnable` enabled it. It is above every format on main when it merged, not 32.31: an entry takes the highest
+/// format of its commands, so a `Genesis` batched with a 32.33 command commits as 32.33, and a member that reads 32.33
+/// but not a lower `Genesis` format would pass the entry's format check and then meet tag 50 (`decisions/DECISIONS.md`,
+/// "`format-order`").
+pub const REPO_FORMAT_FORKS: Format = Format { family: 0x20, version: 34 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
