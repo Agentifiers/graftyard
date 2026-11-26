@@ -1,0 +1,44 @@
+{
+  "caller": "m3org/f132-r1",
+  "shared": "m3org/f132-r1-shared",
+  "sha": "648d3100a44898030baa0fb67ef9492eefc9b8fc",
+  "tagSha": "b1046ea38cea56fd926465aad4a3c8c3c5e1181d",
+  "branchSha": "32379d752308ddf14f052ce4fbddccdf431046bc",
+  "runs": [
+    [
+      1713070,
+      ".github/workflows/caller.yml",
+      "push",
+      "refs/heads/main",
+      "648d3100a44898030baa0fb67ef9492eefc9b8fc"
+    ]
+  ],
+  "jobs": [
+    [
+      1713071,
+      "call / deploy",
+      "Success"
+    ]
+  ],
+  "read": {
+    "version": "tag",
+    "job_workflow_ref": "m3org/f132-r1-shared/.github/workflows/called.yml@refs/tags/v1",
+    "workflow_ref": "m3org/f132-r1/.github/workflows/caller.yml@refs/heads/main",
+    "event_name": "push"
+  },
+  "want": {
+    "job_workflow_ref": "m3org/f132-r1-shared/.github/workflows/called.yml@refs/tags/v1",
+    "workflow_ref": "m3org/f132-r1/.github/workflows/caller.yml@refs/heads/main"
+  },
+  "checks": {
+    "one_push_run": true,
+    "called_job_succeeded": true,
+    "tag_not_branch": true,
+    "job_workflow_ref": true,
+    "workflow_ref": true,
+    "event_name": true,
+    "no_token_in_logs": true
+  },
+  "ok": true,
+  "runners": 1
+}
