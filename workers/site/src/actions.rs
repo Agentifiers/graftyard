@@ -277,6 +277,13 @@ pub fn actions_cache(env: &worker::Env) -> bool {
     env.var("GRAFTYARD_ACTIONS_CACHE").is_ok_and(|v| v.to_string() == "1")
 }
 
+/// Whether a site day set `GRAFTYARD_ARTIFACTS_V4` (`actions-artifacts` v4): only then does a job message name
+/// `ResultsServiceUrl` and set `GRAFTYARD_ACTIONS=true`, so `upload-artifact@v4` through the `graftyard-actions` forks
+/// speaks Twirp to the edge. Set only beside the edge's `GRAFTYARD_ARTIFACTS=1`. It writes no entry, so no format.
+pub fn artifacts_v4(env: &worker::Env) -> bool {
+    env.var("GRAFTYARD_ARTIFACTS_V4").is_ok_and(|v| v.to_string() == "1")
+}
+
 /// Whether a site day set `GRAFTYARD_OIDC_HEAD_REF` (F121): only then is 0x15.7 sent, by `CreateRunFrom`
 /// (`graftyard_actions::trigger::pr_head`). A site day sets it only once 0x15.7 was enabled, after the day that shipped
 /// its reader to every member, and only beside `GRAFTYARD_ACTIONS_CACHE`, since the head rides with the base.
@@ -817,14 +824,8 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 Err(e) => return Ok(refused(503, e)),
             }
             let Some((row, run)) = fold_job(job) else { return Ok(refused(404, "no job")) };
-            let orch = runsvc::orch_id(run.id.0.0, job, run.attempt);
-            let job_token = runsvc::sign_token(
-                &key,
-                chain,
-                Grant::Job { job, attempt: run.attempt },
-                now / 1000 + runsvc::JOB_TOKEN_TTL_S,
-                Some(orch),
-            );
+            let job_token =
+                runsvc::sign_job_token(&key, chain, run.id, job, run.attempt, now / 1000 + runsvc::JOB_TOKEN_TTL_S);
             let steps = serde_json::from_str::<Value>(&row.spec.steps)
                 .ok()
                 .and_then(|v| v.as_array().map(Vec::len))
@@ -876,6 +877,7 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 secrets,
                 variables,
                 cache: actions_cache(&h.env),
+                artifacts_v4: artifacts_v4(&h.env),
                 id_token: h.core.borrow().as_ref().is_some_and(|c| {
                     graftyard_actions::oidc::id_token_granted(c.m.group_fold().fold.more.tokens.get(&job), run.fork)
                 }),

@@ -707,14 +707,8 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
     });
     let id_token = graftyard_actions::oidc::id_token_granted(declared.as_ref(), run.run.fork);
     let n = now();
-    let orch = runsvc::orch_id(run.run.id.0.0, job, run.run.attempt);
-    let job_token = runsvc::sign_token(
-        &h.key,
-        CHAIN,
-        Grant::Job { job, attempt: run.run.attempt },
-        n.0 / 1000 + runsvc::JOB_TOKEN_TTL_S,
-        Some(orch),
-    );
+    let job_token =
+        runsvc::sign_job_token(&h.key, CHAIN, run.run.id, job, run.run.attempt, n.0 / 1000 + runsvc::JOB_TOKEN_TTL_S);
     let secrets = host_secrets();
     let github = runsvc::github_json(&h.urls, &run.run, &j, "owner/repo", "owner", actor.as_deref(), run_number);
     let s2 = secrets.clone();
@@ -730,6 +724,7 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
         variables: Vec::new(),
         cache: false,
         id_token,
+        artifacts_v4: std::env::var("RUNSVC_ARTIFACTS_V4").is_ok_and(|v| v == "1"),
         actor: actor.as_deref(),
         run_number,
         reusable,

@@ -73,6 +73,7 @@ mod repos;
 mod secrets;
 mod ssh;
 mod transfer;
+mod twirp;
 mod ui;
 mod usertok;
 
@@ -4696,6 +4697,10 @@ async fn serve(
     #[cfg(feature = "test-faults")]
     if path.starts_with(bed_rows::PREFIX) {
         return bed_rows::serve(&c, &mut req, &path).await;
+    }
+    // actions-artifacts v4: `@actions/artifact` 2.x posts its Twirp calls at the results URL's origin (`twirp`).
+    if let Some(method) = path.strip_prefix(graftyard_actions::twirp::PREFIX) {
+        return twirp::serve(&c, req, method).await;
     }
     // The Actions run service, its launch service, and the live-log viewer (`actions`).
     if actions::launch_job(&c, &req, &path).is_some() {

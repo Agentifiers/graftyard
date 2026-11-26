@@ -537,6 +537,7 @@ fn a_pull_request_runs_granted_job_gets_the_id_token_url_only_with_job_tokens_on
                     cache: true,
                     // As the shard leader reads it (`workers/site/src/actions.rs`, `acquire`).
                     id_token: graftyard_actions::oidc::id_token_granted(f.more.tokens.get(&j.spec.id), row.run.fork),
+                    artifacts_v4: false,
                     actor: None,
                     run_number: None,
                     reusable: None,
@@ -704,6 +705,7 @@ fn a_pull_request_runs_actor_and_number_ride_with_the_claims_flag() {
                 variables: vec![],
                 cache: false,
                 id_token: false,
+                artifacts_v4: false,
                 actor: actor.as_deref(),
                 run_number: f.run_number(r),
                 reusable: None,
@@ -867,6 +869,7 @@ fn one_entry_of_pushes_starts_a_run_per_matching_ref_at_its_commit() {
             variables: vec![],
             cache: false,
             id_token: false,
+            artifacts_v4: false,
             actor: actor.as_deref(),
             run_number: f.run_number(r),
             reusable: None,
