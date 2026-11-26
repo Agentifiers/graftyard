@@ -8,7 +8,8 @@
 //! left out keeps the current key, and `generation` is the current plus one), `{"SiteMode": {"site": 1, "mode":
 //! "Drain"}}`, `{"ReleaseUploaded": {"record": "<path>", "record_sig": "<hex>", "versions": [["Edge", "<uuid>"]],
 //! "reads": ["32.1"]}}`, `{"IntentStep": {"intent": "<ulid>", "step": 0}}`, `{"IntentDone": {"intent": "<ulid>"}}`,
-//! `{"Halt": {"intent": "<ulid>"}}`, `{"Intent": {"id": "<ulid>", "ttl_s": 3600, "intent": {"EdgeRoll": {"release":
+//! `{"Halt": {"intent": "<ulid>"}}`, `{"Resume": {"intent": "<ulid>", "undo": []}}` (keeping the intent's undos),
+//! `{"Intent": {"id": "<ulid>", "ttl_s": 3600, "intent": {"EdgeRoll": {"release":
 //! "<hex>"}}, "undo": [{"EdgePointer": {"pin": "<hex>"}}], "undo_key": "<private key path>"}}`, and
 //! `{"Undo": {"intent": "<ulid>", "entry": {"EdgePointer": {"pin": "<hex>"}}}}`, which binds a pre-signed undo to its
 //! parent for the `sign` that pre-signed it, and `{"StaleMode": {"scope": {"Repo": 7}, "until_s": 600}}`. An intent may
@@ -256,6 +257,13 @@ fn body(v: &Value, t: &InstallToml, keys: &Value) -> Res<ReleaseEntry> {
             ReleaseEntry::StaleMode { scope, until }
         }
         "Halt" => ReleaseEntry::Halt { intent: intent_id(b, "intent")? },
+        // An empty undo list keeps the intent's pre-signed one; a re-signed list is not built in this tool.
+        "Resume" => {
+            if b.get("undo").and_then(Value::as_array).is_some_and(|u| !u.is_empty()) {
+                return Err("a Resume with re-signed undos is not built in this tool; give undo: []".into());
+            }
+            ReleaseEntry::Resume { intent: intent_id(b, "intent")?, undo: Vec::new() }
+        }
         "Abort" => ReleaseEntry::Abort { intent: intent_id(b, "intent")?, target: release_id(b, "target")? },
         "Intent" => {
             let id = match b.get("id").and_then(Value::as_str) {
@@ -794,5 +802,81 @@ mod tests {
         assert_eq!(i, Intent::Rotate { secret: SecretName::ReadToken, slot: 0 });
         assert!(intent(&serde_json::json!({ "Rotate": { "secret": "DeployToken", "slot": 2 } })).is_err());
         assert!(intent(&serde_json::json!({ "Rotate": { "secret": "Deploy", "slot": 1 } })).is_err());
+    }
+
+    /// `release entry`'s `Resume` (m6aL2's recovery of a RestorePlacement halted under a `ReplaceMember`): the group
+    /// resumes the halted intent on the customer key, back to Running at its step; a non-empty undo is refused here.
+    #[test]
+    fn a_resume_entry_resumes_the_halted_intent() {
+        let dir = scratch();
+        let config = install_toml(&dir, &CUSTOMER);
+        let t = InstallToml::load(&config).unwrap();
+        let id = "01M8APNH9Q41NDG3G0JYXN5RBR";
+        let e = body(&json!({ "Resume": { "intent": id, "undo": [] } }), &t, &Value::Null).unwrap();
+        assert_eq!(e, ReleaseEntry::Resume { intent: IntentId(id.parse().unwrap()), undo: Vec::new() });
+        assert!(
+            body(
+                &json!({ "Resume": { "intent": id, "undo": [{ "EdgePointer": { "pin": "00" } }] } }),
+                &t,
+                &Value::Null
+            )
+            .is_err()
+        );
+        assert!(body(&json!({ "Resume": {} }), &t, &Value::Null).is_err());
+
+        // The group: a RestorePlacement halted under a ReplaceMember, current again once the replace is done, resumes.
+        let unsigned = make_genesis(&dir, &config, "genesis.unsigned");
+        let ckey = key_file(&dir, "customer.key", &CUSTOMER, false);
+        let signed = dir.join("genesis.signed");
+        sign(&unsigned, &signed, &ckey, None).unwrap();
+        let anchor = t.anchor().unwrap();
+        let mut fold = ReleaseFold::default();
+        let mut at = Timestamp(1_790_000_000_000);
+        let mut commit = |fold: &mut ReleaseFold, b: Vec<u8>| {
+            at = Timestamp(at.0 + 60_000);
+            let ev = fold.decide(&anchor, at, &b).unwrap_or_else(|e| panic!("{e:?}"));
+            fold.apply(&ev, at);
+        };
+        commit(&mut fold, fs::read(&signed).unwrap());
+        let exec = [5u8; 32];
+        let mut k = fold.keys.clone().unwrap();
+        k.generation += 1;
+        k.executor = graftyard_release::public_key(&exec);
+        let bound =
+            |f: &ReleaseFold| Bound { install: anchor.install, group: ChainId::Release, prev: f.last, parent: None };
+        let signed_by = |f: &ReleaseFold, b: ReleaseEntry, key: &[u8; 32]| {
+            let mut e = SignedEntry::unsigned(bound(f), b);
+            e.sign(key);
+            e.encode()
+        };
+        let e = signed_by(&fold, ReleaseEntry::Keys(Box::new(k)), &CUSTOMER);
+        commit(&mut fold, e);
+        let g = fold.genesis.clone().unwrap();
+        let lost = g.sites.iter().find(|s| !s.spare).unwrap().id;
+        let spare = g.sites.iter().find(|s| s.spare).map(|s| s.id).expect("the test genesis names a spare");
+        let e = signed_by(&fold, ReleaseEntry::SiteLost { site: lost }, &CUSTOMER);
+        commit(&mut fold, e);
+        let mut spec =
+            json!({ "Intent": { "id": id, "ttl_s": 86_400, "intent": { "RestorePlacement": { "site": lost.0 } } } });
+        let restore = body(&spec, &t, &Value::Null).unwrap();
+        let e = signed_by(&fold, restore, &CUSTOMER);
+        commit(&mut fold, e);
+        spec = json!({ "Intent": { "ttl_s": 86_400, "intent": { "ReplaceMember": { "lost": lost.0, "spare": spare.0 } } } });
+        let replace = body(&spec, &t, &Value::Null).unwrap();
+        let ReleaseEntry::Intent(ri) = &replace else { unreachable!() };
+        let rid = ri.id;
+        let e = signed_by(&fold, replace, &exec);
+        commit(&mut fold, e);
+        let e = signed_by(&fold, ReleaseEntry::IntentDone { intent: rid }, &exec);
+        commit(&mut fold, e);
+        let c = fold.current.as_deref().unwrap();
+        assert!(matches!(c.state, graftyard_release::IntentState::Halted { .. }), "{:?}", c.state);
+        let resume = body(&json!({ "Resume": { "intent": id, "undo": [] } }), &t, &Value::Null).unwrap();
+        let e = signed_by(&fold, resume, &CUSTOMER);
+        commit(&mut fold, e);
+        let c = fold.current.as_deref().unwrap();
+        assert_eq!(c.intent.id, IntentId(id.parse().unwrap()));
+        assert!(matches!(c.state, graftyard_release::IntentState::Running { .. }), "{:?}", c.state);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
