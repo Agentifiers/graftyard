@@ -2755,6 +2755,73 @@ fn a_quick_campaign_after_idle_time_stamps_no_extend() {
     assert!(ext.is_empty(), "a campaign shorter than EXTEND_MIN moved leases: {ext:?}");
 }
 
+/// idle-stall (graft-m2b, 2026-11-26): a `suspect` report to a follower of a quiet group marks no stall, so the
+/// election it leads to stamps no `extend` for the idle time before it. Before, the fold audit's cron visit to an idle
+/// B0-33 group left a report's marker on a follower, and the next visit's leader moved every live lease by the 4 h
+/// between visits. A report while the follower holds an entry above its commit for CALL_DEADLINE still marks one, so
+/// the leader that wins after a hung leader stamps the time since the report.
+#[test]
+fn a_suspect_report_marks_a_stall_only_while_an_entry_waits_for_commit() {
+    let wait = graftyard_raft::ELECTION_AFTER.as_millis() as u64;
+    let floor = graftyard_raft::EXTEND_MIN.as_millis() as u64;
+    let win = |c: &mut Cluster| {
+        c.crash(A);
+        c.advance(wait + 1);
+        assert_eq!(c.on(B, |m, now| m.campaign(now)), Verdict::Started);
+        c.deliver(|e| e.to != A);
+        assert_eq!(c.m(B).role(), Role::Leader);
+    };
+    // A quiet group: every entry committed and told to the followers; a report 60 s in, then 60 s more of quiet.
+    let mut c = Cluster::new(41);
+    c.elect(A);
+    c.sync(A);
+    c.sync(A);
+    let last = c.m(A).log().last().unwrap().at;
+    assert_eq!(c.m(B).state().commit, c.m(B).last_index(), "B holds no entry above its commit");
+    c.advance(60_000);
+    let term = c.m(B).state().term;
+    c.on(B, |m, now| m.suspect(now, graftyard_raft::Colo(7), A, term));
+    assert_eq!(c.m(B).state().stalled_since, None, "a report about a quiet group marks no stall");
+    c.advance(60_000);
+    win(&mut c);
+    let ext: Vec<_> = c.m(B).log().iter().filter(|e| e.at > last).filter_map(|e| e.extend).collect();
+    assert!(ext.is_empty(), "the idle time before the report's election moved leases: {ext:?}");
+
+    // A hung leader: B stores an entry whose commit it never learns, and a report CALL_DEADLINE later marks the
+    // stall then, so the leader B becomes stamps the time from the report to its win.
+    let mut c = Cluster::new(43);
+    c.elect(A);
+    c.sync(A);
+    c.sync(A);
+    c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(9_100)), put("k", "hung"))).expect("admits");
+    let hung = c.m(A).log().last().unwrap().at;
+    let to_b: Vec<_> = std::mem::take(&mut c.inbox).into_iter().filter(|e| e.to == B).collect();
+    for e in to_b {
+        c.on(B, |m, now| m.step(now, e.from, e.msg));
+    }
+    c.inbox.clear();
+    assert!(c.m(B).last_index() > c.m(B).state().commit, "B holds the entry above its commit");
+    c.crash(A);
+    let term = c.m(B).state().term;
+    c.on(B, |m, now| m.suspect(now, graftyard_raft::Colo(7), A, term));
+    assert_eq!(
+        c.m(B).state().stalled_since,
+        None,
+        "an entry younger than CALL_DEADLINE is a prompt append, not a stall"
+    );
+    c.now = Timestamp(c.now.0 + graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+    c.on(B, |m, now| m.suspect(now, graftyard_raft::Colo(7), A, term));
+    let marked = c.m(B).state().stalled_since.expect("a report while an entry waits marks a stall");
+    assert_eq!(marked, c.now, "{marked:?}");
+    c.advance(wait + 1);
+    assert_eq!(c.on(B, |m, now| m.campaign(now)), Verdict::Started);
+    c.deliver(|e| e.to != A);
+    assert_eq!(c.m(B).role(), Role::Leader);
+    let x = c.m(B).log().iter().filter(|e| e.at > hung).find_map(|e| e.extend).expect("the stall stamps an extend");
+    assert_eq!(x.since, marked, "{x:?}");
+    assert!(x.by.as_millis() as u64 > wait && x.by.as_millis() as u64 >= floor, "{x:?}");
+}
+
 /// R29: a group that commits an entry and goes quiet still tells its followers the commit within about one
 /// CALL_DEADLINE, with no further command; then its leader sends nothing more while idle. Before, a follower learned a
 /// commit only from the next append, so on graft-m4a's 65567 both followers sat one commit behind until a `/campaign`.

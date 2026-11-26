@@ -1286,6 +1286,16 @@ pub fn moved<E>(ok: Index, base: Index, log: &[raft::LogEntry<E>]) -> bool {
         })
 }
 
+/// Whether the leader's refold is due: its last report is `AUDIT_EVERY_MS` old, and the chain holds an entry since
+/// that report's index that writes the fold (`moved_since`, which `moved` answers). A refold through an unmoved chain
+/// reads the same snapshot and log and finds the same digests, so an idle chain is refolded once, though the no-ops
+/// of the terms the cron's own lookups start move its applied index (graft-m2b, 2026-11-26: repo:131389 and 131391
+/// refolded about 43,000 rows each a visit; `decisions/DECISIONS.md`, "`idle-stall`"). A failed refold, whose report
+/// carries no index, is due again.
+fn refold_due(last: Option<&(u64, Value)>, now: u64, moved_since: impl Fn(Index) -> bool) -> bool {
+    last.is_none_or(|(at, v)| now >= at + AUDIT_EVERY_MS && v["index"].as_u64().is_none_or(|i| moved_since(Index(i))))
+}
+
 // ---- routes ----
 
 /// `/fold {"audit": {..}}`: the last report and the running job. With `start`, a job starts when none runs and the
@@ -1311,7 +1321,9 @@ pub fn audit_route(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
     let last = last.first().map(|r| Ok::<_, Error>((int(&r[0])? as u64, serde_json::from_str::<Value>(text(&r[1])?)?)));
     let last = last.transpose()?;
     let mut started = false;
-    let due = last.as_ref().is_none_or(|(at, _)| now_ms() >= at + AUDIT_EVERY_MS);
+    let due = refold_due(last.as_ref(), now_ms(), |i| {
+        h.core.borrow().as_ref().is_none_or(|c| moved(i, c.m.log_base().index, c.m.log()))
+    });
     let force = body["force"].as_bool().unwrap_or(false);
     if body["cancel"].as_bool().unwrap_or(false) && job.as_ref().is_some_and(|j| !j.install()) {
         end_job(&sql, false)?;
@@ -1788,5 +1800,22 @@ mod moved_tests {
         let mut ids = log;
         ids.push(entry(9, EntryBody::IdBlock(IdBlock::new(DbId(1 << 20), 4).unwrap())));
         assert!(moved(Index(8), base, &ids), "an id block moves the tiers' cursors");
+    }
+
+    /// graft-m2b, 2026-11-26 (`decisions/DECISIONS.md`, "`idle-stall`"): a day-old refold through index 5 of a chain
+    /// whose log since holds only the no-ops of the cron's own terms and a config is not run again; an events entry
+    /// since, a failed refold, or no refold yet is due, and a refold under a day old never is.
+    #[test]
+    fn an_unmoved_chain_is_refolded_once() {
+        let log = vec![entry(5, EntryBody::Events(vec![1])), entry(6, EntryBody::Noop), entry(7, EntryBody::Noop)];
+        let day = super::AUDIT_EVERY_MS;
+        let since = |i| moved(i, Index(4), &log);
+        let report = |index: u64| (1_000, serde_json::json!({ "index": index }));
+        assert!(!super::refold_due(Some(&report(5)), 1_000 + day, since), "only no-ops since the refold");
+        assert!(super::refold_due(Some(&report(4)), 1_000 + day, since), "entry 5 wrote the fold since");
+        assert!(!super::refold_due(Some(&report(4)), 999 + day, since), "under a day old");
+        let failed = (1_000, serde_json::json!({ "error": "the metadata tier is loading" }));
+        assert!(super::refold_due(Some(&failed), 1_000 + day, since), "a failed refold");
+        assert!(super::refold_due(None, 0, since), "no refold yet");
     }
 }
