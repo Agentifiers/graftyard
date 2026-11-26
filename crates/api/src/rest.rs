@@ -1290,6 +1290,106 @@ pub fn list_issues(r: &Repo<'_>, query: &str) -> Reply {
     }
 }
 
+const PULLS_DOC: &str = "rest/pulls/pulls#list-pull-requests";
+
+/// `GET /repos/{owner}/{repo}/pulls` (F136): pull requests in `state` (default open), with `head` (`owner:branch`) and
+/// `base` (a branch name) filters, sorted by `sort` (`created`, the default, `updated`, `popularity`, the comment
+/// count, or `long-running`, by creation) in `direction` (`desc` by default for `created`, else `asc`), paged with a
+/// `Link` header, each item the pinned `pull-request-simple`. A `head` with no `owner:` is ignored, as on GitHub.
+/// `long-running` does not yet limit the list to pull requests open over a month with activity in the last one: the
+/// view has no clock (F136).
+pub fn list_pulls(r: &Repo<'_>, query: &str) -> Reply {
+    let state = match param(query, "state") {
+        None | Some("open") => StateFilter::Open,
+        Some("closed") => StateFilter::Closed,
+        Some("all") => StateFilter::All,
+        Some(_) => return Reply::error(422, "Validation Failed", PULLS_DOC),
+    };
+    let sort = param(query, "sort").unwrap_or("created");
+    if !matches!(sort, "created" | "updated" | "popularity" | "long-running") {
+        return Reply::error(422, "Validation Failed", PULLS_DOC);
+    }
+    let asc = match param(query, "direction") {
+        Some("asc") => true,
+        Some("desc") => false,
+        _ => sort != "created",
+    };
+    let head = param(query, "head").map(unpercent).and_then(|h| {
+        let (o, b) = h.split_once(':')?;
+        Some((o.to_lowercase(), b.to_owned()))
+    });
+    let base = param(query, "base").map(unpercent);
+    let page = Page::parse(query);
+    let mut select = || {
+        let mut all: Vec<(IssueNumber, IssueRow)> = Vec::new();
+        for n in r.numbers(graftyard_git::issues::IssueKind::PullRequest, state) {
+            let Some(row) =
+                graftyard_git::tiers::get_rec::<IssueRow>(r.meta, "issue", &[graftyard_git::tiers::n_key(n)])
+            else {
+                continue;
+            };
+            if head.is_some() || base.is_some() {
+                let Some(pull) = graftyard_git::tiers::get_rec::<graftyard_git::tiers::PullRow>(
+                    r.meta,
+                    "pull",
+                    &[graftyard_git::tiers::n_key(n)],
+                ) else {
+                    continue;
+                };
+                if base.as_ref().is_some_and(|b| *b != short_branch(&pull.base)) {
+                    continue;
+                }
+                if let Some((o, b)) = &head {
+                    let owner = if pull.head.repo == r.at.id {
+                        Some(r.at.owner.to_lowercase())
+                    } else {
+                        r.dir.repo(pull.head.repo).map(|x| x.owner.to_lowercase())
+                    };
+                    if owner.as_deref() != Some(o.as_str()) || *b != short_branch(&pull.head.branch) {
+                        continue;
+                    }
+                }
+            }
+            all.push((n, row));
+        }
+        match sort {
+            "updated" => all.sort_by_key(|(n, row)| (row.updated, *n)),
+            "popularity" => all.sort_by_key(|(n, row)| (row.comments, *n)),
+            _ => all.sort_by_key(|(n, row)| (row.created, *n)),
+        }
+        if !asc {
+            all.reverse();
+        }
+        let (total, more) = (all.len(), all.len() > page.end());
+        let numbers = all.into_iter().skip(page.skip()).take(page.per_page).map(|(n, _)| n);
+        Pick::of_numbers(numbers, total, more)
+    };
+    let pick = r.dir.pick(&format!("pulls?{query}"), &mut select);
+    let items: Vec<Value> = pick
+        .numbers()
+        .into_iter()
+        .filter_map(|n| r.item(n))
+        .map(|it| crate::webhooks::pull_request_simple(r, &it))
+        .collect();
+    let keep: Vec<(&str, &str)> = query
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .filter(|(k, _)| !matches!(*k, "page" | "per_page"))
+        .collect();
+    let link = graftyard_wire::link(&r.host.api(), r.at.id.0.0, "/pulls", &keep, page, pick.more, None);
+    let reply = Reply::json(200, Value::Array(items));
+    match link {
+        Some(l) => reply.with("link", l),
+        None => reply,
+    }
+}
+
+/// A branch's short name, as the `head` and `base` filters name it.
+fn short_branch(b: &RefName) -> String {
+    let s = b.display();
+    s.strip_prefix("refs/heads/").map(str::to_owned).unwrap_or(s)
+}
+
 // ---- the web app's chrome reads (`decisions/OPEN-QUESTIONS.md`, F61) ----
 
 /// Every ref under `prefix` (`refs/heads/` or `refs/tags/`) and its object, in name order.

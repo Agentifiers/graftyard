@@ -2,13 +2,15 @@
 // PAT, git's and gh's user agents, no agent header) sent to edge 0 (the base build) and edge 1 (the head build), and
 // their status, headers and body compared. Masked: the headers `run.sh` lists as per request (`date`, `server-timing`,
 // request ids, lengths), GitHub request ids in bodies, `id` and `node_id` values, and the label name, which differs per
-// edge so both label writes create. ALLOW names the request whose only allowed difference is a `retry-after` header the
+// edge so both label writes create. `CHANGED` names the requests the head means to answer otherwise. ALLOW names the request whose only allowed difference is a `retry-after` header the
 // base lacks, with its value (`fetch=2`: edge-shed-429's upload-pack shard 503). Exits 1 on any other difference.
 //   node tests/plaindiff/diff.mjs <front url> <bed dir> [ALLOW]
 import { readFileSync } from "node:fs";
 
 const [F, B, ALLOW = ""] = process.argv.slice(2);
 const [allowName, allowValue] = ALLOW.split("=");
+// Requests the head is meant to answer differently: the base's and the head's status, and the head's body.
+const CHANGED = { "rest-pulls": [404, 200, "[]"] };
 const seed = JSON.parse(readFileSync(`${B}/seed.json`, "utf8"));
 const auth = { authorization: "Basic " + Buffer.from(`x:${seed.token}`).toString("base64") };
 const tok = { authorization: `token ${seed.token}`, "user-agent": "gh/2.102.1" };
@@ -28,6 +30,10 @@ const reqs = [
   ["fetch", "POST", `${p}/git-upload-pack`, up, fetchV2],
   ["info-refs-receive", "GET", `${p}/info/refs?service=git-receive-pack`, { ...auth, "user-agent": "git/2.43.0" }],
   ["rest-repo", "GET", `/api/v3/repos/${seed.login}/${seed.repo}`, tok],
+  // F136: the head serves the list of pull requests main answered 404; `CHANGED` names that difference.
+  ["rest-pulls", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/pulls?state=all&per_page=5`, tok],
+  ["rest-pull-1", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/pulls/1`, tok],
+  ["rest-issues", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues?state=all`, tok],
   ["rest-label-write", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/labels`, { ...tok, "content-type": "application/json" }, "LABEL"],
   ["graphql", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "{ repository(owner: \"cw\", name: \"r\") { name } }" })],
 ];
@@ -49,9 +55,12 @@ for (const q of reqs) {
   const same = JSON.stringify(a) === JSON.stringify(b);
   const allowed = !same && q[0] === allowName && a.status === b.status && a.body === b.body && ra === undefined
     && rb === allowValue && JSON.stringify(a.headers) === JSON.stringify(b.headers.filter(([k]) => k !== "retry-after"));
-  const verdict = same ? "identical" : allowed ? `differs only by retry-after: ${rb} (allowed)` : "DIFFERS";
+  const ch = CHANGED[q[0]];
+  const changed = !same && ch && a.status === ch[0] && b.status === ch[1] && b.body === ch[2];
+  const verdict = same ? "identical" : allowed ? `differs only by retry-after: ${rb} (allowed)`
+    : changed ? `changed as intended: ${a.status} -> ${b.status}` : "DIFFERS";
   console.log(`${q[0]}: base ${a.status} retry-after ${ra ?? "-"} | head ${b.status} retry-after ${rb ?? "-"} | ${verdict} | ${a.body.slice(0, 80).replace(/\n/g, " ")}`);
-  if (!same && !allowed) {
+  if (!same && !allowed && !changed) {
     bad++;
     console.log(`  base ${JSON.stringify(a).slice(0, 400)}\n  head ${JSON.stringify(b).slice(0, 400)}`);
   }

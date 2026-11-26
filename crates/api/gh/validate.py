@@ -94,6 +94,11 @@ for f in sorted(glob.glob(os.path.join(replies, '*.json'))):
     n_gql += 1
 
 spec = json.load(open(openapi_path))
+# The description's known inaccuracies, each corrected where it differs from what GitHub answers, with its upstream
+# issue. `pull-request-simple`'s labels say `description` is a string, but GitHub's `GET /pulls` answers null for a
+# label with none, as `pull-request`'s labels allow (github/rest-api-description#1812, reopened as #5560).
+spec['components']['schemas']['pull-request-simple']['properties']['labels']['items']['properties']['description'][
+    'nullable'] = True
 
 
 def deref(node, seen=()):

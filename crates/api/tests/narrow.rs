@@ -405,6 +405,7 @@ fn same_rest(c: &Chain, tail: &[&str], query: &str) -> (MemStore, MemStore) {
         let path = match tail {
             [] => "/repos/{owner}/{repo}",
             ["issues"] => "/repos/{owner}/{repo}/issues",
+            ["pulls"] => "/repos/{owner}/{repo}/pulls",
             ["pulls", _] => "/repos/{owner}/{repo}/pulls/{pull_number}",
             ["issues", _, "comments"] => "/repos/{owner}/{repo}/issues/{issue_number}/comments",
             ["pulls", _, "reviews"] => "/repos/{owner}/{repo}/pulls/{pull_number}/reviews",
@@ -525,6 +526,129 @@ fn rest_issue_lists_are_the_whole_tier_bytes_and_hold_only_their_page() {
     let (_, meta) = same_rest(&c, &["issues"], "per_page=5");
     assert_eq!(items(&meta).len(), 5);
     assert!(!meta.0.contains_key("comment"), "a list reads no comment rows");
+}
+
+/// `GET /pulls`'s page by GHES 3.22's documented rules (`ghes-3.22.json`, `pulls/list`), from the rows the test reads
+/// itself: pull requests only, in `state`; `head` as `owner:branch` (ignored without the `owner:`), `base` as a branch;
+/// sorted by creation, update, or comment count, `desc` by default only for `created`; then the page.
+fn pulls_oracle(c: &Chain, q: &str) -> (Vec<u32>, bool) {
+    use graftyard_git::tiers::{PullRow, get_rec};
+    let m = &c.members[0].meta;
+    let pull = |n: u32| -> PullRow { get_rec(m, "pull", &[graftyard_fold::Val::Int(i64::from(n))]).unwrap() };
+    let short = |r: &graftyard_git::refs::RefName| r.display().trim_start_matches("refs/heads/").to_owned();
+    let head = param(q, "head")
+        .and_then(|h| h.replace("%3A", ":").split_once(':').map(|(o, b)| (o.to_lowercase(), b.to_owned())));
+    let mut all: Vec<Row> = rows(c)
+        .into_iter()
+        .filter(|r| r.pull)
+        .filter(|r| match param(q, "state") {
+            Some("closed") => !r.open,
+            Some("all") => true,
+            _ => r.open,
+        })
+        .filter(|r| param(q, "base").is_none_or(|b| short(&pull(r.n).base) == b))
+        .filter(|r| head.as_ref().is_none_or(|(o, b)| o == "o" && short(&pull(r.n).head.branch) == *b))
+        .collect();
+    let sort = param(q, "sort").unwrap_or("created");
+    all.sort_by_key(|r| match sort {
+        "updated" => (r.updated, r.n),
+        "popularity" => (u64::from(r.comments), r.n),
+        _ => (r.created, r.n),
+    });
+    let asc = param(q, "direction").map_or(sort != "created", |d| d == "asc");
+    if !asc {
+        all.reverse();
+    }
+    let per = param(q, "per_page").and_then(|v| v.parse().ok()).unwrap_or(30usize).min(100);
+    let page = param(q, "page").and_then(|v| v.parse().ok()).unwrap_or(1usize);
+    (all.iter().skip((page - 1) * per).take(per).map(|r| r.n).collect(), all.len() > page * per)
+}
+
+/// F136, BF-76 r1: `GET /repos/{o}/{r}/pulls` answered 404. Over every state, sort, direction, `head` and `base`
+/// filter, and page boundary, it is GHES's page with a next link iff more follow, the narrow read is the whole-tier
+/// bytes and holds only the page's items, and each item is the single-pull route's object without the fields only
+/// `pull-request` has. Issues never appear, and a sort or direction default taken from `GET /issues` (`desc` for
+/// every sort) would differ, since updates and comments run in other orders than creation.
+#[test]
+fn rest_pull_lists_follow_ghes_rules_and_are_the_whole_tier_bytes() {
+    let mut c = big();
+    // A pull request on another base, so `base` drops one and keeps the rest.
+    c.push("refs/heads/rel", oid(90));
+    c.push("refs/heads/b41", oid(141));
+    c.now = Timestamp(1_793_200_000_000);
+    c.commit(
+        WRITER,
+        IssueOp::OpenPr {
+            head: graftyard_git::issues::HeadSpec { repo: REPO, branch: name("refs/heads/b41") },
+            base: name("refs/heads/rel"),
+            title: "onto rel".into(),
+            body: "r".into(),
+            draft: false,
+            head_sha: oid(141),
+            base_sha: oid(90),
+        },
+    )
+    .unwrap();
+    let full_only = [
+        "additions",
+        "changed_files",
+        "comments",
+        "commits",
+        "deletions",
+        "maintainer_can_modify",
+        "mergeable",
+        "mergeable_state",
+        "merged",
+        "merged_by",
+        "rebaseable",
+        "review_comments",
+    ];
+    let (h, d) = (host(), Dir::new(WRITER));
+    let (mut cases, mut nonempty, mut next_pages) = (0, 0, 0);
+    for state in ["", "state=open&", "state=closed&", "state=all&"] {
+        for sort in ["", "sort=created&", "sort=updated&", "sort=popularity&", "sort=long-running&"] {
+            for dir in ["", "direction=asc&", "direction=desc&"] {
+                for filter in ["", "base=main&", "base=rel&", "head=o:b4&", "head=O%3Ab41&", "head=b4&", "head=x:b4&"] {
+                    for page in ["per_page=4", "per_page=4&page=3", "per_page=4&page=8", "page=2"] {
+                        let q = format!("{state}{sort}{dir}{filter}{page}");
+                        let (_, meta) = same_rest(&c, &["pulls"], &q);
+                        let whole = rest_get(&c.repo(0, &h, &d), &["pulls"], &q, Index(9)).unwrap();
+                        assert_eq!(whole.status, 200, "{q}");
+                        let list = whole.value().as_array().unwrap().clone();
+                        let got: Vec<u32> = list.iter().map(|i| i["number"].as_u64().unwrap() as u32).collect();
+                        let (want, more) = pulls_oracle(&c, &q);
+                        assert_eq!(got, want, "{q}: GHES's page");
+                        let next = whole.header("link").is_some_and(|l| l.contains("rel=\"next\""));
+                        assert_eq!(next, more, "{q}: a next link iff more pull requests follow");
+                        let mut sorted = want.clone();
+                        sorted.sort_unstable();
+                        assert_eq!(items(&meta), sorted, "{q}: the narrow rows hold exactly the page's items");
+                        for item in &list {
+                            let n = item["number"].to_string();
+                            let mut single = graftyard_api::rest::get_pull(&c.repo(0, &h, &d), &n).value().clone();
+                            full_only
+                                .iter()
+                                .for_each(|k| assert!(single.as_object_mut().unwrap().remove(*k).is_some()));
+                            assert_eq!(item, &single, "{q}: #{n} is the single-pull object without the full fields");
+                        }
+                        nonempty += usize::from(!got.is_empty());
+                        next_pages += usize::from(more);
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 1680);
+    assert!(nonempty > 400 && next_pages > 100, "{nonempty} non-empty pages, {next_pages} with a next page");
+    // A page's link keeps the filters and moves only the page.
+    let r = c.repo(0, &h, &d);
+    let link = rest_get(&r, &["pulls"], "state=all&base=main&per_page=4&page=2", Index(9)).unwrap();
+    let link = link.header("link").unwrap();
+    assert!(link.contains("state=all") && link.contains("base=main") && link.contains("page=3"), "{link}");
+    for bad in ["state=merged", "sort=comments", "sort=x"] {
+        assert_eq!(rest_get(&r, &["pulls"], bad, Index(9)).unwrap().status, 422, "{bad}");
+    }
 }
 
 /// Single-object routes read only their object: a pull request's GET holds no other item's rows, nor another pull
