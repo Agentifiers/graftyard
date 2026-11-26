@@ -157,6 +157,55 @@ fn a_replaced_site_undrains_only_once_recovered_and_its_restore_moves_back_and_c
     assert_eq!(o.started.last(), Some(&back));
 }
 
+/// m6aL2's order: a customer-signed `SiteLost`, then a `RestorePlacement` before graft-ops has drained the site. The
+/// group refuses it while the site is lost and not replaced, though nothing is drained yet; a restore that committed
+/// anyway and halted under the `ReplaceMember` resumes only once the site is undrained.
+#[test]
+fn a_restore_inside_the_drain_window_is_refused_and_a_halted_one_resumes_only_undrained() {
+    let mut o = Ops::new(G::new());
+    upload_all(&mut o.g, 1);
+    for s in 0..4 {
+        let b = o.g.entry(ReleaseEntry::SiteRelease { site: SiteId(s), release: rel(1).0 }, &[&EXECUTOR]);
+        o.g.ok(b);
+    }
+    let b = o.g.entry(ReleaseEntry::SiteLost { site: SiteId(1) }, &[&CUSTOMER]);
+    o.g.ok(b);
+    assert!(o.g.f.drained.is_empty(), "the SiteLost drains nothing");
+    let restore = Intent::RestorePlacement { site: SiteId(1) };
+    let b = o.g.intent(60, restore.clone(), &[], &CUSTOMER);
+    assert!(matches!(o.g.no(b), Refusal::Rejected(m) if m.contains("lost and not yet replaced")));
+
+    // The restore as m6aL2 committed it, on the fold before this rule: halted under the replace once it is done.
+    let mut h = Ops::new(G::new());
+    upload_all(&mut h.g, 1);
+    for s in 0..4 {
+        let b = h.g.entry(ReleaseEntry::SiteRelease { site: SiteId(s), release: rel(1).0 }, &[&EXECUTOR]);
+        h.g.ok(b);
+    }
+    let b = h.g.intent(60, restore.clone(), &[], &CUSTOMER);
+    h.g.ok(b);
+    let b = h.g.entry(ReleaseEntry::SiteLost { site: SiteId(1) }, &[&CUSTOMER]);
+    h.g.ok(b);
+    h.act();
+    h.act();
+    h.moves = MoveRun::Done;
+    h.act();
+    h.act();
+    let c = h.g.f.current.as_deref().expect("the restore is current again");
+    assert_eq!(c.intent.intent, restore);
+    assert!(matches!(c.state, IntentState::Halted { .. }));
+    assert!(h.g.f.drained.contains_key(&1));
+    let resume = |g: &G| g.entry(ReleaseEntry::Resume { intent: id(60), undo: Vec::new() }, &[&CUSTOMER]);
+    let b = resume(&h.g);
+    assert!(matches!(h.g.no(b), Refusal::Rejected(m) if m.contains("undrained")));
+    h.health = BTreeMap::from([(1, v(true, false, true))]);
+    h.act();
+    assert!(h.g.f.drained.is_empty(), "recovered: the drain key undrains it");
+    let b = resume(&h.g);
+    h.g.ok(b);
+    assert!(matches!(h.g.f.current.as_deref().unwrap().state, IntentState::Running { .. }));
+}
+
 /// A `RestorePlacement` of a site no `ReplaceMember` moved has nothing to move back: one step, no Workflow.
 #[test]
 fn a_restore_of_a_site_never_replaced_moves_nothing() {

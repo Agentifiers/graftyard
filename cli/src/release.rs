@@ -854,12 +854,14 @@ mod tests {
         let g = fold.genesis.clone().unwrap();
         let lost = g.sites.iter().find(|s| !s.spare).unwrap().id;
         let spare = g.sites.iter().find(|s| s.spare).map(|s| s.id).expect("the test genesis names a spare");
-        let e = signed_by(&fold, ReleaseEntry::SiteLost { site: lost }, &CUSTOMER);
-        commit(&mut fold, e);
+        // The restore commits before the `SiteLost` (the group now refuses one after it until the replace), then the
+        // replace halts it, as m6aL2's did.
         let mut spec =
             json!({ "Intent": { "id": id, "ttl_s": 86_400, "intent": { "RestorePlacement": { "site": lost.0 } } } });
         let restore = body(&spec, &t, &Value::Null).unwrap();
         let e = signed_by(&fold, restore, &CUSTOMER);
+        commit(&mut fold, e);
+        let e = signed_by(&fold, ReleaseEntry::SiteLost { site: lost }, &CUSTOMER);
         commit(&mut fold, e);
         spec = json!({ "Intent": { "ttl_s": 86_400, "intent": { "ReplaceMember": { "lost": lost.0, "spare": spare.0 } } } });
         let replace = body(&spec, &t, &Value::Null).unwrap();
