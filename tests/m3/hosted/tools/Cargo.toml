@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 graftyard-identity = { path = "../../../../crates/identity" }
+graftyard-git = { path = "../../../../crates/git" }
 graftyard-raft = { path = "../../../../crates/raft" }
 graftyard-types = { path = "../../../../crates/types" }
 graftyard-release = { path = "../../../../crates/release" }

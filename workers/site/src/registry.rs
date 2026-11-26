@@ -281,6 +281,20 @@ impl DurableObject for Registry {
                 };
                 ns.get_by_name(&format!("ssh#{}", id.0))?.fetch_with_str("https://front/status").await
             }
+            // Test installs only: B0-24a's kill of this site's `SshFront`, its `POST /kill` (workers/site/ssh.mjs,
+            // `kill`), which answers only on a version deployed with `SSH_KILL=1`.
+            #[cfg(feature = "test-faults")]
+            (Method::Post, "/ssh_front_kill") => {
+                let id = crate::SiteEnv::read(&self.env)?.id;
+                let Ok(ns) = self.env.durable_object(&format!("SSHFRONT_{}", id.0)) else {
+                    return Response::error("this site binds no SSHFRONT: SSH is off", 404);
+                };
+                let mut init = RequestInit::new();
+                init.with_method(Method::Post);
+                ns.get_by_name(&format!("ssh#{}", id.0))?
+                    .fetch_with_request(Request::new_with_init("https://front/kill", &init)?)
+                    .await
+            }
             // Both `ActionsOidcKey` slots' public halves on this site, `{"keys": [jwk..], "slots": {"A": kid, "B": kid}}`
             // (`graftyard_actions::oidc::published`): the edge serves `keys` as the issuer's JWKS, and `graft-ops`
             // reads `slots` as the `ActionsOidcKey` `Rotate`'s probe. No private byte leaves.

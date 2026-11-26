@@ -278,3 +278,22 @@ A row stopped early is reported as stopped, with its hours and readings so far, 
   - The two rows would also share the account's day: the drill at most $20 a day, this row at most $10.
   - Neither would breach a cap, but keeping them apart keeps the drill's readings clean.
 - **If the lead wants it sooner:** the row can run inside the drill. Separate installs keep separate caps, and the account takes at most $30 a day from the two of them. The only change is that the drill's "no script version" line must then be read for `graft-m6a` alone.
+
+### The lead's GO and the $0 code (2026-11-26)
+
+The lead merged the plan as main `4942da0f` and gave a staged GO:
+- **Reading:** the verdict is the gate as written, 99.9% and 99% on every session, as on 11-01. The three failure classes and the measured d are evidence. A reading between the lines goes into `decisions/OPEN-QUESTIONS.md` with the d / 1,800 s ceiling and the design change that would lift it, such as a front that drains its sessions before it exits on a planned stop. The gate stays.
+- **Instance:** m3f's own `standard-4`, not `standard-1`. A smaller shard lengthens d, and d sets the ceiling. The row stop stays $10, read every 10 minutes.
+- **Window:** as proposed. The site day is 2026-11-30 01:00Z, and the load runs from 01:45Z to 2026-12-01 01:45Z.
+- **Order:** site day and edge day from the main that holds the code, the smoke, BF-52, the 24 hours, then teardown. If the smoke shows anything off, the row stops for the lead before BF-52.
+
+What the code is, for review:
+- **The kill:** `workers/site/ssh.mjs` `kill`, served as `SshFront` `POST /kill` (`workers/site/entry.mjs`). It answers only when the version's `SSH_KILL` is `1`, and any other version answers 404. `workers/site/deploy.mjs` sets the variable only with `--test-faults` and `--ssh`, and refuses it through `--vars` or `--var`.
+- **The open count:** `connect` counts a session from its banner to its end. A session still waiting for its banner is not counted, because a kill does not end it: it retries and starts the container again. `GET /status` reports the count as `open`, and graft-ops' probe ignores the field.
+- **The routes:** the Registry's `POST /ssh_front_kill`, under `test-faults`. The tools edge's `/ssh_kill` and `/ssh_status` (`tests/m1/wp7/edge.ts`) reach each site's Registry object `ssh`, as graft-ops reaches `/ssh_front`. The tools edge's `/commit_many` also takes `leader` and `rids`, because it has no record source for a repository chain. That settles the smoke step's open check by design: the driver names the leader that `statuses` reads.
+- **The driver** is `tests/m6/hosted/b024a.mjs`, with commands `setup`, `load`, `report`, `bf52`, `kill` and `drop-key`. The smoke is `load --hours 0.25 --kill-every-min 4`: about 300 sessions and one kill on each site. A cost read that fails three times in a row is also a stop.
+- **The reading** is `tests/m6/hosted/b024a-judge.mjs`, which is pure, with `b024a.test.mjs`.
+  - The test `/log` lists only the first 8 ref updates of an entry (`workers/site/src/family.rs`, `log_fields`). The driver records any entry that has a new value past that limit, and a missing push is then read by hand before it counts as lost.
+  - BF-52's no-ref-moved check uses `ls-remote` over HTTPS for the same reason.
+- **BF-52's pushes** come from `tests/m3/hosted/tools` bin `bf52queue`, which uses graft-sshd's fingerprint (SHA-256 of the key blob, checked against `ssh-keygen -lf`) and `Push::to_wire`. A queue control of 10 pushes with no hold and no revocation must be acknowledged first, so the 1,000 401s are the key's.
+- **Plant:** `tests/m0carried/plant283.py`, 11 mutants, all caught.

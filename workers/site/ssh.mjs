@@ -78,7 +78,9 @@ export async function open(o, deadline = Date.now() + BANNER_WAIT_MS) {
   }
 }
 
-// The object's `connect(socket)`: the banner first, then both directions until either side closes.
+// The object's `connect(socket)`: the banner first, then both directions until either side closes. `o.inFlight` counts
+// the sessions between their banner and their end, the ones a kill ends: a session still waiting for its banner
+// retries and starts the container again (`open`).
 export async function connect(o, socket, wait = BANNER_WAIT_MS) {
   let front;
   try {
@@ -88,19 +90,39 @@ export async function connect(o, socket, wait = BANNER_WAIT_MS) {
     socket.close?.();
     return;
   }
-  const w = socket.writable.getWriter();
-  await w.write(front.first);
-  w.releaseLock();
-  await Promise.allSettled([socket.readable.pipeTo(front.socket.writable), front.socket.readable.pipeTo(socket.writable)]);
+  o.inFlight = (o.inFlight ?? 0) + 1;
+  try {
+    const w = socket.writable.getWriter();
+    await w.write(front.first);
+    w.releaseLock();
+    await Promise.allSettled([socket.readable.pipeTo(front.socket.writable), front.socket.readable.pipeTo(socket.writable)]);
+  } finally {
+    o.inFlight--;
+  }
+}
+
+// `POST /kill` on the object, test installs only (B0-24a, tests/m6/results/m6-wp2.md): `destroy()` on a running front,
+// the clean kill B0-24a used, which ends every session in flight on it. It answers `{at, running, open}`: the time
+// of the kill, whether the front was running, and the sessions in flight then. A stopped front is not touched. Only a
+// version whose `SSH_KILL` variable is `1` answers, which `workers/site/deploy.mjs` sets only with `--test-faults`;
+// any other answers 404, as a route it does not have.
+export async function kill(o) {
+  if (o.env?.SSH_KILL !== "1") return new Response("Not Found", { status: 404 });
+  const c = o.ctx.container;
+  const out = { at: Date.now(), running: !!c.running, open: o.inFlight ?? 0 };
+  if (out.running) await c.destroy("b024a kill");
+  return Response.json(out);
 }
 
 // `GET /status` on the object, which this site's Registry serves at `/ssh_front` and graft-ops' `SshHostKeys` probe
 // reads (`workers/ops/src/lib.rs`, `ssh_fronts_ready`): whether the container runs, the image this object last started
-// and this version's, and the banner graft-sshd sends on one connection, whose version names its generation. It never
-// starts the container: a stopped one starts on this version's image at its next session.
+// and this version's, the banner graft-sshd sends on one connection, whose version names its generation, and `open`,
+// the sessions in flight (`connect`). It never starts the container: a stopped one starts on this version's image at
+// its next session.
 export async function status(o) {
   const c = o.ctx.container;
-  const out = { running: !!c.running, image: (await o.ctx.storage.get("image")) ?? null, version_image: c.images?.ssh ?? null, banner: null };
+  const out = { running: !!c.running, image: (await o.ctx.storage.get("image")) ?? null, version_image: c.images?.ssh ?? null, banner: null,
+    open: o.inFlight ?? 0 };
   if (!out.running) return out;
   let timer;
   let s;

@@ -194,9 +194,115 @@ test("a running front restarts once on a version that names another image, and o
   assert.equal(await old.o.ctx.storage.get("image"), "registry/sshfront@sha256:Y");
 });
 
+// A socket that stays open until `end()`, or until its writable is closed, as graft-sshd closes when its client does:
+// its readable yields `first`, then nothing until it closes.
+function held(first) {
+  let ctl;
+  const s = {
+    readable: new ReadableStream({
+      start(c) {
+        ctl = c;
+        if (first) c.enqueue(new TextEncoder().encode(first));
+      },
+    }),
+    writable: new WritableStream({ write() {}, close: () => s.end() }),
+    opened: Promise.resolve({}),
+    end() {
+      try {
+        ctl.close();
+      } catch {
+        // already closed
+      }
+    },
+    close() {
+      this.end();
+    },
+  };
+  return s;
+}
+
+// A running front whose container sockets stay open until a `destroy()` ends them all, as a kill does.
+function live(env) {
+  const f = object({ coldTries: 0 });
+  const c = f.o.ctx.container;
+  const sockets = [];
+  c.getTcpPort = () => ({
+    connect: () => {
+      if (!c.running) return socket([]);
+      const s = held("SSH-2.0-graftyard_2\r\n");
+      sockets.push(s);
+      return s;
+    },
+  });
+  const destroy = c.destroy;
+  c.destroy = async function (reason) {
+    await destroy.call(this, reason);
+    for (const s of sockets.splice(0)) s.end();
+  };
+  f.o.env = env;
+  return f;
+}
+const tick = () => new Promise((r) => setTimeout(r, 10));
+
+test("kill answers only on an SSH_KILL version, and destroys a running front with the sessions in flight counted", async () => {
+  // A version without the variable, or with any other value, has no kill route and keeps the front running.
+  for (const env of [undefined, {}, { SSH_KILL: "0" }, { SSH_KILL: "true" }]) {
+    const f = live(env);
+    await ssh.connect(f.o, socket(["SSH-2.0-OpenSSH_10.6\r\n"]));
+    const r = await ssh.kill(f.o);
+    assert.equal(r.status, 404, JSON.stringify(env));
+    assert.deepEqual(f.destroys, []);
+    assert.equal(f.o.ctx.container.running, true);
+  }
+
+  const f = live({ SSH_KILL: "1" });
+  // Two sessions held open, and a third that ends before the kill: two are in flight.
+  const a = held(), b = held(), done = held();
+  const sa = ssh.connect(f.o, a), sb = ssh.connect(f.o, b), sd = ssh.connect(f.o, done);
+  await tick();
+  assert.equal((await ssh.status(f.o)).open, 3);
+  done.end();
+  await tick();
+  const before = Date.now();
+  const r = await ssh.kill(f.o);
+  assert.equal(r.status, 200);
+  const k = await r.json();
+  assert.ok(k.at >= before && k.at <= Date.now());
+  assert.equal(k.running, true);
+  assert.equal(k.open, 2);
+  assert.deepEqual(f.destroys, ["b024a kill"]);
+  // The kill ended every session on the front, and the count with them.
+  await Promise.all([sa, sb, sd]);
+  assert.equal((await ssh.status(f.o)).open, 0);
+  assert.equal(f.o.ctx.container.running, false);
+
+  // A stopped front is not destroyed again.
+  const again = await (await ssh.kill(f.o)).json();
+  assert.deepEqual([again.running, again.open], [false, 0]);
+  assert.deepEqual(f.destroys, ["b024a kill"]);
+  // The next session starts it again, and is counted.
+  const starts = f.starts.length;
+  const next = held();
+  const sn = ssh.connect(f.o, next);
+  await tick();
+  assert.equal(f.starts.length, starts + 1);
+  assert.equal((await ssh.status(f.o)).open, 1);
+  next.end();
+  await ssh.kill(f.o);
+  await sn;
+});
+
+test("a session that never got its banner is not counted in flight", async () => {
+  const f = object({ coldTries: Infinity });
+  f.o.env = { SSH_KILL: "1" };
+  await ssh.connect(f.o, socket([]), 50);
+  assert.equal((await ssh.status(f.o)).open, 0);
+  assert.equal((await (await ssh.kill(f.o)).json()).open, 0);
+});
+
 test("status answers a running front's banner without CR/LF and never starts a stopped one", async () => {
   const f = object({ coldTries: 0, image: "registry/sshfront@sha256:Y" });
-  assert.deepEqual(await ssh.status(f.o), { running: false, image: null, version_image: "registry/sshfront@sha256:Y", banner: null });
+  assert.deepEqual(await ssh.status(f.o), { running: false, image: null, version_image: "registry/sshfront@sha256:Y", banner: null, open: 0 });
   assert.equal(f.starts.length, 0);
   assert.equal(f.tries(), 0, "a stopped front is not dialled");
   await ssh.connect(f.o, socket(["SSH-2.0-OpenSSH_10.6\r\n"]));
@@ -205,6 +311,7 @@ test("status answers a running front's banner without CR/LF and never starts a s
     image: "registry/sshfront@sha256:Y",
     version_image: "registry/sshfront@sha256:Y",
     banner: "SSH-2.0-graftyard",
+    open: 0,
   });
   assert.equal(f.starts.length, 1, "status started nothing");
   assert.deepEqual(f.destroys, []);
