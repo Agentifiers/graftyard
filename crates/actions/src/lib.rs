@@ -2,6 +2,7 @@
 //! `design/DESIGN.md`, Shape, "Identity"). Pure Rust: no Workers dependency, no clock and no randomness but what the
 //! caller passes in. The design as built is `tests/m4/results/m4-wp3-design.md`.
 
+pub mod annotations;
 pub mod artifacts;
 pub mod broker;
 pub mod cache;

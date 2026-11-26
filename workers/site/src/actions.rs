@@ -907,8 +907,14 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
             // `reusable`: a planned run's job commits the outputs the runner evaluated with its `Finished` (0x15.9);
             // no other run has a plan, so every other `complete` is the `Job` op it was.
             let planned = h.core.borrow().as_ref().is_some_and(|c| c.m.group_fold().fold.run_plan(row.run).is_some());
+            // BF-76 (0x15.10): the check-run annotations the edge mapped and capped, only once it enabled 0x15.10.
+            let annotations: Vec<graftyard_git::issues::CheckAnnotation> =
+                serde_json::from_value(b["annotations"].clone()).unwrap_or_default();
             if row.state.completed().is_none() {
-                let op = if planned {
+                let op = if !annotations.is_empty() {
+                    let outputs = if planned { runsvc::outputs(&b) } else { Vec::new() };
+                    ActionsOp::FinishAnnotated { job, version: row.version, conclusion: c, outputs, annotations }
+                } else if planned {
                     let outputs = runsvc::outputs(&b);
                     ActionsOp::FinishWith { job, version: row.version, conclusion: c, outputs }
                 } else {

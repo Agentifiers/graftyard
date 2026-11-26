@@ -8,8 +8,8 @@
 
 use graftyard_git::issues::RepoReleaseId;
 use graftyard_git::issues::{
-    CheckConclusion, CheckRunUpdate, CheckStatus, IssueKind, IssueNumber, MergeMethod, PrState, ReviewState,
-    StateReason, StatusState, StatusUpdate,
+    AnnotationLevel, CheckAnnotation, CheckConclusion, CheckRunUpdate, CheckStatus, IssueKind, IssueNumber,
+    MergeMethod, PrState, ReviewState, StateReason, StatusState, StatusUpdate,
 };
 use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_git::tiers::{CommentRow, LabelRow, ReleaseRow, ReviewRow, Timed};
@@ -884,7 +884,7 @@ impl Obj for Run<'_> {
     fn type_name(&self) -> &'static str {
         "CheckRun"
     }
-    fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+    fn field<'s>(&'s self, f: &str, a: &Args) -> Option<Out<'s>> {
         let c = &self.t.rec;
         Some(match f {
             "name" => leaf(&*c.name),
@@ -896,8 +896,90 @@ impl Obj for Run<'_> {
             // Actions workflow runs arrive with Milestone 4; until then a run belongs to no workflow run.
             "checkSuite" => obj(Suite),
             "isRequired" => leaf(self.base.as_ref().is_some_and(|b| self.r.is_required(b, &c.name, Some(c.app)))),
+            "annotations" => {
+                let nodes = c
+                    .output
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|o| &o.annotations)
+                    .map(|annotation| {
+                        Box::new(Annotation { r: self.r, head_sha: c.head_sha, row: annotation.clone() })
+                            as Box<dyn Obj>
+                    })
+                    .collect();
+                obj(Conn::window("CheckAnnotationConnection", nodes, a))
+            }
             _ => return None,
         })
+    }
+}
+
+struct Annotation<'r> {
+    r: &'r Repo<'r>,
+    head_sha: ObjectId,
+    row: CheckAnnotation,
+}
+
+impl Obj for Annotation<'_> {
+    fn type_name(&self) -> &'static str {
+        "CheckAnnotation"
+    }
+    fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+        let a = &self.row;
+        Some(match f {
+            "annotationLevel" => leaf(match a.level {
+                AnnotationLevel::Failure => "FAILURE",
+                AnnotationLevel::Notice => "NOTICE",
+                AnnotationLevel::Warning => "WARNING",
+            }),
+            "blobUrl" => leaf(format!(
+                "{}/{}/{}/blob/{}/{}",
+                self.r.host.web(),
+                self.r.at.owner,
+                self.r.at.name,
+                self.head_sha.hex(),
+                a.path
+            )),
+            "databaseId" | "rawDetails" => Out::Null,
+            "location" => obj(AnnotationSpan { start: a.start_line, end: a.end_line }),
+            "message" => leaf(&*a.message),
+            "path" => leaf(&*a.path),
+            "title" => leaf(a.title.as_deref()),
+            _ => return None,
+        })
+    }
+}
+
+struct AnnotationSpan {
+    start: u32,
+    end: u32,
+}
+
+impl Obj for AnnotationSpan {
+    fn type_name(&self) -> &'static str {
+        "CheckAnnotationSpan"
+    }
+    fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+        match f {
+            "start" => Some(obj(AnnotationPosition(self.start))),
+            "end" => Some(obj(AnnotationPosition(self.end))),
+            _ => None,
+        }
+    }
+}
+
+struct AnnotationPosition(u32);
+
+impl Obj for AnnotationPosition {
+    fn type_name(&self) -> &'static str {
+        "CheckAnnotationPosition"
+    }
+    fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+        match f {
+            "line" => Some(leaf(self.0)),
+            "column" => Some(Out::Null),
+            _ => None,
+        }
     }
 }
 

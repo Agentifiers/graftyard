@@ -2095,6 +2095,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         (Method::Get, ["pulls", n, "comments"]) => rest::list_review_comments(&r, n, query),
         (Method::Get, ["commits", reference, "check-runs"]) => rest::list_check_runs_for_ref(&r, reference, query),
         (Method::Get, ["check-runs", id]) => rest::get_check_run(&r, id),
+        (Method::Get, ["check-runs", id, "annotations"]) => rest::list_check_run_annotations(&r, id, query),
         // The web app's chrome reads (`decisions/OPEN-QUESTIONS.md`, F61).
         (Method::Get, ["branches"]) => rest::list_branches(&r, query),
         (Method::Get, ["tags"]) => match peeled_tags(c, &rd, &r).await {
