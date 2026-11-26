@@ -2173,8 +2173,16 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             ask_merges(c, &rd.repo, asks, merge_computes(&r, who.as_ref()));
             reply
         }
+        // F137: the repository-wide tails first, which `issues/{n}` would otherwise take.
+        (Method::Get, ["issues", "comments"]) => rest::list_repo_issue_comments(&r, query),
+        (Method::Get, ["issues", "events"]) => rest::list_repo_issue_events(&r, query),
+        (Method::Get, ["issues", "comments", id]) => rest::get_issue_comment(&r, id),
+        (Method::Get, ["issues", "events", id]) => rest::get_issue_event(&r, id),
         (Method::Get, ["issues", n]) => rest::get_issue(&r, n),
         (Method::Get, ["issues", n, "comments"]) => rest::list_issue_comments(&r, n, query),
+        (Method::Get, ["issues", n, "labels"]) => rest::list_issue_labels(&r, n, query),
+        (Method::Get, ["issues", n, "events"]) => rest::list_issue_events(&r, n, query),
+        (Method::Get, ["issues", n, "timeline"]) => rest::list_timeline(&r, n, query),
         (Method::Get, ["pulls", n, "reviews"]) => rest::list_reviews(&r, n, query),
         (Method::Get, ["pulls", n, "comments"]) => rest::list_review_comments(&r, n, query),
         (Method::Get, ["commits", reference, "check-runs"]) => rest::list_check_runs_for_ref(&r, reference, query),

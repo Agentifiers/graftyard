@@ -407,6 +407,13 @@ fn same_rest(c: &Chain, tail: &[&str], query: &str) -> (MemStore, MemStore) {
             ["issues"] => "/repos/{owner}/{repo}/issues",
             ["pulls"] => "/repos/{owner}/{repo}/pulls",
             ["pulls", _] => "/repos/{owner}/{repo}/pulls/{pull_number}",
+            ["issues", "comments"] => "/repos/{owner}/{repo}/issues/comments",
+            ["issues", "events"] => "/repos/{owner}/{repo}/issues/events",
+            ["issues", "comments", _] => "/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            ["issues", "events", _] => "/repos/{owner}/{repo}/issues/events/{event_id}",
+            ["issues", _, "labels"] => "/repos/{owner}/{repo}/issues/{issue_number}/labels",
+            ["issues", _, "events"] => "/repos/{owner}/{repo}/issues/{issue_number}/events",
+            ["issues", _, "timeline"] => "/repos/{owner}/{repo}/issues/{issue_number}/timeline",
             ["issues", _] => "/repos/{owner}/{repo}/issues/{issue_number}",
             ["issues", _, "comments"] => "/repos/{owner}/{repo}/issues/{issue_number}/comments",
             ["pulls", _, "reviews"] => "/repos/{owner}/{repo}/pulls/{pull_number}/reviews",
@@ -717,6 +724,218 @@ fn single_object_routes_read_only_their_object() {
     same_rest(&c, &["tarball", "main"], "");
     same_rest(&c, &["releases", "tags", "v1"], "");
     same_rest(&c, &["releases", "1"], "");
+}
+
+/// F137's issue reads, from the fold: an item's labels, its events and timeline, the repository's events, and its
+/// conversation comments by id and in one list. Each is the whole-tier bytes over the narrow rows. The timeline orders
+/// by time, not id: #7's review is submitted before its comments though its id is a Core id. The comment list's `since`
+/// and `sort=updated` see an edited comment's new time, and a review comment is in neither the list nor `comments/{id}`.
+#[test]
+fn issue_reads_serve_what_the_fold_records() {
+    let mut c = big();
+    let (h, d) = (host(), Dir::new(WRITER));
+    c.now = Timestamp(1_793_050_000_000);
+    let commit = oid(107);
+    c.commit(
+        OWNER,
+        IssueOp::Review {
+            n: IssueNumber(7),
+            state: graftyard_git::issues::ReviewState::Approved,
+            commit,
+            body: "ok".into(),
+        },
+    )
+    .unwrap();
+    c.now = Timestamp(1_793_300_000_000);
+    let comment = |c: &mut Chain, n: u32| match c
+        .commit(
+            READER,
+            IssueOp::Comment { on: CommentTarget::Issue(IssueNumber(n)), body: "late".into(), reply_to: None },
+        )
+        .unwrap()
+    {
+        IssueOut::Id(id) => id.0,
+        o => panic!("{o:?}"),
+    };
+    let late = comment(&mut c, 7);
+    // #33's first comment, edited last: oldest by creation, newest by update.
+    let first33 = c.repo(0, &h, &d).comments_of(IssueNumber(33))[0].0;
+    c.now = Timestamp(1_793_400_000_000);
+    c.commit(READER, IssueOp::EditComment { id: first33, body: "edited".into() }).unwrap();
+    // #10 merged after #8 and #26.
+    c.now = Timestamp(1_793_500_000_000);
+    let main = c.repo(0, &h, &d).ref_value(&name("refs/heads/main"));
+    let ev = graftyard_git::repo::RepoEvent::Merged {
+        n: IssueNumber(10),
+        base: graftyard_git::refs::RefUpdate { name: name("refs/heads/main"), expect: main, new: Some(oid(202)) },
+        head: oid(110),
+        method: graftyard_git::issues::MergeMethod::Merge,
+        also: Vec::new(),
+        pack: None,
+        verified: graftyard_git::merge::TreeDiffDigest(graftyard_types::Digest([0; 32])),
+        engine: graftyard_git::merge::EngineVersion("t".into()),
+        by: graftyard_identity::UserId(AccountId(DbId(WRITER))),
+    };
+    let tag = graftyard_git::tiers::tier_of(&ev);
+    c.entry(graftyard_raft::EntryBody::Events(vec![ev]), tag);
+    let r = c.repo(0, &h, &d);
+    let get = |tail: &[&str], q: &str| rest_get(&r, tail, q, Index(9)).expect("a served route");
+    let events = |v: &Value| -> Vec<String> {
+        v.as_array().unwrap().iter().map(|e| e["event"].as_str().unwrap().to_owned()).collect()
+    };
+
+    // Labels: #1 has both, paged one at a time with a next link on the first page only.
+    let names = |v: &Value| -> Vec<String> {
+        v.as_array().unwrap().iter().map(|l| l["name"].as_str().unwrap().to_owned()).collect()
+    };
+    assert_eq!(names(get(&["issues", "1", "labels"], "").value()), ["bug", "ui"]);
+    let p1 = get(&["issues", "1", "labels"], "per_page=1");
+    assert_eq!(
+        (names(p1.value()), p1.header("link").is_some_and(|l| l.contains("rel=\"next\""))),
+        (vec!["bug".into()], true)
+    );
+    let p2 = get(&["issues", "1", "labels"], "per_page=1&page=2");
+    assert_eq!(names(p2.value()), ["ui"]);
+    assert!(!p2.header("link").is_some_and(|l| l.contains("rel=\"next\"")));
+    assert_eq!(get(&["issues", "3", "labels"], "").value(), &json!([]));
+    assert_eq!(get(&["issues", "99", "labels"], "").status, 404);
+
+    // Events: only a merge records its actor. #8's is the merger's, with the merge commit; an open or closed item has
+    // none; the repository's are newest first, each with its issue.
+    let e8 = get(&["issues", "8", "events"], "");
+    let e8 = e8.value()[0].clone();
+    assert_eq!(
+        (e8["event"].as_str(), e8["actor"]["login"].as_str()),
+        (Some("merged"), graftyard_api::view::Directory::login(&d, AccountId(DbId(OWNER))).as_deref())
+    );
+    assert_eq!(e8["commit_id"].as_str(), Some(oid(200).hex().as_str()));
+    for n in ["7", "5", "3"] {
+        assert_eq!(get(&["issues", n, "events"], "").value(), &json!([]), "#{n}");
+    }
+    assert_eq!(get(&["issues", "99", "events"], "").status, 404);
+    let all = get(&["issues", "events"], "");
+    let order: Vec<u64> =
+        all.value().as_array().unwrap().iter().map(|e| e["issue"]["number"].as_u64().unwrap()).collect();
+    assert_eq!(order, [10, 26, 8], "newest merge first");
+    let p = get(&["issues", "events"], "per_page=2&page=2");
+    assert_eq!(p.value().as_array().unwrap().len(), 1);
+    let id8 = e8["id"].to_string();
+    let one = get(&["issues", "events", &id8], "");
+    assert_eq!((one.status, one.value()["issue"]["number"].as_u64()), (200, Some(8)));
+    let id7 = r.item(IssueNumber(7)).unwrap().row.id.0.to_string();
+    for missing in [id7.as_str(), "1", "x"] {
+        assert_eq!(get(&["issues", "events", missing], "").status, 404, "{missing}");
+    }
+
+    // Timeline: #7's review (submitted first, lower case), its three comments, then the late one; `exclude` drops a
+    // kind and its Link keeps it. #8 ends with its merge.
+    let t7 = get(&["issues", "7", "timeline"], "");
+    assert_eq!(events(t7.value()), ["reviewed", "commented", "commented", "commented", "commented"]);
+    assert_eq!(t7.value()[0]["state"].as_str(), Some("approved"));
+    assert_eq!(t7.value()[4]["id"].as_i64(), Some(late));
+    assert_eq!(t7.value()[1]["actor"], t7.value()[1]["user"]);
+    assert_eq!(events(get(&["issues", "7", "timeline"], "exclude=commented").value()), ["reviewed"]);
+    let paged = get(&["issues", "7", "timeline"], "exclude=reviewed&per_page=2");
+    assert_eq!(events(paged.value()), ["commented", "commented"]);
+    let link = paged.header("link").unwrap();
+    assert!(link.contains("exclude=reviewed") && link.contains("page=2"), "{link}");
+    assert_eq!(events(get(&["issues", "8", "timeline"], "").value()).last().map(String::as_str), Some("merged"));
+    assert_eq!(get(&["issues", "99", "timeline"], "").status, 404);
+
+    // The repository's comments, against every conversation comment as each item's own list holds it.
+    let mut want: Vec<(u64, u64, i64)> = (1..=40)
+        .flat_map(|n| r.comments_of(IssueNumber(n)))
+        .map(|(id, row)| (row.created.0, row.updated.0, id.0.0))
+        .collect();
+    want.sort_by_key(|w| w.2);
+    let ids = |v: &Value| -> Vec<i64> { v.as_array().unwrap().iter().map(|x| x["id"].as_i64().unwrap()).collect() };
+    let page_of = |mut w: Vec<(u64, u64, i64)>, q: &str| -> (Vec<i64>, bool) {
+        let since = param(q, "since").map(|s| graftyard_wire::parse_iso(&s.replace("%3A", ":")).unwrap().0);
+        w.retain(|x| since.is_none_or(|s| x.1 >= s));
+        match param(q, "sort") {
+            Some("created") => w.sort_by_key(|x| (x.0, x.2)),
+            Some("updated") => w.sort_by_key(|x| (x.1, x.2)),
+            _ => {}
+        }
+        if param(q, "sort").is_some() && param(q, "direction") != Some("asc") {
+            w.reverse();
+        }
+        let per = param(q, "per_page").and_then(|v| v.parse().ok()).unwrap_or(30usize);
+        let page = param(q, "page").and_then(|v| v.parse().ok()).unwrap_or(1usize);
+        (w.iter().skip((page - 1) * per).take(per).map(|x| x.2).collect(), w.len() > page * per)
+    };
+    let mut cases = 0;
+    for sort in ["", "sort=created&", "sort=updated&"] {
+        for dir in ["", "direction=asc&", "direction=desc&"] {
+            for since in ["", "since=2026-10-27T11:20:05Z&", "since=2026-10-29T00%3A00%3A00Z&"] {
+                for page in ["per_page=3", "per_page=3&page=4", "per_page=100"] {
+                    let q = format!("{sort}{dir}{since}{page}");
+                    let (_, meta) = same_rest(&c, &["issues", "comments"], &q);
+                    let reply = get(&["issues", "comments"], &q);
+                    let (want_ids, more) = page_of(want.clone(), &q);
+                    assert_eq!(ids(reply.value()), want_ids, "{q}");
+                    let next = reply.header("link").is_some_and(|l| l.contains("rel=\"next\""));
+                    assert_eq!(next, more, "{q}: a next link iff more comments follow");
+                    if next && !sort.is_empty() {
+                        let l = reply.header("link").unwrap();
+                        assert!(l.contains(&sort[..sort.len() - 1]), "{q}: {l}");
+                    }
+                    assert_eq!(meta.prefix("comment", &[]).len(), want_ids.len(), "{q}: only the page's comments");
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 81);
+    // The edited comment: last by update, first among #33's by creation, and alone after the edit's time.
+    let last = |q: &str| ids(get(&["issues", "comments"], q).value());
+    assert_eq!(last("sort=updated&per_page=1"), [first33.0.0]);
+    assert_eq!(last("since=2026-10-30T00:00:00Z"), [first33.0.0]);
+    assert_eq!(last("sort=created&per_page=1"), [late]);
+    for bad in ["sort=comments", "direction=up", "sort=created&direction=x", "since=yesterday"] {
+        assert_eq!(get(&["issues", "comments"], bad).status, 422, "{bad}");
+    }
+    let got = get(&["issues", "comments", &late.to_string()], "");
+    assert_eq!((got.status, got.value()["body"].as_str()), (200, Some("late")));
+    assert!(got.value()["issue_url"].as_str().unwrap().ends_with("/issues/7"));
+    let review_comment = c.members[0]
+        .meta
+        .prefix("comment", &[])
+        .into_iter()
+        .find_map(|(k, _)| {
+            let row: graftyard_git::tiers::CommentRow =
+                graftyard_git::tiers::get_rec(&c.members[0].meta, "comment", &k)?;
+            matches!(row.on, CommentTarget::Review { .. }).then(|| k[0].clone())
+        })
+        .unwrap();
+    let graftyard_fold::Val::Int(rc) = review_comment else { panic!() };
+    for missing in [rc.to_string(), "999999".into(), "x".into()] {
+        assert_eq!(get(&["issues", "comments", &missing], "").status, 404, "{missing}");
+    }
+
+    // Every route, narrowly: the whole-tier bytes, and a single read holds only its own item.
+    let late_id = late.to_string();
+    for (tail, q) in [
+        (&["issues", "1", "labels"][..], "per_page=1"),
+        (&["issues", "99", "labels"], ""),
+        (&["issues", "8", "events"], ""),
+        (&["issues", "7", "events"], ""),
+        (&["issues", "events"], ""),
+        (&["issues", "events"], "per_page=1&page=2"),
+        (&["issues", "events", &id8], ""),
+        (&["issues", "events", &id7], ""),
+        (&["issues", "7", "timeline"], "exclude=reviewed&per_page=2"),
+        (&["issues", "8", "timeline"], ""),
+        (&["issues", "comments", &late_id], ""),
+        (&["issues", "comments", "x"], ""),
+        (&["issues", "comments"], "since=yesterday"),
+    ] {
+        same_rest(&c, tail, q);
+    }
+    let (_, meta) = same_rest(&c, &["issues", "7", "timeline"], "");
+    assert_eq!(items(&meta), [7]);
+    let (_, meta) = same_rest(&c, &["issues", "events"], "per_page=1");
+    assert_eq!(items(&meta), [10], "the page's merge only");
 }
 
 /// GraphQL connections page by `first`/`after` and `last` from the member's selection: every captured gh list and

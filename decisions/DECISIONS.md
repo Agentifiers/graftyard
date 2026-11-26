@@ -12036,3 +12036,34 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/plaindiff/run.sh`, base main `789484b6`: 12 request pairs, all byte-identical. `rest-issue-1` and `rest-issue-comment` stay main's 404, since the bed seeds no issue and does not enable 32.32.
 
 **Flip.** A GHES 3.22 reply that differs on the same rows, for example a comment on a locked issue that GHES refuses but `decide` allows, which F137 leaves to `IssueOp::Comment`'s existing rules. If a later release needs the GraphQL path's bytes for REST, drop `What::IssueCommentCreated` only after every member reads its replacement.
+
+### `issue-reads`: F137's REST issue reads serve the fold through the narrow read, and an event is served only where the fold records its actor, 2026-11-26
+
+**Status.** Built at $0 on branch `issue-reads` (F137's read half). It is native-tested and plant282 catches every mutant; edgeboot passed with test-faults and with PRODUCT, and plaindiff ran. Its hosted proof rides the next graft-m4a row with an edge day. It needs no format and no site day, since it reads rows every member already folds. F137's write half stays open.
+
+**Decision.**
+- `rest_get` and the edge's whole-tier arm serve `GET issues/{n}/labels`, `issues/{n}/events`, `issues/events`, `issues/events/{id}`, `issues/{n}/timeline`, `issues/comments` and `issues/comments/{id}`. The repository-wide tails `issues/comments` and `issues/events` match before `issues/{n}`, which would otherwise take them as an issue numbered `comments` and answer 404.
+- `issues/comments` lists every conversation comment, not review comments, in ascending id with no `sort`. With `sort=created` or `updated` it orders by that time, newest first unless `direction=asc`. `since` keeps comments updated at or after it. A bad `sort`, `direction` or `since` is 422, and the page's `Link` keeps all three. Which comments are on the page is a selection over every `comment` row (`Directory::pick`), so a member sends only the page's rows.
+- An event is served only where the fold records its actor: a merged pull request's `merged`, with the merger, the merge commit and the item's own id as its id, as `ui::events` gives it. `issues/events/{id}` finds it through `issue_by_id`. Its node id is `ME_` (`NodeType::MergedEvent`). `issues/events` lists merges newest first, each with its `issue`, from a selection over `pull_head`.
+- A timeline is the item's comments (`commented`, with `actor` the author), its submitted reviews (`reviewed`, `state` in lower case, as GitHub serves it, github/rest-api-description#6345) and its `merged` event, oldest first by time and then id, less any kinds `exclude` names.
+
+**Why.** F137's sweep found these reads 404. Octokit's `issues.listLabelsOnIssue`, `listEvents`, `listEventsForRepo`, `getEvent`, `listEventsForTimeline`, `listCommentsForRepo` and `getComment` call them, and GHES 3.22 serves them all.
+
+**What it beat.**
+- A `closed` event for each closed item with the author as its actor, as `ui::events` renders for its own page. The fold records no closer: `issue-event-for-issue` and `state-change-issue-event` both require a non-null actor, so the reply would name someone who did not close it.
+- New fold rows for issue-event history (labeled, assigned, renamed, locked, closed by). That is a format and a backfill question, and the lead asked for reads only.
+- `paged_values` for the repository's comments, which keeps no filters in `Link` and would read every comment row into the narrow answer.
+
+**Evidence.**
+- `crates/api/tests/narrow.rs`, `issue_reads_serve_what_the_fold_records`, which fails on main:
+	- #1's labels are paged one at a time.
+	- #8's `merged` event names the merger and the merge commit; open and closed items have none. The repository's events are #10, #26, #8, newest merge first, and an event by id finds its issue, while another item's id is 404.
+	- #7's timeline puts a review submitted before its comments first, though its Core id is higher, with state `approved`. `exclude` drops a kind and its `Link` keeps it.
+	- The repository's comments, over 81 combinations of sort, direction, `since` and page, match an oracle built from each item's own list, with a next link exactly when more follow and only the page's comment rows in the narrow answer. An edited comment is first by `sort=updated` and alone after the edit's time. Four bad queries are 422, and a review comment's id is 404 on `issues/comments/{id}`.
+	- Every route's narrow reply is the whole-tier bytes.
+- The new replies (`narrow-issues-*`, 93) validate against `ghes-3.22.json` with `crates/api/gh/validate.py`. The crate's whole reply set fails only the four `merge_group` and queue webhook keys GHES 3.22 lacks, as before.
+- `tests/m0carried/plant282.py`: 11 of 11 caught. The first two mutants are main's rules.
+- `bash tests/edgeboot/run.sh` and `PRODUCT=1 bash tests/edgeboot/run.sh` pass with 0 wasm traps; both answer `issues/comments`, `issues/events` and `issues/1/timeline` without a 500 with no site bound.
+- `tests/plaindiff/run.sh`, base main `d78527cf`: 19 request pairs, 0 unexpected differences. `issues/comments` and `issues/events` change as intended from main's 404 to 200 `[]` on the seed, which holds no issue; the item and by-id reads stay main's 404.
+
+**Flip.** A fold that records event history, such as a closer or label changes, which would let the events routes serve those kinds. Or a client that needs an event the fold cannot render and accepts a `ghost` actor in its place.

@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 const [F, B, ALLOW = ""] = process.argv.slice(2);
 const [allowName, allowValue] = ALLOW.split("=");
 // Requests the head is meant to answer differently: the base's and the head's status, and the head's body.
-const CHANGED = { "rest-pulls": [404, 200, "[]"] };
+const CHANGED = { "rest-pulls": [404, 200, "[]"], "rest-issue-comments": [404, 200, "[]"], "rest-issue-events": [404, 200, "[]"] };
 const seed = JSON.parse(readFileSync(`${B}/seed.json`, "utf8"));
 const auth = { authorization: "Basic " + Buffer.from(`x:${seed.token}`).toString("base64") };
 const tok = { authorization: `token ${seed.token}`, "user-agent": "gh/2.102.1" };
@@ -38,6 +38,16 @@ const reqs = [
   // does not enable; the seed holds no issue, so both stay main's 404.
   ["rest-issue-1", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1`, tok],
   ["rest-issue-comment", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/comments`, { ...tok, "content-type": "application/json" }, JSON.stringify({ body: "plain" })],
+  // F137's reads: the repository-wide comment and event lists, which main answered 404 as `issues/{n}`, are the
+  // seed's empty lists on the head (`CHANGED`); an item's labels, events and timeline, and a comment or event by id,
+  // stay 404 with no issue.
+  ["rest-issue-comments", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/comments?sort=updated`, tok],
+  ["rest-issue-events", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/events`, tok],
+  ["rest-issue-1-labels", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/labels`, tok],
+  ["rest-issue-1-events", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/events`, tok],
+  ["rest-issue-1-timeline", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/timeline`, tok],
+  ["rest-issue-comment-1", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/comments/1`, tok],
+  ["rest-issue-event-1", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/events/1`, tok],
   ["rest-label-write", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/labels`, { ...tok, "content-type": "application/json" }, "LABEL"],
   ["graphql", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "{ repository(owner: \"cw\", name: \"r\") { name } }" })],
 ];

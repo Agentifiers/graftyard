@@ -59,6 +59,8 @@ pub fn rest_serves(tail: &[&str]) -> bool {
             | ["pulls", _]
             | ["issues", _]
             | ["issues", _, "comments"]
+            | ["issues", _, "labels" | "events" | "timeline"]
+            | ["issues", "comments" | "events", _]
             | ["pulls", _, "reviews"]
             | ["pulls", _, "comments"]
             | ["commits", _, "check-runs"]
@@ -81,8 +83,16 @@ pub fn rest_get(r: &Repo<'_>, tail: &[&str], query: &str, index: Index) -> Optio
         ["issues"] => rest::list_issues(r, query),
         ["pulls"] => rest::list_pulls(r, query),
         ["pulls", n] => rest::get_pull(r, n),
+        // F137: the repository-wide tails first, which `issues/{n}` would otherwise take.
+        ["issues", "comments"] => rest::list_repo_issue_comments(r, query),
+        ["issues", "events"] => rest::list_repo_issue_events(r, query),
+        ["issues", "comments", id] => rest::get_issue_comment(r, id),
+        ["issues", "events", id] => rest::get_issue_event(r, id),
         ["issues", n] => rest::get_issue(r, n),
         ["issues", n, "comments"] => rest::list_issue_comments(r, n, query),
+        ["issues", n, "labels"] => rest::list_issue_labels(r, n, query),
+        ["issues", n, "events"] => rest::list_issue_events(r, n, query),
+        ["issues", n, "timeline"] => rest::list_timeline(r, n, query),
         ["pulls", n, "reviews"] => rest::list_reviews(r, n, query),
         ["pulls", n, "comments"] => rest::list_review_comments(r, n, query),
         ["commits", reference, "check-runs"] => rest::list_check_runs_for_ref(r, reference, query),
