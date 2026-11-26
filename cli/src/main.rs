@@ -414,9 +414,10 @@ enum RunnersCmd {
         /// The runner image in the runner account's registry, pinned by digest.
         #[arg(long)]
         image: String,
-        /// The `graftyard-hosted-runners` App's private key (PEM).
+        /// The `graftyard-hosted-runners` App's private key (PEM), written to `HostedRunnersAppKey` only once the
+        /// App accepts a JWT signed with it. Without it, the stored key is kept, and an account with none refuses.
         #[arg(long)]
-        app_key: PathBuf,
+        app_key: Option<PathBuf>,
         /// A file holding the App's webhook secret.
         #[arg(long)]
         webhook_secret: PathBuf,
@@ -812,7 +813,7 @@ fn run(cli: Cli) -> Res<()> {
                 spec: &spec,
                 bundle: &bundle,
                 image: &image,
-                app_key: &app_key,
+                app_key: app_key.as_deref(),
                 webhook_secret: &webhook_secret,
             })
         }

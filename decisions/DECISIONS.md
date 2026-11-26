@@ -4845,7 +4845,7 @@ Plants 99 to 105 (`tests/m4/wp4/plant.py`): a cursor past an unfinished event (9
 
 ### `r23-m3`: release M3 deletes the Sandbox SDK classes and their applications, so `RunnerBox` alone runs hosted runners, 2026-11-26
 
-**Status.** Deployed on the runner account on 2026-11-26 at 07:41:41Z: `graftyard runners init` from main `d301d866` moved `graft-runners` from `v2` to `v3` (version `5129a092`) and deleted both Sandbox applications. The 8-job burst has not passed. `init` rewrote `HostedRunnersAppKey` from a retired App key, so no runner started (`tests/m4/results/m4-wp4.md`, "Hosted result r1"). R23 (`decisions/OPEN-QUESTIONS.md`) stays open until the burst passes.
+**Status.** Deployed on the runner account on 2026-11-26 at 07:41:41Z: `graftyard runners init` from main `d301d866` moved `graft-runners` from `v2` to `v3` (version `5129a092`) and deleted both Sandbox applications. The 8-job burst has not passed. `init` rewrote `HostedRunnersAppKey` from a retired App key, so no runner started (`tests/m4/results/m4-wp4.md`, "Hosted result r1"). After LM-1 restored key 2, run 1713082 passed (8 of 8 `Success` on `RunnerBox`, "Hosted result r2"), which settles R23 (`decisions/OPEN-QUESTIONS.md`).
 
 **Decision.**
 - **Code.** `graft-runners` exports only `RunnerBox` (`workers/runners/entry.mjs`). `launch.mjs`, its test, `@cloudflare/sandbox` 0.12.14 (with `package.json` and its lock), the `SANDBOX_STD3`/`SANDBOX_STD4` bindings, `RUNNER_BOX_ON` and `runners.json`'s `runner_box` and `max_instances` are deleted. The Worker arms and destroys only `RunnerBox` (`workers/runners/src/worker.rs`), so `Host::destroy` no longer takes an instance type. `nodejs_compat` went with the SDK, whose bundle alone needed it. The runner image keeps the Sandbox base image, because every hosted run so far measured it. `RunnerBox` bypasses the base image's server, and a new base is a new image with its own canary.
@@ -4880,6 +4880,29 @@ So there are 0 stale destroys of legacy-class runners and 0 legacy objects still
 - The hosted half: if `init` refuses on a live Sandbox container, nothing has changed; wait and rerun. If the 8-job burst after it fails on `RunnerBox`, fix forward with a new version. M2's version `13193b05` binds the deleted `SANDBOX_STD*` namespaces and cannot be redeployed, and M3 starts runners exactly as M2's `RunnerBox` path did.
 - A Containers API that keeps an application after its class's `deleted_classes`, or answers `DELETE` 409 while instances are listed `inactive`: then delete only applications whose instances list is empty, and leave the rest for a rerun.
 
+
+### `init-key-guard`: `graftyard runners init` writes `HostedRunnersAppKey` only when the App accepts the key, 2026-11-26
+
+**Status.** Code-only, on branch `init-key-guard`. Not run hosted: the next `runners init` exercises it.
+
+**Decision.**
+- `--app-key` is optional.
+- **Without it,** `init` keeps the stored `HostedRunnersAppKey`, and refuses before the deploy when the store has none.
+- **With it,** `init` first mints an App JWT with that key, as `graft-runners` does (RS256, `iss` the spec's `app_id`, `iat` 60 s back, `exp` 540 s ahead). It sends the JWT to the install's `GET /api/v3/app/hook/config`. The install answers 200 only when one of the App's current keys verifies the JWT (`workers/edge/src/ident.rs`, `app_hook_config`). On any other answer, or on a transport error, `init` refuses with the key's SPKI sha256 prefix and the answer. That happens before any store write, upload or application change.
+- The check goes against the keys the App lists now, not a list held in the CLI or a script. Since hrak r1, that list is key 2 alone.
+
+**Why.** R23 M3's r1 (`tests/m4/results/m4-wp4.md`, "Hosted result r1"): `init` always wrote `--app-key` to the store. The operator's file still held App 1835008's key 1, which the HostedRunnersAppKey rotation had retired on 11-25. So every `graft-runners` pass then got 401 on `access_tokens`, and no runner started for about 24 minutes (07:41:41Z to the first clean pass at 08:05:49Z), until LM-1 restored key 2.
+
+**What it beat.**
+- **Never write when the secret exists.** That leaves no way to install a rotated key through `init`, and it still writes a wrong key on a fresh account.
+- **`GET /app`.** The install doesn't serve it (404 on graft-m4a, 2026-11-26). `GET /app/hook/config` verifies the App JWT the same way `POST /app/installations/{id}/access_tokens` does, and needs no installation id.
+- **Comparing SPKI hashes against a list in the operator's files.** That is the trap hrak.sh's `put` guard fell into: it still expects keys 1 and 2.
+
+**Evidence.**
+- `cli/src/runners.rs` `init_writes_hosted_runners_app_key_only_when_the_app_accepts_it` fails on main's `init_with` (checked by compiling this test module against main's code). The stub install verifies the JWT with the `rsa` crate, not with `app_jwt`. The test covers four cases: a retired key is refused with nothing written, uploaded or deleted; the current key is checked, then PATCHed; no `--app-key` keeps the stored key; and no `--app-key` with an empty store is refused.
+- `tests/m0carried/plant275.py`: 5 of 5 caught. The first mutant is main's rule.
+
+**Flip.** The install serves `GET /app`. Then check against it, as GitHub's own docs show.
 ### `roll-up`: a bounded roll of a chain's oldest promoted packs, recorded as `Compacted` on the repository chain, 2026-11-16
 
 **Status.** Approved by the operator after round 32's review, with the repository-chain form; built on branch `rollup` (G9), not deployed. Built: the fold and `verify`, the archive alarm's roll step (`log_archive::roll_plan`, `Step::Rolled`), the site's warm `/roll` through the promotion path, the container's `/roll`, the rehydrate's read of produced packs with its fallback to the consumed packs, the site variable `GRAFTYARD_ROLLUP` that gates every roll (`log_archive::rollup_enabled`: unset, the alarm sends no `/roll` and records no `Compacted`; a site day sets it to `1` only after `FormatsEnable` enabled 32.25, as R24's `GRAFTYARD_APP_HOOKS` waits for 32.24), and the deletion guard as a pure rule (`sweep::consumed_deletable`). Not built: the sweeper's deletion of consumed packs, which waits for that rule's shard answers (G9's remainder). DESIGN, Shape, `Promoted` and `rehydrate`, and Failure modes (pack buckets bad-deploy, git caches noisy-tenant) carry the rule; this entry carries the numbers.
