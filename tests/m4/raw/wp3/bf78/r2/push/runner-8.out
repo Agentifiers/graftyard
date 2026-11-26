@@ -1,0 +1,11 @@
+
+√ Connected to GitHub
+
+Current runner version: '2.338.2'
+2026-11-26 00:46:13Z: Listening for Jobs
+2026-11-26 00:46:19Z: Running job: p
+2026-11-26 00:46:26Z: Job p completed with result: Succeeded
+√ Removed .credentials
+√ Removed .runner
+Runner listener exit with 0 return code, stop the service, no retry needed.
+Exiting runner...
