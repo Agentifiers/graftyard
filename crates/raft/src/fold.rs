@@ -85,6 +85,11 @@ pub trait Scratch {
     /// first entry after a stall judges leases as they stand once the stall is added back. Folds without leases ignore
     /// it.
     fn extend(&mut self, _x: crate::types::ExtendLeases) {}
+    /// The leader's count of the next command's actor's committed writes over the last `DEMOTE_WINDOW` before the
+    /// entry (`Command::actor`, `GroupFold::actor_writes`), set before that command decides. A command whose rule
+    /// reads it, such as a Graftyard-run create refusing a demoted actor, reads the value set for it; `verify` sets
+    /// none, since followers check events and do not decide. Folds that read no count ignore it.
+    fn set_actor_writes(&mut self, _n: u32) {}
 }
 
 /// The events of a command's fold.
@@ -120,6 +125,11 @@ pub trait Command: Record + Clone {
     /// `tests/am1/results/lm1-memory.md` on `lm1-memory`). COMMAND_MAX and ENTRY_MAX still count `encoded_len`.
     fn stored_len(&self) -> usize {
         self.encoded_len()
+    }
+    /// The actor whose committed writes this command's `decide` reads (`Scratch::set_actor_writes`), keyed as
+    /// admission keys it. By default none, and no count is read.
+    fn actor(&self) -> Option<crate::admit::ActorKey> {
+        None
     }
 }
 

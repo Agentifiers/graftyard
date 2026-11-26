@@ -85,6 +85,15 @@ pub struct IssueCallOut {
 }
 
 impl IssueCall {
+    /// The actor whose committed writes a Graftyard-run create reads (`crate::task::decide`): its user, keyed as
+    /// `group::AdmitWire::of` keys it. Only a create from a user reads one; every other command none.
+    pub fn demote_actor(&self) -> Option<graftyard_raft::admit::ActorKey> {
+        match (&self.op, self.actor.actor) {
+            (IssueOp::CreateRun(_), Actor::User(u)) => Some(graftyard_raft::admit::ActorKey(u.0.0.0 as u64)),
+            _ => None,
+        }
+    }
+
     pub fn format(&self) -> Format {
         // 32.14 first: a lease command, or a command the edge marked, which may carry lease events. It may carry
         // 32.8's and 32.12's too.
@@ -338,7 +347,7 @@ impl IssueCall {
         let view = RepoView::new(s.fold().tiers(), core, meta, s.at());
         let leases = self.format() == crate::repo::REPO_FORMAT_LEASES;
         let (evs, out) = if self.op.is_task() {
-            cmd.decide_task(&view, deps, s.at(), s.applied(), leases)?
+            cmd.decide_task(&view, deps, s.at(), s.applied(), leases, s.actor_writes())?
         } else if self.op.is_lease() {
             cmd.decide_lease(&view, deps, s.at())?
         } else {

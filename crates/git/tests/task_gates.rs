@@ -640,6 +640,68 @@ fn a_human_writer_creates_a_run_task_only_with_agents_enabled_in_repo() {
     assert_eq!(task_err(&run_create(&mut w, user(WRITER), None, Some("x"))), Some(TaskErr::NoRunApps));
 }
 
+/// L0-14's demoted user: a writer past DEMOTE_PER_MIN committed writes in the last minute, at the create's own entry,
+/// is refused as a non-human, and one write fewer is not. The count is the group's replicated window, so a member that
+/// becomes leader after the writes refuses the same create; task commands themselves are not counted.
+#[test]
+fn a_writer_past_demote_per_min_at_the_creates_entry_cannot_create_a_run_task() {
+    use graftyard_identity::WorkspaceMode::InRepo;
+    use graftyard_raft::admit::DEMOTE_PER_MIN;
+    let open = |who: i64, i: u32| {
+        let op = IssueOp::OpenIssue {
+            title: format!("d{i}").into(),
+            body: "".into(),
+            labels: Default::default(),
+            assignees: Default::default(),
+        };
+        issue(user(who), op)
+    };
+    let mut w = run_world();
+    agents(&mut w, true, InRepo);
+    // 59 writes in one entry's minute: still human, and its own creates do not count toward the 60th.
+    let o = w.commit_all((0..DEMOTE_PER_MIN - 1).map(|i| open(WRITER2, i)).collect());
+    assert!(o.iter().all(Result::is_ok), "{o:?}");
+    for _ in 0..3 {
+        assert!(run_create(&mut w, user(WRITER2), None, Some("x")).is_ok(), "59 writes and some creates are human");
+    }
+    // The 60th write, in the create's own entry ahead of it, demotes it there.
+    let rid = w.rid();
+    let c = IssueCall::new(
+        IssueOp::CreateRun(task::NewRun { issue: None, prompt: Some("x".into()), summary: "".into() }),
+        user(WRITER2),
+        rid,
+        serde_json::Value::Null,
+    );
+    // The first command admitted decides alone, so another writer's open goes first.
+    let all = w.commit_all_acked(vec![open(WRITER, 98), open(WRITER2, 99), RepoCmd::Issue(Box::new(c))]);
+    let opened = all[1].as_ref().map(|a| a.index).expect("the 60th write commits");
+    let refused_at = w.repo.resolutions.iter().rev().find_map(|r| match r {
+        Resolution::Ticket { result: Err(CommitError::Refused { index, err: RepoErr::Issue { .. } }), .. } => {
+            Some(*index)
+        }
+        _ => None,
+    });
+    assert_eq!(refused_at, Some(opened), "the create is decided in the 60th write's entry");
+    let o: Vec<RepoOutcome> = all.into_iter().map(|r| r.map(|a| a.out)).collect();
+    assert_eq!(task_err(&o[2]), Some(TaskErr::NotWriter), "the same entry's 60th write counts");
+    assert_eq!(task_err(&run_create(&mut w, user(WRITER2), None, Some("x"))), Some(TaskErr::NotWriter));
+    // Another writer is not counted with it.
+    assert!(run_create(&mut w, user(WRITER), None, Some("x")).is_ok());
+    // A new leader reads the same window from the log it applied.
+    let old = w.repo.leader();
+    let next = SITES.into_iter().find(|s| *s != old).unwrap();
+    let now = w.now;
+    // `Group::on` takes any alarm as a defect, so the transfer's own `TransferStarted` alarm is read here.
+    let i = old.0 as usize;
+    let (r, out) = w.repo.members[i].transfer(now, next).persist(&mut w.repo.disks[i]);
+    r.expect("the transfer starts");
+    assert!(out.alarms.iter().all(|a| matches!(a, graftyard_raft::Alarm::TransferStarted { .. })), "{:?}", out.alarms);
+    w.repo.inbox.extend(out.early.into_iter().chain(out.messages));
+    w.settle();
+    assert_eq!(w.repo.leader(), next, "the follower leads");
+    assert_eq!(task_err(&run_create(&mut w, user(WRITER2), None, Some("x"))), Some(TaskErr::NotWriter));
+}
+
 /// The session is the request id's bits as a version-8 UUID: the same request mints the same id, two requests two.
 #[test]
 fn a_run_session_is_minted_from_the_request() {

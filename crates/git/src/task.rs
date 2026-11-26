@@ -554,6 +554,10 @@ pub struct TaskCtx<'a> {
     pub human_writer: bool,
     /// `run_apps`, read for a Graftyard-run create only.
     pub run: Option<(AppId, InstallationId)>,
+    /// The creator's committed writes in the last `DEMOTE_WINDOW` at this entry, from the group's replicated window
+    /// (`graftyard_raft::Scratch::set_actor_writes`): at DEMOTE_PER_MIN the actor is demoted, and a Graftyard-run
+    /// create needs a human. Task commands are not counted in it.
+    pub writes: u32,
 }
 
 type Decided = Result<(smallvec::SmallVec<[crate::repo::RepoEvent; 4]>, crate::issue_ops::IssueOut), TaskErr>;
@@ -645,6 +649,10 @@ pub fn decide(
             // exception for an issue assigned to its bot, and fork mode, are AM3-WP3's rest.
             let TaskActor::User(u) = actor else { return Err(TaskErr::NotWriter) };
             if !ctx.human_writer || ctx.perm < Some(RepoPermission::Write) {
+                return Err(TaskErr::NotWriter);
+            }
+            // A demoted actor, past DEMOTE_PER_MIN at the create's own entry, is not a human for this rule.
+            if ctx.writes >= graftyard_raft::admit::DEMOTE_PER_MIN {
                 return Err(TaskErr::NotWriter);
             }
             let owner = ctx.owner.ok_or(TaskErr::NotYours)?;

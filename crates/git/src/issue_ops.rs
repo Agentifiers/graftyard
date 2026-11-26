@@ -1406,6 +1406,7 @@ impl IssueCmd {
         at: Timestamp,
         applied: graftyard_types::Index,
         leases: bool,
+        writes: u32,
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
         let cred = self.actor.credential_shard();
         let app = match (&self.actor.actor, &self.actor.credential) {
@@ -1469,6 +1470,7 @@ impl IssueCmd {
             request: self.request,
             human_writer,
             run,
+            writes,
         };
         crate::task::decide(&self.op, &self.actor, v.core(), &ctx).map_err(IssueErr::Task)
     }

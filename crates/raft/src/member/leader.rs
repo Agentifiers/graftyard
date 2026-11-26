@@ -1487,13 +1487,25 @@ impl<C: Command> Member<C> {
             if let Some(x) = extend {
                 s.extend(x);
             }
+            // DEMOTE_PER_MIN at this entry, from the replicated window, so a new leader counts what its predecessor
+            // committed. The leader's held and refused requests are left out: they are not in the log.
+            // The entry's earlier commands count too (`in_entry`), as `decide` sees the fold plus them.
+            let from = Timestamp(self.now.0.saturating_sub(DEMOTE_WINDOW.as_millis() as u64));
+            let mut in_entry: BTreeMap<crate::admit::ActorKey, u32> = BTreeMap::new();
             for q in batch {
                 tiers = tiers.union(q.cmd.tiers());
                 format = format.max(q.cmd.format());
+                if let Some(a) = q.cmd.actor() {
+                    let earlier = in_entry.get(&a).copied().unwrap_or(0);
+                    s.set_actor_writes(self.fold.actor_writes(a, from, self.now) + earlier);
+                }
                 match q.cmd.decide(&s, deps) {
                     Ok((evs, out)) => {
                         let start = events.len() as u32;
                         for e in &evs {
+                            if let Some(a) = C::Fold::write_mark(e).and_then(|m| m.actor) {
+                                *in_entry.entry(a).or_insert(0) += 1;
+                            }
                             s.apply(e);
                         }
                         events.extend(evs);
