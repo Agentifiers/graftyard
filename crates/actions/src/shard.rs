@@ -78,10 +78,16 @@ pub const ACTIONS_FORMAT_ANNOTATIONS: Format = Format { family: 0x15, version: 1
 /// each. Only a site whose site day set `GRAFTYARD_PUSH_TRIGGER` sends one, after the day that shipped this reader to
 /// every member (`decisions/DECISIONS.md`, "`push-trigger`"). 0x15.11 is another branch's.
 pub const ACTIONS_FORMAT_PUSH: Format = Format { family: 0x15, version: 12 };
+/// `agent-ci` (AM3-WP3, `AgentPolicy.ci`): `CreateRunHeld`, whose entry holds an agent run's jobs for a writer's
+/// approval (`ActionsEvent::RunHeld`, `JobState::Held`), and `ApproveRun`, which releases them (`JobEvent::Approved`).
+/// Only a site whose site day set `GRAFTYARD_AGENT_CI` sends `CreateRunHeld`, and only an edge whose `FORMATS_ENABLED`
+/// holds 0x15.13 sends `ApproveRun`, after the day that shipped this reader to every member (`decisions/DECISIONS.md`,
+/// "`agent-ci`").
+pub const ACTIONS_FORMAT_AGENT_CI: Format = Format { family: 0x15, version: 13 };
 /// Every Actions format this release reads, which a member's `reads()` is: a format a command can be sent as and a
 /// member does not list is refused `Unsupported` on every site, as 0x15.7 was on main 46ea4200
 /// (`every_command_format_is_read`).
-pub const ACTIONS_FORMATS: [Format; 11] = [
+pub const ACTIONS_FORMATS: [Format; 12] = [
     ACTIONS_FORMAT,
     ACTIONS_FORMAT_ANNOTATIONS,
     ACTIONS_FORMAT_MERGE_GROUP,
@@ -93,6 +99,7 @@ pub const ACTIONS_FORMATS: [Format; 11] = [
     ACTIONS_FORMAT_CLAIMS,
     ACTIONS_FORMAT_REUSABLE,
     ACTIONS_FORMAT_PUSH,
+    ACTIONS_FORMAT_AGENT_CI,
 ];
 
 #[cfg(test)]
@@ -298,6 +305,11 @@ pub enum ActionsEvent {
     JobAnnotations {
         job: JobId,
         annotations: Vec<graftyard_git::issues::CheckAnnotation>,
+    },
+    /// `agent-ci` (0x15.13): an agent run held for a writer's approval, in its `RunCreated`'s entry: every job of the
+    /// run moves to `JobState::Held`, keeping its `needs`.
+    RunHeld {
+        run: RunId,
     },
 }
 
@@ -514,6 +526,22 @@ fn apply_event(t: &mut impl Tables, ev: &ActionsEvent, at: Timestamp) {
         ActionsEvent::JobOutputs { job, outputs } => t.put_outputs(*job, outputs),
         ActionsEvent::RunEvent { run, payload } => t.put_event(*run, payload),
         ActionsEvent::JobAnnotations { job, annotations } => t.put_annotations(*job, annotations),
+        ActionsEvent::RunHeld { run } => {
+            let Some(r) = t.run(*run) else { return };
+            for j in r.jobs.clone() {
+                let Some(row) = t.job(j) else { continue };
+                if !matches!(row.state, JobState::Queued { .. } | JobState::Pending { .. }) {
+                    continue;
+                }
+                let was_queued = is_queued(&row.state);
+                let held = JobState::Held { needs: row.spec.needs.clone(), since: at };
+                let row = JobRow { state: held, version: row.version + 1, ..row.clone() };
+                t.put_job(j, row);
+                if was_queued {
+                    t.queue_moved();
+                }
+            }
+        }
     }
 }
 
@@ -1019,6 +1047,9 @@ impl Scratch for ActionsScratch<'_> {
             ActionsEvent::RunActor { run, .. } if self.run(*run).is_none() => {
                 Err("an actor for a run the entry did not create".into())
             }
+            ActionsEvent::RunHeld { run } if self.run(*run).is_none() => {
+                Err("a hold for a run the entry did not create".into())
+            }
             ActionsEvent::RunEvent { run, .. } if !self.run(*run).is_some_and(|r| r.run.is_push()) => {
                 Err("a push payload for a run the entry did not create, or not a push run".into())
             }
@@ -1262,6 +1293,16 @@ pub enum ActionsOp {
         outputs: Vec<(Box<str>, Box<str>)>,
         annotations: Vec<graftyard_git::issues::CheckAnnotation>,
     },
+    /// `agent-ci` (0x15.13): `create`, a run-creating op for an agent run under `ci: Approve`, whose entry also holds
+    /// the run for a writer's approval (`ActionsEvent::RunHeld`).
+    CreateRunHeld {
+        create: Box<ActionsOp>,
+    },
+    /// `agent-ci` (0x15.13): a writer's approval of a held run (`POST /api/graftyard/v1/repos/{o}/{r}/actions/runs/
+    /// {id}/approve`): `Approved` for every held job, which re-queues it.
+    ApproveRun {
+        run: RunId,
+    },
 }
 
 impl ActionsOp {
@@ -1275,6 +1316,7 @@ impl ActionsOp {
             | ActionsOp::CreateRunAs { run, .. }
             | ActionsOp::CreateRunPlanned { run, .. }
             | ActionsOp::CreateRunPush { run, .. } => Some(run),
+            ActionsOp::CreateRunHeld { create } => create.created(),
             _ => None,
         }
     }
@@ -1564,6 +1606,7 @@ impl Command for ActionsCmd {
 
     fn format(&self) -> Format {
         match &self.op {
+            ActionsOp::CreateRunHeld { .. } | ActionsOp::ApproveRun { .. } => ACTIONS_FORMAT_AGENT_CI,
             // A `push` run's key names its ref (0x15.12), so every call that creates one is 0x15.12: a member that
             // keys runs the old way never applies one.
             op if op.created().is_some_and(WorkflowRun::is_push) => ACTIONS_FORMAT_PUSH,
@@ -1660,6 +1703,32 @@ impl Command for ActionsCmd {
                     }
                 }
                 Ok((evs, out))
+            }
+            // The wrapped create is operator-only itself.
+            ActionsOp::CreateRunHeld { create } => {
+                if create.created().is_none() || matches!(**create, ActionsOp::CreateRunHeld { .. }) {
+                    return Err(ActionsErr::Illegal("CreateRunHeld takes a run create".into()));
+                }
+                let inner = ActionsCmd { actor: self.actor.clone(), op: (**create).clone() };
+                let (mut evs, out) = inner.decide(s, &[])?;
+                if let ActionsOut::Run(id) = out {
+                    evs.push(ActionsEvent::RunHeld { run: id });
+                }
+                Ok((evs, out))
+            }
+            ActionsOp::ApproveRun { run } => {
+                only(admin)?;
+                s.run(*run).ok_or(ActionsErr::NotFound)?;
+                let evs: SmallVec<[ActionsEvent; 4]> = s
+                    .run_jobs(*run)
+                    .into_iter()
+                    .filter(|j| matches!(j.state, JobState::Held { .. }))
+                    .map(|j| ActionsEvent::Job { job: j.spec.id, version: j.version, event: JobEvent::Approved })
+                    .collect();
+                if evs.is_empty() {
+                    return Err(ActionsErr::Illegal("the run is not waiting for approval".into()));
+                }
+                Ok((evs, ActionsOut::Done))
             }
             ActionsOp::SetSubTemplate { repo, sub } => {
                 only(admin)?;
@@ -2665,6 +2734,8 @@ mod tests {
             ops.push(ActionsOp::CreateRun { run: r.clone(), jobs: vec![job(0, &l)] });
         }
         let (j, p) = (vec![job(0, &l)], Vec::new());
+        let held =
+            ActionsOp::CreateRunHeld { create: Box::new(ActionsOp::CreateRun { run: r.clone(), jobs: j.clone() }) };
         ops.extend([
             ActionsOp::CreateRunWith { run: r.clone(), jobs: j.clone(), permissions: p.clone() },
             ActionsOp::CreateRunOn { run: r.clone(), jobs: j.clone(), permissions: p.clone(), base_ref: "b".into() },
@@ -2718,6 +2789,8 @@ mod tests {
             ActionsOp::ExpireLeases,
             ActionsOp::AcquireToken { job: JobId(DbId(1)), version: 0 },
             ActionsOp::CacheDropRepo { repo: RepoId(DbId(7)) },
+            ActionsOp::ApproveRun { run: RunId(DbId(1)) },
+            held,
         ]);
         for op in ops {
             let f = ActionsCmd { actor: ActionsActor::Operator, op: op.clone() }.format();
@@ -2726,7 +2799,7 @@ mod tests {
         // 0x15.11 is another branch's (the lead's reservation); it joins this list as it merges.
         let mut versions: Vec<u16> = ACTIONS_FORMATS.iter().map(|f| f.version).collect();
         versions.sort_unstable();
-        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12]);
+        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]);
     }
 
     /// A recorded stall moves a live lease and a queued job's `since` by exactly its length, through the fold and

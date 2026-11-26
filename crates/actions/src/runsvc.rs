@@ -752,13 +752,29 @@ pub fn with_plan(mut call: Value, plan: Option<&crate::reusable::RunPlan>) -> Va
     call
 }
 
-/// The command a shard leader commits for a `create_run_call`, with the run's key: `CreateRunPush` (0x15.12) for a
+/// `agent-ci` (0x15.13): a `create_run_call` for an agent run under `ci: Approve`, which the shard creates held for a
+/// writer's approval (`ActionsOp::CreateRunHeld`). Only a site whose site day set `GRAFTYARD_AGENT_CI` sends one.
+pub fn held(mut call: Value) -> Value {
+    call["held"] = json!(true);
+    call
+}
+
+/// The command a shard leader commits for a `create_run_call`, with the run's key, wrapped in `CreateRunHeld` when
+/// the call is `held`: `CreateRunPush` (0x15.12) for a
 /// `push` run's call that carries its event (`push_run_call`), with its plan when it has one, `CreateRunPlanned` for
 /// another call with a plan (`with_plan`), with its actor when the call names one, `CreateRunAs` (0x15.8) for a call
 /// that names its actor,
 /// `CreateRunFrom` for a `pull_request` run with a base and a head, `CreateRunOn` for one with a
 /// base alone, else `CreateRunWith` when the call carries permissions, else `CreateRun`.
 pub fn create_run_op(b: &Value) -> Result<(crate::shard::RunKey, crate::shard::ActionsOp), String> {
+    let (key, op) = create_run_op_plain(b)?;
+    if b["held"].as_bool() == Some(true) {
+        return Ok((key, crate::shard::ActionsOp::CreateRunHeld { create: Box::new(op) }));
+    }
+    Ok((key, op))
+}
+
+fn create_run_op_plain(b: &Value) -> Result<(crate::shard::RunKey, crate::shard::ActionsOp), String> {
     use crate::shard::ActionsOp;
     let run: crate::shard::WorkflowRun = serde_json::from_value(b["run"].clone()).map_err(|e| e.to_string())?;
     let jobs: Vec<crate::shard::JobSpec> = serde_json::from_value(b["jobs"].clone()).map_err(|e| e.to_string())?;

@@ -136,6 +136,7 @@ impl World {
                 ACTIONS_FORMAT_PULL_REQUEST,
                 graftyard_actions::shard::ACTIONS_FORMAT_TOKENS,
                 ACTIONS_FORMAT_ANNOTATIONS,
+                graftyard_actions::shard::ACTIONS_FORMAT_AGENT_CI,
             ],
             ActionsFold::default(),
             now,
@@ -1081,6 +1082,71 @@ fn the_run_owner_cursor_never_moves_back() {
     assert_eq!(w.fold().owner_cursor, Index(9));
     let after = w.shard.committed_after(before);
     assert!(after.iter().all(|(_, e)| e.is_empty()), "{after:?}");
+}
+
+// ---- AM3-WP3: `agent-ci` ----
+
+/// An agent's run under `ci: Approve`: created held, it takes no runner and writes no check until a writer approves
+/// it; then it runs as a fork run, its `needs` still ordering its jobs, and its checks appear.
+#[test]
+fn an_agent_run_waits_for_approval_then_runs_as_a_fork_run() {
+    let mut w = World::new();
+    w.plans.insert("build".into(), Plan { ms: 5_000, ends: Conclusion::Success });
+    w.plans.insert("test".into(), Plan { ms: 5_000, ends: Conclusion::Success });
+    w.register(2);
+    let run = WorkflowRun {
+        id: RunId(DbId(0)),
+        repo: REPO,
+        workflow: ".github/workflows/ci.yml".into(),
+        event: "push".into(),
+        head_sha: oid(11).0,
+        head_ref: "refs/heads/graftyard/run-1/fix".into(),
+        trigger: (ChainId::Repo(REPO), Index(2)),
+        attempt: 1,
+        concurrency: None,
+        fork: true,
+    };
+    let create = ActionsOp::CreateRun { run, jobs: vec![spec("build", &[]), spec("test", &[0])] };
+    let held = |actor| ActionsCmd { actor, op: ActionsOp::CreateRunHeld { create: Box::new(create.clone()) } };
+    // Only the trigger creates a held run.
+    assert!(matches!(w.shard_cmd(held(ActionsActor::Admin(OWNER))), Some(Err(ActionsErr::Forbidden))));
+    let run = match w.shard_cmd(held(ActionsActor::Operator)) {
+        Some(Ok(ActionsOut::Run(id))) => id,
+        o => panic!("{o:?}"),
+    };
+    w.run_for(2 * MIN);
+    let f = w.fold();
+    assert!(f.run_jobs(run).iter().all(|j| matches!(j.state, JobState::Held { .. })), "{:?}", f.run_jobs(run));
+    assert_eq!(f.run(run).unwrap().status, RunStatus::Held);
+    assert!(w.running.is_empty() && f.queued().is_empty());
+    let checks = |w: &World| {
+        w.repo
+            .committed_after(Index(0))
+            .iter()
+            .flat_map(|(_, evs)| evs.iter())
+            .filter(|e| matches!(e, RepoEvent::CheckRun(_) | RepoEvent::CheckSuite(_)))
+            .count()
+    };
+    assert_eq!(checks(&w), 0, "a held run writes no check");
+
+    let approve = |actor| ActionsCmd { actor, op: ActionsOp::ApproveRun { run } };
+    assert!(matches!(w.shard_cmd(approve(ActionsActor::Runner(w.runners[0]))), Some(Err(ActionsErr::Forbidden))));
+    assert!(matches!(w.shard_cmd(approve(ActionsActor::Admin(OWNER))), Some(Ok(_))));
+    assert!(matches!(w.shard_cmd(approve(ActionsActor::Admin(OWNER))), Some(Err(ActionsErr::Illegal(_)))));
+    let f = w.fold();
+    let states: Vec<JobState> = f.run_jobs(run).iter().map(|j| j.state.clone()).collect();
+    assert!(matches!(states[..], [JobState::Queued { .. }, JobState::Pending { .. }]), "{states:?}");
+
+    w.run_for(2 * MIN);
+    let f = w.fold();
+    assert_eq!(f.run(run).unwrap().status, RunStatus::Completed(Conclusion::Success));
+    assert!(f.run(run).unwrap().run.fork, "an agent run keeps fork semantics after approval");
+    let [build, test] = &f.run_jobs(run)[..] else { panic!() };
+    let (JobState::Completed { at: b, .. }, JobState::Completed { at: t, .. }) = (&build.state, &test.state) else {
+        panic!()
+    };
+    assert!(b < t, "test waited for build");
+    assert!(checks(&w) > 0, "the approved run wrote its checks");
 }
 
 // ---- R24: `workflow_job` to an App ----

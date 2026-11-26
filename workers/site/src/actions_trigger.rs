@@ -41,8 +41,9 @@ use std::rc::Rc;
 use graftyard_actions::shard::{JobSpec, WorkflowRun};
 use graftyard_actions::specs::Declared;
 use graftyard_actions::trigger::{
-    Carried, IN_FLIGHT_MAX, Item, PrEvent, PrTarget, PushEvent, RETRY_MS, Stream, Tried, built, diff_paths,
-    merge_group_run, pr_events, pr_target, pull_request_run, push_base, push_events, push_run, skips_ci, two_dot,
+    AgentRun, Carried, IN_FLIGHT_MAX, Item, PrEvent, PrTarget, PushEvent, RETRY_MS, Stream, Tried, agent_run, built,
+    diff_paths, merge_group_run, pr_events, pr_target, pull_request_run, push_base, push_events, push_run, skips_ci,
+    two_dot,
 };
 use graftyard_git as git;
 use graftyard_git::issues::Consumer;
@@ -352,7 +353,9 @@ async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
             let make = |path: &str, src: &str| merge_group_run(f.repo, c.index, path, src, q);
             let mut times = Times::default();
             let call = Call::Run { base: None, head: None, actor: None };
-            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, call, &mut times).await {
+            // A queue ref is the queue's, never an agent's (`agent_ci_of`).
+            let agent = AgentRun::No;
+            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, call, agent, &mut times).await {
                 Ok(n) => {
                     let ms = crate::now_ms() - t0;
                     console_log!(
@@ -474,7 +477,8 @@ async fn pull_request_try(
             let actor = run_actor(&h.env, p.actor).await?;
             let actor = actor.as_ref().map(|(a, l)| (*a, l.as_str()));
             let call = Call::Run { base: Some(&base), head: head.as_deref(), actor };
-            runs_on(&h.env, site, b, repo, owner, record, merge, make, call, &mut times).await?
+            let agent = agent_ci_of(h, repo, p.n).await?;
+            runs_on(&h.env, site, b, repo, owner, record, merge, make, call, agent, &mut times).await?
         }
         PrTarget::Pending | PrTarget::Conflict | PrTarget::None => 0,
     };
@@ -618,7 +622,9 @@ async fn push_runs(
     let make = |path: &str, src: &str| push_run(repo, c.index, path, src, p, paths.as_deref());
     let actor = actor.as_ref().map(|(a, l)| (*a, l.as_str()));
     let mut times = Times::default();
-    runs_on(env, site, b, repo, f.owner, record, p.after, make, Call::Push { actor, event: &event }, &mut times).await
+    let agent = agent_ci_on(h, repo, &p.r#ref, p.after).await?;
+    let call = Call::Push { actor, event: &event };
+    runs_on(env, site, b, repo, f.owner, record, p.after, make, call, agent, &mut times).await
 }
 
 /// Commit `id`'s raw object from this site's git cache shard: a protocol v2 fetch of the commit alone
@@ -652,6 +658,55 @@ async fn head_commit(
     git::commit_fetch::commit_of(&r.bytes().await.map_err(|e| e.to_string())?, id)
 }
 
+/// `agent-ci`: what the repository's `AgentPolicy.ci` does to a run on `branch` at `head`
+/// (`graftyard_actions::trigger::agent_run`), from the leader's fold and the install's `AgentApp` rows, read once per
+/// event. `AgentRun::No` unless a site day set `GRAFTYARD_AGENT_CI`, so every run is created as before until then.
+async fn agent_ci_on(
+    h: &Rc<Host<Repo>>,
+    repo: RepoId,
+    branch: &git::refs::RefName,
+    head: git::refs::ObjectId,
+) -> std::result::Result<AgentRun, String> {
+    if !crate::actions::agent_ci(&h.env) {
+        return Ok(AgentRun::No);
+    }
+    let (ci, gated) = {
+        let core = h.core.borrow();
+        let fold = &core.as_ref().ok_or("not joined")?.m.group_fold().fold;
+        (git::tiers::agent_policy(&*fold.core).ci, git::merge::agent_gate_holds(&*fold.core, repo, branch, head))
+    };
+    let prefixes = agent_prefixes(&h.env).await?;
+    Ok(agent_run(ci, branch, &prefixes, gated))
+}
+
+/// `agent_ci_on` for pull request `n`'s run: its head branch at its head commit, a same-repository pull request's
+/// only, since `pr_target` starts no run for a fork's.
+async fn agent_ci_of(
+    h: &Rc<Host<Repo>>,
+    repo: RepoId,
+    n: git::issues::IssueNumber,
+) -> std::result::Result<AgentRun, String> {
+    let ph = {
+        let core = h.core.borrow();
+        git::tiers::pull_head(&*core.as_ref().ok_or("not joined")?.m.group_fold().fold.core, n)
+    };
+    match ph.filter(|ph| ph.head.repo == repo) {
+        Some(ph) => agent_ci_on(h, repo, &ph.head.branch, ph.head_sha).await,
+        None => Ok(AgentRun::No),
+    }
+}
+
+/// Every `AgentApp`'s `confine` on the install's own `Authz` chain, through `fresh`.
+async fn agent_prefixes(env: &Env) -> std::result::Result<Vec<graftyard_identity::glob::RefPattern>, String> {
+    let install = graftyard_identity::install_account();
+    let chain = ChainId::Authz(install);
+    let record = crate::member::owner_record(env, install).await?;
+    let (v, _) = crate::lookup::call(env, chain, &record, "/read", &json!({ "q": { "dep": true } })).await?;
+    let bytes = v.get("value").and_then(Value::as_str).and_then(crate::host::unhex).ok_or("no Authz fold")?;
+    let f: graftyard_identity::AuthzFold = graftyard_raft::codec::from_bytes(&bytes).map_err(|e| e.to_string())?;
+    Ok(f.more.more.agent_apps.values().filter_map(|r| r.confine.clone()).collect())
+}
+
 /// How `runs_on` calls `create_run`: as the pull request and merge group triggers do (`create_run_body`), or as a
 /// `push` (`runsvc::push_run_call`).
 enum Call<'a> {
@@ -672,6 +727,7 @@ async fn runs_on(
     tip: git::refs::ObjectId,
     make: impl Fn(&str, &str) -> std::result::Result<Option<(WorkflowRun, Vec<JobSpec>, Declared)>, String>,
     call: Call<'_>,
+    agent: AgentRun,
     times: &mut Times,
 ) -> std::result::Result<usize, String> {
     let commit = tip.hex();
@@ -700,7 +756,7 @@ async fn runs_on(
             continue;
         };
         let src = blob["text"].as_str().unwrap_or_default();
-        let (run, mut jobs, mut permissions) = match make(&path, src) {
+        let (mut run, mut jobs, mut permissions) = match make(&path, src) {
             Ok(Some(x)) => x,
             Ok(None) => continue,
             Err(e) => {
@@ -742,32 +798,29 @@ async fn runs_on(
                 continue;
             }
         };
+        agent.mark(&mut run);
+        let body = graftyard_actions::runsvc::with_plan(
+            match &call {
+                Call::Run { base, head, actor } => {
+                    crate::actions::create_run_body(env, &run, &jobs, &permissions, *base, *head, *actor)
+                }
+                Call::Push { actor, event } => graftyard_actions::runsvc::push_run_call(
+                    &run,
+                    &jobs,
+                    &permissions,
+                    crate::actions::job_tokens(env),
+                    *actor,
+                    event,
+                ),
+            },
+            plan.as_ref(),
+        );
+        // `agent-ci`: an agent's run under `ci: Approve` is created held for a writer's approval (0x15.13).
+        let body = if agent == AgentRun::Held { graftyard_actions::runsvc::held(body) } else { body };
         let t = crate::now_ms();
         let created = async {
             graftyard_lookup::create(b, chain, record, &json!({})).await?;
-            graftyard_lookup::call(
-                b,
-                chain,
-                record,
-                "/runsvc",
-                &graftyard_actions::runsvc::with_plan(
-                    match &call {
-                        Call::Run { base, head, actor } => {
-                            crate::actions::create_run_body(env, &run, &jobs, &permissions, *base, *head, *actor)
-                        }
-                        Call::Push { actor, event } => graftyard_actions::runsvc::push_run_call(
-                            &run,
-                            &jobs,
-                            &permissions,
-                            crate::actions::job_tokens(env),
-                            *actor,
-                            event,
-                        ),
-                    },
-                    plan.as_ref(),
-                ),
-            )
-            .await
+            graftyard_lookup::call(b, chain, record, "/runsvc", &body).await
         }
         .await;
         times.create += crate::now_ms().saturating_sub(t);

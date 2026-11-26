@@ -291,6 +291,12 @@ pub fn oidc_head_ref(env: &worker::Env) -> bool {
     env.var("GRAFTYARD_OIDC_HEAD_REF").is_ok_and(|v| v.to_string() == "1")
 }
 
+/// Whether a site day set `GRAFTYARD_AGENT_CI` (`agent-ci`), after the day that shipped format 0x15.13's reader: only
+/// then does `ActionsTrigger` follow a repository's `AgentPolicy.ci` for an agent's runs (`crate::actions_trigger`).
+pub fn agent_ci(env: &worker::Env) -> bool {
+    env.var("GRAFTYARD_AGENT_CI").is_ok_and(|v| v.to_string() == "1")
+}
+
 /// Whether a site day set `GRAFTYARD_OIDC_CLAIMS` (BF-73): only then does `ActionsTrigger` name a run's actor, which
 /// makes its call `CreateRunAs` (0x15.8). A site day sets it only once 0x15.8 was enabled, after the day that shipped
 /// its reader to every member.
@@ -944,6 +950,20 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
             let run = RunId(DbId(run));
             match commit(h, fresh_rid(), ActionsActor::Admin(admin), ActionsOp::CancelRun { run }).await {
                 Ok(Ok(_)) => json!({ "status": 202, "body": {} }),
+                Ok(Err(ActionsErr::NotFound)) => refused(404, "Not Found"),
+                Ok(r) => refused(409, r),
+                Err(e) => refused(503, e),
+            }
+        }
+        // `agent-ci` (0x15.13): `POST /api/graftyard/v1/repos/{o}/{r}/actions/runs/{id}/approve` from a caller the
+        // edge found may approve: `ApproveRun`, which re-queues every held job of the run.
+        ("approve", None) => {
+            let (Ok(admin), Some(run)) = (serde_json::from_value(b["admin"].clone()), b["run"].as_i64()) else {
+                return Ok(refused(400, "admin and run are required"));
+            };
+            let run = RunId(DbId(run));
+            match commit(h, fresh_rid(), ActionsActor::Admin(admin), ActionsOp::ApproveRun { run }).await {
+                Ok(Ok(_)) => json!({ "status": 201, "body": {} }),
                 Ok(Err(ActionsErr::NotFound)) => refused(404, "Not Found"),
                 Ok(r) => refused(409, r),
                 Err(e) => refused(503, e),

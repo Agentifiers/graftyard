@@ -169,6 +169,12 @@ pub fn round(
             }
             continue;
         }
+        // `agent-ci`: a run held for approval has no check suite or check runs until it is approved, as its jobs do
+        // not exist on GitHub until then; its status still flips to `Held`.
+        if fold.run_jobs(*r).iter().any(|j| matches!(j.state, JobState::Held { .. })) {
+            then.push(ActionsOp::SetRunStatus { run: *r });
+            continue;
+        }
         let (suites, checks) = by_repo.entry(row.run.repo).or_default();
         suites.push(suite(row));
         checks.extend(
@@ -277,6 +283,8 @@ fn suite(row: &RunRow) -> CheckSuiteUpdate {
         RunStatus::Queued => (CheckStatus::Queued, None),
         RunStatus::InProgress => (CheckStatus::InProgress, None),
         RunStatus::Completed(c) => (CheckStatus::Completed, Some(conclusion(c))),
+        // A held run writes no checks (`round`): this arm is never sent.
+        RunStatus::Held => (CheckStatus::Queued, None),
     };
     CheckSuiteUpdate {
         suite: CheckSuiteId(row.run.id.0),
@@ -298,7 +306,7 @@ fn check_run(
     annotations: &[CheckAnnotation],
 ) -> CheckRunUpdate {
     let (status, c, completed) = match s {
-        JobState::Pending { .. } | JobState::Queued { .. } => (CheckStatus::Queued, None, None),
+        JobState::Pending { .. } | JobState::Queued { .. } | JobState::Held { .. } => (CheckStatus::Queued, None, None),
         JobState::Assigned { .. } | JobState::InProgress { .. } => (CheckStatus::InProgress, None, None),
         JobState::Completed { conclusion: k, at } => (CheckStatus::Completed, Some(conclusion(*k)), Some(*at)),
     };

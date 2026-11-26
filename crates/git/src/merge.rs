@@ -426,9 +426,22 @@ pub(crate) fn authorize(
     Ok((user, permission(actor, v, &crate::repo::authz_folds(deps))))
 }
 
+/// Whether `AgentGate` holds at `head` for an open pull request of `repo` with `AgentMeta` whose head is `branch`: what
+/// ends an agent run's fork semantics (`graftyard_actions::trigger::agent_run`).
+pub fn agent_gate_holds(
+    core: &(impl Read + ?Sized),
+    repo: graftyard_types::RepoId,
+    branch: &RefName,
+    head: ObjectId,
+) -> bool {
+    crate::tiers::pulls_from(core, repo, branch)
+        .into_iter()
+        .any(|n| crate::tiers::agent_meta(core, n).is_some() && gate_holds(core, n, head).is_ok())
+}
+
 /// `AgentGate` for a PR with `AgentMeta`: distinct approvers on the current head, the requester excluded, at least
 /// `1 + extra_human_approvals`, plus one when `requester` is empty. A PR without `AgentMeta` passes untouched.
-pub(crate) fn gate_holds(core: &dyn Read, n: IssueNumber, head: ObjectId) -> Result<(), MergeError> {
+pub(crate) fn gate_holds(core: &(impl Read + ?Sized), n: IssueNumber, head: ObjectId) -> Result<(), MergeError> {
     let Some(meta) = crate::tiers::agent_meta(core, n) else { return Ok(()) };
     let need = crate::agent::approvals_needed(&meta, &crate::tiers::agent_policy(core));
     let have = crate::tiers::agent_gates(core, n, &head).iter().filter(|u| Some(**u) != meta.requester).count();

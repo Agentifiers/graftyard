@@ -37,11 +37,32 @@ pub enum Conclusion {
 /// Wire tags as `Conclusion`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobState {
-    Pending { needs: SmallVec<[JobId; 4]> },
-    Queued { labels: LabelSet, since: Timestamp },
-    Assigned { runner: RunnerId, lease_until: Timestamp },
-    InProgress { runner: RunnerId, lease_until: Timestamp },
-    Completed { conclusion: Conclusion, at: Timestamp },
+    Pending {
+        needs: SmallVec<[JobId; 4]>,
+    },
+    Queued {
+        labels: LabelSet,
+        since: Timestamp,
+    },
+    Assigned {
+        runner: RunnerId,
+        lease_until: Timestamp,
+    },
+    InProgress {
+        runner: RunnerId,
+        lease_until: Timestamp,
+    },
+    Completed {
+        conclusion: Conclusion,
+        at: Timestamp,
+    },
+    /// `agent-ci` (0x15.13): a job of an agent run held for a writer's approval (`ActionsEvent::RunHeld`). `needs` is
+    /// what `Pending` would hold, and `since` when the run was held; `Approved` releases it to `Queued`, or to
+    /// `Pending` while it has needs.
+    Held {
+        needs: SmallVec<[JobId; 4]>,
+        since: Timestamp,
+    },
 }
 
 impl JobState {
@@ -82,6 +103,8 @@ pub enum JobEvent {
     LeaseExpired,
     QueueExpired,
     Cancel,
+    /// `agent-ci` (0x15.13): a writer approved the job's held run (`ActionsOp::ApproveRun`).
+    Approved,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
@@ -98,6 +121,7 @@ fn state_name(s: &JobState) -> &'static str {
         JobState::Assigned { .. } => "Assigned",
         JobState::InProgress { .. } => "InProgress",
         JobState::Completed { .. } => "Completed",
+        JobState::Held { .. } => "Held",
     }
 }
 
@@ -112,6 +136,7 @@ fn event_name(e: &JobEvent) -> &'static str {
         JobEvent::LeaseExpired => "LeaseExpired",
         JobEvent::QueueExpired => "QueueExpired",
         JobEvent::Cancel => "Cancel",
+        JobEvent::Approved => "Approved",
     }
 }
 
@@ -138,6 +163,10 @@ pub fn transition(
         (S::Completed { .. }, _) => None,
         (_, E::Cancel) => Some(done(Conclusion::Cancelled)),
         (S::Pending { .. }, E::NeedsMet) => Some(S::Queued { labels: labels.clone(), since: now }),
+        (S::Held { needs, .. }, E::Approved) if needs.is_empty() => {
+            Some(S::Queued { labels: labels.clone(), since: now })
+        }
+        (S::Held { needs, .. }, E::Approved) => Some(S::Pending { needs: needs.clone() }),
         (S::Pending { .. }, E::NeedsFailed) => Some(done(Conclusion::Skipped)),
         (S::Queued { .. }, E::Matched(r)) => Some(S::Assigned { runner: *r, lease_until: lease }),
         (S::Queued { since, .. }, E::QueueExpired) if now >= after(*since, QUEUE_LIMIT) => {
@@ -171,6 +200,9 @@ pub enum RunStatus {
     Queued,
     InProgress,
     Completed(Conclusion),
+    /// `agent-ci` (0x15.13): every unfinished job is held for a writer's approval. GHES renders it `completed` with
+    /// conclusion `action_required` (`crate::rest`).
+    Held,
 }
 
 /// The run's status from its jobs (SHARED). Completed when every job is, with GitHub's precedence: any failure fails
@@ -196,6 +228,9 @@ pub fn derive_run_status(jobs: &[JobState]) -> RunStatus {
             Conclusion::Success
         };
         return RunStatus::Completed(c);
+    }
+    if jobs.iter().any(|j| matches!(j, JobState::Held { .. })) {
+        return RunStatus::Held;
     }
     let started = jobs
         .iter()
@@ -235,6 +270,35 @@ mod tests {
         }
         // A queued job is matched once: a second runner's match is refused.
         assert!(transition(&a, &JobEvent::Matched(RunnerId(DbId(8))), &l, t(2)).is_err());
+    }
+
+    #[test]
+    fn a_held_job_waits_for_approval_then_queues_or_waits_for_its_needs() {
+        let l = labels();
+        let need: SmallVec<[JobId; 4]> = smallvec::smallvec![JobId(DbId(3))];
+        let free = JobState::Held { needs: SmallVec::new(), since: t(1) };
+        let blocked = JobState::Held { needs: need.clone(), since: t(1) };
+        // No runner takes a held job, and its needs being met does not release it.
+        for e in [JobEvent::Matched(R), JobEvent::NeedsMet, JobEvent::QueueExpired, JobEvent::Acquired] {
+            assert!(transition(&free, &e, &l, t(9_000)).is_err(), "{e:?} on a held job");
+        }
+        assert_eq!(
+            transition(&free, &JobEvent::Approved, &l, t(5)).unwrap(),
+            JobState::Queued { labels: l.clone(), since: t(5) }
+        );
+        assert_eq!(transition(&blocked, &JobEvent::Approved, &l, t(5)).unwrap(), JobState::Pending { needs: need });
+        assert_eq!(
+            transition(&blocked, &JobEvent::Cancel, &l, t(6)).unwrap(),
+            JobState::Completed { conclusion: Conclusion::Cancelled, at: t(6) }
+        );
+        // Approval releases only a held job.
+        let q = JobState::Queued { labels: l.clone(), since: t(1) };
+        assert!(transition(&q, &JobEvent::Approved, &l, t(5)).is_err());
+        // The run reads held while any job is, even beside a finished one; a run all of whose jobs finished is not.
+        let done = JobState::Completed { conclusion: Conclusion::Success, at: t(2) };
+        assert_eq!(derive_run_status(&[done.clone(), blocked.clone()]), RunStatus::Held);
+        assert_eq!(derive_run_status(&[done.clone(), q]), RunStatus::InProgress);
+        assert_eq!(derive_run_status(&[done]), RunStatus::Completed(Conclusion::Success));
     }
 
     #[test]
