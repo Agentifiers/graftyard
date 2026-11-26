@@ -447,7 +447,7 @@ fn fold_blobs_without_a_cursor_keep_the_previous_releases_bytes() {
     );
     assert_eq!(hex(&codec::to_bytes(&n)), "0101050000000000000101808018044f63746f00000000000000");
     t.more.more = Index(41);
-    n.more.more = Index(42);
+    n.more.more.cursor = Index(42);
     assert_eq!(codec::from_bytes::<TokensFold>(&codec::to_bytes(&t)).unwrap(), t);
     assert_eq!(codec::from_bytes::<NamesFold>(&codec::to_bytes(&n)).unwrap(), n);
     let _ = Owed::Login { account: acct(0, 3, 0), key: login("Octo").key() };

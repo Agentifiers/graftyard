@@ -10,14 +10,16 @@ use common::{A, B, Group, SITES, acct, key, login};
 use graftyard_identity::finish;
 use graftyard_identity::{
     AccountKind, AppId, AppKey, AppRecord, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzOp, AuthzRead, ClientId,
-    ClientRoute, CodeKind, DEVICE_CODE_TTL, Fingerprint, Jti, LoginRow, NAMES_FORMAT, NAMES_FORMAT_V2, NameKey,
-    NamesCmd, NamesErr, NamesEvent, NamesFold, NamesOp, NamesOut, NamesRead, OAuthAppRecord, OpaqueToken,
+    ClientRoute, CodeKind, DEVICE_CODE_TTL, Fingerprint, Jti, LoginRow, NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V4,
+    NameKey, NamesCmd, NamesErr, NamesEvent, NamesFold, NamesOp, NamesOut, NamesRead, OAuthAppRecord, OpaqueToken,
     PermissionSet, RsaPublic, ScopeSet, SecretHash, Slug, SlugRow, TokenFields, TokenKind, TokensCmd, TokensErr,
     TokensEvent, TokensFold, TokensOp, TokensRead, UserId, account_shard, code_hash, draw_device_code, draw_secret_on,
     fingerprint_shard, jti_shard, name_shard, shard_of_hash, token_shard,
 };
-use graftyard_raft::{CommitError, Fold, Record, Scratch, codec};
-use graftyard_types::{AccountId, ChainId, CredentialShard, DbId, Timestamp, TokenShard, Ulid};
+use graftyard_raft::{Command, CommitError, Fold, Record, Scratch, codec};
+use graftyard_types::{
+    AccountId, ChainId, CredentialShard, DbId, Index, NetworkId, RepoId, Timestamp, TokenShard, Ulid,
+};
 use smallvec::smallvec;
 
 use common::world::{FreshLeader, OPS, World};
@@ -727,4 +729,54 @@ fn bf33_device_flow_under_a_leader_kill_completes_or_restarts_cleanly() {
         assert_eq!(f.token(t).map(|r| r.account), Some(user));
     }
     assert_eq!(issued.len(), 100, "one token per login");
+}
+
+#[test]
+fn a_forks_repo_owner_row_carries_its_network_and_a_roots_keeps_its_bytes() {
+    let repo = RepoId(DbId(77));
+    let owner = acct(0, 9, 1);
+    let root_event = NamesEvent::RepoOwner { repo, owner };
+    let mut f = NamesFold::new(name_shard(&NameKey::Repo(repo)));
+    f.apply(&root_event);
+    f.apply(&NamesEvent::AuditCursor { through: Index(7) });
+    let before = codec::to_bytes(&f);
+    assert_eq!(f.audit_cursor(), Index(7));
+
+    let root = NamesCmd {
+        cred: CredentialShard::NONE,
+        op: NamesOp::RepoOwnerIn { repo, owner, network: NetworkId::of_root(repo) },
+    };
+    assert_eq!(root.format(), NAMES_FORMAT_V4);
+    let (events, out) = root.decide(&f.scratch(), &[]).unwrap();
+    assert_eq!(events.as_slice(), std::slice::from_ref(&root_event));
+    assert_eq!(out, NamesOut::Done);
+
+    let network = NetworkId::of_root(RepoId(DbId(78)));
+    let fork = NamesCmd { cred: CredentialShard::NONE, op: NamesOp::RepoOwnerIn { repo, owner, network } };
+    let fork_event = NamesEvent::ForkOwner { repo, owner, network };
+    let (events, out) = fork.decide(&f.scratch(), &[]).unwrap();
+    assert_eq!(events.as_slice(), std::slice::from_ref(&fork_event));
+    assert_eq!(out, NamesOut::Done);
+    f.apply(&fork_event);
+    assert_eq!(f.repo_network(repo), Some(network));
+    assert_eq!(f.repo_owner(repo), Some(owner));
+    assert_eq!(f.audit_cursor(), Index(7));
+    let (events, out) = fork.decide(&f.scratch(), &[]).unwrap();
+    assert!(events.is_empty(), "an identical fork create commits nothing");
+    assert_eq!(out, NamesOut::Done);
+
+    let bytes = codec::to_bytes(&f);
+    assert_eq!(codec::from_bytes::<NamesFold>(&bytes).unwrap(), f);
+    f.more.more.more = Default::default();
+    assert_eq!(codec::to_bytes(&f), before);
+
+    let mut canonical = Vec::new();
+    root_event.encode(&mut canonical);
+    assert_eq!(canonical, hex("0b000000000000004d0000000000090001"));
+    canonical.clear();
+    fork_event.encode(&mut canonical);
+    assert_eq!(canonical[0], 14);
+
+    let invalid = NamesEvent::ForkOwner { repo, owner, network: NetworkId::of_root(repo) };
+    assert!(f.scratch().check(&invalid).is_err(), "a fork's network is not its own id");
 }

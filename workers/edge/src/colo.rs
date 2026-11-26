@@ -294,15 +294,28 @@ async fn put_text(url: String, body: String, max_age: Duration) {
     let _ = c.put(url.as_str(), r).await;
 }
 
-/// The data center's gate entry at `url`: its stamp.
-pub(crate) async fn match_gate(url: &str) -> Option<Timestamp> {
-    let v: serde_json::Value = serde_json::from_str(&match_text(url).await?).ok()?;
-    v["at"].as_u64().map(Timestamp)
+/// The data center's gate entry at `url`: its stamp, and a fork's network (`gate_entry`).
+pub(crate) async fn match_gate(url: &str) -> Option<(Timestamp, Option<NetworkId>)> {
+    gate_entry(&match_text(url).await?)
 }
 
-/// Puts an `Allow` stamped `at` under `url`.
-pub(crate) async fn put_gate(url: String, at: Timestamp) {
-    put_text(url, serde_json::json!({ "at": at.0 }).to_string(), READ_CACHE).await;
+/// Puts an `Allow` stamped `at` under `url`, with a fork's network (`gate_body`).
+pub(crate) async fn put_gate(url: String, at: Timestamp, net: Option<NetworkId>) {
+    put_text(url, gate_body(at, net), READ_CACHE).await;
+}
+
+/// A gate entry's body: `{"at"}`, and `net` only for a fork, so a root's entry keeps its bytes and a data-center copy
+/// of a fork's decision carries the network its fill learned (`decisions/DECISIONS.md`, "`fork-network-read`").
+fn gate_body(at: Timestamp, net: Option<NetworkId>) -> String {
+    match net {
+        None => serde_json::json!({ "at": at.0 }).to_string(),
+        Some(n) => serde_json::json!({ "at": at.0, "net": n }).to_string(),
+    }
+}
+
+fn gate_entry(text: &str) -> Option<(Timestamp, Option<NetworkId>)> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    Some((Timestamp(v["at"].as_u64()?), serde_json::from_value(v["net"].clone()).ok().flatten()))
 }
 
 /// A chain bucket's header sets: the isolate's, then the data center's, put to both once every check passed
@@ -744,6 +757,23 @@ mod tests {
         let g = run(gate(&d, POST));
         assert_eq!((g.decision, g.rows), (Ok(Hidden), Some(12_000)));
         assert_eq!(d.held(), Some((Timestamp(12_000), Hidden, false, Some(12_000))));
+    }
+
+    /// A root's entry keeps main's bytes, `{"at":N}`, which an edge before forks reads; a fork's adds `net`, read back
+    /// whole, and an older entry reads as no network.
+    #[test]
+    fn a_gate_entry_carries_a_forks_network_and_a_roots_keeps_its_bytes() {
+        let net = NetworkId(graftyard_types::DbId(3));
+        assert_eq!(gate_body(Timestamp(1_000), None), r#"{"at":1000}"#);
+        assert_eq!(gate_entry(r#"{"at":1000}"#), Some((Timestamp(1_000), None)));
+        let fork = gate_body(Timestamp(1_000), Some(net));
+        assert_eq!(gate_entry(&fork), Some((Timestamp(1_000), Some(net))));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&fork).unwrap()["at"],
+            1_000,
+            "an older edge reads its stamp"
+        );
+        assert_eq!(gate_entry(r#"{"net":3}"#), None);
     }
 
     /// Every input of the key is in it: the credential, the repository, and the placement record, and the raw

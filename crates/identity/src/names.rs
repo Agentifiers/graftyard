@@ -11,7 +11,7 @@ use std::fmt;
 use arrayvec::ArrayString;
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
 use graftyard_types::{
-    AccountId, ChainId, CredentialShard, Digest, Index, NameShard, Placement, PlacementError, PlacementName,
+    AccountId, ChainId, CredentialShard, Digest, Index, NameShard, NetworkId, Placement, PlacementError, PlacementName,
     PlacementRecord, RepoId, SiteId, Timestamp,
 };
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ use crate::credential::{CredentialRefusal, IdentityDep, Own, check_credential, c
 use crate::enc;
 use crate::ids::{IdBlock, IdCursor};
 use crate::overlay::{Overlay, SetOverlay, Table};
-use crate::{NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V3};
+use crate::{NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V3, NAMES_FORMAT_V4};
 
 pub const NAME_SHARDS: u16 = 1024;
 
@@ -377,11 +377,18 @@ pub enum NamesEvent {
     AuditCursor {
         through: Index,
     },
+    /// On `name_shard(NameKey::Repo(repo))`: a fork's `RepoOwner` row with its network, never its own id (format
+    /// 0x10.4). A root's row stays `RepoOwner`, whose network is its own id.
+    ForkOwner {
+        repo: RepoId,
+        owner: AccountId,
+        network: NetworkId,
+    },
 }
 
 /// Tags follow the design's `NamesEvent` declaration order, so tags 0 to 11 are the design's 12 variants. Milestone 1
-/// wrote 0, 1, 2, 10, and 11, and they keep their bytes. `AccountLogin`, which the design does not list, takes 12, and
-/// `AuditCursor` 13.
+/// wrote 0, 1, 2, 10, and 11, and they keep their bytes. `AccountLogin`, which the design does not list, takes 12,
+/// `AuditCursor` 13, and `ForkOwner` 14.
 impl Record for NamesEvent {
     fn encode(&self, out: &mut Vec<u8>) {
         let mut e = Enc(out);
@@ -460,6 +467,12 @@ impl Record for NamesEvent {
                 e.u8(13);
                 e.u64(through.0);
             }
+            NamesEvent::ForkOwner { repo, owner, network } => {
+                e.u8(14);
+                enc::repo(&mut e, *repo);
+                enc::account(&mut e, *owner);
+                enc::db(&mut e, network.0);
+            }
         }
     }
 }
@@ -475,9 +488,9 @@ pub struct NamesMore {
     pub shortcodes: BTreeMap<Shortcode, AccountId>,
     pub emails: BTreeMap<Digest, AccountId>,
     pub retired: BTreeSet<(LoginKey, RepoNameKey)>,
-    /// The `Audit` consumer's cursor (`NamesEvent::AuditCursor`), a trailing part of its own, so a fold whose cursor
-    /// never moved keeps the bytes of the release before it.
-    pub more: Index,
+    /// The `Audit` consumer's cursor (`NamesEvent::AuditCursor`), then AM3-WP2a's fork networks as a trailing part, so
+    /// a fold whose cursor never moved and that holds no fork network keeps the bytes of the release before either.
+    pub more: CursorPart,
 }
 
 tail_serde!(NamesMore {
@@ -489,7 +502,62 @@ tail_serde!(NamesMore {
     shortcodes: BTreeMap<Shortcode, AccountId>,
     emails: BTreeMap<Digest, AccountId>,
     retired: BTreeSet<(LoginKey, RepoNameKey)>,
-} more: Index);
+} more: CursorPart);
+
+/// The `Audit` cursor, then AM3-WP2a's fork networks as a trailing part, so a fold with none keeps its cursor's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CursorPart {
+    pub cursor: Index,
+    pub more: ForkRows,
+}
+
+impl serde::Serialize for CursorPart {
+    /// A fold with no fork network writes the cursor alone, as the `Index` it was before AM3-WP2a.
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+        if self.more == ForkRows::default() {
+            return self.cursor.serialize(s);
+        }
+        let mut t = s.serialize_tuple(3)?;
+        t.serialize_element(&self.cursor)?;
+        t.serialize_element(&1u8)?;
+        t.serialize_element(&self.more)?;
+        t.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CursorPart {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = CursorPart;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("CursorPart")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<CursorPart, A::Error> {
+                let cursor: Index = seq.next_element()?.ok_or_else(|| serde::de::Error::missing_field("cursor"))?;
+                let more = match seq.next_element::<u8>() {
+                    Ok(Some(1)) => seq.next_element()?.ok_or_else(|| serde::de::Error::missing_field("more"))?,
+                    Ok(Some(m)) => {
+                        return Err(serde::de::Error::invalid_value(
+                            serde::de::Unexpected::Unsigned(u64::from(m)),
+                            &"1, the marker of a fold's trailing part",
+                        ));
+                    }
+                    Ok(None) | Err(_) => ForkRows::default(),
+                };
+                Ok(CursorPart { cursor, more })
+            }
+        }
+        d.deserialize_tuple(3, V)
+    }
+}
+
+/// AM3-WP2a's fork networks, keyed by the fork's repository id.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkRows {
+    pub networks: BTreeMap<RepoId, NetworkId>,
+}
 
 /// One `Names` shard's fold. `shard` is the chain's own shard: a command whose key belongs to another shard is
 /// refused, because the shard is the key's uniqueness point. `None`, the `Default` a member starts from before its
@@ -522,7 +590,7 @@ impl NamesFold {
 
     /// Every entry through this index is one the `Audit` consumer finished or found nothing owed for.
     pub fn audit_cursor(&self) -> Index {
-        self.more.more
+        self.more.more.cursor
     }
 }
 
@@ -532,6 +600,9 @@ pub trait NamesRead {
     fn account(&self, id: AccountId) -> Option<AccountRow>;
     fn placement(&self, owner: AccountId) -> Option<&PlacementRecord>;
     fn repo_owner(&self, repo: RepoId) -> Option<AccountId>;
+    /// The repository's network when its `RepoOwner` row names one: a fork's (format 0x10.4). `None` for a root,
+    /// whose network is its own id, and for a repository with no row.
+    fn repo_network(&self, repo: RepoId) -> Option<NetworkId>;
     /// The account's current login, on its `account_shard` (F50).
     fn account_login(&self, account: AccountId) -> Option<&Login>;
     fn slug(&self, slug: &Slug) -> Option<SlugRow>;
@@ -555,6 +626,9 @@ impl NamesRead for NamesFold {
     }
     fn repo_owner(&self, repo: RepoId) -> Option<AccountId> {
         self.repo_owners.get(&repo).copied()
+    }
+    fn repo_network(&self, repo: RepoId) -> Option<NetworkId> {
+        self.more.more.more.networks.get(&repo).copied()
     }
     fn account_login(&self, account: AccountId) -> Option<&Login> {
         self.more.account_logins.get(&account)
@@ -601,6 +675,7 @@ trait MoreTables {
     fn shortcodes(&mut self) -> &mut dyn Table<Shortcode, AccountId>;
     fn emails(&mut self) -> &mut dyn Table<Digest, AccountId>;
     fn retired(&mut self) -> &mut dyn Table<(LoginKey, RepoNameKey), ()>;
+    fn networks(&mut self) -> &mut dyn Table<RepoId, NetworkId>;
 }
 
 impl MoreTables for NamesMore {
@@ -627,6 +702,9 @@ impl MoreTables for NamesMore {
     }
     fn retired(&mut self) -> &mut dyn Table<(LoginKey, RepoNameKey), ()> {
         &mut self.retired
+    }
+    fn networks(&mut self) -> &mut dyn Table<RepoId, NetworkId> {
+        &mut self.more.more.networks
     }
 }
 
@@ -664,6 +742,10 @@ where
         NamesEvent::InstallationRegistered { id, app, owner } => t.more.installations().put(*id, (*app, *owner)),
         NamesEvent::Placement { owner, record } => t.placements.put(*owner, record.clone()),
         NamesEvent::RepoOwner { repo, owner } => t.repo_owners.put(*repo, *owner),
+        NamesEvent::ForkOwner { repo, owner, network } => {
+            t.repo_owners.put(*repo, *owner);
+            t.more.networks().put(*repo, *network);
+        }
         NamesEvent::AccountLogin { account, login } => t.more.account_logins().put(*account, login.clone()),
         // The fold's own field (`NamesFold::apply`); `decide` never reads it from a scratch view.
         NamesEvent::AuditCursor { .. } => {}
@@ -680,6 +762,7 @@ struct MoreOverlay<'a> {
     shortcodes: Overlay<'a, Shortcode, AccountId>,
     emails: Overlay<'a, Digest, AccountId>,
     retired: SetOverlay<'a, (LoginKey, RepoNameKey)>,
+    networks: Overlay<'a, RepoId, NetworkId>,
 }
 
 impl MoreTables for MoreOverlay<'_> {
@@ -706,6 +789,9 @@ impl MoreTables for MoreOverlay<'_> {
     }
     fn retired(&mut self) -> &mut dyn Table<(LoginKey, RepoNameKey), ()> {
         &mut self.retired
+    }
+    fn networks(&mut self) -> &mut dyn Table<RepoId, NetworkId> {
+        &mut self.networks
     }
 }
 
@@ -740,6 +826,9 @@ impl NamesRead for NamesScratch<'_> {
     }
     fn repo_owner(&self, repo: RepoId) -> Option<AccountId> {
         self.repo_owners.get(&repo).copied()
+    }
+    fn repo_network(&self, repo: RepoId) -> Option<NetworkId> {
+        self.more.networks.get(&repo).copied()
     }
     fn account_login(&self, account: AccountId) -> Option<&Login> {
         self.more.account_logins.get(&account)
@@ -822,6 +911,13 @@ impl Scratch for NamesScratch<'_> {
             NamesEvent::Placement { owner, record } if !follows(self.placement(*owner), record) => {
                 Err(format!("placement of {owner:?} does not follow {:?}", self.placement(*owner)).into())
             }
+            NamesEvent::ForkOwner { repo, network, .. } if network.root() == *repo => {
+                Err("a fork's network is not its own id".into())
+            }
+            NamesEvent::ForkOwner { repo, network, .. } => match self.repo_network(*repo) {
+                Some(n) if n != *network => Err(format!("{repo:?} is already in network {n:?}").into()),
+                _ => Ok(()),
+            },
             NamesEvent::AppSlug { slug, app: Some(app), .. } => match self.slug(slug) {
                 Some(r) if r.app != *app => Err(format!("{slug:?} is claimed for {:?} of {:?}", r.app, r.owner).into()),
                 _ => Ok(()),
@@ -874,6 +970,7 @@ impl Fold for NamesFold {
                 shortcodes: Overlay::new(&m.shortcodes),
                 emails: Overlay::new(&m.emails),
                 retired: SetOverlay::new(&m.retired),
+                networks: Overlay::new(&m.more.more.networks),
             },
         }
     }
@@ -891,7 +988,7 @@ impl Fold for NamesFold {
         );
         // Never back: two cursor commands in one entry leave the later of the two.
         if let NamesEvent::AuditCursor { through } = ev {
-            self.more.more = self.more.more.max(*through);
+            self.more.more.cursor = self.more.more.cursor.max(*through);
         }
     }
     fn apply_id_block(&mut self, b: IdBlock) {
@@ -1020,6 +1117,14 @@ pub enum NamesOp {
     AuditCursor {
         shard: NameShard,
         through: Index,
+    },
+    // ---- format 4 ----
+    /// `RepoOwner` with the repository's network: a fork's create sends it (AM3-WP2a). `decide` writes `RepoOwner`
+    /// when `network` is the repository's own id, so a root's row keeps its bytes, and `ForkOwner` otherwise.
+    RepoOwnerIn {
+        repo: RepoId,
+        owner: AccountId,
+        network: NetworkId,
     },
 }
 
@@ -1176,6 +1281,12 @@ impl Record for NamesCmd {
                 e.u16(shard.0);
                 e.u64(through.0);
             }
+            NamesOp::RepoOwnerIn { repo, owner, network } => {
+                e.u8(18);
+                enc::repo(&mut e, *repo);
+                enc::account(&mut e, *owner);
+                enc::db(&mut e, network.0);
+            }
         }
     }
 }
@@ -1191,7 +1302,7 @@ impl NamesCmd {
             | NamesOp::MovePlacement { owner, .. }
             | NamesOp::FinishMove { owner, .. }
             | NamesOp::SetAccountLogin { account: owner, .. } => return Some(account_shard(*owner)),
-            NamesOp::RepoOwner { repo, .. } => NameKey::Repo(*repo),
+            NamesOp::RepoOwner { repo, .. } | NamesOp::RepoOwnerIn { repo, .. } => NameKey::Repo(*repo),
             NamesOp::ClaimSlug { slug, .. } | NamesOp::ReleaseSlug { slug, .. } => NameKey::AppSlug(slug.clone()),
             NamesOp::RegisterApp { app, .. } => NameKey::App(*app),
             NamesOp::RegisterClient { client, .. } => NameKey::Client(*client),
@@ -1259,6 +1370,7 @@ impl NamesCmd {
             | NamesOp::MovePlacement { .. }
             | NamesOp::FinishMove { .. }
             | NamesOp::RepoOwner { .. }
+            | NamesOp::RepoOwnerIn { .. }
             | NamesOp::ClaimShortcode { .. }
             | NamesOp::Retire { .. }
             | NamesOp::AuditCursor { .. } => false,
@@ -1341,6 +1453,16 @@ impl NamesCmd {
             }
             NamesOp::RepoOwner { repo, owner } => {
                 one(NamesEvent::RepoOwner { repo: *repo, owner: *owner }, NamesOut::Done)
+            }
+            NamesOp::RepoOwnerIn { repo, owner, network } => {
+                if s.repo_network(*repo) == Some(*network) && s.repo_owner(*repo) == Some(*owner) {
+                    return Ok((SmallVec::new(), NamesOut::Done));
+                }
+                if network.root() == *repo {
+                    one(NamesEvent::RepoOwner { repo: *repo, owner: *owner }, NamesOut::Done)
+                } else {
+                    one(NamesEvent::ForkOwner { repo: *repo, owner: *owner, network: *network }, NamesOut::Done)
+                }
             }
             NamesOp::SetAccountLogin { account, login } => {
                 let chain = self.login_dep().expect("a login");
@@ -1457,6 +1579,7 @@ impl Command for NamesCmd {
             | NamesOp::FinishMove { .. }
             | NamesOp::RepoOwner { .. } => NAMES_FORMAT,
             NamesOp::AuditCursor { .. } => NAMES_FORMAT_V3,
+            NamesOp::RepoOwnerIn { .. } => NAMES_FORMAT_V4,
             _ => NAMES_FORMAT_V2,
         }
     }

@@ -525,6 +525,7 @@ pub(crate) async fn read_repo(
     // `settings` and the `collaborator` rows. A private repository whose owner's `Authz` did not answer is 503, not a
     // 404 the caller would take as "no such repository".
     let core = TierRows::store(&rows.core);
+    crate::nets::learn_rows(repo.id, &core);
     // A read-class request's owner `Authz` may be up to `READ_CACHE` old (`crate::rcache`): one that would hide the
     // repository is read again fresh first, so a grant shows at once and only a revocation waits out the cache.
     if gate == Gate::Readers
