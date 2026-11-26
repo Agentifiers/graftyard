@@ -1267,6 +1267,9 @@ pub(crate) async fn tasks(
         Err(r) => return Ok(r),
     };
     let Some(who) = who else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
+    if let Some(r) = t::agent_session_create(&op, c.agent_session) {
+        return Ok(r);
+    }
     let created = matches!(op, IssueOp::CreateTask(_) | IssueOp::CreateRun(_));
     commit_issue(c, &rd, &who, op, What::Task { created, contents: reader.contents }).await
 }
