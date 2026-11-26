@@ -2226,8 +2226,13 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // An assignment's body, read before the view borrows `rd`: a login the tiers do not name is read into the
     // directory, so the plan resolves it and the leader renders it; a bot login (`{slug}[bot]`) resolves only to
     // `graftyard-agent`'s bot account, which `decide` checks is installed.
+    // F141's single-field issue edit is served only once 32.33 is enabled, whose members may pause the issue's tasks in
+    // the edit's own entry; until then a title or body `PATCH` answers as before (404).
+    let edit_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_HOST_PAUSE);
     let assign_body = match (assign_on, &method, tail) {
-        (true, Method::Post | Method::Delete, ["issues", _, "assignees"]) | (true, Method::Patch, ["issues", _]) => {
+        (true, Method::Post | Method::Delete, ["issues", _, "assignees"]) | (_, Method::Patch, ["issues", _])
+            if assign_on || edit_on =>
+        {
             let b = serde_json::from_slice::<Value>(&req.bytes().await?).unwrap_or(Value::Null);
             for login in rest::assignee_logins(&b) {
                 if graftyard_api::view::Directory::by_login(&rd.dir, &login).is_some() {
@@ -2371,7 +2376,8 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         }
         // F20: `issues/{n}/assignees` add and remove, and an issue `PATCH` that sets only `assignees`.
         (m @ (Method::Post | Method::Delete | Method::Patch), ["issues", n] | ["issues", n, "assignees"])
-            if assign_body.is_some()
+            if assign_on
+                && assign_body.is_some()
                 && let Some(plan) = rest::plan_issue_assignees(
                     &r,
                     match m {
@@ -2390,6 +2396,25 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             match plan {
                 Ok(op) => {
                     let what = What::IssueAssigned { n: n.parse().unwrap_or(0), created: m == Method::Post };
+                    commit_issue(c, &rd, &who, to_wire(op), what).await?
+                }
+                Err(x) => x,
+            }
+        }
+        // F141: an issue `PATCH` whose body names exactly one of `title` and `body`, one `Change` and so one atomic
+        // command (32.33, which may pause the issue's tasks in the same entry). A body naming more, or `state`, is
+        // M4-WP4's atomic update (32.34) and answers as before until it lands.
+        (Method::Patch, ["issues", n])
+            if edit_on
+                && let Some(plan) = rest::plan_issue_edit(&r, n, assign_body.as_ref().unwrap_or(&Value::Null)) =>
+        {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match plan {
+                Ok(op) => {
+                    let what = What::IssueAssigned { n: n.parse().unwrap_or(0), created: false };
                     commit_issue(c, &rd, &who, to_wire(op), what).await?
                 }
                 Err(x) => x,

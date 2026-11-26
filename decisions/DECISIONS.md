@@ -12068,6 +12068,31 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 
 **Flip.** A fold that records event history, such as a closer or label changes, which would let the events routes serve those kinds. Or a client that needs an event the fold cannot render and accepts a `ghost` actor in its place.
 
+### `issue-edit`: a REST issue `PATCH` that names exactly one of `title` and `body` commits one title or body `Change`, served once 32.33 is enabled, 2026-11-26
+
+**Status.** Built at $0 on branch `issue-edit` (F141), for LM-3's in-repo row's pause line. It is native-tested, plant285 catches every mutant, and its reply validates against GHES 3.22. Its hosted proof is that row's pause line after an edge day carrying it.
+
+**Decision.**
+- `rest::plan_issue_edit` plans `PATCH /repos/{o}/{r}/issues/{n}` only when the body names exactly one of `title` and `body`: `IssueOp::Change { n, Title | Body }`, one command and so one entry, which `decide` already checks (the author or triage, 32.33's pause for a caller below write). A numeric `title` is its text, as on create; a `null` body clears it, as GHES allows; another type is 422; a missing item 404.
+- Any other body is not this route and keeps its earlier answer: two fields, `state`, or anything else. GHES 3.22 commits an issue update all or nothing, and two `Change` commands for one request would not be atomic. M4-WP4 builds that update as one multi-op command in 32.34 (lead, 2026-11-26), and widens this route then. An assignees-only body stays F20's `Assign`.
+- Its 200 is the issue after the entry, the reply an assignees-only `PATCH` already renders (`What::IssueAssigned { created: false }`), so a member needs no new render variant.
+- The edge serves it only once `FormatsEnable` enabled 32.33 (`call::REPO_FORMAT_HOST_PAUSE`), the format `IssueCall::pausable` already marks a title or body `Change` with, so a member that cannot read the pause never receives one. No new format.
+
+**Why.** LM-3's in-repo row found no request that builds a title or body `Change` for an issue (F141), so 32.33's pause could not be reached hosted. GHES 3.22's `issues/update` is how Octokit and `gh issue edit` edit one.
+
+**What it beat.**
+- Serving every field of `issues/update` as several `Change` commands: one request would commit in parts, which GHES never does (lead, 2026-11-26).
+- A GraphQL `updateIssue`: no client of the pause line sends it, and its input carries the same multi-field question.
+
+**Evidence.**
+- `crates/api/tests/surfaces.rs`, `rest_issue_patch_of_one_field_is_one_change`: two fields, `state`, `title` with `state`, assignees-only, `{}` and a non-object are not planned; a missing issue 404 and an array title 422; a numeric title and a `null` body plan their change; the issue's reader author's body edit commits and renders 200 with the new body and the old title.
+- Its reply (`issue-patched`) validates against `ghes-3.22.json` with `crates/api/gh/validate.py`: 1 REST reply checked, 0 failed.
+- `tests/m0carried/plant285.py`: 5 of 5 caught. The first mutant is main's rule. Plant 283 is M4-WP4's and 284 AM3-WP3's controller head.
+- `tests/edgeboot/run.sh`: PASS with 0 wasm traps under test-faults (the single-field PATCH answers 503 with 32.33 off), and PASS with 0 traps for the product build.
+- `tests/plaindiff/diff.mjs`: 21 request pairs, 0 unexpected differences. `rest-issue-1-patch-title` and `rest-issue-1-patch-two` answer the same as main's with 32.33 off.
+
+**Flip.** M4-WP4's 32.34 atomic update lands: then `issues/update` is that command for every body, and this single-field plan is removed with its route.
+
 ### `session-log`: the controller host builds, redacts, and pushes a task's session log before its final state, and the base's page reads it from the base or the workspace fork, 2026-11-26
 
 **Status.** Built at $0 on branch `am3-sessions` (AM3-WP4). Native tests, plant279, and both edgeboots. Its hosted row, LF-10, waits for AM2's fork-mode task delivery (`workers/controller/src/taskbox.rs`, `deliver` still runs in-repo). Retention (a retention command plus GC) is not built here and stays with OPEN-QUESTIONS A15.

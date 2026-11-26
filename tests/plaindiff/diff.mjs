@@ -48,6 +48,10 @@ const reqs = [
   ["rest-issue-1-timeline", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/timeline`, tok],
   ["rest-issue-comment-1", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/comments/1`, tok],
   ["rest-issue-event-1", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/events/1`, tok],
+  // F141: the single-field issue PATCH is served only once 32.33 is enabled, which this bed does not enable, and a
+  // two-field PATCH is never this route; both stay main's answer.
+  ["rest-issue-1-patch-title", "PATCH", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1`, { ...tok, "content-type": "application/json" }, JSON.stringify({ title: "plain" })],
+  ["rest-issue-1-patch-two", "PATCH", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1`, { ...tok, "content-type": "application/json" }, JSON.stringify({ title: "plain", body: "b" })],
   ["rest-label-write", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/labels`, { ...tok, "content-type": "application/json" }, "LABEL"],
   ["graphql", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "{ repository(owner: \"cw\", name: \"r\") { name } }" })],
 ];
