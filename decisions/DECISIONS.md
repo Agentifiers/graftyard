@@ -11854,3 +11854,40 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 **Note on the demoted-actor create's count (AM3-WP3's rest, part 2; the lead, 2026-11-26).** It counts writes in the replicated `Recent` window by their entry times, which are approximate across leaders (`crates/raft/src/admit.rs`, `between`) [inference]. That is fine for a 60-a-minute threshold.
 
 **Flip.** If GHES 3.22 is shown to answer an assignee without push access with 422 rather than dropping it, refuse in `plan_issue_assignees`. If GitHub lists a bot assignee in `Issue.assignees`, stop filtering it. If the controller needs to create from an issue assigned before 32.30 was enabled (an `IssueOpened` row), it cannot: such a row names no assigner, so a writer must reassign the bot.
+
+### `pulls-list`: `GET /repos/{o}/{r}/pulls` lists `pull-request-simple` from the fold, through the narrow read, 2026-11-26
+
+**Status.** Built at $0 on branch `pulls-list`. It is native-tested, edgeboot passed with test-faults and with PRODUCT, and plaindiff ran. Its hosted proof rides the next graft-m4a row that already does a site day and an edge day. Closes OPEN-QUESTIONS F136 once hosted.
+
+**Decision.**
+- `rest::list_pulls` serves GHES 3.22's `pulls/list`:
+  - `state`: `open` (the default), `closed` or `all`.
+  - `head` as `owner:branch`, compared case-blind on the owner. A `head` with no `owner:` is ignored, as GitHub ignores it.
+  - `base`: a branch name.
+  - `sort`: `created` (the default), `updated`, `popularity` (the comment count), or `long-running` (by creation).
+  - `direction`: `desc` by default for `created` only, and `asc` for the others, as the description says.
+  - `per_page` and `page`, with a `Link` header that keeps the filters.
+  - Anything else in `state` or `sort` answers 422.
+- Its selection is a `Directory::pick` over `issue_order`'s pull-request keys, so a member answers the narrow read with only the page's items (`narrow::rest_serves`, `rest_get`), as `GET /issues` does. The edge's whole-tier path routes it too.
+- Each item is the pinned `pull-request-simple`: `webhooks::pull_request_simple`, which `pull_request` now builds on. It is the single-pull object without the 12 fields only `pull-request` has. So a list reads no git-cache counts and asks for no test merge.
+- No format. It is a read of rows every member already folds.
+
+**Why.** LM-1's BF-76 r1 on graft-m4a got 404 for `GET /pulls`. Octokit's `pulls.list`, `gh api repos/o/r/pulls`, and the web app's pulls and compare pages (`web/src/areas/pulls/queries.ts`, `pullsQuery`, `state=all&per_page=100`) all call it. The web app reaches it only through its msw mock (`web/src/mocks/areas/pulls.ts`) until `VITE_MOCK_API=false`.
+
+**What it beat.**
+- Serving the full `pull-request` per item. That needs a git-cache compare for each item's counts, a cost GHES's list avoids by its schema.
+- Reusing `GET /issues`' sort defaults. They sort `desc` for every sort, which GHES's `pulls/list` does not.
+
+**Evidence.**
+- `crates/api/tests/narrow.rs`, `rest_pull_lists_follow_ghes_rules_and_are_the_whole_tier_bytes`:
+  - 1,680 queries over every state, sort, direction, `head` and `base` form, and page boundary.
+  - Each page is the one an oracle computes from the rows by the description's rules, with a next link if and only if more follow.
+  - The narrow reply is the whole-tier bytes and holds only the page's items.
+  - Each item equals `GET /pulls/{n}` without the full-only fields.
+  - It fails on main, where `rest_get` serves no `pulls`.
+- All 1,680 replies validate against `ghes-3.22.json`'s `pulls/list` response with `crates/api/gh/validate.py`. That needs one correction of the description: `pull-request-simple`'s label `description` is typed non-null, but GitHub answers null for a label with none (github/rest-api-description#5560). With it, the crate's whole reply set validates but for the four `merge_group` and queue webhook keys GHES 3.22 lacks, which need `DOTCOM_OPENAPI`, as before.
+- `tests/m0carried/plant276.py`: 8 of 8 caught. The first mutant is main's rule.
+- `bash tests/edgeboot/run.sh` and `PRODUCT=1 bash tests/edgeboot/run.sh` pass with 0 wasm traps. Both answer `/repos/o/r/pulls` 503 with no site bound, as they answer `/repos/o/r`.
+- `tests/plaindiff/run.sh`, base main `b65e6812`: 10 request pairs. `rest-pulls` answers 404 on the base and 200 `[]` on the head (named in `CHANGED`), and the other 9 are byte-identical: git, `GET /repos/{o}/{r}`, `GET /pulls/1` (404 on both, since the bed has no pull request), `GET /issues`, a label write, and GraphQL.
+
+**Flip.** A GHES 3.22 reply that differs from this one on the same rows, for example a `long-running` list limited by age, which F136 leaves open because the view has no clock, or a `head` without `owner:` that filters.

@@ -382,17 +382,38 @@ fn issue(r: &Repo<'_>, it: &Item) -> Value {
     v
 }
 
-/// The webhook `pull_request` object (`pull-request` with the webhook's additions).
+/// The webhook `pull_request` object (`pull-request` with the webhook's additions): `pull_request_simple` and the
+/// fields only the full object has, whose counts are the git cache's (`Repo::counts`).
 pub(crate) fn pull_request(r: &Repo<'_>, it: &Item) -> Value {
+    let Some((pull, head)) = &it.pull else { return Value::Null };
+    let mut v = pull_request_simple(r, it);
+    let merged_by = match head.state {
+        PrState::Merged { by, .. } => Some(by.0),
+        _ => None,
+    };
+    let c = r.counts(pull, head);
+    let rest = json!({
+        "merged": matches!(head.state, PrState::Merged { .. }), "mergeable": null, "rebaseable": null,
+        "mergeable_state": "unknown", "merged_by": merged_by.map(|b| simple_user(r.host, r.dir, Some(b))),
+        "comments": it.row.comments, "review_comments": 0, "maintainer_can_modify": false, "commits": c.commits,
+        "additions": c.additions, "deletions": c.deletions, "changed_files": c.changed_files,
+    });
+    v.as_object_mut().expect("object").extend(obj(rest));
+    v
+}
+
+/// The pinned `pull-request-simple` object, which `GET /repos/{owner}/{repo}/pulls` lists: no counts, so a list asks
+/// the git cache for none.
+pub(crate) fn pull_request_simple(r: &Repo<'_>, it: &Item) -> Value {
     let (api, web) = (r.host.api(), r.host.web());
     let (o, n) = (&r.at.owner, &r.at.name);
     let num = it.n.0;
     let row = &it.row;
     let Some((pull, head)) = &it.pull else { return Value::Null };
     let merged = matches!(head.state, PrState::Merged { .. });
-    let (merge_commit, merged_by) = match head.state {
-        PrState::Merged { merge_commit, by, .. } => (Some(merge_commit.hex()), Some(by.0)),
-        _ => (None, None),
+    let merge_commit = match head.state {
+        PrState::Merged { merge_commit, .. } => Some(merge_commit.hex()),
+        _ => None,
     };
     let url = format!("{api}/repos/{o}/{n}/pulls/{num}");
     let repo = repository(r);
@@ -401,7 +422,6 @@ pub(crate) fn pull_request(r: &Repo<'_>, it: &Item) -> Value {
             "user": simple_user(r.host, r.dir, Some(r.at.owner_id)), "repo": repo.clone() })
     };
     let base_tip = r.ref_value(&pull.base).unwrap_or(pull.base_sha);
-    let c = r.counts(pull, head);
     let labels: Vec<Value> = r.labels_of(it.n).iter().map(|(id, l)| crate::rest::label_json(r, *id, l)).collect();
     let assignees: Vec<Value> = r.assignees_of(it.n).into_iter().map(|a| simple_user(r.host, r.dir, Some(a))).collect();
     let open = matches!(head.state, PrState::Open { .. });
@@ -435,10 +455,6 @@ pub(crate) fn pull_request(r: &Repo<'_>, it: &Item) -> Value {
             "statuses": link(format!("{api}/repos/{o}/{n}/statuses/{}", head.head_sha.hex())),
         },
         "author_association": crate::wire::association(r, row.author), "auto_merge": null, "draft": draft,
-        "merged": merged, "mergeable": null, "rebaseable": null, "mergeable_state": "unknown",
-        "merged_by": merged_by.map(|b| simple_user(r.host, r.dir, Some(b))), "comments": row.comments,
-        "review_comments": 0, "maintainer_can_modify": false, "commits": c.commits, "additions": c.additions,
-        "deletions": c.deletions, "changed_files": c.changed_files,
     });
     v.as_object_mut().expect("object").extend(obj(rest));
     v

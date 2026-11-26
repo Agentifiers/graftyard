@@ -57,7 +57,7 @@ echo "GET openid-configuration: $c $(head -c 100 "$B/body")"
 { [ "$c" = 200 ] && grep -q '"jwks_uri":"https://edgeboot.example/_services/token/.well-known/jwks"' "$B/body"; } || { echo "  FAIL: discovery"; ok=0; }
 c=$(curl -s -m 30 -o "$B/body" -w '%{http_code}' "http://127.0.0.1:$P/_services/token/.well-known/jwks")
 echo "GET jwks: $c"; [ "$c" = 503 ] || { echo "  FAIL: jwks with no site is not 503"; ok=0; }
-for p in "/api/v3/repos/o/r" "/api/graftyard/v1/release/entries?after=0" "/o/r.git/info/refs?service=git-upload-pack" \
+for p in "/api/v3/repos/o/r" "/api/v3/repos/o/r/pulls?state=all&per_page=5" "/api/graftyard/v1/release/entries?after=0" "/o/r.git/info/refs?service=git-upload-pack" \
   "/o/r.git/git-upload-pack"; do
   m=GET; [ "${p##*/}" = git-upload-pack ] && m=POST
   c=$(curl -s -m 30 -X $m -D "$B/h" -o "$B/body" -w '%{http_code}' "${hdr[@]}" "http://127.0.0.1:$P$p")
