@@ -17,6 +17,11 @@ use crate::{Anchor, Bound, Refusal, SignedEntry, check_genesis, check_keys};
 /// How long a drain-key or intent-key drain must have held, with zero acks read by `graft-ops`, before the executor
 /// key may replace the site ("Install operations", Site day, `ZERO_ACKS`) [guess].
 pub const ZERO_ACKS: u64 = 24 * 3_600_000;
+/// The first entry time at which the group refuses a `RestorePlacement` of a site that is lost and not yet replaced
+/// (`decisions/DECISIONS.md`, `restore-gate-from`): 2026-11-27T12:00Z, after BM-6's prep site day has put the release
+/// carrying the rule on every graft-m6a member. Entries before it replay under the old rule, so m6aL2's restore
+/// (committed between its `SiteLost` and the drain) stays in every replica's history.
+pub const RESTORE_GATE_FROM: Timestamp = Timestamp(1_795_780_800_000);
 /// The longest an uncommitted `StaleMode` is honored after it arrives (Shape, "The read path") [guess].
 pub const STALE_MAX: u64 = 24 * 3_600_000;
 /// `ROLL_STEPS` for the scripts that roll by percentage ("Install operations", Site day): the share of requests the
@@ -785,8 +790,9 @@ impl ReleaseFold {
                 }
                 // A customer-signed `SiteLost` drains nothing; graft-ops drains the site on its next run. Until the
                 // site is replaced, a restore is the same restore while drained (m6aL2: committed 42 s after the
-                // `SiteLost`, before the drain, and halted under the `ReplaceMember`).
-                if self.lost.contains(&site.0) && !self.replaced.contains_key(&site.0) {
+                // `SiteLost`, before the drain, and halted under the `ReplaceMember`). Only from RESTORE_GATE_FROM: an
+                // entry committed before it was accepted without this rule, and every replica replays it.
+                if at >= RESTORE_GATE_FROM && self.lost.contains(&site.0) && !self.replaced.contains_key(&site.0) {
                     return Err(refuse("RestorePlacement is refused while its site is lost and not yet replaced"));
                 }
             }

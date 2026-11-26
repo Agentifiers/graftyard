@@ -1,0 +1,7 @@
+refused at 12: RestorePlacement is refused while its site is lost and not yet replaced
+count=12
+lost={0} replaced={} drained={}
+A silent, move absent: Commit { body: SiteMode(SiteMode { site: SiteId(0), mode: Drain }), signer: Drain }
+A silent, move running: Commit { body: SiteMode(SiteMode { site: SiteId(0), mode: Drain }), signer: Drain }
+A silent, move done: Commit { body: SiteMode(SiteMode { site: SiteId(0), mode: Drain }), signer: Drain }
+no verdicts, move done: Commit { body: SiteMode(SiteMode { site: SiteId(0), mode: Drain }), signer: Drain }
