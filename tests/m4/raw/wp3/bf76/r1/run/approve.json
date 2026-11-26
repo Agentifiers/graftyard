@@ -1,0 +1,36 @@
+{
+ "phase": "approve",
+ "ok": true,
+ "from": "2026-11-26T07:30:12.390Z",
+ "to": "2026-11-26T07:31:11.049Z",
+ "fails": [],
+ "lines": [
+  {
+   "ok": true,
+   "what": "org admin approves the map 5277fe93c5ab: {\"pin_map\":\"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93\",\"tags\":false}"
+  },
+  {
+   "ok": true,
+   "what": "approving a digest the install does not hold: 422"
+  },
+  {
+   "ok": true,
+   "what": "the same pinned workflow concluded Success (want Success)"
+  },
+  {
+   "ok": true,
+   "what": "Set up job downloads actions/upload-artifact@ea165f8d... as written at the fork's SHA aeb6043f"
+  },
+  {
+   "ok": true,
+   "what": "no GHESNotSupportedError"
+  },
+  {
+   "ok": true,
+   "what": "REST zip of pinned: files {\"x.bin\":\"b334fec39339fe1558ca600a10da411b042c07a32094c40266bb7586966607d2\"} vs {\"p/x.bin\":\"b334fec39339fe1558ca600a10da411b042c07a32094c40266bb7586966607d2\"}"
+  }
+ ],
+ "run": 1972521,
+ "head": "3a2d2ca33767e006c5e3e9662106b3d8170a0e88",
+ "job": 1972522
+}

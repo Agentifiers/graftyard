@@ -1,0 +1,33 @@
+2026-11-26T07:19:15Z
+121078243
+upload-artifact v4.6.2 upstream ea165f8d65b6e75b540449e92b4886f43607fa02 fork aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e (2 bundle(s))
+download-artifact v4.3.0 upstream d3f86a106a0bac45b974a628896c90dbdf5c8093 fork 373906d2915ced2e53ba59693e2d2acf30171209 (1 bundle(s))
+build-forks exit 0
+2026-11-26T07:19:44.302Z graftyard-actions = 7100013, m3-admin its admin
+2026-11-26T07:20:06.449Z graftyard-actions/upload-artifact = 4653056
+2026-11-26T07:20:27.069Z graftyard-actions/upload-artifact@v4 = aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e
+2026-11-26T07:20:27.072Z graftyard-actions/upload-artifact@v4.6.2 = aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e
+fork upload exit 0
+2026-11-26T07:20:30.534Z graftyard-actions = 7100013, m3-admin its admin
+2026-11-26T07:20:48.693Z graftyard-actions/download-artifact = 4653057
+2026-11-26T07:21:02.502Z graftyard-actions/download-artifact@v4 = 373906d2915ced2e53ba59693e2d2acf30171209
+2026-11-26T07:21:02.505Z graftyard-actions/download-artifact@v4.3.0 = 373906d2915ced2e53ba59693e2d2acf30171209
+fork download exit 0
+2026-11-26T07:21:07.436Z actions = 7100010, m3-admin its admin
+2026-11-26T07:21:24.980Z actions/upload-artifact = 3997698
+2026-11-26T07:21:39.907Z actions/upload-artifact@v4.6.2 = ea165f8d65b6e75b540449e92b4886f43607fa02
+upstream upload exit 0
+2026-11-26T07:21:42.627Z actions = 7100010, m3-admin its admin
+2026-11-26T07:22:03.314Z actions/download-artifact = 3997699
+2026-11-26T07:22:17.150Z actions/download-artifact@v4.3.0 = d3f86a106a0bac45b974a628896c90dbdf5c8093
+upstream download exit 0
+2026-11-26T07:22:19.155Z ok   PUT pin-map: 201 {"digest":"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93"}, want digest 5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93
+2026-11-26T07:22:19.630Z ok   PUT pin-map signed by another key: 422
+2026-11-26T07:22:19.657Z ok   PUT pin-map with no token: 401
+2026-11-26T07:22:21.538Z ok   graftyard-actions/upload-artifact@v4 is aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e (want aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e)
+2026-11-26T07:22:22.997Z ok   actions/upload-artifact@ea165f8d on the install: 200
+2026-11-26T07:22:23.873Z ok   graftyard-actions/download-artifact@v4 is 373906d2915ced2e53ba59693e2d2acf30171209 (want 373906d2915ced2e53ba59693e2d2acf30171209)
+2026-11-26T07:22:24.157Z ok   actions/download-artifact@d3f86a10 on the install: 200
+2026-11-26T07:22:24.159Z BF-76 setup PASS (2026-11-26T07:22:17.201Z to 2026-11-26T07:22:24.158Z)
+2026-11-26T07:22:24.159Z sheds: python3 tests/fanout/tieroff503.py 2026-11-26T07:22:17.201Z 2026-11-26T07:22:24.158Z graft-m4a-edge
+setup exit 0

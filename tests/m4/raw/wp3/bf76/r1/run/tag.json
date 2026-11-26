@@ -1,0 +1,59 @@
+{
+ "phase": "tag",
+ "ok": true,
+ "from": "2026-11-26T07:22:44.285Z",
+ "to": "2026-11-26T07:24:53.291Z",
+ "fails": [],
+ "lines": [
+  {
+   "ok": true,
+   "what": "org policy tags on: 200 {\"pin_map\":null,\"tags\":true}"
+  },
+  {
+   "ok": true,
+   "what": "jobs: up Success, down Success"
+  },
+  {
+   "ok": true,
+   "what": "up's download line names actions/upload-artifact@v4 and the fork's SHA aeb6043f"
+  },
+  {
+   "ok": true,
+   "what": "down's download line names actions/download-artifact@v4 and the fork's SHA 373906d2"
+  },
+  {
+   "ok": true,
+   "what": "down: every file's SHA-256 matches (BF76 ALL SUMS OK)"
+  },
+  {
+   "ok": true,
+   "what": "no GHESNotSupportedError in either job"
+  },
+  {
+   "ok": true,
+   "what": "REST zip of v4art: 302/200, 20006465 B, unzip -t true, files {\"big.bin\":\"205f307b634bd32170de7e6fbee79bd6f2fc30fb87cd2ca60aa10405195929ba\",\"empty.txt\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"sub/a.txt\":\"7fe8761b4a783f7d60b2f9d540b7fd9a55ec8c95bdca08ace53cd284cd054e2f\"} vs sums {\"big.bin\":\"205f307b634bd32170de7e6fbee79bd6f2fc30fb87cd2ca60aa10405195929ba\",\"sub/a.txt\":\"7fe8761b4a783f7d60b2f9d540b7fd9a55ec8c95bdca08ace53cd284cd054e2f\",\"empty.txt\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}"
+  },
+  {
+   "ok": true,
+   "what": "v4art's retention-days: 2 reads as expires_at - created_at = 2 days"
+  }
+ ],
+ "run": 1972513,
+ "jobs": [
+  [
+   1972514,
+   "up",
+   "Success"
+  ],
+  [
+   1972515,
+   "down",
+   "Success"
+  ]
+ ],
+ "sums": {
+  "big.bin": "205f307b634bd32170de7e6fbee79bd6f2fc30fb87cd2ca60aa10405195929ba",
+  "sub/a.txt": "7fe8761b4a783f7d60b2f9d540b7fd9a55ec8c95bdca08ace53cd284cd054e2f",
+  "empty.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ }
+}

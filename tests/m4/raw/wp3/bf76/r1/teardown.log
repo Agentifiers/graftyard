@@ -1,0 +1,32 @@
+2026-11-26T07:37:56Z
+121078243
+2026-11-26T07:38:03.043Z policy PUT {"tags":false,"pin_map":null}: 200; now {"pin_map":"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93","tags":false}
+2026-11-26T07:38:09.043Z policy PUT {"pin_map":"43dd75a6e4fe74c3c70f8eaa28a7ecda9d7badcaf6e73f4e867cdcc0c87b86b1"}: 200; now {"pin_map":"43dd75a6e4fe74c3c70f8eaa28a7ecda9d7badcaf6e73f4e867cdcc0c87b86b1","tags":false}
+2026-11-26T07:38:10.250Z withdraw workaround: empty map 201 43dd75a6e4fe74c3c70f8eaa28a7ecda9d7badcaf6e73f4e867cdcc0c87b86b1, approved {"pin_map":"43dd75a6e4fe74c3c70f8eaa28a7ecda9d7badcaf6e73f4e867cdcc0c87b86b1","tags":false}, real map current again 201 5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93
+2026-11-26T07:38:10.250Z FAIL {pin_map: null} withdrew nothing ({"pin_map":"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93","tags":false}); the empty map 43dd75a6e4fe is approved instead
+2026-11-26T07:38:14.729Z ok   tag substitution off: {"pin_map":"43dd75a6e4fe74c3c70f8eaa28a7ecda9d7badcaf6e73f4e867cdcc0c87b86b1","tags":false}
+2026-11-26T07:38:14.729Z ok   m3org/bf76-r1: DELETE 204, anonymous read after 404
+2026-11-26T07:38:14.730Z BF-76 teardown FAIL (2026-11-26T07:37:56.885Z to 2026-11-26T07:38:14.730Z)
+2026-11-26T07:38:14.730Z sheds: python3 tests/fanout/tieroff503.py 2026-11-26T07:37:56.885Z 2026-11-26T07:38:14.730Z graft-m4a-edge
+teardown exit 1
+Traceback (most recent call last):
+  File "~/tmp/wt-bf76/tests/fanout/teardown.py", line 50, in <module>
+    r = subprocess.run([wrangler, "deploy", "-c", f"{work}/wrangler.json", "--secrets-file", f"{work}/secrets.json"],
+                       capture_output=True, text=True)
+  File "/usr/lib/python3.14/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/subprocess.py", line 1990, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'wrangler'
+sweep exit 1

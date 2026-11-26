@@ -1,0 +1,10 @@
+shardkill deployed: https://graft-m4a-shardkill.<sub>.workers.dev
+git#1#net:65625 200
+git#0#net:4653057 200
+git#0#net:3997699 200
+git#0#net:3997698 200
+git#0#net:4653056 200
+{"torn_down": 5, "codes": {"200": 5}}
+sweep: no shard container running
+shardkill deleted: True
+sweep exit 0

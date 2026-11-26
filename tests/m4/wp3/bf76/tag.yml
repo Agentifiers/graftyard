@@ -1,0 +1,28 @@
+# BF-76's tag job (tests/m4/wp3/bf76): `actions/upload-artifact@v4` and `actions/download-artifact@v4` as written, which
+# the org's tag substitution resolves to the `graftyard-actions` forks. `up` prints each file's SHA-256 as `BF76 SUM`
+# lines; `down` downloads the artifact and checks them, printing `BF76 ALL SUMS OK`. No step reads a secret.
+on: workflow_dispatch
+jobs:
+  up:
+    runs-on: [self-hosted]
+    steps:
+      - run: |
+          set -eu
+          mkdir -p v4/sub
+          head -c 20000000 /dev/urandom > v4/big.bin
+          echo "bf76 v4" > v4/sub/a.txt
+          : > v4/empty.txt
+          (cd v4 && sha256sum big.bin sub/a.txt empty.txt | tee ../sums.txt | sed 's/^/BF76 SUM /')
+      - uses: actions/upload-artifact@v4
+        with: { name: v4art, path: v4, retention-days: 2 }
+      - uses: actions/upload-artifact@v4
+        with: { name: sums, path: sums.txt }
+  down:
+    needs: up
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: v4art, path: got }
+      - uses: actions/download-artifact@v4
+        with: { name: sums, path: s }
+      - run: (cd got && sha256sum -c ../s/sums.txt) && echo "BF76 ALL SUMS OK"

@@ -1,0 +1,13 @@
+2026-11-26T07:10:46Z
+121078243
+{"script":"graft-m4a-site-a","created_on":"2026-11-26T06:22:44.93684Z","versions":["777ea0b0 100"]} ["GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev"]
+{"script":"graft-m4a-site-b","created_on":"2026-11-26T06:22:54.4666Z","versions":["c45c5df4 100"]} ["GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev"]
+{"script":"graft-m4a-site-c","created_on":"2026-11-26T06:23:03.069814Z","versions":["de2bbc0f 100"]} ["GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev"]
+{"script":"graft-m4a-edge","created_on":"2026-11-26T06:27:47.490885Z","versions":["d6ab185a 100"]} ["FORMATS_ENABLED=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.16,32.19,20.3,32.22,32.23,18.12,32.24,18.13,21.6,21.5,18.14,21.7,21.8,32.28,21.9,32.29","HOST=graft-m4a-edge.<sub>.workers.dev"]
+{"script":"graft-m4a-ops","created_on":"2026-11-25T14:56:05.928151Z","versions":["ac4cd9a5 100"]} []
+{"ops":[]}
+custom domains: []
+dns: []
+packs: [{"type":"universal","hosts":["graftyard.dev","*.graftyard.dev"],"status":"active"},{"type":"universal","hosts":["graftyard.dev","*.graftyard.dev"],"status":"backup_issued"}]
+config rules: {"rules":[],"errors":[]}
+install day: {"prefix_usd":1.93}

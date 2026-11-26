@@ -1,0 +1,33 @@
+{
+ "sums": {
+  "p/x.bin": "b334fec39339fe1558ca600a10da411b042c07a32094c40266bb7586966607d2"
+ },
+ "z": {
+  "a": {
+   "archive_download_url": "https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/bf76-r1/actions/artifacts/6913366396453134/zip",
+   "created_at": "2026-11-26T07:31:03Z",
+   "expired": false,
+   "expires_at": "2027-02-24T07:31:03Z",
+   "id": 6913366396453134,
+   "name": "pinned",
+   "node_id": "MDg6QXJ0aWZhY3Q2OTEzMzY2Mzk2NDUzMTM0",
+   "size_in_bytes": 100159,
+   "updated_at": "2026-11-26T07:31:06Z",
+   "url": "https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/bf76-r1/actions/artifacts/6913366396453134",
+   "workflow_run": {
+    "head_branch": "pin",
+    "head_repository_id": 65625,
+    "head_sha": "3a2d2ca33767e006c5e3e9662106b3d8170a0e88",
+    "id": 1972521,
+    "repository_id": 65625
+   }
+  },
+  "status": 302,
+  "zstatus": 200,
+  "size": 100159,
+  "tested": true,
+  "files": {
+   "x.bin": "b334fec39339fe1558ca600a10da411b042c07a32094c40266bb7586966607d2"
+  }
+ }
+}
