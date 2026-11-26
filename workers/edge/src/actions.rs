@@ -812,7 +812,7 @@ async fn dispatch(c: &Ctx<'_>, rd: &Read, chain: ChainId, b: &Value) -> Result<R
     // A run marked as a fork pull request's, whose jobs read no secret (BF-59): no fork route exists yet, so the
     // admin's dispatch marks it [inference: the refusal is `acquirejob`'s, which reads only `run.fork`].
     let fork = b["fork"].as_bool().unwrap_or(false);
-    // `reusable`: every called workflow read at its ref and pinned, once 0x15.9 is enabled (`called_file`).
+    // `reusable`: every called workflow read at its ref and pinned, once 0x15.9 is enabled (`CallReads`).
     let planned = {
         let parsed = graftyard_actions::workflow::parse(path, &src);
         let origin = graftyard_actions::reusable::Origin {
@@ -822,9 +822,9 @@ async fn dispatch(c: &Ctx<'_>, rd: &Read, chain: ChainId, b: &Value) -> Result<R
             sha: sha.0,
         };
         let enabled = c.cfg.enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_REUSABLE);
-        let own = format!("{}/{}", rd.at.owner, rd.at.name);
+        let reads = CallReads { c, rd };
         match graftyard_actions::reusable::plan_run(&parsed.workflow, &origin, parsed.ok() && enabled, |w| {
-            called_file(c, rd, &own, w)
+            graftyard_actions::reusable::called_file(&reads, w)
         })
         .await
         {
@@ -850,65 +850,55 @@ async fn dispatch(c: &Ctx<'_>, rd: &Read, chain: ChainId, b: &Value) -> Result<R
     })
 }
 
-/// A called workflow file for the dispatch's plan (`graftyard_actions::reusable`): `./` in the dispatched repository at
-/// the caller's commit, or `owner/repo` resolved by name on this install and read as an anonymous caller, as the
-/// launch service reads an action's repository (F90), its version a full SHA, else a tag, else a branch. The file is
-/// read from the network's git cache at the commit, and that commit is what its jobs' tokens name.
-async fn called_file(
-    c: &Ctx<'_>,
-    rd: &Read,
-    own: &str,
-    w: graftyard_actions::reusable::Want,
-) -> std::result::Result<graftyard_actions::reusable::Fetched, String> {
-    use graftyard_actions::reusable::{Fetched, Origin, Version, resolve_version};
-    let other;
-    let (at, (r#ref, sha)) = match (&w.repo, &w.version) {
-        (None, Version::At { r#ref, sha }) => (rd, (r#ref.clone(), *sha)),
-        (Some(name), version) => {
-            let (o, r) = name.split_once('/').ok_or("owner/repo")?;
-            let v = match version {
-                Version::At { sha, .. } => graftyard_git::refs::ObjectId(*sha).hex(),
-                Version::Named(v) => v.clone(),
-            };
-            let route = graftyard_api::narrow::Route::Rest {
-                tail: vec!["tarball".into(), v.clone()],
-                query: String::new(),
-                path: format!("/repos/{o}/{r}/tarball/{v}"),
-                agent: false,
-            };
-            other = match crate::api::read_as(c, o, r, None, crate::api::Rows::Api(route)).await {
-                Ok(Ok(x)) => x,
-                Ok(Err(x)) if x.status == 404 => return Err(format!("{name}: not found or not readable")),
-                Ok(Err(x)) => return Err(format!("{name}: {}", x.status)),
-                Err(e) => return Err(format!("{name}: {e}")),
-            };
-            let pinned = match version {
-                Version::At { r#ref, sha } => (r#ref.clone(), *sha),
-                Version::Named(v) => {
-                    let host = graftyard_wire::Host::new(&c.cfg.host, false).map_err(|e| format!("{e:?}"))?;
-                    let view = other.view(&host);
-                    let (r, sha) = resolve_version(v, |n| view.ref_value(n))
-                        .ok_or_else(|| format!("{name}@{v}: no such version"))?;
-                    (r, sha.0)
-                }
-            };
-            (&other, pinned)
+/// The dispatch's reads for its plan (`graftyard_actions::reusable::called_file`, which `ActionsTrigger` shares, F132):
+/// `owner/repo` resolved by name on this install and read as an anonymous caller, as the launch service reads an
+/// action's repository (F90), with the rows a narrow `tarball/{version}` read records, and each file from its network's
+/// git cache at the pinned commit, which its jobs' tokens name.
+struct CallReads<'a, 'b> {
+    c: &'a Ctx<'b>,
+    rd: &'a Read,
+}
+
+impl graftyard_actions::reusable::CallReads for CallReads<'_, '_> {
+    type At = Read;
+    async fn other(
+        &self,
+        o: &str,
+        r: &str,
+        v: &str,
+    ) -> std::result::Result<Option<graftyard_actions::reusable::Other<Read>>, String> {
+        let route = graftyard_api::narrow::Route::Rest {
+            tail: vec!["tarball".into(), v.into()],
+            query: String::new(),
+            path: format!("/repos/{o}/{r}/tarball/{v}"),
+            agent: false,
+        };
+        match crate::api::read_as(self.c, o, r, None, crate::api::Rows::Api(route)).await {
+            Ok(Ok(rd)) => Ok(Some(graftyard_actions::reusable::Other {
+                id: rd.repo.id,
+                owner: rd.repo.owner,
+                core: rd.core.clone(),
+                at: rd,
+            })),
+            Ok(Err(x)) if x.status == 404 => Ok(None),
+            Ok(Err(x)) => Err(format!("{o}/{r}: {}", x.status)),
+            Err(e) => Err(format!("{o}/{r}: {e}")),
         }
-        (None, Version::Named(_)) => return Err(format!("{own}: a call in this repository names no version")),
-    };
-    let q = [("commit", graftyard_git::refs::ObjectId(sha).hex()), ("path", w.path.clone())];
-    let src = match crate::ui::shard_json(c, at, "blob", &q).await {
-        Ok(v) => v["text"].as_str().unwrap_or_default().to_owned(),
-        Err(x) => {
-            return Err(format!(
-                "{}: {} {}",
-                w.path,
-                x.status,
-                if x.status == 404 { "not found" } else { "the git cache did not answer" }
-            ));
+    }
+    async fn blob(
+        &self,
+        repo: Option<&graftyard_actions::reusable::Other<Read>>,
+        sha: [u8; 20],
+        path: &str,
+    ) -> std::result::Result<Option<String>, String> {
+        let at = repo.map_or(self.rd, |o| &o.at);
+        let q = [("commit", graftyard_git::refs::ObjectId(sha).hex()), ("path", path.to_owned())];
+        match crate::ui::shard_json(self.c, at, "blob", &q).await {
+            Ok(v) => Ok(Some(v["text"].as_str().unwrap_or_default().to_owned())),
+            Err(x) if x.status == 404 => Ok(None),
+            Err(x) => Err(format!("{path}: {} the git cache did not answer", x.status)),
         }
-    };
-    Ok(Fetched { origin: Origin { repo: w.repo, path: w.path, r#ref, sha }, src })
+    }
 }
 
 /// The dispatch's `/runsvc` `create_run` call for workflow `path` (source `src`) at `sha` on branch `r`, and its job
