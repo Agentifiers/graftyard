@@ -1405,7 +1405,9 @@ impl Family for Repo {
             .collect();
         let refs: Vec<(graftyard_types::SiteId, &git::host::R2)> = buckets.iter().map(|(s, b)| (*s, b)).collect();
         match mark {
-            Ok(pack) => git::mark_committed(&refs, graftyard_types::NetworkId(repo.0), pack, chain, acked.index).await,
+            Ok(pack) => {
+                git::mark_committed(&refs, graftyard_types::NetworkId::of_root(repo), pack, chain, acked.index).await
+            }
             Err(b) => git::blob::mark_blob(&refs, repo, &b, chain, acked.index).await,
         }
     }

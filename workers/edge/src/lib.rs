@@ -176,6 +176,14 @@ pub(crate) struct Repo {
     record: PlacementRecord,
 }
 
+impl Repo {
+    /// The network the repository's packs, git cache shards, clone and archive caches are keyed by
+    /// (`design/DESIGN.md`, Shape, `R2Key`, `shards_for`): every edge path names it through here, never from `id`.
+    pub(crate) fn network(&self) -> NetworkId {
+        NetworkId::of_root(self.id)
+    }
+}
+
 /// `o/r` through `Names` then `Authz` (`design/DESIGN.md`, Shape, the lookup rule: "the owner's `Names` rows for
 /// `o/r`"): the owner's login row on `name_shard(Login(o))`, the owner's `Placement` row on `account_shard(owner)`, then
 /// the repository's name on the owner's `Authz` chain. `None` for an unknown owner or repository, which git sees as 404.
@@ -1824,7 +1832,7 @@ fn shard_at(c: &Ctx<'_>, repo: &Repo, at: Option<SiteId>) -> Result<Stub> {
     let region = c.sites.get(site).ok_or("unknown home site")?.region;
     c.env
         .durable_object(&format!("SHARD_{}", site.0))?
-        .get_by_name_with_location_hint(&format!("git#{}#net:{}", site.0, repo.id.0.0), region.hint())
+        .get_by_name_with_location_hint(&graftyard_git::first_shard_name(repo.network(), site), region.hint())
 }
 
 /// A repository chain's group, created on first use from the owner's record: its members join with the owner, which
@@ -2548,7 +2556,7 @@ async fn receive_pack(
         let since = js_sys::Date::now();
         let placed = match tail.take() {
             None => {
-                let stage = Stage { network: NetworkId(repo.id.0), id, meta, bytes: pack, inline, part: c.cfg.part };
+                let stage = Stage { network: repo.network(), id, meta, bytes: pack, inline, part: c.cfg.part };
                 let validate = async {
                     let (ix, d) = validate(c, repo, pack, &tips, &detail, agent.is_some()).await?;
                     *detail_out.borrow_mut() = d;
@@ -2559,7 +2567,7 @@ async fn receive_pack(
             // `design/DESIGN.md`, journey 1, step 2: the pack streams to the buckets in parts and to the git cache,
             // and the edge holds two parts of it, whatever its size.
             Some(mut t) => {
-                let s = Streamed { network: NetworkId(repo.id.0), id, meta, part: c.cfg.part };
+                let s = Streamed { network: repo.network(), id, meta, part: c.cfg.part };
                 let pack = futures_util::stream::once(std::future::ready(Ok(std::mem::take(&mut t.pack))));
                 let pipe = graftyard_git::Pipe::default();
                 let validate = async {
@@ -2678,7 +2686,7 @@ async fn receive_pack(
             raw.iter().filter(|(s, _)| repo.record.sites.contains(s)).map(|(s, b)| (*s, b)).collect();
         let store = PackStore { sites: c.sites, buckets: &refs, copies: Copies::TwoRegions };
         let stage = Stage {
-            network: NetworkId(repo.id.0),
+            network: repo.network(),
             id: PackId(Ulid::new(now(), rand10())),
             meta: ObjectMeta { chain: ChainId::Repo(repo.id), request: c.rid },
             bytes: pack,
@@ -2900,7 +2908,7 @@ fn shard_order(repo: &Repo, pinned: Option<SiteId>) -> Vec<SiteId> {
     let net = repo.id.0.0;
     COLD.with(|m| {
         let m = m.borrow();
-        warm_first(validate_sites(&repo.record, NetworkId(repo.id.0), pinned), |s| {
+        warm_first(validate_sites(&repo.record, repo.network(), pinned), |s| {
             m.get(&(net, s.0)).is_some_and(|c| c.until > t)
         })
     })
@@ -3350,7 +3358,7 @@ pub(crate) async fn push_init(
         raw.iter().filter(|(s, _)| repo.record.sites.contains(s)).map(|(s, b)| (*s, b)).collect();
     let store = PackStore { sites: c.sites, buckets: &refs, copies: Copies::TwoRegions };
     let stage = Stage {
-        network: NetworkId(repo.id.0),
+        network: repo.network(),
         id: PackId(Ulid::new(now(), rand10())),
         meta: ObjectMeta { chain: ChainId::Repo(repo.id), request: rid },
         bytes: &init.pack,
@@ -3432,20 +3440,18 @@ async fn upload_front(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Upl
         Some(v) if cache_ok => {
             // The tags are read only for a key that holds them (`CloneKey::needs_tags`): an ls-refs read them from the
             // leader and threw them away.
-            if CloneKey::needs_tags(NetworkId(repo.id.0), v) {
+            if CloneKey::needs_tags(repo.network(), v) {
                 match read_refs(c, repo, b"refs/tags/").await {
-                    Ok(Ok((_, refs))) => CloneKey::of(
-                        NetworkId(repo.id.0),
-                        v,
-                        tags_digest(refs.iter().map(|(n, o)| (n.as_str(), o.as_str()))),
-                    ),
+                    Ok(Ok((_, refs))) => {
+                        CloneKey::of(repo.network(), v, tags_digest(refs.iter().map(|(n, o)| (n.as_str(), o.as_str()))))
+                    }
                     _ => {
                         answer = Some(Hit::Ready(text(c.rid, 503, "the repository's group has no leader; retry\n")?));
                         None
                     }
                 }
             } else {
-                CloneKey::of(NetworkId(repo.id.0), v, graftyard_types::Digest([0; 32]))
+                CloneKey::of(repo.network(), v, graftyard_types::Digest([0; 32]))
             }
         }
         _ => None,
@@ -3459,7 +3465,7 @@ async fn upload_front(c: &Ctx<'_>, req: &mut Request, repo: &Repo) -> Result<Upl
 /// The network's chain buckets as R2 handles, home first (`chain-warm`): after a fold the home bucket can lack a chain
 /// the other warm bucket still holds whole, and its shards still name it.
 fn chain_r2(c: &Ctx<'_>, repo: &Repo) -> Result<Vec<R2>> {
-    graftyard_git::chain_buckets(NetworkId(repo.id.0), &repo.record)
+    graftyard_git::chain_buckets(repo.network(), &repo.record)
         .into_iter()
         .map(|s| Ok(R2(c.env.bucket(&format!("BUCKET_{}", s.0))?)))
         .collect()
@@ -3468,7 +3474,7 @@ fn chain_r2(c: &Ctx<'_>, repo: &Repo) -> Result<Vec<R2>> {
 /// The chain buckets' header sets (`colo-gate`), in `chain_r2`'s order: in the isolate and, unless this is the
 /// share-off arm, the data center's Cache API.
 fn chain_sets<'a>(c: &'a Ctx<'a>, repo: &Repo) -> colo::ChainSets<'a> {
-    let network = NetworkId(repo.id.0);
+    let network = repo.network();
     colo::ChainSets { c, network, sites: graftyard_git::chain_buckets(network, &repo.record), share: !colo_off(c) }
 }
 
@@ -3487,7 +3493,7 @@ async fn clone_hit(c: &Ctx<'_>, repo: &Repo, k: &CloneKey) -> Result<Option<Hit>
         && let Some(b) = o.body()
         && let worker::ResponseBody::Stream(body) = b.response_body()?
     {
-        let net = NetworkId(repo.id.0);
+        let net = repo.network();
         let sets = chain_sets(c, repo);
         match api::timed(c, "chain_open", graftyard_git::host::manifest_check(&chain, net, body, o.size(), &sets))
             .await
@@ -3509,7 +3515,7 @@ async fn upload_pack(c: &Ctx<'_>, repo: &Repo, front: UploadFront) -> Result<Res
     // On the lifeboat, `ls-refs` too comes from `graft-git`, so the refs it names are always ones it can send
     // (`lifeboat::git`); the edge's normal path is unchanged.
     if graftyard_lookup::lifeboat() {
-        return lifeboat::git(c, NetworkId(repo.id.0), &proto, Some(body), &Service::UploadPack.result_type()).await;
+        return lifeboat::git(c, repo.network(), &proto, Some(body), &Service::UploadPack.result_type()).await;
     }
     let is_ls = v2.as_ref().is_some_and(|v| v.command == "ls-refs");
     #[cfg(feature = "test-faults")]
@@ -3533,7 +3539,7 @@ async fn upload_pack(c: &Ctx<'_>, repo: &Repo, front: UploadFront) -> Result<Res
         Some(Hit::Ready(r)) => return Ok(r),
         None => {}
     }
-    let net = NetworkId(repo.id.0);
+    let net = repo.network();
     let chain = chain_r2(c, repo)?;
     let chain: Vec<&R2> = chain.iter().collect();
     // A miss names its key (`fill=`): the shard spools the whole answer and puts it to the cache itself, so a client
@@ -3612,8 +3618,7 @@ async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service, si
                 .with_headers(git_headers(c.rid, &service.advertisement_type())?))
         }
         Service::UploadPack if graftyard_lookup::lifeboat() => {
-            lifeboat::git(c, NetworkId(repo.id.0), proto.as_deref().unwrap_or(""), None, &service.advertisement_type())
-                .await
+            lifeboat::git(c, repo.network(), proto.as_deref().unwrap_or(""), None, &service.advertisement_type()).await
         }
         Service::UploadPack => {
             // v0: the shard's own advertisement, after it caught up to the leader's refs.
@@ -3684,7 +3689,7 @@ async fn each_member(c: &Ctx<'_>, repo: &Repo, path: &str) -> Vec<(u8, String, s
 async fn bed_archive(c: &Ctx<'_>, repo: &Repo, from: u64, to: u64) -> Result<serde_json::Value> {
     use sha2::Digest as _;
     let chain = ChainId::Repo(repo.id);
-    let net = NetworkId(repo.id.0);
+    let net = repo.network();
     let fail = |e: String| Error::RustError(e);
     // The range's entries from the leader, every page.
     let mut entries: Vec<serde_json::Value> = Vec::new();
@@ -3867,7 +3872,7 @@ async fn bed_place_bytes(
     let checksum = Digest(sha2::Sha256::digest(&bytes).into());
     let ix = PackIndex { checksum, bytes: n as u64, objects: 0, trailer: "".into() };
     let stage = Stage {
-        network: NetworkId(repo.id.0),
+        network: repo.network(),
         id: PackId(Ulid::new(now(), rand10())),
         meta: ObjectMeta { chain: ChainId::Repo(repo.id), request: c.rid },
         bytes: &bytes,
@@ -4163,7 +4168,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             for e in entries {
                 let packs: Vec<graftyard_git::PackRef> = serde_json::from_value(e["packs"].clone())?;
                 for id in packs.iter().filter_map(graftyard_git::PackRef::stored_id) {
-                    let pack = graftyard_git::R2Key::Pack { network: NetworkId(repo.id.0), id };
+                    let pack = graftyard_git::R2Key::Pack { network: repo.network(), id };
                     let marker = graftyard_git::R2Key::committed(pack.clone()).ok_or("marker")?.to_string();
                     let mut per = Vec::new();
                     for (site, b) in &raw {
@@ -4269,7 +4274,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                 return text(c.rid, 400, "at most 500 ids\n");
             }
             let raw = buckets(c.env, c.sites)?;
-            let net = NetworkId(repo.id.0);
+            let net = repo.network();
             // Every id's six HEADs at once, 25 ids at a time (the HEADs of one id run serially in 1.1 s).
             let one = |id: String| {
                 let raw = &raw;
@@ -4352,21 +4357,15 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                         bytes: p.2,
                         sites: graftyard_types::SiteSet(refs.iter().fold(0, |m, (s, _)| m | 1 << s.0)),
                     };
-                    graftyard_git::mark_committed(
-                        &refs,
-                        NetworkId(repo.id.0),
-                        &pack,
-                        chain,
-                        graftyard_types::Index(at),
-                    )
-                    .await;
+                    graftyard_git::mark_committed(&refs, repo.network(), &pack, chain, graftyard_types::Index(at))
+                        .await;
                 }
             }
             Response::from_json(&v)
         }
         "/_bed/drop_pack" => {
             let id = qp("id").and_then(|v| v.parse::<Ulid>().ok()).map(PackId).ok_or("id")?;
-            let net = NetworkId(repo.id.0);
+            let net = repo.network();
             let keys = vec![
                 graftyard_git::R2Key::Pack { network: net, id }.to_string(),
                 graftyard_git::R2Key::Idx { network: net, id }.to_string(),

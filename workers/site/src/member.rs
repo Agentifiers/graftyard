@@ -70,7 +70,7 @@ async fn shard_warm(
 ) -> bool {
     let call = async {
         let rec = serde_json::to_string(record).ok()?;
-        let name = format!("git#{}#net:{}", to.0, repo.0.0);
+        let name = graftyard_git::first_shard_name(graftyard_types::NetworkId::of_root(repo), to);
         let st = crate::fanout::stub(env, &site.sites, to, &name).ok()?;
         let url = warm_url(repo, &String::from(worker::js_sys::encode_uri_component(&rec)));
         let mut init = RequestInit::new();

@@ -180,7 +180,7 @@ pub fn changing(committed: Option<&GroupConfig>, latest: &GroupConfig, placing: 
 /// yet, so every network holds one repository (`workers/site/src/sweep.rs`, `home_site`). A fork route must make the
 /// purge refuse a network another repository still uses (`decisions/DECISIONS.md`, "`repo-purge`", Flip).
 pub fn network(repo: RepoId) -> NetworkId {
-    NetworkId(repo.0)
+    NetworkId::of_root(repo)
 }
 
 /// The chains a repository's purge retires: the repository chain and its metadata child.

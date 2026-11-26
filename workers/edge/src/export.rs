@@ -140,7 +140,7 @@ fn refused(c: &Ctx<'_>, e: &ExportError) -> Result<Response> {
 fn owned_repo(chain: Option<ChainId>) -> Option<RepoId> {
     match chain? {
         ChainId::Repo(r) | ChainId::RepoMeta(r) => Some(r),
-        ChainId::Network(n) => Some(RepoId(n.0)),
+        ChainId::Network(n) => Some(n.root()),
         _ => None,
     }
 }

@@ -120,7 +120,7 @@ struct Grant {
 impl Grant {
     fn of(c: &crate::host::Core<Repo>) -> Result<Grant> {
         let ChainId::Repo(repo) = c.join.chain else { return Err("not a repository chain".into()) };
-        let net = NetworkId(repo.0);
+        let net = NetworkId::of_root(repo);
         let sites: Vec<SiteId> = c.join.record.sites.iter().copied().collect();
         let fold = &c.m.group_fold().fold;
         Ok(Grant {
@@ -295,8 +295,7 @@ pub async fn report_from_shard(
 ) -> std::result::Result<(u8, Option<Vec<u16>>), String> {
     let body = json!({ "site": me.0, "load": git::combine(loads) });
     let b = graftyard_lookup::Bindings { env, sites };
-    let (v, _) =
-        graftyard_lookup::call(&b, ChainId::Repo(graftyard_types::RepoId(net.0)), record, "/fanout", &body).await?;
+    let (v, _) = graftyard_lookup::call(&b, ChainId::Repo(net.root()), record, "/fanout", &body).await?;
     let mine = v["grants"].as_array().and_then(|g| {
         g.iter()
             .find(|x| x[0].as_u64() == Some(u64::from(me.0)))

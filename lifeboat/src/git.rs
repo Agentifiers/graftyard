@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use graftyard_git::group::RefsPage;
 use graftyard_git::pack::{Compacted, Marker, PackId, PackRef, Promoted};
 use graftyard_git::{ChainLog, Head, LogPacks, StoreError};
-use graftyard_types::{ChainId, Index, NetworkId, RepoId};
+use graftyard_types::{ChainId, Index, NetworkId};
 use serde::{Deserialize, Serialize};
 
 /// Git pieces one pass runs at most, round the networks [guess]: each is a `catch_up` `PIECE`, about 1.5 s hosted.
@@ -220,7 +220,7 @@ impl<L: Learner> ChainLog for LearnerLog<'_, L> {
     }
 }
 
-/// The repository chain whose packs a network holds: a network id is its root repository's id.
+/// The repository chain whose packs a network holds: its root repository's (`NetworkId::root`).
 pub fn chain_of(network: NetworkId) -> ChainId {
-    ChainId::Repo(RepoId(network.0))
+    ChainId::Repo(network.root())
 }

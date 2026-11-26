@@ -318,7 +318,10 @@ fn warm(h: &Rc<Host<Repo>>, repo: RepoId, record: &graftyard_types::PlacementRec
                 let stub = env
                     .durable_object(&format!("SHARD_{}", at.0))
                     .and_then(|ns| {
-                        ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", at.0, repo.0.0), region.hint())
+                        ns.get_by_name_with_location_hint(
+                            &git::first_shard_name(graftyard_types::NetworkId::of_root(repo), at),
+                            region.hint(),
+                        )
                     })
                     .map_err(|e| e.to_string())?;
                 let url = format!(
@@ -625,7 +628,12 @@ async fn shard_post(env: &Env, site: &SiteEnv, repo: RepoId, url: &str) -> std::
     let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", me.0))
-        .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint()))
+        .and_then(|ns| {
+            ns.get_by_name_with_location_hint(
+                &git::first_shard_name(graftyard_types::NetworkId::of_root(repo), me),
+                region.hint(),
+            )
+        })
         .map_err(|e| e.to_string())?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post);

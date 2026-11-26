@@ -311,7 +311,7 @@ fn held(st: &State) -> BTreeMap<NetworkId, Index> {
         .0
         .iter()
         .filter_map(|(c, i)| match c {
-            ChainId::Repo(r) => Some((NetworkId(r.0), *i)),
+            ChainId::Repo(r) => Some((NetworkId::of_root(*r), *i)),
             _ => None,
         })
         .collect()
@@ -322,7 +322,7 @@ fn waiting(st: &State) -> BTreeSet<NetworkId> {
     let mut w: BTreeSet<NetworkId> = st.owed.iter().map(|o| o.network).collect();
     for c in st.puller.halted.iter().chain(&st.puller.gone) {
         if let ChainId::Repo(r) = c {
-            w.insert(NetworkId(r.0));
+            w.insert(NetworkId::of_root(*r));
         }
     }
     w

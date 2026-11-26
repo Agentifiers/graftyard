@@ -640,7 +640,12 @@ async fn head_commit(
     let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", me.0))
-        .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint()))
+        .and_then(|ns| {
+            ns.get_by_name_with_location_hint(
+                &git::first_shard_name(graftyard_types::NetworkId::of_root(repo), me),
+                region.hint(),
+            )
+        })
         .map_err(|e| e.to_string())?;
     let rec = serde_json::to_string(record).map_err(|e| e.to_string())?;
     let url =
@@ -955,7 +960,12 @@ async fn ui(
     let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", me.0))
-        .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint()))
+        .and_then(|ns| {
+            ns.get_by_name_with_location_hint(
+                &git::first_shard_name(graftyard_types::NetworkId::of_root(repo), me),
+                region.hint(),
+            )
+        })
         .map_err(|e| e.to_string())?;
     let rec = serde_json::to_string(record).map_err(|e| e.to_string())?;
     let mut url = format!("https://shard/ui/{route}?repo={}&wait=30", repo.0.0);
