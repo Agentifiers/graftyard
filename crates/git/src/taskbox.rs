@@ -264,6 +264,18 @@ impl TaskBox {
         }
     }
 
+    /// The host could not mint the token for what the box owes the base: the state `Some(state)`'s `PATCH`, or the
+    /// session log's push for `None`. The base answered the token request `status`. A 4xx is a refusal for good, as
+    /// for a task the base no longer reads live (a cancelled one, F145), so it settles the debt as a 4xx from the base
+    /// itself would. Anything else is no answer: the state stays owed, and the log's push counts one try with none.
+    pub fn unminted(&mut self, owed: Option<TaskApiState>, status: u16) {
+        let refused = (400..500).contains(&status);
+        match owed {
+            Some(state) => self.answered(state, if refused { status } else { 503 }),
+            None => self.log_answered(if refused { Pushed::Refused } else { Pushed::Retry }),
+        }
+    }
+
     /// Takes one input at `now` (ms).
     pub fn on(&mut self, input: Input, now: u64) -> Result<Act, Report> {
         match input {

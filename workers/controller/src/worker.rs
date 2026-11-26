@@ -140,14 +140,18 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     if let Some(r) = box_fault(&env, &req).await? {
         return Ok(r);
     }
-    let mut resp = match req.method() {
+    let resp = match req.method() {
         Method::Get if req.path() == STATUS_PATH => status(&env, &req, version.clone())?,
         Method::Post => webhook(req, &env).await?,
         _ => reply(405, json!({ "message": "Method Not Allowed" }))?,
     };
-    // The version report `graft-agents-front` asked for: it checks it against its `ControllerPointer` pin.
+    // The version report `graft-agents-front` asked for: it checks it against its `ControllerPointer` pin. A
+    // `graftyard_task` delivery's response is its `TaskBox`'s, whose headers are immutable, so the report goes on a
+    // copy of them (F144).
     if front && let Some(v) = &version {
-        resp.headers_mut().set(VERSION_HEADER, v)?;
+        let h = resp.headers().clone();
+        h.set(VERSION_HEADER, v)?;
+        return Ok(resp.with_headers(h));
     }
     Ok(resp)
 }

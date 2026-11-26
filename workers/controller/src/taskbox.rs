@@ -466,7 +466,9 @@ impl TaskBox {
             for (k, v) in Cred::model_headers(&key) {
                 h.set(k, &v)?;
             }
-        } else if let Some(auth) = self.credential(fwd.cred, &s).await? {
+        } else if let Some(auth) =
+            self.credential(fwd.cred, &s).await?.map_err(|c| err(format!("access_tokens: {c}")))?
+        {
             h.set("authorization", &auth)?;
         }
         let sent = fwd.body.unwrap_or(body);
@@ -569,8 +571,17 @@ impl TaskBox {
         let host = host(&s.start.route).ok_or_else(|| err("the route names no host"))?.to_owned();
         let target = push_target(&s.start.route).ok_or_else(|| err("the route names no push target"))?;
         let url = format!("https://{host}/{target}.git/git-receive-pack");
-        let auth =
-            self.credential(Cred::Workspace(Scheme::Basic), &s).await?.ok_or_else(|| err("no workspace token"))?;
+        let auth = match self.credential(Cred::Workspace(Scheme::Basic), &s).await? {
+            Ok(a) => a.ok_or_else(|| err("no workspace token"))?,
+            Err(code) => {
+                let Some(mut s) = self.load().await? else { return Ok(()) };
+                s.b.unminted(None, code);
+                if !s.b.log_due() {
+                    self.state.storage().delete("log").await?;
+                }
+                return self.save(&s).await;
+            }
+        };
         let h = Headers::new();
         h.set("authorization", &auth)?;
         h.set("content-type", "application/x-git-receive-pack-request")?;
@@ -599,10 +610,11 @@ impl TaskBox {
     }
 
     /// The `Authorization` value for an installation token's `cred`, minting the task's token when none is cached. The
-    /// model key is no `Authorization` value (`Cred::model_headers`), and neither it nor `None` gets one.
-    async fn credential(&self, cred: Cred, s: &Stored) -> Result<Option<String>> {
+    /// model key is no `Authorization` value (`Cred::model_headers`), and neither it nor `None` gets one. `Err(status)`
+    /// is the base's answer to a mint it refused, as for a task it no longer reads live (F145).
+    async fn credential(&self, cred: Cred, s: &Stored) -> Result<std::result::Result<Option<String>, u16>> {
         let (scheme, app, inst) = match cred {
-            Cred::None | Cred::ModelKey => return Ok(None),
+            Cred::None | Cred::ModelKey => return Ok(Ok(None)),
             Cred::Agent(sc) => (sc, "AGENT", &s.start.agent),
             Cred::Workspace(sc) => (sc, "WORKSPACE", &s.start.workspace),
         };
@@ -612,19 +624,22 @@ impl TaskBox {
         let token = match cached {
             Some(t) => t,
             None => {
-                let (t, exp) = self.mint(app, inst, &s.b.task.id, &s.start.route).await?;
+                let (t, exp) = match self.mint(app, inst, &s.b.task.id, &s.start.route).await? {
+                    Ok(t) => t,
+                    Err(code) => return Ok(Err(code)),
+                };
                 let mut tokens = self.tokens.borrow_mut();
                 tokens.retain(|t| t.0 != cred);
                 tokens.push((cred, t.clone(), exp));
                 t
             }
         };
-        Ok(Some(match scheme {
+        Ok(Ok(Some(match scheme {
             Scheme::Bearer => format!("Bearer {token}"),
             Scheme::Basic => {
                 format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}")))
             }
-        }))
+        })))
     }
 
     /// Sends the base's task the state the box reached, if the base has not answered it (`tb::TaskBox::unreported`,
@@ -637,7 +652,14 @@ impl TaskBox {
         let host = host(&s.start.route).ok_or_else(|| err("the route names no host"))?.to_owned();
         let (o, n) = (s.b.task.base.owner.as_str(), s.b.task.base.name.as_str());
         let url = format!("https://{host}/api/graftyard/v1/repos/{o}/{n}/tasks/{}", s.b.task.id.text());
-        let auth = self.credential(Cred::Agent(Scheme::Bearer), &s).await?.ok_or_else(|| err("no agent token"))?;
+        let auth = match self.credential(Cred::Agent(Scheme::Bearer), &s).await? {
+            Ok(a) => a.ok_or_else(|| err("no agent token"))?,
+            Err(code) => {
+                let Some(mut s) = self.load().await? else { return Ok(()) };
+                s.b.unminted(Some(state), code);
+                return self.save(&s).await;
+            }
+        };
         let h = Headers::new();
         h.set("authorization", &auth)?;
         h.set("accept", "application/vnd.github+json")?;
@@ -660,8 +682,15 @@ impl TaskBox {
         self.save(&s).await
     }
 
-    /// One installation token of `app` (`AGENT` or `WORKSPACE`) for `inst.repo`, claimed for the task.
-    async fn mint(&self, app: &str, inst: &Inst, task: &SessionId, route: &Route) -> Result<(String, u64)> {
+    /// One installation token of `app` (`AGENT` or `WORKSPACE`) for `inst.repo`, claimed for the task, or the base's
+    /// 4xx refusing it.
+    async fn mint(
+        &self,
+        app: &str,
+        inst: &Inst,
+        task: &SessionId,
+        route: &Route,
+    ) -> Result<std::result::Result<(String, u64), u16>> {
         let jwt = app_jwt(&self.env, app).await?;
         let host = host(route).ok_or_else(|| err("the route names no host"))?;
         let h = Headers::new();
@@ -676,7 +705,11 @@ impl TaskBox {
         let mut r = Fetch::Request(Request::new_with_init(&url, &init)?).send().await?;
         let v: Value = r.json().await.unwrap_or(Value::Null);
         match (r.status_code(), v["token"].as_str()) {
-            (201, Some(t)) => Ok((t.to_string(), now_ms() + 3_600_000)),
+            (201, Some(t)) => Ok(Ok((t.to_string(), now_ms() + 3_600_000))),
+            (code @ 400..500, _) => {
+                console_log!("graft-controller: task {} {app} access_tokens: {code} {}", task.text(), v["message"]);
+                Ok(Err(code))
+            }
             (code, _) => Err(err(format!("{app} access_tokens: {code} {}", v["message"]))),
         }
     }

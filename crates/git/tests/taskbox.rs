@@ -314,6 +314,30 @@ fn the_base_task_is_sent_each_state_until_the_base_answers_it() {
     assert_eq!(c.unreported(), None);
 }
 
+/// F145: a finished box whose task the base cancelled owes its final state, and the base refuses the token its `PATCH`
+/// needs with a 422, since the task is no longer live. That refusal settles the debt, so the box owes nothing and its
+/// alarm stops; a mint with no answer leaves it owed. The same holds for the session log's push.
+#[test]
+fn a_refused_mint_settles_what_the_box_owes_the_base() {
+    use graftyard_git::session_log::Pushed;
+    use graftyard_git::task::TaskApiState::{Completed, InProgress};
+    use graftyard_git::taskbox::LogState;
+    let mut b = started();
+    b.answered(InProgress, 200);
+    assert!(b.log_reported());
+    assert_eq!(b.on(Input::Report { from: sb(1), event: TaskEvent::Finished }, 1), Ok(Act::Stop));
+    b.unminted(None, 503);
+    assert!(b.log_due(), "no answer to the mint is a push with no answer");
+    b.unminted(None, 422);
+    assert_eq!(b.log, LogState::Done(Pushed::Refused));
+    assert_eq!(b.unreported(), Some(Completed));
+    b.unminted(Some(Completed), 500);
+    assert_eq!(b.unreported(), Some(Completed), "a 5xx mint is tried again at the next alarm");
+    b.unminted(Some(Completed), 422);
+    assert_eq!(b.unreported(), None, "the base refused the task's token for good");
+    assert!(!b.log_due());
+}
+
 /// AM3-WP4: a reported session log holds the final `PATCH` until the host's push of it is answered, since `decide`
 /// takes the session ref only while the base reads the task live. A push with no answer is tried again, and after
 /// `LOG_TRIES` with none the task is let go; a refusal lets it go at once; a second report is refused. A state that is

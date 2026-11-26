@@ -140,6 +140,9 @@ jobs:
       - run: npm ci --prefix tests/m0
       - run: bash tests/edgeboot/run.sh
       - run: PRODUCT=1 bash tests/edgeboot/run.sh
+      # graft-controller's wasm answers a graftyard_task delivery from graft-agents-front without a 500 (F144).
+      - run: bash tests/ctlboot/run.sh
+      - run: PRODUCT=1 bash tests/ctlboot/run.sh
 
   rust-test:
     name: Rust tests (${{ matrix.shard }}/4)
