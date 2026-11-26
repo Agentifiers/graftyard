@@ -613,7 +613,8 @@ pub enum What {
     /// `POST /repos/{o}/{r}/issues`: 201 with the pinned `issue` object and `Location` (`bf77-routes`).
     IssueCreated,
     /// An `Assign` (F20, format 32.30): REST `POST`/`DELETE .../issues/{n}/assignees` and an assignees-only issue
-    /// `PATCH`, the issue after the entry: 201 for `POST` (`created`), 200 otherwise.
+    /// `PATCH`, the issue after the entry: 201 for `POST` (`created`), 200 otherwise. F141's single-field issue `PATCH`
+    /// (a title or body `Change`) renders the same 200, so a member that reads 32.33 renders it with no new variant.
     IssueAssigned {
         n: u32,
         created: bool,

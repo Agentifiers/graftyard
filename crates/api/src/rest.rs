@@ -538,6 +538,36 @@ pub fn plan_issue_assignees(
     }))
 }
 
+/// `PATCH /repos/{o}/{r}/issues/{n}` whose body names exactly one of `title` and `body` (F141): one title or body
+/// `Change`, so one command, all or nothing as GHES 3.22 commits an issue update. A `body` of `null` clears it, as GHES
+/// allows; a `title` is a string or a number, as on create. `None` for any other body, a second field or `state`
+/// included, which M4-WP4's atomic multi-field update (32.34) serves; until then it answers as before. The reply is
+/// the assignment route's (`What::IssueAssigned` with `created: false`): the issue after the entry, 200.
+pub fn plan_issue_edit(
+    r: &Repo<'_>,
+    n: &str,
+    body: &Value,
+) -> Option<Result<graftyard_git::issue_ops::IssueOp, Reply>> {
+    use graftyard_git::issues::IssueChange;
+    let o = body.as_object().filter(|o| o.len() == 1)?;
+    let change = match (o.get("title"), o.get("body")) {
+        (Some(Value::String(t)), None) => IssueChange::Title(t.as_str().into()),
+        (Some(Value::Number(t)), None) => IssueChange::Title(t.to_string().into()),
+        (None, Some(Value::String(b))) => IssueChange::Body(b.as_str().into()),
+        (None, Some(Value::Null)) => IssueChange::Body("".into()),
+        (Some(_), None) | (None, Some(_)) => {
+            return Some(Err(Reply::error(422, "Validation Failed", ISSUE_UPDATE_DOC)));
+        }
+        _ => return None,
+    };
+    match n.parse::<u32>().ok().map(IssueNumber).filter(|n| r.item(*n).is_some()) {
+        Some(n) => Some(Ok(graftyard_git::issue_ops::IssueOp::Change { n, change })),
+        None => Some(Err(Reply::not_found())),
+    }
+}
+
+const ISSUE_UPDATE_DOC: &str = "rest/issues/issues#update-an-issue";
+
 /// The reply of a committed `Assign`: the issue as the leader's tiers hold it after the entry, 201 for `POST`
 /// (`issues/add-assignees`) and 200 otherwise.
 pub fn issue_assigned(after: &Repo<'_>, n: u32, created: bool) -> Reply {

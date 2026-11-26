@@ -1330,6 +1330,60 @@ fn rest_assignees_add_remove_and_replace_render_the_issue() {
     assert_eq!(reply.value()["assignee"]["login"], "bob");
 }
 
+/// F141: an issue `PATCH` whose body names exactly one of `title` and `body` is one title or body `Change`, and its 200
+/// is the issue after the entry. Two fields, `state`, or an assignees-only body are not this route (M4-WP4's atomic
+/// update and F20's assignment own them), so a two-field `PATCH` never splits into commands that are not atomic.
+#[test]
+fn rest_issue_patch_of_one_field_is_one_change() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_ok};
+    use graftyard_api::rest::plan_issue_edit;
+    use graftyard_git::issues::IssueChange;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let plan = |c: &Chain, n: &str, body: Value| plan_issue_edit(&c.repo(0, &h, &dir), n, &body);
+    for multi in [
+        json!({ "title": "t", "body": "b" }),
+        json!({ "state": "closed" }),
+        json!({ "title": "t", "state": "closed" }),
+        json!({ "assignees": ["bob"] }),
+        json!({}),
+        json!("title"),
+    ] {
+        assert!(plan(&c, "1", multi.clone()).is_none(), "{multi}");
+    }
+    assert_eq!(plan(&c, "99", json!({ "body": "b" })).unwrap().unwrap_err().status, 404);
+    assert_eq!(plan(&c, "1", json!({ "title": ["t"] })).unwrap().unwrap_err().status, 422);
+    let IssueOp::Change { change: IssueChange::Title(t), .. } = plan(&c, "1", json!({ "title": 42 })).unwrap().unwrap()
+    else {
+        panic!("a numeric title is a title change")
+    };
+    assert_eq!(&*t, "42");
+    let IssueOp::Change { change: IssueChange::Body(b), .. } = plan(&c, "1", json!({ "body": null })).unwrap().unwrap()
+    else {
+        panic!("a null body clears it")
+    };
+    assert_eq!(&*b, "");
+    // The issue's author, a reader, edits its body: committed, and the 200 renders the new body.
+    let op = plan(&c, "1", json!({ "body": "steps, again" })).unwrap().unwrap();
+    let out = c.commit(READER, op).unwrap();
+    let logins: std::collections::BTreeMap<i64, String> =
+        [(OWNER, "o".to_owned()), (WRITER, "alice".to_owned()), (READER, "bob".to_owned())].into();
+    let hosted = HostedDir { home: Some(dir.home()), logins, ..Default::default() };
+    let render = Render {
+        host: h.name().to_owned(),
+        isolation: false,
+        dir: hosted,
+        what: What::IssueAssigned { n: 1, created: false },
+    };
+    let m = &c.members[0];
+    let reply = render_ok(&render, &ack(out), &m.core, &m.meta).reply();
+    assert_eq!(
+        (reply.status, reply.value()["body"].clone(), reply.value()["title"].clone()),
+        (200, json!("steps, again"), json!("it breaks"))
+    );
+    keep_rest_as("issue-patched", "PATCH", "/repos/{owner}/{repo}/issues/{issue_number}", &reply);
+}
+
 /// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the
 /// label the leader holds after the entry, a taken name answers gh's `already_exists`, and an issue opened with the
 /// label is in `GET /repos/o/r/issues?labels=bug&sort=updated` from the next read, newest update first.
