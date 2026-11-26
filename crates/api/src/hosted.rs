@@ -624,6 +624,17 @@ pub enum What {
     IssueCommentCreated {
         n: u32,
     },
+    /// `PATCH /repos/{o}/{r}/issues/{n}` (F137, format 32.35 for a multi-field `Edit`): 200 with the pinned `issue`.
+    IssueUpdated {
+        n: u32,
+    },
+    /// `PATCH /repos/{o}/{r}/issues/comments/{id}` (F137, format 32.35): 200 with the pinned `issue-comment`.
+    IssueCommentUpdated {
+        id: i64,
+    },
+    /// `PUT` and `DELETE /repos/{o}/{r}/issues/{n}/lock` (F137, format 32.35): 204, refused with the issue routes'
+    /// errors.
+    IssueLocked,
 }
 
 /// The render request an issue command carries to its leader.
@@ -772,6 +783,9 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::IssueCreated => WireReply::of(&crate::rest::issue_created(acked, &r)),
         What::IssueAssigned { n, created } => WireReply::of(&crate::rest::issue_assigned(&r, *n, *created)),
         What::IssueCommentCreated { n } => WireReply::of(&crate::rest::issue_comment_created(acked, &r, *n)),
+        What::IssueUpdated { n } => WireReply::of(&crate::rest::issue_updated(&r, *n)),
+        What::IssueCommentUpdated { id } => WireReply::of(&crate::rest::issue_comment_updated(&r, *id)),
+        What::IssueLocked => WireReply::of(&Reply::empty(204)),
         What::ActionsConfig => WireReply::of(&match acked.out {
             IssueOut::Created => Reply::json(201, serde_json::json!({})),
             _ => Reply::empty(204),
@@ -808,6 +822,9 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::IssueCreated => WireReply::of(&crate::rest::issue_create_refused(e)),
         What::IssueAssigned { .. } => WireReply::of(&crate::rest::issue_assign_refused(e)),
         What::IssueCommentCreated { .. } => WireReply::of(&crate::rest::issue_comment_refused(e)),
+        What::IssueUpdated { .. } => WireReply::of(&crate::rest::issue_edit_refused(e)),
+        What::IssueCommentUpdated { .. } => WireReply::of(&crate::rest::issue_comment_edit_refused(e)),
+        What::IssueLocked => WireReply::of(&crate::rest::issue_lock_refused(e)),
         What::ActionsConfig => WireReply::of(&match e {
             IssueErr::Exists => Reply::error(409, "Already exists", "rest/actions/variables"),
             e => crate::webhooks::refused(e),

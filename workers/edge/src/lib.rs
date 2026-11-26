@@ -168,33 +168,64 @@ fn buckets(env: &Env, sites: &SiteTable) -> Result<Vec<(SiteId, R2)>> {
     sites.0.iter().map(|s| Ok((s.id, R2(env.bucket(&format!("BUCKET_{}", s.id.0))?)))).collect()
 }
 
-/// A repository the edge serves: its id, its owner, and the owner's placement record.
-#[derive(Clone, Debug, PartialEq)]
+/// A repository the edge serves: its id, its owner, the owner's placement record, and its network once a read of its
+/// own fixed it (`Repo::fix`).
+#[derive(Clone, Debug)]
 pub(crate) struct Repo {
     id: RepoId,
     owner: AccountId,
     record: PlacementRecord,
+    net: std::cell::Cell<Option<NetworkId>>,
+}
+
+/// The same repository at the same placement, whether or not either has fixed its network yet.
+impl PartialEq for Repo {
+    fn eq(&self, o: &Repo) -> bool {
+        (self.id, self.owner, &self.record) == (o.id, o.owner, &o.record)
+    }
 }
 
 impl Repo {
+    pub(crate) fn new(id: RepoId, owner: AccountId, record: PlacementRecord) -> Repo {
+        Repo { id, owner, record, net: Default::default() }
+    }
+
     /// The network the repository's packs, git cache shards, clone and archive caches are keyed by
     /// (`design/DESIGN.md`, Shape, `R2Key`, `shards_for`): every edge path names it through here, never from `id`.
+    /// Once the read gate or the request's own read fixed it, that read's; before, the isolate's guess (`nets`),
+    /// which only a lookup ahead of the gate uses and which `upload_pack` checks again.
     pub(crate) fn network(&self) -> NetworkId {
-        nets::get(self.id)
+        self.net.get().unwrap_or_else(|| nets::get(self.id))
+    }
+
+    /// Fixes the network this request keys by to the one its own read found: `fork` from a fork's row, `None` for a
+    /// root. A request that has fixed it never reads the isolate's map again, so an overflow that clears the map
+    /// meanwhile cannot move this request's packs under the fork's own id (`fork-network-read`).
+    pub(crate) fn fix(&self, fork: Option<NetworkId>) {
+        let n = fork.unwrap_or(NetworkId::of_root(self.id));
+        nets::learn(self.id, n);
+        self.net.set(Some(n));
+    }
+
+    /// The fixed network when it is a fork's, what this request's gate entries carry; `None` for a root or before
+    /// any read fixed it.
+    fn fork(&self) -> Option<NetworkId> {
+        self.net.get().filter(|n| n.root() != self.id)
     }
 }
 
 /// The forks' networks this isolate learned (`decisions/DECISIONS.md`, "`fork-network-read`"): from a fork's `fork`
 /// row in the access rows every gate read and tier read already carries, from a shared gate entry's `net`, or from
 /// `Names`' `RepoOwner` row on an id-only route. A network never changes, so an entry is right at any age. A root has
-/// none and is its own id. The map is cleared with the gate cache, so no gate entry outlives what its fill learned.
+/// none and is its own id. It is a guess for the lookups ahead of the gate only: each request keys by the network
+/// its own read fixed (`Repo::fix`), and each gate entry holds its own fill's, so clearing the map moves neither.
 mod nets {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
     use graftyard_types::{NetworkId, RepoId};
 
-    /// The most forks one isolate remembers; past it this map and the gate cache start empty again.
+    /// The most forks one isolate remembers; past it the map starts empty again.
     const ENTRIES_MAX: usize = 4_096;
 
     thread_local! {
@@ -216,25 +247,13 @@ mod nets {
         if network.root() == repo {
             return;
         }
-        let full = FORKS.with(|m| {
+        FORKS.with(|m| {
             let mut m = m.borrow_mut();
-            let full = m.len() >= ENTRIES_MAX && !m.contains_key(&repo);
-            if full {
+            if m.len() >= ENTRIES_MAX && !m.contains_key(&repo) {
                 m.clear();
             }
             m.insert(repo, network);
-            full
         });
-        if full {
-            super::gate::clear();
-        }
-    }
-
-    /// Learns a fork's network from its core rows (`graftyard_git::tiers::fork`); a root's rows hold none.
-    pub(crate) fn learn_rows(repo: RepoId, core: &dyn graftyard_fold::Read) {
-        if let Some(f) = graftyard_git::tiers::fork(core) {
-            learn(repo, f.network);
-        }
     }
 }
 
@@ -290,7 +309,7 @@ async fn gate_shared(c: &Ctx<'_>, req: &Request, guessed: &Repo) -> Result<bool>
             Err(_) => return Ok(true),
         },
     };
-    if gate::get(&(guessed.id, key)).is_some_and(|(at, _, foreign, _)| colo::servable(at, now(), foreign)) {
+    if gate::get(&(guessed.id, key)).is_some_and(|((at, _, foreign, _), _)| colo::servable(at, now(), foreign)) {
         return Ok(true);
     }
     let got = api::timed(c, "beside_match", colo::match_gate(&colo::gate_url(guessed.id, key, &guessed.record))).await;
@@ -431,7 +450,7 @@ async fn named(
         && let Ok(Some(f)) = authz_read(c, account, &record).await
         && let Some((r, _)) = graftyard_identity::AuthzRead::resolve(&f, &name.key())
     {
-        return Ok(Some(Repo { id: r, owner: account, record }));
+        return Ok(Some(Repo::new(r, account, record)));
     }
     let authz = ChainId::Authz(account);
     let b = c.bindings();
@@ -445,11 +464,9 @@ async fn named(
         Ok(None) => return Ok(None),
         Err(e) => return Err(e),
     };
-    Ok(v.pointer("/value/repo/repo").and_then(serde_json::Value::as_i64).map(|r| Repo {
-        id: RepoId(DbId(r)),
-        owner: account,
-        record,
-    }))
+    Ok(v.pointer("/value/repo/repo")
+        .and_then(serde_json::Value::as_i64)
+        .map(|r| Repo::new(RepoId(DbId(r)), account, record)))
 }
 
 /// A REST merge's guess at `owner/repo` (`api::rest_repo`), which it reads ahead on and keeps only if its own fresh
@@ -474,7 +491,7 @@ fn held_repo(owner: &str, repo: &str) -> Option<Repo> {
     let name = RepoName::parse(repo).ok()?;
     let (account, record) = held_guess(owner)?;
     let (id, _) = graftyard_identity::AuthzRead::resolve(&rcache::last(&rcache::AUTHZ, &account)?, &name.key())?;
-    Some(Repo { id, owner: account, record })
+    Some(Repo::new(id, account, record))
 }
 
 /// Whether the caller may read `repo`, before the edge serves any of its bytes (`graftyard_identity::authorize_read`
@@ -568,22 +585,25 @@ impl colo::GateFx for GateIo<'_, '_, '_> {
     fn now(&self) -> Timestamp {
         now()
     }
+    /// The entry's own fill named its network, and the request keys by it from here (`Repo::fix`).
     fn held(&self) -> Option<colo::Held<gate::Rows>> {
-        gate::get(&self.key)
+        let (held, fork) = gate::get(&self.key)?;
+        self.repo.fix(fork);
+        Some(held)
     }
+    /// Every hold follows a fill or a match that fixed the request's network, so the entry carries that one.
     fn hold(&self, at: Timestamp, d: graftyard_identity::Decision, foreign: bool, rows: Option<gate::Rows>) {
-        gate::put(self.key, at, d, foreign, rows);
+        gate::put(self.key, at, d, foreign, rows, self.repo.fork());
     }
     async fn matched(&self) -> Option<Timestamp> {
-        let (at, net) = api::timed(self.c, "gate_match", colo::match_gate(&self.url)).await?;
-        if let Some(n) = net {
-            nets::learn(self.repo.id, n);
-        }
+        let (at, fork) = api::timed(self.c, "gate_match", colo::match_gate(&self.url)).await?;
+        self.repo.fix(fork);
         Some(at)
     }
+    /// The network this request's own entry or fill fixed, never the isolate's map at put time.
     async fn share(&self, at: Timestamp) {
         let url = self.url.clone();
-        self.c.ctx.wait_until(colo::put_gate(url, at, nets::fork(self.repo.id)));
+        self.c.ctx.wait_until(colo::put_gate(url, at, self.repo.fork()));
     }
     async fn read(&self) -> std::result::Result<colo::Fill<gate::Rows>, GateFail> {
         fresh_gate(self.c, self.repo, self.who, Some(&self.writable)).await
@@ -718,7 +738,7 @@ async fn fresh_gate_on(
         Err(e) if graftyard_lookup::is_gone(&e) => return Ok((graftyard_identity::Decision::Hidden, None)),
         Err(e) => return Err(GateFail::Read(e)),
     };
-    nets::learn_rows(repo.id, &core);
+    repo.fix(graftyard_git::tiers::fork(&core).map(|f| f.network));
     let access = graftyard_git::issue_ops::Access { repo: repo.id, owner: repo.owner, core: &core };
     let decide = |owner| {
         let owner = gate_owner(owner)?;
@@ -790,7 +810,7 @@ mod gate {
     use std::collections::BTreeMap;
 
     use graftyard_identity::{Actor, Credential, Decision, Principal, stateless::InstallationClaims};
-    use graftyard_types::{RepoId, Timestamp};
+    use graftyard_types::{NetworkId, RepoId, Timestamp};
     use sha2::{Digest, Sha256};
 
     /// The most decisions one isolate keeps; past it the cache starts empty again.
@@ -809,6 +829,8 @@ mod gate {
         d: Decision,
         foreign: bool,
         rows: Option<(Rows, usize)>,
+        /// The fork's network the fill or match that made the decision named; `None` for a root.
+        fork: Option<NetworkId>,
     }
 
     thread_local! {
@@ -876,17 +898,13 @@ mod gate {
         (k.0, Some(hash.finalize().into()))
     }
 
-    /// Drops every entry: `crate::nets` forgot the forks their fills learned.
-    pub(crate) fn clear() {
-        CACHE.with(|c| c.borrow_mut().clear());
-        ROWS_BYTES.with(|b| b.set(0));
-    }
-
     /// The decision held for `k` at any age, the time of the oldest fold read it was made on, whether it was copied
     /// from the data center's entry, and the agent rows its own fill read; `colo::gate` decides whether it may serve
-    /// (`colo::servable`), and the rows serve only with it.
-    pub(crate) fn get(k: &Key) -> Option<crate::colo::Held<Rows>> {
-        CACHE.with(|c| c.borrow().get(k).map(|e| (e.at, e.d, e.foreign, e.rows.as_ref().map(|(r, _)| r.clone()))))
+    /// (`colo::servable`), and the rows serve only with it. Beside it, the fork's network its fill named.
+    pub(crate) fn get(k: &Key) -> Option<(crate::colo::Held<Rows>, Option<NetworkId>)> {
+        CACHE.with(|c| {
+            c.borrow().get(k).map(|e| ((e.at, e.d, e.foreign, e.rows.as_ref().map(|(r, _)| r.clone())), e.fork))
+        })
     }
 
     /// The share-off arm's key on a test install (`x-graft-colo: off`): the same credential and repository under
@@ -901,8 +919,8 @@ mod gate {
 
     /// Holds `d` for `k`, stamped `at` (the oldest fold read under it), with the agent rows the same fill read;
     /// `foreign` when copied from the data center. It replaces `k`'s entry whole, so no earlier fill's rows stay
-    /// beside it.
-    pub(crate) fn put(k: Key, at: Timestamp, d: Decision, foreign: bool, rows: Option<Rows>) {
+    /// beside it, and with the fork's network that fill named.
+    pub(crate) fn put(k: Key, at: Timestamp, d: Decision, foreign: bool, rows: Option<Rows>, fork: Option<NetworkId>) {
         CACHE.with(|c| {
             let mut c = c.borrow_mut();
             ROWS_BYTES.with(|b| {
@@ -920,7 +938,7 @@ mod gate {
                         (r, n)
                     })
                 });
-                c.insert(k, Entry { at, d, foreign, rows });
+                c.insert(k, Entry { at, d, foreign, rows, fork });
             });
         });
     }
@@ -1123,9 +1141,11 @@ mod gate_tests {
 
     /// `fork-network-read`: a fork's network comes from its `fork` row in the gate's access rows, and every path
     /// keys by it from then on, packs and the first shard's name included; a root's rows hold none and it keeps its
-    /// own id, the bytes main's paths use. A network never changes, so it is kept past every gate entry's age.
+    /// own id, the bytes main's paths use. The request keys by what its own read fixed: another request that
+    /// overflows the isolate's map meanwhile moves neither this request's network nor the network its gate entry
+    /// carries (AM2's review of head 1: a cleared map put a fork's pack under `pack/<fork>/`).
     #[test]
-    fn a_forks_network_is_learned_from_its_rows_and_a_root_keeps_its_own_id() {
+    fn a_forks_network_is_fixed_by_its_own_read_and_a_root_keeps_its_own_id() {
         use graftyard_types::{NetworkId, PlacementName, PlacementRecord, SiteId};
         let record = PlacementRecord {
             name: PlacementName::Tri,
@@ -1135,7 +1155,7 @@ mod gate_tests {
             moving_from: None,
             at: Timestamp(1),
         };
-        let repo = |id: i64| super::Repo { id: RepoId(DbId(id)), owner: AccountId(DbId(9)), record: record.clone() };
+        let repo = |id: i64| super::Repo::new(RepoId(DbId(id)), AccountId(DbId(9)), record.clone());
         let (root, fork, base) = (repo(131_901), repo(131_902), NetworkId(DbId(131_900)));
         let mut rows = graftyard_fold::MemStore::default();
         let cols = |r: &graftyard_git::tiers::ForkRow| {
@@ -1148,17 +1168,32 @@ mod gate_tests {
             vec![],
             graftyard_fold::Stored { written: Default::default(), cols: cols(&row) },
         );
+        let fixed = |r: &graftyard_fold::MemStore| graftyard_git::tiers::fork(r).map(|f| f.network);
         assert_eq!(fork.network(), NetworkId::of_root(fork.id), "before any read the edge knows no fork");
-        super::nets::learn_rows(fork.id, &rows);
-        super::nets::learn_rows(root.id, &graftyard_fold::MemStore::default());
+        fork.fix(fixed(&rows));
+        root.fix(fixed(&graftyard_fold::MemStore::default()));
         assert_eq!(fork.network(), base);
         assert_eq!(graftyard_git::first_shard_name(fork.network(), SiteId(2)), "git#2#net:131900");
         assert_eq!(graftyard_git::R2Key::pack_prefix(fork.network()), "pack/131900/");
-        assert_eq!((root.network(), super::nets::fork(root.id)), (NetworkId::of_root(root.id), None));
-        // A root's own id is never stored, so its shared gate entry carries no `net`.
-        super::nets::learn(root.id, NetworkId::of_root(root.id));
-        assert_eq!(super::nets::fork(root.id), None);
-        assert_eq!(super::nets::fork(fork.id), Some(base), "what a fork's shared entry carries");
+        assert_eq!(
+            (root.network(), root.fork(), super::nets::fork(root.id)),
+            (NetworkId::of_root(root.id), None, None)
+        );
+        assert_eq!(super::nets::fork(fork.id), Some(base));
+        assert_eq!(repo(131_902).network(), base, "a later request's guess, before its own gate");
+        // The fork's gate entry holds its fill's network.
+        let k = (fork.id, Some([3; 32]));
+        gate::put(k, Timestamp(1_000), graftyard_identity::Decision::Allow, false, None, fork.fork());
+        // Another request learns enough forks to overflow the map, which clears it.
+        for id in 0..5_000 {
+            super::nets::learn(RepoId(DbId(200_000 + id)), NetworkId(DbId(1)));
+        }
+        assert_eq!(super::nets::fork(fork.id), None, "the map was cleared");
+        assert_eq!(fork.network(), base, "this request still keys its packs by its network");
+        assert_eq!(fork.fork(), Some(base), "and still shares it with its decision");
+        assert_eq!(gate::get(&k).map(|(_, f)| f), Some(Some(base)), "the entry kept its own fill's network");
+        let later = repo(131_902);
+        assert_eq!(later.network(), NetworkId::of_root(later.id), "a new request has only the guess, until its gate");
     }
 
     /// `agent-rows-cache`: an entry's rows are its own fill's. A put replaces the whole entry, so a decision put
@@ -1169,19 +1204,19 @@ mod gate_tests {
     fn a_gate_entry_holds_only_its_own_fills_rows_within_the_byte_cap() {
         let k = (RepoId(DbId(901)), Some([1; 32]));
         let base = gate::rows_bytes();
-        gate::put(k, Timestamp(1_000), graftyard_identity::Decision::Allow, false, Some(rows("fill-1")));
+        gate::put(k, Timestamp(1_000), graftyard_identity::Decision::Allow, false, Some(rows("fill-1")), None);
         let one = gate::rows_bytes() - base;
         assert!(one > 0);
-        let (at, d, foreign, got) = gate::get(&k).unwrap();
+        let ((at, d, foreign, got), _) = gate::get(&k).unwrap();
         assert_eq!(
             (at, d, foreign, tag(&got.unwrap())),
             (Timestamp(1_000), graftyard_identity::Decision::Allow, false, "fill-1".into())
         );
-        gate::put(k, Timestamp(2_000), graftyard_identity::Decision::Allow, true, None);
-        assert_eq!(gate::get(&k).unwrap().3, None, "a copy's decision carries no earlier fill's rows");
+        gate::put(k, Timestamp(2_000), graftyard_identity::Decision::Allow, true, None, None);
+        assert_eq!(gate::get(&k).unwrap().0.3, None, "a copy's decision carries no earlier fill's rows");
         assert_eq!(gate::rows_bytes(), base, "the replaced rows' bytes are released");
-        gate::put(k, Timestamp(3_000), graftyard_identity::Decision::Hidden, false, Some(rows("fill-3")));
-        assert_eq!(tag(&gate::get(&k).unwrap().3.unwrap()), "fill-3");
+        gate::put(k, Timestamp(3_000), graftyard_identity::Decision::Hidden, false, Some(rows("fill-3")), None);
+        assert_eq!(tag(&gate::get(&k).unwrap().0.3.unwrap()), "fill-3");
         assert_eq!(gate::rows_bytes() - base, one);
         // A fill too large for what is left keeps its decision and no rows.
         let mut big = graftyard_fold::MemStore::default();
@@ -1190,8 +1225,11 @@ mod gate_tests {
             graftyard_fold::Stored { written: Default::default(), cols: vec![graftyard_fold::Val::Blob(blob.into())] };
         graftyard_fold::Store::put(&mut big, "agent_task", Vec::new(), row);
         let k2 = (RepoId(DbId(902)), Some([1; 32]));
-        gate::put(k2, Timestamp(4_000), graftyard_identity::Decision::Allow, false, Some(std::rc::Rc::new(big)));
-        assert_eq!(gate::get(&k2).map(|e| (e.1, e.3.is_none())), Some((graftyard_identity::Decision::Allow, true)));
+        gate::put(k2, Timestamp(4_000), graftyard_identity::Decision::Allow, false, Some(std::rc::Rc::new(big)), None);
+        assert_eq!(
+            gate::get(&k2).map(|(e, _)| (e.1, e.3.is_none())),
+            Some((graftyard_identity::Decision::Allow, true))
+        );
         assert_eq!(gate::rows_bytes() - base, one, "and counts nothing for it");
     }
 
@@ -1648,7 +1686,7 @@ fn needs_install(c: &Ctx<'_>, who: &Principal) -> bool {
 }
 
 /// The account that holds `login`, from its `Names` row read through `fresh`.
-async fn account_of(c: &Ctx<'_>, login: &str) -> std::result::Result<Option<AccountId>, String> {
+pub(crate) async fn account_of(c: &Ctx<'_>, login: &str) -> std::result::Result<Option<AccountId>, String> {
     let Ok(l) = Login::parse(login) else { return Ok(None) };
     let read = async {
         let names = ChainId::Names(name_shard(&NameKey::Login(l.key())));
@@ -3621,10 +3659,25 @@ async fn clone_hit(c: &Ctx<'_>, repo: &Repo, k: &CloneKey) -> Result<Option<Hit>
         .map(Hit::Ready))
 }
 
+/// The front's clone key on `network`, and whether the front's lookup under it still stands: `false` when the front
+/// built it on another network, and the caller looks it up again.
+fn front_key(key: Option<CloneKey>, network: NetworkId) -> (Option<CloneKey>, bool) {
+    match key {
+        Some(k) if k.network != network => (Some(CloneKey { network, ..k }), false),
+        k => (k, true),
+    }
+}
+
 async fn upload_pack(c: &Ctx<'_>, repo: &Repo, front: UploadFront) -> Result<Response> {
     let UploadFront { proto, body, v2, key, answer } = front;
-    // A fork's network may be learned only by the gate this front ran beside: its fill goes under the network's key.
-    let key = key.map(|k| CloneKey { network: repo.network(), ..k });
+    // The front ran beside the gate on the isolate's guess at the network; the gate's own read fixed it since. A key
+    // built on another network is built again, and what the front found under it is not served: it is another
+    // network's entry, stale for this repository (`fork-network-read`).
+    let (key, kept) = front_key(key, repo.network());
+    let answer = match &key {
+        Some(k) if !kept => clone_hit(c, repo, k).await?,
+        _ => answer,
+    };
     // On the lifeboat, `ls-refs` too comes from `graft-git`, so the refs it names are always ones it can send
     // (`lifeboat::git`); the edge's normal path is unchanged.
     if graftyard_lookup::lifeboat() {
@@ -3764,11 +3817,12 @@ pub(crate) async fn repo_by_id(c: &Ctx<'_>, id: RepoId) -> std::result::Result<R
     let owner: AccountId = serde_json::from_value::<Option<AccountId>>(v["repoOwner"].clone())
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("{id:?} has no RepoOwner row"))?;
-    if let Ok(Some(n)) = serde_json::from_value::<Option<NetworkId>>(v["repoNetwork"].clone()) {
-        nets::learn(id, n);
-    }
     let record = placement(c, owner).await?.ok_or_else(|| format!("{owner:?} has no placement record"))?;
-    Ok(Repo { id, owner, record })
+    let repo = Repo::new(id, owner, record);
+    if let Ok(Some(n)) = serde_json::from_value::<Option<NetworkId>>(v["repoNetwork"].clone()) {
+        repo.fix(Some(n));
+    }
+    Ok(repo)
 }
 
 /// Sends `path` to every member the caller knows for the repository's chain: the config's voters, else the record's
@@ -4977,11 +5031,11 @@ async fn serve(
     };
     #[cfg(feature = "test-faults")]
     let linked = match (linked, c.link_guess.filter(|_| link.is_some())) {
-        (None, Some((r, o))) => c.system_record(ChainId::Ids).await.ok().map(|record| Repo {
-            id: RepoId(DbId(r)),
-            owner: AccountId(DbId(o)),
-            record,
-        }),
+        (None, Some((r, o))) => c
+            .system_record(ChainId::Ids)
+            .await
+            .ok()
+            .map(|record| Repo::new(RepoId(DbId(r)), AccountId(DbId(o)), record)),
         (l, _) => l,
     };
     c.timing.put(
@@ -5433,7 +5487,7 @@ mod tests {
     #[test]
     fn a_validate_url_names_the_packs_trailer_its_class_and_the_record() {
         let rec = record(PlacementName::Tri, &[0, 1, 2], 1);
-        let repo = super::Repo { id: RepoId(DbId(7)), owner: graftyard_types::AccountId(DbId(3)), record: rec.clone() };
+        let repo = super::Repo::new(RepoId(DbId(7)), graftyard_types::AccountId(DbId(3)), rec.clone());
         let mut pack = vec![0xaa; 40];
         pack[20..].copy_from_slice(&[0x01; 20]);
         let q = |u: &str| {
@@ -5730,6 +5784,31 @@ mod tests {
         assert_eq!(pick(&s(&[5]), &[]), (5, vec![], vec![]));
     }
 
+    /// AM2's review of head 1: the upload front builds its clone key and looks it up on the isolate's guess before the
+    /// gate fixes a fork's network, so a key on the fork's own id is built again on the fixed network and its lookup
+    /// runs again; a key already on it, or none, is kept with what the front found.
+    #[test]
+    fn a_clone_key_built_before_the_gate_fixed_a_forks_network_is_built_again() {
+        use graftyard_git::clone::CloneKey;
+        use graftyard_types::NetworkId;
+        let mut b = Vec::new();
+        graftyard_git::pkt::line(&mut b, "command=fetch");
+        graftyard_git::pkt::delim(&mut b);
+        graftyard_git::pkt::line(&mut b, &format!("want {}", "ab".repeat(20)));
+        graftyard_git::pkt::line(&mut b, "done");
+        graftyard_git::pkt::flush(&mut b);
+        let v = graftyard_git::smart::parse_v2(&b).unwrap();
+        let (own, base) = (NetworkId(DbId(131_902)), NetworkId(DbId(131_900)));
+        let guessed = CloneKey::of(own, &v, graftyard_types::Digest([0; 32])).unwrap();
+        let (rebuilt, kept) = super::front_key(Some(guessed.clone()), base);
+        let rebuilt = rebuilt.unwrap();
+        assert!(!kept, "what the front found under the fork's own id is looked up again");
+        assert_eq!(rebuilt, CloneKey::of(base, &v, graftyard_types::Digest([0; 32])).unwrap());
+        assert_ne!(rebuilt.digest(), guessed.digest(), "the fork's entry is under its network's key");
+        assert_eq!(super::front_key(Some(rebuilt.clone()), base), (Some(rebuilt), true), "a key on the network stays");
+        assert_eq!(super::front_key(None, base), (None, true));
+    }
+
     /// Every try but the last says another shard follows, so a rehydrating shard answers it at once; the last try
     /// waits, so a call never runs out of shards that would serve it. The home try waits less than the others.
     #[test]
@@ -5963,7 +6042,7 @@ mod tests {
         rcache::put(&rcache::PLACEMENTS, owner, old, rec.clone());
         rcache::put(&rcache::AUTHZ, owner, old, fold);
         assert!(rcache::get(&rcache::AUTHZ, &owner, Timestamp(60_000), true).is_none(), "past READ_CACHE");
-        assert_eq!(super::held_repo("m9fleet", "fleet"), Some(Repo { id: repo, owner, record: rec }));
+        assert_eq!(super::held_repo("m9fleet", "fleet"), Some(Repo::new(repo, owner, rec)));
         assert_eq!(super::held_repo("m9fleet", "other"), None, "a name the fold does not hold");
         assert_eq!(super::held_repo("m9other", "fleet"), None, "a login the isolate never read");
     }
@@ -6018,8 +6097,7 @@ mod tests {
     fn rows_read_beside_the_front_are_kept_only_for_the_repository_the_resolve_named() {
         use futures_util::FutureExt;
         let rec = |g| PlacementRecord { generation: g, ..record(PlacementName::Tri, &[0, 1, 2], 0) };
-        let repo =
-            |id: i64, owner: i64, g| Repo { id: RepoId(DbId(id)), owner: AccountId(DbId(owner)), record: rec(g) };
+        let repo = |id: i64, owner: i64, g| Repo::new(RepoId(DbId(id)), AccountId(DbId(owner)), rec(g));
         let run = |guessed: Repo, started: Result<Option<i64>, String>, resolved: Repo| {
             let reads = std::cell::RefCell::new(Vec::new());
             let read = |r: Repo| {

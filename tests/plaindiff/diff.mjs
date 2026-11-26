@@ -52,6 +52,13 @@ const reqs = [
   // two-field PATCH is never this route; both stay main's answer.
   ["rest-issue-1-patch-title", "PATCH", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1`, { ...tok, "content-type": "application/json" }, JSON.stringify({ title: "plain" })],
   ["rest-issue-1-patch-two", "PATCH", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1`, { ...tok, "content-type": "application/json" }, JSON.stringify({ title: "plain", body: "b" })],
+  // F137's writes: a comment edit and a lock change are served only once 32.35 is enabled, which this bed does not
+  // enable; a comment delete and the assignee check are served on the head, and with no issue all stay main's 404.
+  ["rest-issue-comment-1-edit", "PATCH", `/api/v3/repos/${seed.login}/${seed.repo}/issues/comments/1`, { ...tok, "content-type": "application/json" }, JSON.stringify({ body: "plain" })],
+  ["rest-issue-comment-1-delete", "DELETE", `/api/v3/repos/${seed.login}/${seed.repo}/issues/comments/1`, tok],
+  ["rest-issue-1-lock", "PUT", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/lock`, { ...tok, "content-type": "application/json" }, "{}"],
+  ["rest-issue-1-unlock", "DELETE", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/lock`, tok],
+  ["rest-issue-1-assignee", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/assignees/${seed.login}`, tok],
   ["rest-label-write", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/labels`, { ...tok, "content-type": "application/json" }, "LABEL"],
   ["graphql", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "{ repository(owner: \"cw\", name: \"r\") { name } }" })],
 ];

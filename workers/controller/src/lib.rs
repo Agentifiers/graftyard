@@ -62,6 +62,14 @@ pub enum Intake {
     Refused(u16, &'static str),
 }
 
+/// Whether an `issues.assigned` payload assigns the bot account of the App `app`: an `assignee` of type `Bot` whose `id`
+/// is the App's, as the host renders an App's bot (`decisions/DECISIONS.md`, "`app-bot`"). Not by `login`: a host
+/// that renders the bot without its App's record names it `ghost[bot]` with the same id (F143).
+pub fn assigns_app_bot(payload: &serde_json::Value, app: i64) -> bool {
+    let a = &payload["assignee"];
+    a["type"] == "Bot" && a["id"].as_i64() == Some(app)
+}
+
 /// Takes one webhook `POST`. `headers` looks a header up by its lowercase name. The signature is checked before
 /// anything else is read, so an unsigned caller learns nothing about the parser. The payload is a trigger only (A3 step
 /// 2): nothing but its `action` is read, and the controller re-reads the issue over REST.

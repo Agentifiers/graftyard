@@ -20,14 +20,12 @@ use std::collections::VecDeque;
 use serde_json::json;
 use worker::*;
 
-use crate::{Intake, Seen, intake};
+use crate::{Intake, Seen, assigns_app_bot, intake};
 
 /// The header `graft-agents-front` sends on each request it forwards, and the version report it reads back.
 const FRONT_HEADER: &str = "x-graftyard-agents-front";
 const VERSION_HEADER: &str = "x-graftyard-controller-version";
 const STATUS_PATH: &str = "/_controller/status";
-/// `graftyard-agent`'s bot login, as the host renders it in an `issues.assigned` delivery.
-const AGENT_BOT: &str = "graftyard-agent[bot]";
 /// How many accepted deliveries the status route lists.
 const RECENT_MAX: usize = 20;
 
@@ -120,7 +118,8 @@ async fn webhook(mut req: Request, env: &Env) -> Result<Response> {
         Intake::Accepted { event, action: Some(a), .. } if event == "issues" && (a == "assigned" || a == "edited") => {
             let payload: serde_json::Value = serde_json::from_slice(&body)?;
             let open = crate::taskbox::follow(env, &payload).await?;
-            if a == "assigned" && payload["assignee"]["login"] == AGENT_BOT && open == 0 {
+            let agent = env.var("AGENT_APP_ID").ok().and_then(|v| v.to_string().parse().ok());
+            if a == "assigned" && agent.is_some_and(|id| assigns_app_bot(&payload, id)) && open == 0 {
                 crate::taskbox::assigned(env, &payload).await
             } else {
                 reply(202, json!({ "accepted": event, "followed": open }))

@@ -237,6 +237,14 @@ pub async fn repo_route(
     if method == Method::Get && matches!(tail, ["assignees"] | ["teams"]) {
         return Ok(Some(people_list(c, req, rd, tail[0]).await?));
     }
+    // F137: whether a login could be assigned to the issue, by the rule `GET /assignees` lists and `decide`'s
+    // `Assign` keeps (write access or more, from the owner's grants and the repository's collaborator rows).
+    if let (Method::Get, ["issues", n, "assignees", login]) = (&method, tail) {
+        let host = graftyard_wire::Host::new(&c.cfg.host, false).map_err(|e| Error::RustError(e.to_string()))?;
+        let who = crate::account_of(c, &graftyard_api::rest::unpercent(login)).await.ok().flatten();
+        let perm = who.and_then(|a| if a == rd.repo.owner { Some(RepoPermission::Admin) } else { permission(rd, a) });
+        return Ok(Some(graftyard_api::rest::check_assignee(&rd.view(&host), n, perm)));
+    }
     if !matches!(tail.first(), Some(&"collaborators" | &"invitations")) {
         return Ok(None);
     }

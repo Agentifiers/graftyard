@@ -525,7 +525,7 @@ pub(crate) async fn read_repo(
     // `settings` and the `collaborator` rows. A private repository whose owner's `Authz` did not answer is 503, not a
     // 404 the caller would take as "no such repository".
     let core = TierRows::store(&rows.core);
-    crate::nets::learn_rows(repo.id, &core);
+    repo.fix(graftyard_git::tiers::fork(&core).map(|f| f.network));
     // A read-class request's owner `Authz` may be up to `READ_CACHE` old (`crate::rcache`): one that would hide the
     // repository is read again fresh first, so a grant shows at once and only a revocation waits out the cache.
     if gate == Gate::Readers
@@ -1044,12 +1044,15 @@ async fn commit_issue_rid(
     }
     let rest_issue = what == What::IssueCreated;
     let rest_comment = matches!(what, What::IssueCommentCreated { .. });
+    let rest_edit = matches!(what, What::IssueCommentUpdated { .. } | What::IssueLocked);
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let mut call = IssueCall::new(op, who.clone(), rid, serde_json::to_value(&render)?);
     // 32.29 (`bf77-routes`) for a REST issue create, whose reply only a member of that release renders.
     call.rest_issue = rest_issue && !matches!(call.op, IssueOp::OpenPr { .. });
     // 32.32 (F137) for a REST issue comment, likewise.
     call.rest_comment = rest_comment && IssueCall::issue_comment(&call.op);
+    // 32.35 (F137) for a REST comment edit or lock change, likewise; an `Edit` is always 32.35.
+    call.rest_edit = rest_edit && IssueCall::edit_mark(&call.op);
     // Format 32.8, once `FormatsEnable` enabled it, only for a command that can write an agent event: a pull request
     // opened by an App or with a user-to-server token (`AgentMeta` when its App is an `AgentApp`), and a review of a
     // pull request that has `AgentMeta` (`AgentGate`). Every other command keeps its format and its bytes; under a
@@ -1436,7 +1439,7 @@ pub(crate) async fn task_claim(
     let Ok(Some(record)) = crate::placement(c, owner).await else {
         return Ok(Err(Reply::error(422, "no such repository", doc)));
     };
-    let repo = crate::Repo { id: repo, owner, record };
+    let repo = crate::Repo::new(repo, owner, record);
     // The task's own rows (`command-rows`): `token_task` reads only its `agent_task` row.
     let spec = CommandSpec { session: Some(session.clone()), owner: owner.0.0, ..CommandSpec::default() };
     let (rows, install) = futures_util::future::join(command_tier_rows(c, &repo, &spec), crate::install_authz(c)).await;
@@ -1908,6 +1911,8 @@ fn rest_decided(method: &Method, tail: &[&str]) -> bool {
             | (Method::Post, ["statuses", _])
             | (Method::Post, ["issues"])
             | (Method::Post, ["issues", _, "comments"])
+            | (Method::Patch | Method::Delete, ["issues", "comments", _])
+            | (Method::Put | Method::Delete, ["issues", _, "lock"])
             | (Method::Put | Method::Delete, ["branches", .., "protection"])
             | (Method::Post, ["git", "refs"])
             | (Method::Patch, ["git", "refs", ..])
@@ -2087,7 +2092,17 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // F137's REST issue comment is served only once 32.32 is enabled; until then it answers as before (404).
     let comment_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_COMMENT);
     let comment_route = matches!(tail, ["issues", _, "comments"]);
-    c.decided.set(rest_decided(&method, tail) && (routes_on || tail != ["issues"]) && (comment_on || !comment_route));
+    // F137's REST edits (a comment edit, a lock change, a multi-field issue edit) are served only once 32.35 is
+    // enabled; until then they answer as before (404).
+    let writes_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT);
+    let writes_route =
+        matches!((&method, tail), (Method::Patch, ["issues", "comments", _]) | (_, ["issues", _, "lock"]));
+    c.decided.set(
+        rest_decided(&method, tail)
+            && (routes_on || tail != ["issues"])
+            && (comment_on || !comment_route)
+            && (writes_on || !writes_route),
+    );
     let merge_of = rest_merge(&method, tail);
     c.leader_reads.set(merge_of.is_some());
     // A REST merge reads its rows and the owner's `Authz`, both fresh, for the repository it guesses the name names
@@ -2232,7 +2247,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let edit_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_HOST_PAUSE);
     let assign_body = match (assign_on, &method, tail) {
         (true, Method::Post | Method::Delete, ["issues", _, "assignees"]) | (_, Method::Patch, ["issues", _])
-            if assign_on || edit_on =>
+            if assign_on || edit_on || writes_on =>
         {
             let b = serde_json::from_slice::<Value>(&req.bytes().await?).unwrap_or(Value::Null);
             for login in rest::assignee_logins(&b) {
@@ -2402,12 +2417,18 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Err(x) => x,
             }
         }
-        // F141: an issue `PATCH` whose body names exactly one of `title` and `body`, one `Change` and so one atomic
-        // command (32.33, which may pause the issue's tasks in the same entry). A body naming more, or `state`, is
-        // M4-WP4's atomic update (32.34) and answers as before until it lands.
+        // F141 and F137: an issue `PATCH`. A body naming exactly one of `title` and `body` is one `Change` (32.33, which
+        // may pause the issue's tasks in the same entry), with the assignment route's 200. Any other body, once 32.35 is
+        // enabled, is one `Edit` that commits whole or not at all, with `What::IssueUpdated`'s; an assignees-only body
+        // is F20's arm above. Until its format is enabled, each shape answers as before (404).
         (Method::Patch, ["issues", n])
-            if edit_on
-                && let Some(plan) = rest::plan_issue_edit(&r, n, assign_body.as_ref().unwrap_or(&Value::Null)) =>
+            if let Some(plan) = {
+                let b = assign_body.as_ref().unwrap_or(&Value::Null);
+                match rest::plan_issue_edit(&r, n, b) {
+                    Some(plan) => edit_on.then_some(plan),
+                    None => writes_on.then(|| rest::plan_issue_update(&r, n, b)),
+                }
+            } =>
         {
             let who = match need(&who) {
                 Ok(w) => w,
@@ -2415,9 +2436,51 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             };
             match plan {
                 Ok(op) => {
-                    let what = What::IssueAssigned { n: n.parse().unwrap_or(0), created: false };
+                    let n = n.parse().unwrap_or(0);
+                    // A `Change` keeps the single-field route's render, which every 32.33 member has.
+                    let what = match op {
+                        IssueOp::Edit { .. } => What::IssueUpdated { n },
+                        _ => What::IssueAssigned { n, created: false },
+                    };
                     commit_issue(c, &rd, &who, to_wire(op), what).await?
                 }
+                Err(x) => x,
+            }
+        }
+        // F137: a REST comment edit (200 `issue-comment`) and a lock change (204), each in 32.35, served only once it is
+        // enabled; a comment delete commits the existing `DeleteComment` in its own format, and answers 204.
+        (Method::Patch, ["issues", "comments", cid]) if writes_on => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_edit_issue_comment(&r, cid, &body(req.bytes().await?)) {
+                Ok(op) => {
+                    let what = What::IssueCommentUpdated { id: id(cid).unwrap_or(0) };
+                    commit_issue(c, &rd, &who, to_wire(op), what).await?
+                }
+                Err(x) => x,
+            }
+        }
+        (Method::Delete, ["issues", "comments", cid]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_delete_issue_comment(&r, cid) {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::Deleted).await?,
+                Err(x) => x,
+            }
+        }
+        (m @ (Method::Put | Method::Delete), ["issues", n, "lock"]) if writes_on => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            let lock = m == Method::Put;
+            let b = if lock { body(req.bytes().await?) } else { Value::Null };
+            match rest::plan_issue_lock(&r, n, lock, &b) {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::IssueLocked).await?,
                 Err(x) => x,
             }
         }
@@ -3018,7 +3081,7 @@ mod tests {
             moving_from: None,
             at: Timestamp(1),
         };
-        let repo = |id: i64, rec| crate::Repo { id: RepoId(DbId(id)), owner: AccountId(DbId(9)), record: rec };
+        let repo = |id: i64, rec| crate::Repo::new(RepoId(DbId(id)), AccountId(DbId(9)), rec);
         let g = repo(7, record(0, 1));
         let ahead = || Some(("rows", Ok::<_, ()>(Some("authz"))));
         let found = |r: crate::Repo| Some(Ok(Some(r)));
