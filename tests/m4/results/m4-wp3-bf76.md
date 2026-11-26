@@ -1,6 +1,6 @@
 # BF-76 (`upload-artifact@v4` and `download-artifact@v4` through the forks and the pin map) on graft-m4a
 
-Status (2026-11-26): **hosted r1 ran from main 12107824: 3 of 4 gate lines PASS, the annotation line FAILS** on an edge bug (`pinmap::policy` skips the install's current map when nothing is approved), and withdrawing an approval is a no-op (`{pin_map: null}` reads as "keep" on the site). Results are in "Hosted r1" below. Cost $0.30 against the $3 stop. 0 sheds.
+Status (2026-11-26): **PASS hosted.** r1 (main 12107824) passed the tag job, the unapproved pin's failure and the approval, and failed the annotation line on `pinmap::policy`'s early return. `bf76-fix` (plant274) fixed it, and r2 (main 191f3505) passed the withdraw, the annotation (Graftyard's first, in REST and GraphQL) and the approval again. r1 cost $0.30 and r2 $0.05, against $3 each. 0 elect and 0 tierOff sheds in both.
 
 The row (`build/BUILD-PLAN.md`, M4-WP3) passes when:
 
@@ -95,3 +95,23 @@ Driver: `tests/m4/wp3/bf76/row.sh r1 <step>` with `bf76.mjs`. Raw output: `tests
 - The `GET /repos/{o}/{r}/pulls` list 404 from r1 is M4-WP4's to file and fix (plant 276), not this head's.
 
 **r2, pre-GO'd by the lead, $3 stop:** a site day and an edge day from the main that carries the fix, then `row.sh r2 withdraw` (m3org from r1's empty-map approval to none, by `null`), `FROM=r1 row.sh r2 pin` and `FROM=r1 row.sh r2 approve`, then `teardown`.
+
+## Hosted r2 (2026-11-26, 10:04Z to 10:24Z, main 191f3505): PASS
+
+Driver: `row.sh r2 <step>` with `FROM=r1` (r1's signed map, digest `5277fe93…`, still on the install). The tag job is not rerun: r1's PASS stands. Raw output: `tests/m4/raw/wp3/bf76/r2/`.
+
+**Days.**
+- **Site day:** a `3a363f36`, b `c9421cfb`, c `201a5bde`, from `a80a78cf`/`82ab652f`/`1cf7c2b4`, every live flag kept (REUSABLE; ARTIFACTS_V4=1; BF-73's), no push trigger. The first try (`site-refused.log`) was refused by `days.sh`'s build check, because the orb service had restarted the build; one direct rebuild followed.
+- **Edge day:** `e85dc381`, from `faaf6f06`. `FORMATS_ENABLED` was read live and kept all 36 formats, and the plain-text binding diff is empty.
+- **Ops:** `ac4cd9a5`, untouched.
+
+| Line | Verdict | Evidence |
+| --- | --- | --- |
+| Withdraw: m3org starts from no approval | **PASS** | `{tags: false, pin_map: null}` answered 200: before `{pin_map: 43dd75a6…, tags: false}` (r1's empty-map workaround), after `{pin_map: null, tags: false}` |
+| Unapproved pin fails at GHES's step with GHES's lines | **PASS** | Run 1770273: Failure. Set up job downloads `actions/upload-artifact@ea165f8d…` at `SHA:ea165f8d…`. The step `Run actions/upload-artifact@ea165f8d…` logs the `##[warning]…GHESNotSupportedError…` line and then `##[error]@actions/artifact v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not currently supported on GHES.` (`run/pin-job-pinned-1770274.log`, lines 16 and 33) |
+| Check run lists Graftyard's annotation (link and fork SHA) before the runner's, in REST and GraphQL | **PASS** | Check run 1770274: `completed`/`failure`, `annotations_count` 3. REST, in order: (1) failure, line 1, "Pinned action needs the Graftyard pin map", "`actions/upload-artifact@ea165f8d…` is upload-artifact v4+, which GHES does not support. Approve the pin map at https://graft-m4a-edge.<sub>.workers.dev/organizations/m3org/settings/actions/pin-map, or pin `graftyard-actions/upload-artifact@aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e`."; (2) the runner's warning, line 13; (3) the runner's failure, line 18, GHES's message. GraphQL `CheckRun.annotations` on PR #1 (head `aa66a3d4`) lists the same three in the same order: FAILURE 1, WARNING 13, FAILURE 18 (`run/pin-annotations.json`, `run/pin-graphql.json`) |
+| After approval the same workflow passes | **PASS** | `{pin_map: 5277fe93…}` answered 200; a digest the install does not hold got 422. Run 1770276: Success. `Download action repository 'actions/upload-artifact@ea165f8d…' (SHA:aeb6043f…)`, with no `GHESNotSupportedError`. The REST zip's `x.bin` SHA-256 equals the job's `9d19ef04…` |
+
+**Teardown.** The policy reads `{tags: false, pin_map: null}`. `m3org/bf76-r2` is deleted (204, then an anonymous read gets 404). `teardown.py --sweep --shardkill` tore down 3 shards (200), found none running, and deleted shardkill. The forks, the `actions/*` mirrors, and pin map `5277fe93…` as the install's current map stay on m4a.
+
+**Cost and sheds.** `acctcost.py` from 10:04:27Z to 10:24:14Z: graft-m4a **$0.05** (account $0.08), against the $3 stop. `tieroff503.py` over the same window: elect 0, tierOff 0. One edge 503 was a hosted-runner `GET /api/graftyard/v1/owners/m3org/actions/hosted/demand` at 10:10:52Z, during the site day's member reset, not a row request. The new repository needed no 503 retries.

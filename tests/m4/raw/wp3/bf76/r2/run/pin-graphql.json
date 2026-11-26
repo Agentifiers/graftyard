@@ -1,0 +1,74 @@
+{
+ "data": {
+  "repository": {
+   "pullRequest": {
+    "commits": {
+     "nodes": [
+      {
+       "commit": {
+        "oid": "aa66a3d46d9e988195a566f8e871ee6e526304e5",
+        "statusCheckRollup": {
+         "contexts": {
+          "nodes": [
+           {
+            "annotations": {
+             "nodes": [
+              {
+               "annotationLevel": "FAILURE",
+               "location": {
+                "end": {
+                 "line": 1
+                },
+                "start": {
+                 "line": 1
+                }
+               },
+               "message": "`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` is upload-artifact v4+, which GHES does not support. Approve the pin map at https://graft-m4a-edge.<sub>.workers.dev/organizations/m3org/settings/actions/pin-map, or pin `graftyard-actions/upload-artifact@aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e`.",
+               "path": ".github",
+               "title": "Pinned action needs the Graftyard pin map"
+              },
+              {
+               "annotationLevel": "WARNING",
+               "location": {
+                "end": {
+                 "line": 13
+                },
+                "start": {
+                 "line": 13
+                }
+               },
+               "message": "Artifact upload failed with error: GHESNotSupportedError: @actions/artifact v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not currently supported on GHES..\n\nErrors can be temporary, so please try again and optionally run the action with debug mode enabled for more information.\n\nIf the error persists, please check whether Actions is operating normally at [https://githubstatus.com](https://www.githubstatus.com).",
+               "path": ".github",
+               "title": null
+              },
+              {
+               "annotationLevel": "FAILURE",
+               "location": {
+                "end": {
+                 "line": 18
+                },
+                "start": {
+                 "line": 18
+                }
+               },
+               "message": "@actions/artifact v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not currently supported on GHES.",
+               "path": ".github",
+               "title": null
+              }
+             ],
+             "totalCount": 3
+            },
+            "conclusion": "FAILURE",
+            "name": "pinned"
+           }
+          ]
+         }
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

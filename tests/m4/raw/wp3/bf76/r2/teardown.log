@@ -1,0 +1,39 @@
+2026-11-26T10:22:59Z
+191f35058
+2026-11-26T10:23:02.419Z policy PUT {"tags":false,"pin_map":null}: 200; now {"pin_map":null,"tags":false}
+2026-11-26T10:23:04.790Z ok   tag substitution off: {"pin_map":null,"tags":false}
+2026-11-26T10:23:04.790Z ok   m3org/bf76-r2: DELETE 204, anonymous read after 404
+2026-11-26T10:23:04.791Z BF-76 teardown PASS (2026-11-26T10:22:59.611Z to 2026-11-26T10:23:04.791Z)
+2026-11-26T10:23:04.791Z sheds: python3 tests/fanout/tieroff503.py 2026-11-26T10:22:59.611Z 2026-11-26T10:23:04.791Z graft-m4a-edge
+teardown exit 0
+Traceback (most recent call last):
+  File "~/tmp/wt-bf76/tests/fanout/teardown.py", line 50, in <module>
+    r = subprocess.run([wrangler, "deploy", "-c", f"{work}/wrangler.json", "--secrets-file", f"{work}/secrets.json"],
+                       capture_output=True, text=True)
+  File "/usr/lib/python3.14/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/subprocess.py", line 1875, in _execute_child
+    self._posix_spawn(args, executable, env, restore_signals, close_fds,
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      p2cread, p2cwrite,
+                      ^^^^^^^^^^^^^^^^^^
+                      c2pread, c2pwrite,
+                      ^^^^^^^^^^^^^^^^^^
+                      errread, errwrite)
+                      ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/subprocess.py", line 1819, in _posix_spawn
+    self.pid = os.posix_spawn(executable, args, env, **kwargs)
+               ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '~/tmp/wt-bf76/tests/m0/node_modules/wrangler/bin/wrangler.js'
+sweep exit 1

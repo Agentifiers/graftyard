@@ -31,7 +31,10 @@ O=$REPO/tests/m4/raw/wp3/bf76/$TAG; mkdir -p "$O"
 export BF76_REPO=${BF76_REPO:-bf76-$TAG}
 WD=graft-m4a-edge.$CF_WORKERS_SUBDOMAIN.workers.dev
 export GRAFT_EDGE=https://$WD
-export WRANGLER=${WRANGLER:-$REPO/tests/m0/node_modules/wrangler/bin/wrangler.js}
+# A worktree without tests/m0's install takes the main checkout's (`git rev-parse --git-common-dir`).
+W0=$REPO/tests/m0/node_modules/wrangler/bin/wrangler.js
+[ -e "$W0" ] || W0=$(cd "$(git -C "$REPO" rev-parse --git-common-dir)/.." && pwd)/tests/m0/node_modules/wrangler/bin/wrangler.js
+export WRANGLER=${WRANGLER:-$W0}
 scrub() { sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" -e "s#$HOME/#~/#g" -e "s#$REPO/#<checkout>/#g"; }
 log() { { date -u +%FT%TZ; git -C "$REPO" rev-parse --short HEAD; cat; } | scrub >"$O/$STEP.log"; cat "$O/$STEP.log"; }
 # BF-78's site day: every live `GRAFTYARD_*` flag of site a that BF-73's day does not set itself is passed on as it is.
