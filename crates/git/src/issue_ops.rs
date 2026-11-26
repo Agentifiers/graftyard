@@ -580,8 +580,9 @@ impl IssueCmd {
     /// `decide`, where `agent` says the command is format 32.8 (`crate::repo::REPO_FORMAT_AGENT`), so its entry may
     /// carry `AgentMeta`, `AgentGate`, and `AgentPolicy`. The agent refusals write nothing and apply in any format.
     /// `reviews` says it is format 32.22 (`call::REPO_FORMAT_REVIEWS`), so a review comment outside a review submits
-    /// its review as `ReviewEvent::SingleComment`. `bot_author` says it is format 32.29 (`call::REPO_FORMAT_ROUTES`), so
-    /// an App's `OpenIssue` is authored by its bot account (`AppId::bot`).
+    /// its review as `ReviewEvent::SingleComment`. `bot_author` says it is format 32.29 (`call::REPO_FORMAT_ROUTES`) or
+    /// 32.32 (`call::REPO_FORMAT_ISSUE_COMMENT`), so an App's `OpenIssue` or issue `Comment` is authored by its bot
+    /// account (`AppId::bot`).
     #[expect(clippy::too_many_arguments, reason = "each flag is one format the call's entry already decided")]
     pub fn decide_in(
         &self,
@@ -857,13 +858,13 @@ impl IssueCmd {
                     Some((n, review, at)) => CommentTarget::Review { n: *n, review: Some(*review), at: at.clone() },
                     None => on.clone(),
                 };
-                let ev = CommentEvent::Created {
-                    id: CommentId(id),
-                    on,
-                    author: me,
-                    body: body.clone(),
-                    reply_to: *reply_to,
+                // A REST issue comment by an App (32.32) is its bot's, as an issue it opens through REST is (32.29).
+                let author = match (self.actor.actor, &on) {
+                    (Actor::App { app, .. }, CommentTarget::Issue(_)) if bot_author => Some(app.bot()),
+                    _ => me,
                 };
+                let ev =
+                    CommentEvent::Created { id: CommentId(id), on, author, body: body.clone(), reply_to: *reply_to };
                 let mut evs = one(RepoEvent::Comment(ev));
                 if let Some((n, review, at)) = single {
                     evs.push(RepoEvent::Review(if reviews {

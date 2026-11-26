@@ -1424,6 +1424,74 @@ fn an_installation_token_sets_a_status_as_its_apps_bot_with_statuses_write() {
     c.agree();
 }
 
+/// F137: a REST issue comment rides format 32.32 through the binding, a user's and an App's alike, whose
+/// `What::IssueCommentCreated` an older member cannot render; the same `Comment` from GraphQL `addComment` keeps its
+/// format. The mark is only for an issue comment: 32.32 on a review comment is malformed. An App's REST comment is its
+/// bot's, as its REST issue is.
+#[test]
+fn a_rest_issue_comment_rides_32_32_and_an_apps_is_its_bots() {
+    use graftyard_git::issue_ops::call::{
+        IssueCall, REPO_FORMAT_APP_CALLS, REPO_FORMAT_ISSUE_COMMENT, REPO_FORMAT_ISSUES,
+    };
+    use graftyard_identity::Access::{Read, Write};
+    let mut c = setup(3, 90);
+    install(&mut c, &[("issues", Write), ("metadata", Read)]);
+    let w = claims(&[("issues", Write), ("metadata", Read)]);
+    let open =
+        IssueOp::OpenIssue { title: "t".into(), body: "".into(), labels: SmallVec::new(), assignees: SmallVec::new() };
+    c.commit(WRITER, open).unwrap();
+    let comment = || IssueOp::Comment { on: CommentTarget::Issue(IssueNumber(1)), body: "b".into(), reply_to: None };
+    let blobless = |op: IssueOp| op.map_blob(|_| Err::<graftyard_git::blob::BlobRef, ()>(())).expect("no blob");
+    for (actor, before) in [(who(WRITER), REPO_FORMAT_ISSUES), (Principal::installation(&w), REPO_FORMAT_APP_CALLS)] {
+        let mut call = IssueCall::new(blobless(comment()), actor.clone(), RequestId(Ulid(80)), serde_json::json!({}));
+        assert_eq!(call.format(), before, "addComment keeps its bytes");
+        call.rest_comment = true;
+        assert_eq!(call.format(), REPO_FORMAT_ISSUE_COMMENT);
+        let wire = serde_json::to_value(&call).unwrap();
+        assert_eq!(wire["format"], serde_json::json!([0x20, 32]));
+        let back: IssueCall = serde_json::from_value(wire).unwrap();
+        assert!(back.rest_comment && back.actor == actor, "{back:?}");
+    }
+    let mut review = IssueCall::new(
+        blobless(IssueOp::Comment {
+            on: CommentTarget::Review {
+                n: IssueNumber(1),
+                review: None,
+                at: graftyard_git::issues::LineAnchor {
+                    commit: oid(1),
+                    path: "a".into(),
+                    line: 1,
+                    start_line: None,
+                    side: graftyard_git::issues::DiffSide::Right,
+                },
+            },
+            body: "b".into(),
+            reply_to: None,
+        }),
+        who(WRITER),
+        RequestId(Ulid(81)),
+        serde_json::json!({}),
+    );
+    let mut wire = serde_json::to_value(&review).unwrap();
+    wire["format"] = serde_json::json!([0x20, 32]);
+    assert!(serde_json::from_value::<IssueCall>(wire).is_err(), "32.32 marks only an issue comment");
+    review.rest_comment = IssueCall::issue_comment(&review.op);
+    assert_eq!(review.format(), REPO_FORMAT_ISSUES);
+
+    let cmd = app_cmd(&w, comment());
+    let m = &c.members[0];
+    let view = RepoView::new(tiers(), &m.core, &m.meta, c.now);
+    let mut needed: Vec<ChainId> = cmd.deps(&view).into_iter().collect();
+    needed.dedup();
+    let d: Vec<_> = needed.iter().map(|ch| c.deps.iter().find(|(k, _)| k == ch).expect("a dep").clone()).collect();
+    let author = |bot: bool| match &cmd.decide_in(&view, &d, false, None, false, false, bot).unwrap().0[0] {
+        RepoEvent::Comment(graftyard_git::issues::CommentEvent::Created { author, .. }) => *author,
+        e => panic!("{e:?}"),
+    };
+    let app = graftyard_identity::AppId(DbId(APP));
+    assert_eq!((author(true), author(false)), (Some(app.bot()), None), "REST: the App's bot; GraphQL: none");
+}
+
 /// `rest:repos`' create (format 32.13): `InitRepo` writes the chain's first settings and `Created` once, needs Admin,
 /// names the chain's own owner, and a re-sent create commits nothing.
 #[test]

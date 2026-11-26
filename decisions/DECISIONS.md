@@ -11924,3 +11924,32 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/plaindiff/run.sh`, base main `b65e6812`: 10 request pairs. `rest-pulls` answers 404 on the base and 200 `[]` on the head (named in `CHANGED`), and the other 9 are byte-identical: git, `GET /repos/{o}/{r}`, `GET /pulls/1` (404 on both, since the bed has no pull request), `GET /issues`, a label write, and GraphQL.
 
 **Flip.** A GHES 3.22 reply that differs from this one on the same rows, for example a `long-running` list limited by age, which F136 leaves open because the view has no clock, or a `head` without `owner:` that filters.
+
+### `issue-routes`: `GET /repos/{o}/{r}/issues/{n}` reads the issue through the narrow read, and `POST .../issues/{n}/comments` commits `addComment`'s `Comment` in repository format 32.32, 2026-11-26
+
+**Status.** Built at $0 on branch `issue-routes` (F137). It is native-tested and plant280 catches every mutant; edgeboot passed with test-faults and with PRODUCT, and plaindiff ran. Its hosted proof rides the next graft-m4a row that does a site day and an edge day enabling 32.32. Closes OPEN-QUESTIONS F137's two routes once hosted; the rest of F137's sweep stays open.
+
+**Decision.**
+- `rest::get_issue` serves GHES 3.22's `issues/get`: the pinned `issue` from `issue_json`, 404 for a number no item has. A pull request's number answers its issue form with `pull_request`, as GHES does. It is in `narrow::rest_serves` and `rest_get`, so a member answers it with only that item's rows, and the edge's whole-tier path routes it too. No format: it reads rows every member already folds.
+- `POST /repos/{o}/{r}/issues/{n}/comments` plans `IssueOp::Comment { on: Issue(n) }`, the command GraphQL `addComment` commits, on an issue or a pull request's conversation. A missing item is 404 and a missing or non-string `body` 422 `missing_field` before any commit. `decide` checks it as it checks `addComment`: `issues: write` of an installation token, or `pull_requests: write` on a pull request.
+- Its 201 is the pinned `issue-comment` with `Location`, rendered on the leader from `&Acked` (`What::IssueCommentCreated { n }`, `rest::issue_comment_created`).
+- It rides repository format 32.32 (`call::REPO_FORMAT_ISSUE_COMMENT`, the mark `IssueCall::rest_comment`), because a member without `What::IssueCommentCreated` would commit the comment and then fail to render its reply. A member that reads only up to 32.30 refuses it before it commits, and 32.32 on any command but an issue comment is malformed. It carries what 32.30 does: an App's claims, a task's included, or none for a user. The edge serves the route only once `FormatsEnable` enabled 32.32; until then it answers 404, as main did. 32.31 is AM2's forks.
+- An App's REST comment is authored by its bot account (`AppId::bot`), as its REST issue is in 32.29 (`app-bot`). GraphQL `addComment` keeps its format and its author-less bytes.
+- The edge lets the comment take the cached token row (`rest_decided`), as every other REST issue write does, once 32.32 is enabled.
+
+**Why.** AM2's LM-3 batch r1 on graft-m4a got 404 for both. Octokit's `issues.get` and `issues.createComment`, and `gh api`, call them, and GHES 3.22 serves both.
+
+**What it beat.**
+- Committing through `What::Graphql` with an `addComment` document and converting its payload to REST's shape on the edge, which needs no format. It is a second renderer for `issue-comment` that can drift from `issue_comment_json` (lead, 2026-11-26).
+- Reusing `What::ReviewCommentCreated`, which looks the id up among review comments and would answer 500.
+
+**Evidence.**
+- `crates/api/tests/narrow.rs`, `single_object_routes_read_only_their_object`: `issues/9` (an issue) and `issues/7` (a retitled, commented pull request in its issue form) are the whole-tier bytes, hold only their own item, and carry the title, comment count and `pull_request` the rows say; `issues/99` and `issues/x` are 404. It fails on main, where `rest_get` serves no `issues/{n}`.
+- `crates/api/tests/surfaces.rs`, `rest_issue_comment_create_renders_the_issue_comment`: a comment on issue 1 and on pull request 2 each renders 201 with its id, body, author, `issue_url`, the `html_url` of its kind and `Location`, and lists after the item's earlier comments; 404 and 422 refusals plan nothing; a refused `Forbidden` is GitHub's 403. It fails to compile on main.
+- `crates/git/tests/issues.rs`, `a_rest_issue_comment_rides_32_32_and_an_apps_is_its_bots`: a user's and an App's REST comment cross the binding in 32.32 with their principal; the same `Comment` unmarked keeps 32.5 or 32.9; 32.32 on a review comment is refused; an App's 32.32 comment is its bot's and its 32.9 one author-less.
+- The new replies (`narrow-issues-*`, `issue-comment-created-*`) validate against `ghes-3.22.json` with `crates/api/gh/validate.py`; the crate's whole reply set fails only the four `merge_group` and queue webhook keys GHES 3.22 lacks, as before.
+- `tests/m0carried/plant280.py`: 8 of 8 caught. The first two mutants are main's rules.
+- `bash tests/edgeboot/run.sh` and `PRODUCT=1 bash tests/edgeboot/run.sh` pass with 0 wasm traps; both answer `GET /repos/o/r/issues/1` and `POST /repos/o/r/issues/1/comments` without a 500 with no site bound.
+- `tests/plaindiff/run.sh`, base main `789484b6`: 12 request pairs, all byte-identical. `rest-issue-1` and `rest-issue-comment` stay main's 404, since the bed seeds no issue and does not enable 32.32.
+
+**Flip.** A GHES 3.22 reply that differs on the same rows, for example a comment on a locked issue that GHES refuses but `decide` allows, which F137 leaves to `IssueOp::Comment`'s existing rules. If a later release needs the GraphQL path's bytes for REST, drop `What::IssueCommentCreated` only after every member reads its replacement.

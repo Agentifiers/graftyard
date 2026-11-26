@@ -57,6 +57,7 @@ pub fn rest_serves(tail: &[&str]) -> bool {
         [] | ["issues"]
             | ["pulls"]
             | ["pulls", _]
+            | ["issues", _]
             | ["issues", _, "comments"]
             | ["pulls", _, "reviews"]
             | ["pulls", _, "comments"]
@@ -80,6 +81,7 @@ pub fn rest_get(r: &Repo<'_>, tail: &[&str], query: &str, index: Index) -> Optio
         ["issues"] => rest::list_issues(r, query),
         ["pulls"] => rest::list_pulls(r, query),
         ["pulls", n] => rest::get_pull(r, n),
+        ["issues", n] => rest::get_issue(r, n),
         ["issues", n, "comments"] => rest::list_issue_comments(r, n, query),
         ["pulls", n, "reviews"] => rest::list_reviews(r, n, query),
         ["pulls", n, "comments"] => rest::list_review_comments(r, n, query),
