@@ -1686,7 +1686,7 @@ fn needs_install(c: &Ctx<'_>, who: &Principal) -> bool {
 }
 
 /// The account that holds `login`, from its `Names` row read through `fresh`.
-async fn account_of(c: &Ctx<'_>, login: &str) -> std::result::Result<Option<AccountId>, String> {
+pub(crate) async fn account_of(c: &Ctx<'_>, login: &str) -> std::result::Result<Option<AccountId>, String> {
     let Ok(l) = Login::parse(login) else { return Ok(None) };
     let read = async {
         let names = ChainId::Names(name_shard(&NameKey::Login(l.key())));

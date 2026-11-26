@@ -15,8 +15,8 @@ use graftyard_raft::{EntryBody, Fold, Format, LogEntry, PREV_ZERO, Term, digest}
 use graftyard_types::{AccountId, DbId, Index, RepoId, Tier, Timestamp};
 use serde_json::Value;
 
-/// The newest repository format: version 34, AM3-WP2a's forks (`REPO_FORMAT_FORKS`).
-const NEWEST: u16 = 34;
+/// The newest repository format: version 35, F137's REST edits (`REPO_FORMAT_ISSUE_EDIT`).
+const NEWEST: u16 = 35;
 
 /// The first format version a kind can be committed at, by wire tag: the version that introduced it
 /// (`crate::repo::RepoEvent`'s comments). Tags 0 to 26, Milestones 1 and 2, from version 1.
@@ -155,7 +155,9 @@ fn a_new_events_format_is_above_every_format_on_main() {
             tag - 1
         );
     }
-    assert_eq!(first_version(kinds - 1), NEWEST, "the newest tag's format is NEWEST");
+    // A format may add no event kind (32.35, F137's REST edits, adds an `IssueOp` only), so the newest kind's format is
+    // at most `NEWEST`, not always it.
+    assert!(first_version(kinds - 1) <= NEWEST, "the newest tag's format is above NEWEST");
     let forks = graftyard_git::issue_ops::call::REPO_FORMAT_FORKS;
     assert_eq!((forks.family, forks.version), (0x20, first_version(50)), "Genesis (tag 50) rides REPO_FORMAT_FORKS");
 }

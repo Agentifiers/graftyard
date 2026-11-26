@@ -74,6 +74,15 @@ pub const REPO_FORMAT_ISSUE_COMMENT: Format = Format { family: 0x20, version: 32
 /// none for a user, as 32.30 does, and a body edit's lease events, as 32.14 does. 32.31 is unused, and 32.32 is F137's
 /// issue comments.
 pub const REPO_FORMAT_HOST_PAUSE: Format = Format { family: 0x20, version: 33 };
+/// F137's REST edits (`decisions/DECISIONS.md`, "`issue-writes`"): a multi-field `PATCH /repos/{o}/{r}/issues/{n}`
+/// (`IssueOp::Edit`, tag 47), and a REST comment `PATCH` (`EditComment`) or lock `PUT`/`DELETE` (`Change` of
+/// `Locked`, with `LockReason::Unspecified` for a lock that names no reason) the edge marks (`IssueCall::rest_edit`),
+/// whose replies a release without `What::IssueUpdated`, `What::IssueCommentUpdated` and `What::IssueLocked` cannot
+/// render after the entry commits. It carries what 32.33 does: an App's claims, a task's included, or none for a
+/// user, and for an `Edit` the pause and a body edit's lease events. A member that cannot read it refuses it before it
+/// commits, and the edge sends it only once `FormatsEnable` enabled it. 32.34 is the forks' (`REPO_FORMAT_FORKS`): a new
+/// format is above every format on main when it merges.
+pub const REPO_FORMAT_ISSUE_EDIT: Format = Format { family: 0x20, version: 35 };
 /// AM3-WP2a, base forks (`build/BUILD-PLAN.md`): `RepoEvent::Genesis` (tag 50), whose fork's core `fork` row names the
 /// repository's network. A member that cannot read it refuses it before it commits, and the edge sends it only once
 /// `FormatsEnable` enabled it. It is above every format on main when it merged, not 32.31: an entry takes the highest
@@ -109,6 +118,9 @@ pub struct IssueCall {
     /// Format 32.33 (`REPO_FORMAT_HOST_PAUSE`): the edge enabled it and the command is `pausable`, so its entry may
     /// pause or resume the issue's Graftyard-run tasks.
     pub pause: bool,
+    /// Format 32.35 (`REPO_FORMAT_ISSUE_EDIT`): a REST comment edit or lock change (`IssueCall::edit_mark`), whose
+    /// reply only a 32.35 member renders. An `Edit` is always 32.35.
+    pub rest_edit: bool,
     /// What the leader renders from the `&Acked`, opaque here (`graftyard_api::hosted::Render`).
     pub render: Value,
     /// The blob `op` names, rebuilt by the member that admits the command. Never sent.
@@ -146,6 +158,10 @@ impl IssueCall {
         // 32.23 likewise: a secret or variable command is never an agent, task, or lease command.
         if self.op.is_secret() {
             return crate::secrets::REPO_FORMAT_SECRETS;
+        }
+        // 32.35 likewise: a multi-field issue edit, or a REST comment edit or lock change.
+        if self.rest_edit || matches!(self.op, IssueOp::Edit { .. }) {
+            return REPO_FORMAT_ISSUE_EDIT;
         }
         // 32.33 likewise, before 32.30 and 32.14: it carries what each of them does for these commands.
         if self.pause {
@@ -218,6 +234,7 @@ impl IssueCall {
             rest_issue: false,
             rest_comment: false,
             pause: false,
+            rest_edit: false,
         }
     }
 
@@ -227,6 +244,14 @@ impl IssueCall {
             op,
             IssueOp::Change { change: crate::issues::IssueChange::Title(_) | crate::issues::IssueChange::Body(_), .. }
                 | IssueOp::Assign { .. }
+        )
+    }
+
+    /// Whether `op` is a command 32.35 marks when it comes from REST: a comment edit, or a lock change.
+    pub fn edit_mark<B>(op: &IssueOp<B>) -> bool {
+        matches!(
+            op,
+            IssueOp::EditComment { .. } | IssueOp::Change { change: crate::issues::IssueChange::Locked(_), .. }
         )
     }
 
@@ -336,6 +361,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             REPO_FORMAT_ASSIGN,
             REPO_FORMAT_ISSUE_COMMENT,
             REPO_FORMAT_HOST_PAUSE,
+            REPO_FORMAT_ISSUE_EDIT,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
@@ -361,7 +387,9 @@ impl<'de> Deserialize<'de> for IssueCall {
         // 32.30 carries an App's claims, a task claim included, or none for a user, and 32.32 and 32.33 what 32.30 does.
         let comment = fmt(REPO_FORMAT_ISSUE_COMMENT);
         let pause = fmt(REPO_FORMAT_HOST_PAUSE);
-        let assign = fmt(REPO_FORMAT_ASSIGN) || comment || pause;
+        // 32.35 carries what 32.33 does.
+        let edit = fmt(REPO_FORMAT_ISSUE_EDIT);
+        let assign = fmt(REPO_FORMAT_ASSIGN) || comment || pause || edit;
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         let task_claim = w.claims.as_ref().is_some_and(|c| c.task.is_some());
         if !tasks && (w.agent_session.is_some() || (task_claim && !assign)) {
@@ -394,6 +422,7 @@ impl<'de> Deserialize<'de> for IssueCall {
         c.rest_issue = routes && matches!(c.op, IssueOp::OpenIssue { .. });
         c.rest_comment = comment && IssueCall::issue_comment(&c.op);
         c.pause = pause && IssueCall::pausable(&c.op);
+        c.rest_edit = edit && IssueCall::edit_mark(&c.op);
         // One form per command: a format that does not match the command is malformed.
         let got = c.format();
         if !fmt(got) {
@@ -406,7 +435,7 @@ impl<'de> Deserialize<'de> for IssueCall {
 impl IssueCall {
     pub fn tiers(&self) -> TierSet {
         // A 32.33 command may write a task's core row (`TaskUpdated`) and its metadata row (`TaskResumed`).
-        if self.pause {
+        if self.pause || matches!(self.op, IssueOp::Edit { .. }) {
             return TierSet::CORE.union(TierSet::METADATA);
         }
         self.cmd().map_or(TierSet::METADATA, |cmd| cmd.tiers())
@@ -421,8 +450,10 @@ impl IssueCall {
         d.extend(crate::repo::authz_chains(fold.authz_owner(), fold.authz_enterprise()));
         crate::repo::with_install(&mut d, &self.actor);
         let install = ChainId::Authz(graftyard_identity::install_account());
-        // An assignment reads the install's `AgentApp` rows for the one assignable bot.
-        if (self.agent_events() || matches!(self.op, IssueOp::Assign { .. })) && !d.contains(&install) {
+        // An assignment, or an edit that sets assignees, reads the install's `AgentApp` rows for the one assignable bot.
+        if (self.agent_events() || matches!(self.op, IssueOp::Assign { .. } | IssueOp::Edit { .. }))
+            && !d.contains(&install)
+        {
             d.push(install);
         }
         d
@@ -444,15 +475,16 @@ impl IssueCall {
         };
         // The entry's time: an invitation's `expires` is set from it and checked against it.
         let view = RepoView::new(s.fold().tiers(), core, meta, s.at());
-        // 32.33 carries a body edit's lease events too.
-        let leases = self.format() == crate::repo::REPO_FORMAT_LEASES || self.pause;
+        // 32.33 carries a body edit's lease events too, and so does a 32.35 `Edit`, which carries its pause.
+        let edit = matches!(self.op, IssueOp::Edit { .. });
+        let leases = self.format() == crate::repo::REPO_FORMAT_LEASES || self.pause || edit;
         let (evs, out) = if self.op.is_task() {
             cmd.decide_task(&view, deps, s.at(), s.applied(), leases, s.actor_writes())?
         } else if self.op.is_lease() {
             cmd.decide_lease(&view, deps, s.at())?
         } else {
             let bot = matches!(self.format(), REPO_FORMAT_ROUTES | REPO_FORMAT_ISSUE_COMMENT);
-            let pause = self.pause.then(|| s.applied());
+            let pause = (self.pause || edit).then(|| s.applied());
             cmd.decide_in(&view, deps, self.agent_events(), self.session.as_ref(), leases, self.reviews, bot, pause)?
         };
         let authz = self.render_lacks_authz().then(|| owner_authz(s.fold(), deps)).flatten();

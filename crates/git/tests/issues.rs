@@ -1651,3 +1651,125 @@ fn hook_commands_are_admin_only_and_a_create_alone_is_pinged() {
     assert_eq!(c.commit(OWNER, IssueOp::DeleteHook { id }), Err(IssueErr::NotFound));
     c.agree();
 }
+
+/// F137's multi-field REST `PATCH` (format 32.35): one `Edit` writes every part in one entry or nothing. A title,
+/// body, state and label set commit together; with one bad part (a title over the limit) nothing is written, though
+/// each other part alone would commit. Each part keeps its own command's rule: a reader may edit their own issue's
+/// title and close it, but their label set is dropped, as GHES drops it. A reasonless lock is `Unspecified` and
+/// reads locked; its unlock clears it. An `Edit` crosses the binding only as 32.35, and the comment edit and lock
+/// marks as 32.35.
+#[test]
+fn a_multi_field_issue_edit_commits_whole_or_not_at_all() {
+    use graftyard_git::issue_ops::call::{IssueCall, REPO_FORMAT_ISSUE_EDIT, REPO_FORMAT_ISSUES};
+    use graftyard_git::issues::{IssueChange, LabelId, LabelName, LockReason, StateReason};
+    use graftyard_git::tiers::{IssueRow, get_rec, n_key};
+    let mut c = setup(1, 90);
+    let label = |c: &mut Chain, name: &str| match c
+        .commit(
+            WRITER,
+            IssueOp::DefineLabel { id: None, name: LabelName(name.into()), color: [1, 2, 3], description: None },
+        )
+        .unwrap()
+    {
+        IssueOut::Id(id) => LabelId(id),
+        o => panic!("{o:?}"),
+    };
+    let (bug, ui) = (label(&mut c, "bug"), label(&mut c, "ui"));
+    let open = |c: &mut Chain, who: i64| match c
+        .commit(
+            who,
+            IssueOp::OpenIssue {
+                title: "t".into(),
+                body: "b".into(),
+                labels: smallvec![bug],
+                assignees: SmallVec::new(),
+            },
+        )
+        .unwrap()
+    {
+        IssueOut::Number(n) => n,
+        o => panic!("{o:?}"),
+    };
+    let row = |c: &Chain, n: IssueNumber| get_rec::<IssueRow>(&c.members[0].meta, "issue", &[n_key(n)]).unwrap();
+    let labels = |c: &Chain, n: IssueNumber| -> Vec<i64> {
+        c.members[0]
+            .meta
+            .prefix("issue_label", &[n_key(n)])
+            .into_iter()
+            .map(|(k, _)| match k[1] {
+                Val::Int(i) => i,
+                _ => panic!(),
+            })
+            .collect()
+    };
+    let edit = |n, changes: SmallVec<[IssueChange; 3]>, labels: Option<SmallVec<[LabelId; 4]>>| IssueOp::Edit {
+        n,
+        changes,
+        labels,
+        assignees: None,
+    };
+    let n = open(&mut c, WRITER);
+    let before = c.log.len();
+    let all = smallvec![
+        IssueChange::Title("new".into()),
+        IssueChange::Body("nb".into()),
+        IssueChange::State { open: false, reason: Some(StateReason::NotPlanned) }
+    ];
+    assert_eq!(c.commit(WRITER, edit(n, all, Some(smallvec![ui]))), Ok(IssueOut::Done));
+    assert_eq!(c.log.len(), before + 1, "one entry");
+    let r = row(&c, n);
+    assert_eq!((&*r.title, &*r.body, r.open, r.reason), ("new", "nb", false, Some(StateReason::NotPlanned)));
+    assert_eq!(labels(&c, n), [ui.0.0], "the set replaced");
+    // One part refused refuses the whole edit, and writes nothing.
+    let long = "x".repeat(300);
+    let bad = smallvec![IssueChange::Body("never".into()), IssueChange::Title(long.into())];
+    let before = c.log.len();
+    assert!(matches!(c.commit(WRITER, edit(n, bad, Some(smallvec![bug]))), Err(IssueErr::Invalid(_))));
+    assert_eq!(c.log.len(), before, "no entry");
+    assert_eq!((&*row(&c, n).body, labels(&c, n)), ("nb", vec![ui.0.0]));
+    assert_eq!(
+        c.commit(WRITER, IssueOp::Change { n, change: IssueChange::Body("alone".into()) }),
+        Ok(IssueOut::Done),
+        "the body alone would commit"
+    );
+    // A reader's own issue: title and close commit, the label set is dropped.
+    let mine = open(&mut c, READER);
+    let parts = smallvec![IssueChange::Title("mine".into()), IssueChange::State { open: false, reason: None }];
+    assert_eq!(c.commit(READER, edit(mine, parts, Some(SmallVec::new()))), Ok(IssueOut::Done));
+    assert_eq!((&*row(&c, mine).title, row(&c, mine).open, labels(&c, mine)), ("mine", false, vec![bug.0.0]));
+    // Another's issue: the reader's edit is refused whole.
+    let theirs = smallvec![IssueChange::Title("x".into()), IssueChange::Body("y".into())];
+    assert_eq!(c.commit(READER, edit(n, theirs, None)), Err(IssueErr::Forbidden));
+    // A reasonless lock, and its unlock.
+    let lock = |r| IssueOp::Change { n, change: IssueChange::Locked(r) };
+    assert_eq!(c.commit(READER, lock(Some(LockReason::Unspecified))), Err(IssueErr::Forbidden));
+    c.commit(WRITER, lock(Some(LockReason::Unspecified))).unwrap();
+    assert_eq!(row(&c, n).locked, Some(LockReason::Unspecified));
+    c.commit(WRITER, lock(None)).unwrap();
+    assert_eq!(row(&c, n).locked, None);
+
+    // The wire: an `Edit` is 32.35 under any principal; a comment edit and a lock are 32.35 only when marked, and the
+    // mark on any other command is malformed.
+    let blobless = |op: IssueOp| op.map_blob(|_| Err::<graftyard_git::blob::BlobRef, ()>(())).expect("no blob");
+    let call = |op| IssueCall::new(blobless(op), who(WRITER), RequestId(Ulid(90)), serde_json::json!({}));
+    let e = call(edit(n, smallvec![IssueChange::Title("w".into())], None));
+    assert_eq!(e.format(), REPO_FORMAT_ISSUE_EDIT);
+    let back: IssueCall = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
+    assert_eq!(back.op, e.op);
+    for op in [
+        lock(Some(LockReason::Unspecified)),
+        IssueOp::EditComment { id: graftyard_git::issues::CommentId(DbId(1)), body: "b".into() },
+    ] {
+        let mut m = call(op);
+        assert_eq!(m.format(), REPO_FORMAT_ISSUES, "unmarked, it keeps its bytes");
+        m.rest_edit = IssueCall::edit_mark(&m.op);
+        assert_eq!(m.format(), REPO_FORMAT_ISSUE_EDIT);
+        let wire = serde_json::to_value(&m).unwrap();
+        assert_eq!(wire["format"], serde_json::json!([0x20, 35]));
+        let back: IssueCall = serde_json::from_value(wire).unwrap();
+        assert!(back.rest_edit, "{back:?}");
+    }
+    let mut wire = serde_json::to_value(call(IssueOp::Change { n, change: IssueChange::Title("t".into()) })).unwrap();
+    wire["format"] = serde_json::json!([0x20, 35]);
+    assert!(serde_json::from_value::<IssueCall>(wire).is_err(), "32.35 marks only an edit, a comment edit or a lock");
+}

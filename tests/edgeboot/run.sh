@@ -69,10 +69,12 @@ done
 for p in "/api/v3/repos/o/r" "/api/v3/repos/o/r/pulls?state=all&per_page=5" "/api/v3/repos/o/r/issues/1" \
   "/api/v3/repos/o/r/issues/1/comments" "/api/v3/repos/o/r/issues/comments?sort=updated" \
   "/api/v3/repos/o/r/issues/events" "/api/v3/repos/o/r/issues/1/timeline" "/api/graftyard/v1/release/entries?after=0" "/o/r.git/info/refs?service=git-upload-pack" \
-  "/o/r.git/git-upload-pack" "PATCH /api/v3/repos/o/r/issues/1"; do
+  "/o/r.git/git-upload-pack" "PATCH /api/v3/repos/o/r/issues/1" "PATCH /api/v3/repos/o/r/issues/comments/1" "DELETE /api/v3/repos/o/r/issues/comments/1" \
+  "PUT /api/v3/repos/o/r/issues/1/lock" "DELETE /api/v3/repos/o/r/issues/1/lock" "/api/v3/repos/o/r/issues/1/assignees/o"; do
   m=GET; case "${p##*/}" in git-upload-pack|comments) m=POST;; esac
-  # F141: an issue PATCH with one field, through the edge's arm and its 32.33 gate (off here: 404, never a trap).
-  case "$p" in "PATCH "*) m=PATCH; p=${p#PATCH }; esac
+  # A request written "METHOD path" names its method: F141's issue PATCH, through its 32.33 gate, and F137's comment
+  # edit and delete, the lock, through 32.35's (both off here: 404, never a trap).
+  case "$p" in *" "*) m=${p%% *}; p=${p#* };; esac
   c=$(curl -s -m 30 -X $m -D "$B/h" -o "$B/body" -w '%{http_code}' "${hdr[@]}" "http://127.0.0.1:$P$p")
   st=$(grep -i '^server-timing' "$B/h" | tr -d '\r')
   echo "$m $p: $c $(head -c 100 "$B/body" | tr -d '\n') | ${st:0:220}"

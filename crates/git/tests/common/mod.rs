@@ -331,6 +331,7 @@ pub fn repo_reads() -> Vec<Format> {
         graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_COMMENT,
         graftyard_git::issue_ops::call::REPO_FORMAT_HOST_PAUSE,
         graftyard_git::issue_ops::call::REPO_FORMAT_FORKS,
+        graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT,
     ]
 }
 
