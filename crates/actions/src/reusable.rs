@@ -179,6 +179,74 @@ pub fn resolve_version(v: &str, ref_value: impl Fn(&RefName) -> Option<ObjectId>
     })
 }
 
+/// The ref and commit a call into another repository pins (`want`'s `Version::Named` `version`), from the rows a host
+/// read for it: `core` holds its `settings` and `collaborator` rows and the `ref` rows the version names, as a narrow
+/// `tarball/{version}` read answers them. Refused unless an anonymous caller may read the repository, as the edge's
+/// dispatch and the launch service read another repository (`decisions/OPEN-QUESTIONS.md`, F90), then pinned by
+/// `resolve_version`. The host then reads the file at the commit, so a full SHA that names no commit fails there.
+pub fn pin_other(
+    name: &str,
+    version: &Version,
+    repo: graftyard_types::RepoId,
+    owner: graftyard_types::AccountId,
+    core: &dyn graftyard_fold::Read,
+) -> Result<(String, [u8; 20]), String> {
+    let access = graftyard_git::issue_ops::Access { repo, owner, core };
+    if graftyard_identity::authorize_read(None, None, &[], &access) != graftyard_identity::Decision::Allow {
+        return Err(format!("{name}: not found or not readable"));
+    }
+    let v = match version {
+        Version::At { r#ref, sha } => return Ok((r#ref.clone(), *sha)),
+        Version::Named(v) => v,
+    };
+    let at = |n: &RefName| graftyard_git::tiers::get_rec(core, "ref", &[graftyard_git::tiers::ref_key(n)]);
+    let (r, sha) = resolve_version(v, at).ok_or_else(|| format!("{name}@{v}: no such version"))?;
+    Ok((r, sha.0))
+}
+
+/// A repository other than the run's that a call names, as the host read it for `pin_other`: its id and owner, the
+/// rows of a narrow `tarball/{version}` read, and what the host needs to read its git cache (`at`).
+pub struct Other<A> {
+    pub id: graftyard_types::RepoId,
+    pub owner: graftyard_types::AccountId,
+    pub core: graftyard_fold::MemStore,
+    pub at: A,
+}
+
+/// What a host reads for `called_file`.
+#[allow(async_fn_in_trait, reason = "one host per crate, called on its own thread, never boxed")]
+pub trait CallReads {
+    type At;
+    /// `owner/name` resolved by name on the install and read for `version` (`Other`), `None` when no such repository.
+    async fn other(&self, owner: &str, name: &str, version: &str) -> Result<Option<Other<Self::At>>, String>;
+    /// The text of `path` at commit `sha` in `repo` (`None`, the run's own) from its git cache, `None` when it is not
+    /// there.
+    async fn blob(&self, repo: Option<&Other<Self::At>>, sha: [u8; 20], path: &str) -> Result<Option<String>, String>;
+}
+
+/// A called workflow file for a host's plan, as the edge's dispatch reads one (F132): `./` in the run's repository at
+/// the caller's commit, or `owner/repo` resolved on the install and read as an anonymous caller (`pin_other`), its
+/// version a full SHA, else a tag, else a branch, then the file at the pinned commit.
+pub async fn called_file<R: CallReads>(reads: &R, w: Want) -> Result<Fetched, String> {
+    let other;
+    let (at, (r#ref, sha)) = match (&w.repo, &w.version) {
+        (None, Version::At { r#ref, sha }) => (None, (r#ref.clone(), *sha)),
+        (Some(name), version) => {
+            let (o, n) = name.split_once('/').ok_or("owner/repo")?;
+            let v = match version {
+                Version::At { sha, .. } => ObjectId(*sha).hex(),
+                Version::Named(v) => v.clone(),
+            };
+            other = reads.other(o, n, &v).await?.ok_or_else(|| format!("{name}: not found or not readable"))?;
+            let pinned = pin_other(name, version, other.id, other.owner, &other.core)?;
+            (Some(&other), pinned)
+        }
+        (None, Version::Named(_)) => return Err("a call in this repository names no version".into()),
+    };
+    let src = reads.blob(at, sha, &w.path).await?.ok_or_else(|| format!("{}: not found", w.path))?;
+    Ok(Fetched { origin: Origin { repo: w.repo, path: w.path, r#ref, sha }, src })
+}
+
 /// The called files a workflow's tree needs, read once each.
 #[derive(Default)]
 pub struct Called {

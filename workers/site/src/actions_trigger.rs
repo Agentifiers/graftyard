@@ -708,10 +708,10 @@ async fn runs_on(
                 continue;
             }
         };
-        // `reusable`: a workflow that calls one in this repository, read at this commit, or whose jobs declare
-        // `outputs:`, is created with its plan where a site day set `GRAFTYARD_REUSABLE` (0x15.9). A call into another
-        // repository is the edge's dispatch's alone (`decisions/OPEN-QUESTIONS.md`, F132), and such a workflow is
-        // skipped, as one that does not parse.
+        // `reusable`: a workflow that calls a reusable one, or whose jobs declare `outputs:`, is created with its plan
+        // where a site day set `GRAFTYARD_REUSABLE` (0x15.9). Its called files are read as the edge's dispatch reads
+        // them (`reusable::called_file`, `CallReads`), so a call into another repository runs from a push or a pull
+        // request too (F132); a tree that cannot be read or breaks a limit is skipped, as a file that does not parse.
         let parsed = graftyard_actions::workflow::parse(&path, src);
         let origin = graftyard_actions::reusable::Origin {
             repo: None,
@@ -720,15 +720,9 @@ async fn runs_on(
             sha: tip.0,
         };
         let t = crate::now_ms();
-        let planned = graftyard_actions::reusable::plan_run(&parsed.workflow, &origin, reusable(env), |w| async move {
-            use graftyard_actions::reusable::{Fetched, Origin, Version};
-            let (None, Version::At { r#ref, sha }) = (&w.repo, &w.version) else {
-                return Err("a call into another repository is not taken from a push or pull request yet".into());
-            };
-            let commit = git::refs::ObjectId(*sha).hex();
-            let blob = ui(env, site, repo, record, "blob", &[("commit", &commit), ("path", &w.path)]).await?;
-            let src = blob.ok_or("not found")?["text"].as_str().unwrap_or_default().to_owned();
-            Ok(Fetched { origin: Origin { repo: None, path: w.path, r#ref: r#ref.clone(), sha: *sha }, src })
+        let reads = CallReads { env, site, b, repo, record };
+        let planned = graftyard_actions::reusable::plan_run(&parsed.workflow, &origin, reusable(env), |w| {
+            graftyard_actions::reusable::called_file(&reads, w)
         })
         .await;
         times.reads += crate::now_ms().saturating_sub(t);
@@ -784,6 +778,85 @@ async fn runs_on(
         }
     }
     Ok(n)
+}
+
+/// `ActionsTrigger`'s reads for a plan (`graftyard_actions::reusable::called_file`, F132), as the edge's dispatch's:
+/// `owner/repo` resolved by name on the install (the owner's login row, its `Placement` row, the name on its `Authz`
+/// chain) and read as an anonymous caller from a narrow `tarball/{version}` read on its group, and each file from its
+/// network's git cache shard on this site at the pinned commit.
+struct CallReads<'a> {
+    env: &'a Env,
+    site: &'a SiteEnv,
+    b: &'a Bindings<'a>,
+    repo: RepoId,
+    record: &'a PlacementRecord,
+}
+
+impl graftyard_actions::reusable::CallReads for CallReads<'_> {
+    type At = PlacementRecord;
+    async fn other(
+        &self,
+        owner: &str,
+        name: &str,
+        version: &str,
+    ) -> std::result::Result<Option<graftyard_actions::reusable::Other<PlacementRecord>>, String> {
+        use graftyard_identity as id;
+        let (Ok(login), Ok(rn)) = (id::Login::parse(owner), id::RepoName::parse(name)) else { return Ok(None) };
+        let names = ChainId::Names(id::name_shard(&id::NameKey::Login(login.key())));
+        let nrec = crate::release::system_record(self.env, names).await?;
+        let (v, _) = graftyard_lookup::call(self.b, names, &nrec, "/read", &json!({ "q": { "login": owner } })).await?;
+        let Ok(Some(id::LoginRow::Claimed { account, .. })) =
+            serde_json::from_value::<Option<id::LoginRow>>(v.pointer("/value/login").cloned().unwrap_or_default())
+        else {
+            return Ok(None);
+        };
+        let record = crate::member::owner_record(self.env, account).await?;
+        let q = json!({ "q": { "repo": rn.as_str() } });
+        let Some((v, _, _)) = graftyard_lookup::read_spread(self.b, ChainId::Authz(account), &record, &q).await? else {
+            return Ok(None);
+        };
+        let Some(other) = v.pointer("/value/repo/repo").and_then(Value::as_i64) else { return Ok(None) };
+        let other = RepoId(graftyard_types::DbId(other));
+        let route = graftyard_api::narrow::Route::Rest {
+            tail: vec!["tarball".into(), version.into()],
+            query: String::new(),
+            path: format!("/repos/{owner}/{name}/tarball/{version}"),
+            agent: false,
+        };
+        let at = graftyard_api::view::RepoRef { id: other, owner: owner.into(), owner_id: account, name: name.into() };
+        let q = json!({ "q": { "rows": { "api": graftyard_api::narrow::Spec { at, route } } } });
+        let chain = ChainId::Repo(other);
+        // Created on first use, as the edge's reads create it (`first_use`).
+        let v = match graftyard_lookup::read_spread(self.b, chain, &record, &q).await? {
+            Some((v, _, _)) => v,
+            None => {
+                graftyard_lookup::create(self.b, chain, &record, &json!({ "owner": account })).await?;
+                graftyard_lookup::read_spread(self.b, chain, &record, &q)
+                    .await?
+                    .ok_or_else(|| format!("{owner}/{name}: its group has no leader"))?
+                    .0
+            }
+        };
+        let rows =
+            graftyard_api::hosted::TierRows::from_value(&v["value"]).map_err(|e| format!("{owner}/{name}: {e}"))?;
+        Ok(Some(graftyard_actions::reusable::Other {
+            id: other,
+            owner: account,
+            core: graftyard_api::hosted::TierRows::store(&rows.core),
+            at: record,
+        }))
+    }
+    async fn blob(
+        &self,
+        repo: Option<&graftyard_actions::reusable::Other<PlacementRecord>>,
+        sha: [u8; 20],
+        path: &str,
+    ) -> std::result::Result<Option<String>, String> {
+        let (r, rec) = repo.map_or((self.repo, self.record), |o| (o.id, &o.at));
+        let commit = git::refs::ObjectId(sha).hex();
+        let v = ui(self.env, self.site, r, rec, "blob", &[("commit", &commit), ("path", path)]).await?;
+        Ok(v.map(|v| v["text"].as_str().unwrap_or_default().to_owned()))
+    }
 }
 
 /// A read-only route of this site's git cache shard of the network, `None` for a 404.

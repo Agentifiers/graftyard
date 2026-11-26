@@ -639,3 +639,118 @@ fn completejob_outputs_read_the_runners_variable_values() {
     assert_eq!(graftyard_actions::runsvc::outputs(&json!({})), Vec::new());
     let _: Value = Value::Null;
 }
+
+/// `owner/name`, its id, its visibility, and its refs.
+type OtherRepo = (&'static str, i64, graftyard_git::issues::Visibility, Vec<(&'static str, [u8; 20])>);
+
+/// An install's repositories as `CallReads` reads them (F132): each `owner/name` with its id, visibility, refs and
+/// files, the rows a narrow `tarball` read answers being its `settings` and `ref` rows; and the run's own files.
+struct Rows {
+    repos: Vec<OtherRepo>,
+    files: Vec<(Option<&'static str>, [u8; 20], &'static str, String)>,
+    asked: std::cell::RefCell<Vec<String>>,
+}
+
+impl reusable::CallReads for Rows {
+    type At = &'static str;
+    async fn other(&self, o: &str, n: &str, v: &str) -> Result<Option<reusable::Other<&'static str>>, String> {
+        self.asked.borrow_mut().push(format!("{o}/{n}@{v}"));
+        let Some((name, id, vis, refs)) = self.repos.iter().find(|r| r.0.eq_ignore_ascii_case(&format!("{o}/{n}")))
+        else {
+            return Ok(None);
+        };
+        use graftyard_fold::{Store, Stored, Val};
+        let blob = |b: Vec<u8>| vec![Val::Blob(b.into())];
+        let settings = graftyard_git::issues::RepoSettings {
+            owner: OWNER,
+            enterprise: None,
+            visibility: *vis,
+            default_branch: RefName::parse(b"refs/heads/main").unwrap(),
+            archived: false,
+            description: None,
+            homepage: None,
+            topics: Default::default(),
+            has_issues: true,
+            has_wiki: false,
+            has_projects: false,
+            merge_methods: Default::default(),
+            delete_branch_on_merge: false,
+            allow_auto_merge: false,
+            allow_update_branch: false,
+            check_retention_days: 90,
+        };
+        let mut core = graftyard_fold::MemStore::default();
+        let row = |cols| Stored { written: Index(1), cols };
+        core.put("settings", Vec::new(), row(blob(postcard::to_allocvec(&settings).unwrap())));
+        for (r, sha) in refs {
+            let key = vec![graftyard_git::tiers::ref_key(&RefName::parse(r.as_bytes()).unwrap())];
+            core.put("ref", key, row(blob(postcard::to_allocvec(&ObjectId(*sha)).unwrap())));
+        }
+        Ok(Some(reusable::Other { id: RepoId(DbId(*id)), owner: OWNER, core, at: name }))
+    }
+    async fn blob(
+        &self,
+        at: Option<&reusable::Other<&'static str>>,
+        sha: [u8; 20],
+        p: &str,
+    ) -> Result<Option<String>, String> {
+        let at = at.map(|o| o.at);
+        Ok(self.files.iter().find(|f| f.0 == at && f.1 == sha && f.2 == p).map(|f| f.3.clone()))
+    }
+}
+
+/// F132: the trigger and the edge's dispatch read a called file through the same `reusable::called_file`. A push
+/// whose workflow calls `octo/shared`'s file at `v1` plans it pinned to the tag, not the branch of the same name; a
+/// full SHA pins that commit; a `./` call reads the run's own repository at the caller's commit and resolves no
+/// repository; a private repository, which an anonymous caller may not read, and an unknown one refuse the tree
+/// with "not found or not readable"; a version no ref names refuses it too.
+#[test]
+fn a_called_file_in_another_repository_is_pinned_as_the_dispatch_pins_it() {
+    use graftyard_git::issues::Visibility::{Private, Public};
+    let reads = Rows {
+        repos: vec![
+            (
+                "octo/shared",
+                21,
+                Public,
+                vec![("refs/heads/main", oid(9)), ("refs/heads/v1", oid(9)), ("refs/tags/v1", oid(2))],
+            ),
+            ("octo/secret", 22, Private, vec![("refs/tags/v1", oid(4))]),
+        ],
+        files: vec![
+            (Some("octo/shared"), oid(2), ".github/workflows/deploy.yml", DEPLOY.into()),
+            (Some("octo/shared"), oid(9), ".github/workflows/deploy.yml", DEPLOY.replace("https://", "branch://")),
+            (Some("octo/shared"), oid(5), ".github/workflows/deploy.yml", DEPLOY.replace("https://", "sha://")),
+            (Some("octo/secret"), oid(4), ".github/workflows/deploy.yml", DEPLOY.into()),
+            (None, oid(1), ".github/workflows/local.yml", DEPLOY.into()),
+        ],
+        asked: Default::default(),
+    };
+    let fetch = |uses: &str| block_on(reusable::called_file(&reads, reusable::want(uses, &top()).unwrap()));
+    let got = fetch("octo/shared/.github/workflows/deploy.yml@v1").unwrap();
+    assert_eq!(
+        (got.origin.repo.as_deref(), &*got.origin.r#ref, got.origin.sha),
+        (Some("octo/shared"), "refs/tags/v1", oid(2))
+    );
+    assert!(got.src.contains("https://"), "the tag's file, not the branch's");
+    let sha = hex(oid(5));
+    let got = fetch(&format!("octo/shared/.github/workflows/deploy.yml@{sha}")).unwrap();
+    assert_eq!((&*got.origin.r#ref, got.origin.sha), (sha.as_str(), oid(5)));
+    let got = fetch("./.github/workflows/local.yml").unwrap();
+    assert_eq!((got.origin.repo, &*got.origin.r#ref, got.origin.sha), (None, "refs/heads/main", oid(1)));
+    assert_eq!(reads.asked.borrow().len(), 2, "a ./ call resolves no repository");
+    for (uses, why) in [
+        ("octo/secret/.github/workflows/deploy.yml@v1", "octo/secret: not found or not readable"),
+        ("octo/none/.github/workflows/deploy.yml@v1", "octo/none: not found or not readable"),
+        ("octo/shared/.github/workflows/deploy.yml@v2", "octo/shared@v2: no such version"),
+    ] {
+        assert_eq!(fetch(uses).unwrap_err(), why, "{uses}");
+    }
+    // The whole tree, as the trigger plans it: the called jobs run, pinned to the tag.
+    let p = workflow::parse(".github/workflows/ci.yml", CALLER);
+    let e =
+        block_on(reusable::plan_run(&p.workflow, &top(), true, |w| reusable::called_file(&reads, w))).unwrap().unwrap();
+    let call = &e.plan.as_ref().unwrap().calls[0];
+    assert_eq!((call.repo.as_deref(), &*call.r#ref, call.sha), (Some("octo/shared"), "refs/tags/v1", oid(2)));
+    assert!(e.jobs.iter().any(|j| &*j.name == "call / deploy"));
+}
