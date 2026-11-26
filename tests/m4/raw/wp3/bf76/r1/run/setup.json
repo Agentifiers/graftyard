@@ -1,0 +1,38 @@
+{
+ "phase": "setup",
+ "ok": true,
+ "from": "2026-11-26T07:22:17.201Z",
+ "to": "2026-11-26T07:22:24.158Z",
+ "fails": [],
+ "lines": [
+  {
+   "ok": true,
+   "what": "PUT pin-map: 201 {\"digest\":\"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93\"}, want digest 5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93"
+  },
+  {
+   "ok": true,
+   "what": "PUT pin-map signed by another key: 422"
+  },
+  {
+   "ok": true,
+   "what": "PUT pin-map with no token: 401"
+  },
+  {
+   "ok": true,
+   "what": "graftyard-actions/upload-artifact@v4 is aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e (want aeb6043fcd99c3bdff3a1b86b98a3d66bf60897e)"
+  },
+  {
+   "ok": true,
+   "what": "actions/upload-artifact@ea165f8d on the install: 200"
+  },
+  {
+   "ok": true,
+   "what": "graftyard-actions/download-artifact@v4 is 373906d2915ced2e53ba59693e2d2acf30171209 (want 373906d2915ced2e53ba59693e2d2acf30171209)"
+  },
+  {
+   "ok": true,
+   "what": "actions/download-artifact@d3f86a10 on the install: 200"
+  }
+ ],
+ "digest": "5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93"
+}

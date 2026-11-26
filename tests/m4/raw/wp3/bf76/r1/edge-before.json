@@ -1,0 +1,15 @@
+{
+  "EDGE_CAP_BYTES": "80000000",
+  "FORMATS_ENABLED": "32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.16,32.19,20.3,32.22,32.23,18.12,32.24,18.13,21.6,21.5,18.14,21.7,21.8,32.28,21.9,32.29",
+  "GRAFTYARD_ARTIFACTS": "1",
+  "GRAFTYARD_CACHE_LIMIT": "1073741824",
+  "GRAFTYARD_CUSTOMER_KEY": "031923da25f100f1e0586087cd86b749be1ae6d26a75f4fa8cc6112f2dd882bd",
+  "GRAFTYARD_INSTALL": "01M79F6BJFJSQCH68C772935XB",
+  "GRAFTYARD_SITES": "[{\"id\":0,\"script\":\"graft-m4a-site-a\",\"account\":\"<install-account>\",\"region\":\"enam\",\"jurisdiction\":null,\"bucket\":\"graft-m4a-site-a-packs\",\"release\":null,\"link\":{\"binding\":{\"member_class\":\"Member\"}},\"spare\":false},{\"id\":1,\"script\":\"graft-m4a-site-b\",\"account\":\"<install-account>\",\"region\":\"weur\",\"jurisdiction\":null,\"bucket\":\"graft-m4a-site-b-packs\",\"release\":null,\"link\":{\"binding\":{\"member_class\":\"Member\"}},\"spare\":false},{\"id\":2,\"script\":\"graft-m4a-site-c\",\"account\":\"<install-account>\",\"region\":\"apac\",\"jurisdiction\":null,\"bucket\":\"graft-m4a-site-c-packs\",\"release\":null,\"link\":{\"binding\":{\"member_class\":\"Member\"}},\"spare\":false}]",
+  "HOST": "graft-m4a-edge.<sub>.workers.dev",
+  "OPS_SCRIPT": "graft-m4a-ops",
+  "PART_BYTES": "5242880",
+  "PLAN": "pro",
+  "RUN_SERVICE_PUBLIC": "35f3192f9087eceb3316c4abecb151fd3f324daceb83565a4a5d93c0d5a06f38",
+  "SSH_OPTION": "off"
+}

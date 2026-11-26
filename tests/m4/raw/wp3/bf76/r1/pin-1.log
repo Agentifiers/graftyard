@@ -1,0 +1,24 @@
+2026-11-26T07:25:23Z
+121078243
+2026-11-26T07:25:38.742Z policy PUT {"tags":false,"pin_map":null}: 200; now {"pin_map":null,"tags":false}
+2026-11-26T07:25:38.743Z ok   org policy: no tags, no approved map: {"pin_map":null,"tags":false}
+2026-11-26T07:25:40.245Z run 1972518 (pin.yml on pin)
+2026-11-26T07:25:43.268Z runner 1 (id 1972520)
+2026-11-26T07:26:09.810Z ok   the pinned job concluded Failure (want Failure)
+2026-11-26T07:26:09.811Z ok   Set up job downloads actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 at the upstream SHA (as written, no substitution)
+2026-11-26T07:26:09.811Z ok   the step's lines: ##[warning]...GHESNotSupportedError true, ##[error]@actions/artifact v2.0.0+, upl... true
+2026-11-26T07:26:09.811Z ok   the error is in the action's own step (step at 1168, error at 2288), not at Set up job
+2026-11-26T07:26:10.092Z FAIL check run 1972519: in_progress/null, annotations_count 0
+2026-11-26T07:26:10.700Z FAIL REST: Graftyard's annotation, failure, names /organizations/m3org/settings/actions/pin-map and graftyard-actions/upload-artifact@aeb6043f: undefined
+2026-11-26T07:26:10.700Z ok   REST: the step's own failure annotation with GHES's message: {"annotation_level":"failure","blob_href":"https://graft-m4a-edge.<sub>.workers.dev/m3org/bf76-r1/blob/3a2d2ca33767e006c5e3e9662106b3d8170a0e88/.github","end_column":null,"end_line":18,"message":"@actions/artifact v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not currently s
+file://~/tmp/wt-bf76/tests/m4/wp3/bf76/bf76.mjs:34
+const must = (w, r, ...ok) => { if (!(ok.length ? ok : [200, 201]).includes(r.status)) throw new Error(`${w}: ${r.status} ${JSON.stringify(r.body).slice(0, 400)}`); return r.body; };
+                                                                                             ^
+
+Error: pulls: 404 {"documentation_url":"https://docs.github.com/enterprise-server@3.22/rest","message":"Not Found","status":"404"}
+    at must (file://~/tmp/wt-bf76/tests/m4/wp3/bf76/bf76.mjs:34:94)
+    at file://~/tmp/wt-bf76/tests/m4/wp3/bf76/bf76.mjs:247:15
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+Node.js v26.12.0
+pin exit 1

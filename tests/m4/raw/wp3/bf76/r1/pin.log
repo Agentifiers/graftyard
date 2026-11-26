@@ -1,0 +1,18 @@
+2026-11-26T07:32:59Z
+121078243
+2026-11-26T07:33:12.653Z policy PUT {"tags":true,"pin_map":null}: 200; now {"pin_map":"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93","tags":true}
+2026-11-26T07:33:12.655Z FAIL org policy: tags true, no approved map: {"pin_map":"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93","tags":true}
+2026-11-26T07:33:14.702Z run 1972524 (pin.yml on pin)
+2026-11-26T07:33:17.948Z runner 1 (id 1972526)
+2026-11-26T07:33:54.094Z FAIL the pinned job concluded Success (want Failure)
+2026-11-26T07:33:54.094Z FAIL Set up job downloads actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 at the upstream SHA (as written, no substitution)
+2026-11-26T07:33:54.094Z FAIL the step's lines: ##[warning]...GHESNotSupportedError false, ##[error]@actions/artifact v2.0.0+, upl... false
+2026-11-26T07:33:54.094Z FAIL the error is in the action's own step (step at 1168, error at -1), not at Set up job
+2026-11-26T07:33:54.618Z FAIL check run 1972525: completed/success, annotations_count 0
+2026-11-26T07:33:54.888Z FAIL REST: Graftyard's annotation, failure, names /organizations/m3org/settings/actions/pin-map and graftyard-actions/upload-artifact@aeb6043f: undefined
+2026-11-26T07:33:54.889Z FAIL REST: the step's own failure annotation with GHES's message: undefined
+2026-11-26T07:33:59.944Z FAIL GraphQL CheckRun.annotations on PR #1 (commit 3a2d2ca3): 0 annotations, ours undefined
+2026-11-26T07:33:59.944Z FAIL GraphQL: the step's failure annotation too
+2026-11-26T07:33:59.945Z BF-76 pin FAIL (2026-11-26T07:32:59.285Z to 2026-11-26T07:33:59.945Z)
+2026-11-26T07:33:59.945Z sheds: python3 tests/fanout/tieroff503.py 2026-11-26T07:32:59.285Z 2026-11-26T07:33:59.945Z graft-m4a-edge
+pin exit 1

@@ -1,0 +1,17 @@
+2026-11-26T07:22:44Z
+121078243
+2026-11-26T07:23:12.943Z policy PUT {"tags":true,"pin_map":null}: 200; now {"pin_map":null,"tags":true}
+2026-11-26T07:23:12.944Z ok   org policy tags on: 200 {"pin_map":null,"tags":true}
+2026-11-26T07:23:21.401Z run 1972513 (tag.yml on main)
+2026-11-26T07:23:24.654Z runner 1 (id 1972516)
+2026-11-26T07:24:06.423Z runner 2 (id 1972517)
+2026-11-26T07:24:48.512Z ok   jobs: up Success, down Success
+2026-11-26T07:24:48.512Z ok   up's download line names actions/upload-artifact@v4 and the fork's SHA aeb6043f
+2026-11-26T07:24:48.512Z ok   down's download line names actions/download-artifact@v4 and the fork's SHA 373906d2
+2026-11-26T07:24:48.512Z ok   down: every file's SHA-256 matches (BF76 ALL SUMS OK)
+2026-11-26T07:24:48.512Z ok   no GHESNotSupportedError in either job
+2026-11-26T07:24:53.290Z ok   REST zip of v4art: 302/200, 20006465 B, unzip -t true, files {"big.bin":"205f307b634bd32170de7e6fbee79bd6f2fc30fb87cd2ca60aa10405195929ba","empty.txt":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","sub/a.txt":"7fe8761b4a783f7d60b2f9d540b7fd9a55ec8c95bdca08ace53cd284cd054e2f"} vs sums {"big.bin":"205f307b634bd32170de7e6fbee79bd6f2fc30fb87cd2ca60aa10405195929ba","sub/a.txt":"7fe8761b4a783f7d60b2f9d540b7fd9a55ec8c95bdca08ace53cd284cd054e2f","empty.txt":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+2026-11-26T07:24:53.290Z ok   v4art's retention-days: 2 reads as expires_at - created_at = 2 days
+2026-11-26T07:24:53.291Z BF-76 tag PASS (2026-11-26T07:22:44.285Z to 2026-11-26T07:24:53.291Z)
+2026-11-26T07:24:53.291Z sheds: python3 tests/fanout/tieroff503.py 2026-11-26T07:22:44.285Z 2026-11-26T07:24:53.291Z graft-m4a-edge
+tag exit 0

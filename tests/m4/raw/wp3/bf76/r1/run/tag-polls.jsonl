@@ -1,0 +1,13 @@
+{"t":1240,"jobs":[["up","Queued"],["down","Pending"]]}
+{"t":9609,"jobs":[["up","Assigned"],["down","Pending"]]}
+{"t":15669,"jobs":[["up","InProgress"],["down","Pending"]]}
+{"t":22946,"jobs":[["up","InProgress"],["down","Pending"]]}
+{"t":29600,"jobs":[["up","InProgress"],["down","Pending"]]}
+{"t":36007,"jobs":[["up","InProgress"],["down","Pending"]]}
+{"t":42498,"jobs":[["up","Completed"],["down","Queued"]]}
+{"t":52403,"jobs":[["up","Completed"],["down","InProgress"]]}
+{"t":59248,"jobs":[["up","Completed"],["down","InProgress"]]}
+{"t":65585,"jobs":[["up","Completed"],["down","InProgress"]]}
+{"t":71780,"jobs":[["up","Completed"],["down","InProgress"]]}
+{"t":78047,"jobs":[["up","Completed"],["down","InProgress"]]}
+{"t":85195,"jobs":[["up","Completed"],["down","Completed"]]}

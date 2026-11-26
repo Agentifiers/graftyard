@@ -1,0 +1,37 @@
+{
+ "sums": {
+  "big.bin": "205f307b634bd32170de7e6fbee79bd6f2fc30fb87cd2ca60aa10405195929ba",
+  "sub/a.txt": "7fe8761b4a783f7d60b2f9d540b7fd9a55ec8c95bdca08ace53cd284cd054e2f",
+  "empty.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ },
+ "z": {
+  "a": {
+   "archive_download_url": "https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/bf76-r1/actions/artifacts/7769131286182416/zip",
+   "created_at": "2026-11-26T07:23:52Z",
+   "expired": false,
+   "expires_at": "2026-11-28T07:23:52Z",
+   "id": 7769131286182416,
+   "name": "v4art",
+   "node_id": "MDg6QXJ0aWZhY3Q3NzY5MTMxMjg2MTgyNDE2",
+   "size_in_bytes": 20006465,
+   "updated_at": "2026-11-26T07:23:58Z",
+   "url": "https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/bf76-r1/actions/artifacts/7769131286182416",
+   "workflow_run": {
+    "head_branch": "main",
+    "head_repository_id": 65625,
+    "head_sha": "c8015647c6012a5b9409a89b322ab398cb72a4b1",
+    "id": 1972513,
+    "repository_id": 65625
+   }
+  },
+  "status": 302,
+  "zstatus": 200,
+  "size": 20006465,
+  "tested": true,
+  "files": {
+   "big.bin": "205f307b634bd32170de7e6fbee79bd6f2fc30fb87cd2ca60aa10405195929ba",
+   "empty.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "sub/a.txt": "7fe8761b4a783f7d60b2f9d540b7fd9a55ec8c95bdca08ace53cd284cd054e2f"
+  }
+ }
+}

@@ -1,0 +1,41 @@
+{
+ "check_run": {
+  "app": null,
+  "check_suite": {
+   "after": "3a2d2ca33767e006c5e3e9662106b3d8170a0e88",
+   "app": null,
+   "before": null,
+   "conclusion": "success",
+   "created_at": "2026-11-26T07:33:57Z",
+   "head_branch": null,
+   "head_sha": "3a2d2ca33767e006c5e3e9662106b3d8170a0e88",
+   "id": 1972524,
+   "node_id": "CR_kwDOAAEAWc4AHhks",
+   "pull_requests": [],
+   "status": "completed",
+   "updated_at": "2026-11-26T07:33:57Z",
+   "url": "https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/bf76-r1/check-suites/1972524"
+  },
+  "completed_at": "2026-11-26T07:33:56Z",
+  "conclusion": "success",
+  "details_url": null,
+  "external_id": "",
+  "head_sha": "3a2d2ca33767e006c5e3e9662106b3d8170a0e88",
+  "html_url": "https://graft-m4a-edge.<sub>.workers.dev/m3org/bf76-r1/runs/1972525",
+  "id": 1972525,
+  "name": "pinned",
+  "node_id": "CR_kwDOAAEAWc4AHhkt",
+  "output": {
+   "annotations_count": 0,
+   "annotations_url": "https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/bf76-r1/check-runs/1972525/annotations",
+   "summary": null,
+   "text": null,
+   "title": null
+  },
+  "pull_requests": [],
+  "started_at": null,
+  "status": "completed",
+  "url": "https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/bf76-r1/check-runs/1972525"
+ },
+ "annotations": []
+}

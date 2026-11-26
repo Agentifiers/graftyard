@@ -1,0 +1,12 @@
+# BF-76's pinned job (tests/m4/wp3/bf76): upstream upload-artifact v4.6.2 pinned by its commit SHA. With no approved pin
+# map it runs the upstream bytes, which fail in their own step with GHES's GHESNotSupportedError; after the org admin
+# approves the map, the same SHA resolves to the fork and the job passes. `actions/upload-artifact` is mirrored on the
+# install at that commit (row.sh `setup`).
+on: workflow_dispatch
+jobs:
+  pinned:
+    runs-on: [self-hosted]
+    steps:
+      - run: mkdir -p p && head -c 100000 /dev/urandom > p/x.bin && sha256sum p/x.bin | sed 's/^/BF76 SUM /'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: { name: pinned, path: p }

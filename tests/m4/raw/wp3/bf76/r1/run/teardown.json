@@ -1,0 +1,23 @@
+{
+ "phase": "teardown",
+ "ok": false,
+ "from": "2026-11-26T07:37:56.885Z",
+ "to": "2026-11-26T07:38:14.730Z",
+ "fails": [
+  "{pin_map: null} withdrew nothing ({\"pin_map\":\"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93\",\"tags\":false}); the empty map 43dd75a6e4fe is approved instead"
+ ],
+ "lines": [
+  {
+   "ok": false,
+   "what": "{pin_map: null} withdrew nothing ({\"pin_map\":\"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93\",\"tags\":false}); the empty map 43dd75a6e4fe is approved instead"
+  },
+  {
+   "ok": true,
+   "what": "tag substitution off: {\"pin_map\":\"43dd75a6e4fe74c3c70f8eaa28a7ecda9d7badcaf6e73f4e867cdcc0c87b86b1\",\"tags\":false}"
+  },
+  {
+   "ok": true,
+   "what": "m3org/bf76-r1: DELETE 204, anonymous read after 404"
+  }
+ ]
+}

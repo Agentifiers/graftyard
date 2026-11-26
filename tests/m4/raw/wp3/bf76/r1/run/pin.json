@@ -1,0 +1,66 @@
+{
+ "phase": "pin",
+ "ok": false,
+ "from": "2026-11-26T07:32:59.285Z",
+ "to": "2026-11-26T07:33:59.945Z",
+ "fails": [
+  "org policy: tags true, no approved map: {\"pin_map\":\"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93\",\"tags\":true}",
+  "the pinned job concluded Success (want Failure)",
+  "Set up job downloads actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 at the upstream SHA (as written, no substitution)",
+  "the step's lines: ##[warning]...GHESNotSupportedError false, ##[error]@actions/artifact v2.0.0+, upl... false",
+  "the error is in the action's own step (step at 1168, error at -1), not at Set up job",
+  "check run 1972525: completed/success, annotations_count 0",
+  "REST: Graftyard's annotation, failure, names /organizations/m3org/settings/actions/pin-map and graftyard-actions/upload-artifact@aeb6043f: undefined",
+  "REST: the step's own failure annotation with GHES's message: undefined",
+  "GraphQL CheckRun.annotations on PR #1 (commit 3a2d2ca3): 0 annotations, ours undefined",
+  "GraphQL: the step's failure annotation too"
+ ],
+ "lines": [
+  {
+   "ok": false,
+   "what": "org policy: tags true, no approved map: {\"pin_map\":\"5277fe93c5ab4d8679114e3e784778f64094fbb13736ea530191c2642f613b93\",\"tags\":true}"
+  },
+  {
+   "ok": false,
+   "what": "the pinned job concluded Success (want Failure)"
+  },
+  {
+   "ok": false,
+   "what": "Set up job downloads actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 at the upstream SHA (as written, no substitution)"
+  },
+  {
+   "ok": false,
+   "what": "the step's lines: ##[warning]...GHESNotSupportedError false, ##[error]@actions/artifact v2.0.0+, upl... false"
+  },
+  {
+   "ok": false,
+   "what": "the error is in the action's own step (step at 1168, error at -1), not at Set up job"
+  },
+  {
+   "ok": false,
+   "what": "check run 1972525: completed/success, annotations_count 0"
+  },
+  {
+   "ok": false,
+   "what": "REST: Graftyard's annotation, failure, names /organizations/m3org/settings/actions/pin-map and graftyard-actions/upload-artifact@aeb6043f: undefined"
+  },
+  {
+   "ok": false,
+   "what": "REST: the step's own failure annotation with GHES's message: undefined"
+  },
+  {
+   "ok": false,
+   "what": "GraphQL CheckRun.annotations on PR #1 (commit 3a2d2ca3): 0 annotations, ours undefined"
+  },
+  {
+   "ok": false,
+   "what": "GraphQL: the step's failure annotation too"
+  }
+ ],
+ "run": 1972524,
+ "head": "3a2d2ca33767e006c5e3e9662106b3d8170a0e88",
+ "pr": 1,
+ "job": 1972525,
+ "check_run": 1972525,
+ "annotations": 0
+}

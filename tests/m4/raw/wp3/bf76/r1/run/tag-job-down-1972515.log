@@ -1,0 +1,61 @@
+2026-11-26T07:24:14.4497034Z Current runner version: '2.338.2'
+2026-11-26T07:24:14.4503223Z Runner name: 'bf76-tag-2'
+2026-11-26T07:24:14.4503711Z Machine name: '172'
+2026-11-26T07:24:14.4506153Z Prepare workflow directory
+2026-11-26T07:24:14.5025065Z Prepare all required actions
+2026-11-26T07:24:14.5077605Z Getting action download info
+2026-11-26T07:24:17.0795905Z Download action repository 'actions/download-artifact@v4' (SHA:373906d2915ced2e53ba59693e2d2acf30171209)
+2026-11-26T07:24:27.0695427Z Complete job name: down
+2026-11-26T07:24:27.1355094Z ##[group]Run actions/download-artifact@v4
+2026-11-26T07:24:27.1355585Z with:
+2026-11-26T07:24:27.1355663Z   name: v4art
+2026-11-26T07:24:27.1355709Z   path: got
+2026-11-26T07:24:27.1355812Z   merge-multiple: false
+2026-11-26T07:24:27.1355862Z   repository: m3org/bf76-r1
+2026-11-26T07:24:27.1355915Z   run-id: 1972513
+2026-11-26T07:24:27.1356144Z env:
+2026-11-26T07:24:27.1356243Z   GRAFTYARD_ACTIONS: true
+2026-11-26T07:24:27.1356290Z ##[endgroup]
+2026-11-26T07:24:27.3962420Z Downloading single artifact
+2026-11-26T07:24:28.5509947Z Preparing to download the following artifacts:
+2026-11-26T07:24:28.5510724Z - v4art (ID: 7769131286182416, Size: 20006465, Expected Digest: sha256:20b90e84735c3aa80c217e994edaf5617a850531466048291d14e43459a08c6d)
+2026-11-26T07:24:30.8542799Z Redirecting to blob download url: https://graft-m4a-edge.<sub>.workers.dev/_services/artifact-zip/7100001/5/65625/7769131286182416/b4a6112b647a3ab5e9683bb650ab7c43
+2026-11-26T07:24:30.8552879Z Starting download of artifact to: ~/tmp/runner/_work/bf76-r1/bf76-r1/got
+2026-11-26T07:24:31.6109931Z (node:4002641) [DEP0005] DeprecationWarning: Buffer() is deprecated due to security and usability issues. Please use the Buffer.alloc(), Buffer.allocUnsafe(), or Buffer.from() methods instead.
+2026-11-26T07:24:31.6110118Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-26T07:24:33.8502635Z SHA256 digest of downloaded artifact is 20b90e84735c3aa80c217e994edaf5617a850531466048291d14e43459a08c6d
+2026-11-26T07:24:33.8542733Z Artifact download completed successfully.
+2026-11-26T07:24:33.8543207Z Total of 1 artifact(s) downloaded
+2026-11-26T07:24:33.8543673Z Download artifact has finished successfully
+2026-11-26T07:24:33.8741823Z ##[group]Run actions/download-artifact@v4
+2026-11-26T07:24:33.8741916Z with:
+2026-11-26T07:24:33.8741945Z   name: sums
+2026-11-26T07:24:33.8742016Z   path: s
+2026-11-26T07:24:33.8742051Z   merge-multiple: false
+2026-11-26T07:24:33.8742084Z   repository: m3org/bf76-r1
+2026-11-26T07:24:33.8742184Z   run-id: 1972513
+2026-11-26T07:24:33.8742245Z env:
+2026-11-26T07:24:33.8742276Z   GRAFTYARD_ACTIONS: true
+2026-11-26T07:24:33.8742296Z ##[endgroup]
+2026-11-26T07:24:34.1879174Z Downloading single artifact
+2026-11-26T07:24:35.2202922Z Preparing to download the following artifacts:
+2026-11-26T07:24:35.2203261Z - sums (ID: 3201517209483171, Size: 287, Expected Digest: sha256:83990a647108071e8cb129847c3c81659a00b9b41aee5a9ed9a3113b31b825cd)
+2026-11-26T07:24:37.7381580Z Redirecting to blob download url: https://graft-m4a-edge.<sub>.workers.dev/_services/artifact-zip/7100001/5/65625/3201517209483171/62b7e3e70dfc29e7bd0a346d09ba06d3
+2026-11-26T07:24:37.7381940Z Starting download of artifact to: ~/tmp/runner/_work/bf76-r1/bf76-r1/s
+2026-11-26T07:24:38.4524328Z (node:4006473) [DEP0005] DeprecationWarning: Buffer() is deprecated due to security and usability issues. Please use the Buffer.alloc(), Buffer.allocUnsafe(), or Buffer.from() methods instead.
+2026-11-26T07:24:38.4527159Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-26T07:24:38.6177432Z SHA256 digest of downloaded artifact is 83990a647108071e8cb129847c3c81659a00b9b41aee5a9ed9a3113b31b825cd
+2026-11-26T07:24:38.6178042Z Artifact download completed successfully.
+2026-11-26T07:24:38.6182188Z Total of 1 artifact(s) downloaded
+2026-11-26T07:24:38.6200046Z Download artifact has finished successfully
+2026-11-26T07:24:38.6312142Z ##[group]Run (cd got && sha256sum -c ../s/sums.txt) && echo "BF76 ALL SUMS OK"
+2026-11-26T07:24:38.6312491Z [36;1m(cd got && sha256sum -c ../s/sums.txt) && echo "BF76 ALL SUMS OK"[0m
+2026-11-26T07:24:38.6359981Z shell: /usr/sbin/bash -e {0}
+2026-11-26T07:24:38.6360222Z env:
+2026-11-26T07:24:38.6360251Z   GRAFTYARD_ACTIONS: true
+2026-11-26T07:24:38.6360280Z ##[endgroup]
+2026-11-26T07:24:38.6929797Z big.bin: OK
+2026-11-26T07:24:38.6946281Z sub/a.txt: OK
+2026-11-26T07:24:38.6946726Z empty.txt: OK
+2026-11-26T07:24:38.6946954Z BF76 ALL SUMS OK
+2026-11-26T07:24:38.7035754Z Cleaning up orphan processes
