@@ -424,13 +424,18 @@ export default {
         }
         case "/record": return json({ record: await e.record(chain, tr), trace: tr });
         case "/commit_many": {
-          // A batch to the group's leader in one call, for BF-15's queue.
-          const record = await e.record(chain, tr);
-          if (!record) return json({ error: "no record" }, 404);
-          const f = await e.find(chain, record, "/read", { q: {} }, tr, 3 * CALL_DEADLINE + 500);
-          if (!f) return json({ error: "no group", trace: tr }, 404);
-          const lead = f.voter;
-          const cmds = (body.cmds as unknown[]).map((cmd) => ({ rid: rid(), cmd }));
+          // A batch to the group's leader in one call, for BF-15's queue. `leader` ({site, do_name}) names it for a
+          // chain this edge has no record source for, such as a repository's (BF-52 over SSH, B0-24a), and `rids`
+          // gives each command its request id, else one is minted.
+          let lead: Voter | undefined = body.leader;
+          if (!lead) {
+            const record = await e.record(chain, tr);
+            if (!record) return json({ error: "no record" }, 404);
+            const f = await e.find(chain, record, "/read", { q: {} }, tr, 3 * CALL_DEADLINE + 500);
+            if (!f) return json({ error: "no group", trace: tr }, 404);
+            lead = f.voter;
+          }
+          const cmds = (body.cmds as unknown[]).map((cmd, i) => ({ rid: body.rids?.[i] ?? rid(), cmd }));
           const r = await e.member(lead, "/commit_many", { cmds, hold_deps_ms: body.hold_deps_ms, hold_ms: body.hold_ms }, (body.hold_ms ?? 1_000) + 30_000);
           return json({ leader: lead, rids: cmds.map((c) => c.rid), status: r?.status ?? null, ...(r?.v ?? {}) });
         }
@@ -449,6 +454,21 @@ export default {
         }
         case "/census": return json(await e.census(chain, body.gens ?? 3));
         case "/registry": return json(await e.registryRow(chain, Number(body.site)));
+        case "/ssh_kill":
+        case "/ssh_status": {
+          // B0-24a (tests/m6/results/m6-wp2.md): a site's `SshFront` through its Registry object `ssh`, as graft-ops
+          // reads it: `/ssh_kill` is the test-faults `POST /ssh_front_kill` (`{at, running, open}`), `/ssh_status`
+          // the `GET /ssh_front` status. The front's answer passes through with its status.
+          const site = Number(body.site);
+          const ns = env[`REGISTRY_${site}` as "REGISTRY_0"];
+          const stub = ns.get(ns.idFromName("ssh"), { locationHint: HINTS[site] });
+          const kill = url.pathname === "/ssh_kill";
+          const r = await stub.fetch(kill ? "https://registry/ssh_front_kill" : "https://registry/ssh_front", { method: kill ? "POST" : "GET" });
+          const text = await r.text();
+          let v: unknown = text;
+          try { v = JSON.parse(text); } catch { /* text body */ }
+          return json({ site, status: r.status, v });
+        }
       }
     } catch (err) {
       return json({ error: String(err), stack: (err as Error)?.stack, trace: tr }, 500);
