@@ -59,10 +59,12 @@ pub enum NodeType {
     CheckRun,
     Release,
     ReleaseAsset,
+    /// A GitHub App's bot account (`{slug}[bot]`), GitHub's `BOT_` prefix.
+    Bot,
 }
 
 impl NodeType {
-    const ALL: [NodeType; 12] = [
+    const ALL: [NodeType; 13] = [
         Self::User,
         Self::Organization,
         Self::Repository,
@@ -75,6 +77,7 @@ impl NodeType {
         Self::CheckRun,
         Self::Release,
         Self::ReleaseAsset,
+        Self::Bot,
     ];
 
     pub const fn prefix(self) -> &'static str {
@@ -91,6 +94,7 @@ impl NodeType {
             Self::CheckRun => "CR",
             Self::Release => "RE",
             Self::ReleaseAsset => "RA",
+            Self::Bot => "BOT",
         }
     }
 
@@ -108,12 +112,13 @@ impl NodeType {
             Self::CheckRun => "CheckRun",
             Self::Release => "Release",
             Self::ReleaseAsset => "ReleaseAsset",
+            Self::Bot => "Bot",
         }
     }
 
     /// Repository-scoped types put the repository id first (`research/wire-census.md` #27).
     pub const fn repo_scoped(self) -> bool {
-        !matches!(self, Self::User | Self::Organization | Self::Repository)
+        !matches!(self, Self::User | Self::Organization | Self::Repository | Self::Bot)
     }
 
     fn by_prefix(p: &str) -> Option<NodeType> {

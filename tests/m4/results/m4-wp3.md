@@ -350,3 +350,17 @@ The lead's GO, after AM2's kill row frees graft-m4a, $3 stop per row.
 **Cost.** graft-m4a's UTC day $7.98 before the edge day, $8.02 after BF-75, $8.62 after BF-77's three attempts and teardown ($0.64 for both rows, the edge day included). Under both $3 stops.
 
 **Teardown.** `m3org/bf75` and `m3org/bf77-tok` deleted (404 after); the `bf77-del*` repositories were the rows' own deletes; `actions-mirror2/cache` stays for BF-76. `teardown.py --sweep` tore down 9 shard containers and then found none running. No runner process left.
+
+## BF-77 token half: the two routes (`bf77-routes`, 2026-11-26)
+
+**Built at $0, not yet hosted** (`decisions/DECISIONS.md`, "`app-bot`"; F135).
+- `POST /repos/{o}/{r}/issues` is routed. It plans GraphQL `createIssue`'s `OpenIssue` from GHES 3.22's body, `decide` needs `issues: write` of a `ghs_`, and the member renders the 201 `issue` with `Location` from `&Acked` (`What::IssueCreated`). An App's REST issue is authored by its bot account, so `user` is `github-actions[bot]`; an App's GraphQL `createIssue` keeps its author-less bytes.
+- `POST .../statuses/{sha}` takes an installation token. `decide` needs `statuses: write`, and the creator is the App's bot account, `AppId::bot`, the App's id negated. It renders as GitHub's bot `simple-user`: `github-actions[bot]`, `type` `Bot`, `id` 2, a `BOT_` node id and `html_url` `/apps/github-actions`.
+- Both are repository format 32.29, so the rerun needs a site day before the edge day, and `FORMATS_ENABLED` must add 32.29. The edge serves neither until then: issue create stays 404 and a token's status 401, as on main.
+
+**Evidence at $0, on main `01781349` plus this head.**
+- `crates/git/tests/issues.rs`, `an_installation_token_sets_a_status_as_its_apps_bot_with_statuses_write`: fails on main (the first App status is 403), passes here, and checks the REST issue's bot author against GraphQL's none.
+- `crates/api/tests/surfaces.rs`, `rest_issue_create_and_a_bot_status_render_ghes_shapes`; both replies validate against `ghes-3.22.json` (`gh/validate.py`, 0 failures).
+- `tests/bf77bed/run.sh`: the edge's own wasm in local workerd, the base edge (main `01781349`) and the head edge on one bed, 32.29 enabled. Output: base `default`, `ro` and `rw` each "issue 404, status 401", the PAT's issue 404 and its status 201; head `default` and `ro` "issue 403, status 403" with "Resource not accessible by integration" on both, `rw` "issue 201, status 201", the issue `#1 user github-actions[bot] Bot` with `Location` `.../repos/cw/r/issues/1`, the status `creator` `{"login":"github-actions[bot]","id":2,"type":"Bot","node_id":"BOT_kgAC","html_url":"https://cw.example/apps/github-actions"}`, the PAT's issue 201 (user and assignee `cw`) and status 201 (creator `cw`). 0 unexpected answers on either edge.
+- `tests/plaindiff/run.sh` (base main `01781349`): 7 request pairs, 0 unexpected differences.
+- `tests/m0carried/plant259.py`: 10 of 10 caught, the REST issue's bot author included.

@@ -800,7 +800,8 @@ impl Family for Repo {
     /// 32.24 is R24's `RunChecksCmd` with `workflow_job` steps, which `RunOwner` sends only where `GRAFTYARD_APP_HOOKS` is set.
     /// 32.25 is `RepoEvent::Compacted`, which only a leader of this release records itself. 32.26 is a push over SSH
     /// (M6-WP2), whose principal is an SSH key, sent once `FormatsEnable` enabled it. 32.28 is a Graftyard-run create
-    /// (AM3-WP3), sent once `FormatsEnable` enabled it. A `test-format` build also reads
+    /// (AM3-WP3), sent once `FormatsEnable` enabled it. 32.29 is a REST issue create or an App's commit status
+    /// (`bf77-routes`), sent once `FormatsEnable` enabled it. A `test-format` build also reads
     /// BM-5's `REPO_FORMAT_TEST`, which no other release reads.
     fn reads() -> Vec<Format> {
         vec![
@@ -830,6 +831,7 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_ROLLUP,
             git::repo::REPO_FORMAT_SSH,
             git::repo::REPO_FORMAT_RUNS,
+            git::issue_ops::call::REPO_FORMAT_ROUTES,
             #[cfg(feature = "test-format")]
             git::repo::REPO_FORMAT_TEST,
         ]

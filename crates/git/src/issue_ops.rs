@@ -560,13 +560,15 @@ impl IssueCmd {
         v: &RepoView<'_>,
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
-        self.decide_in(v, deps, false, None, false, false)
+        self.decide_in(v, deps, false, None, false, false, false)
     }
 
     /// `decide`, where `agent` says the command is format 32.8 (`crate::repo::REPO_FORMAT_AGENT`), so its entry may
     /// carry `AgentMeta`, `AgentGate`, and `AgentPolicy`. The agent refusals write nothing and apply in any format.
     /// `reviews` says it is format 32.22 (`call::REPO_FORMAT_REVIEWS`), so a review comment outside a review submits
-    /// its review as `ReviewEvent::SingleComment`.
+    /// its review as `ReviewEvent::SingleComment`. `bot_author` says it is format 32.29 (`call::REPO_FORMAT_ROUTES`), so
+    /// an App's `OpenIssue` is authored by its bot account (`AppId::bot`).
+    #[expect(clippy::too_many_arguments, reason = "each flag is one format the call's entry already decided")]
     pub fn decide_in(
         &self,
         v: &RepoView<'_>,
@@ -575,6 +577,7 @@ impl IssueCmd {
         session: Option<&graftyard_identity::SessionId>,
         leases: bool,
         reviews: bool,
+        bot_author: bool,
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
         let cred = self.actor.credential_shard();
         let app = match (&self.actor.actor, &self.actor.credential) {
@@ -644,9 +647,15 @@ impl IssueCmd {
                     get_rec::<LabelRow>(v.meta(), "label", &[int(l.0.0)]).ok_or(IssueErr::UnknownLabel(*l))?;
                 }
                 let n = IssueNumber(v.last_number() + 1);
+                // A REST create by an App (32.29) is its bot's, as GHES shows `github-actions[bot]` as `user`; an
+                // App's GraphQL `createIssue` (32.9) keeps its author-less bytes.
+                let author = match self.actor.actor {
+                    Actor::App { app, .. } if bot_author => Some(app.bot()),
+                    _ => me,
+                };
                 let capture = IssueCapture {
                     id: v.next_id(Tier::Core)?,
-                    author: me,
+                    author,
                     title: title.clone(),
                     body: body.clone(),
                     labels: labels.clone(),
@@ -1085,7 +1094,12 @@ impl IssueCmd {
             }
             IssueOp::RecordStatus(st) => {
                 need(RepoPermission::Write)?;
-                if me != Some(st.creator) {
+                // An App's status is its bot account's (`AppId::bot`), as GHES shows `github-actions[bot]`.
+                let creator = match self.actor.actor {
+                    Actor::App { app, .. } => Some(app.bot()),
+                    _ => me,
+                };
+                if creator != Some(st.creator) {
                     return Err(IssueErr::Invalid("a status's creator is its actor"));
                 }
                 // A status's id is its version: for one (sha, context), the higher id wins. The edge mints it from
@@ -1574,6 +1588,9 @@ impl IssueCmd {
             | IssueOp::LfsObject(_)
             | IssueOp::LockLfs { .. }
             | IssueOp::UnlockLfs { .. } => smallvec![w("contents")],
+            // GHES's `statuses` App permission for an App's status (a `GITHUB_TOKEN`'s `statuses: write`); a user's
+            // token keeps no per-resource need, so its statuses are limited by its role alone, as before.
+            IssueOp::RecordStatus(_) if matches!(self.actor.actor, Actor::App { .. }) => smallvec![w("statuses")],
             IssueOp::RecordStatus(_) | IssueOp::AnswerInvitation { .. } => SmallVec::new(),
             // External create and cancel need `issues: write` (and `contents: read`, which `crate::task` checks).
             IssueOp::CreateTask(_)

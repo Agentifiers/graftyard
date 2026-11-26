@@ -1091,6 +1091,90 @@ fn a_rest_pull_read_asks_for_the_merge_graphql_asks_for_and_keeps_mergeable_null
     assert_eq!(asks.single.get(&IssueNumber(2)), Some(&(oid(7), oid(2))));
 }
 
+/// BF-77's token half (`decisions/DECISIONS.md`, "`app-bot`"): `POST /repos/{o}/{r}/issues` plans `createIssue`'s
+/// `OpenIssue` from GHES's body and renders the pinned `issue` with `Location` from `&Acked`; and a status an App sets
+/// names its bot account, which renders as GitHub's `github-actions[bot]`.
+#[test]
+fn rest_issue_create_and_a_bot_status_render_ghes_shapes() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_err, render_ok};
+    use graftyard_api::rest::plan_create_issue;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let body = json!({ "title": "from rest", "body": "b", "labels": ["BUG"], "assignees": ["alice"] });
+    let op = plan_create_issue(&c.repo(0, &h, &dir), &body).unwrap();
+    let IssueOp::OpenIssue { labels, assignees, .. } = &op else { panic!("{op:?}") };
+    assert_eq!((labels.len(), assignees.as_slice()), (1, &[AccountId(DbId(WRITER))][..]), "by name and login");
+    // A numeric title is GHES's `oneOf`; what `createIssue` refuses, or a name the repository lacks, is 422.
+    let IssueOp::OpenIssue { title, .. } = plan_create_issue(&c.repo(0, &h, &dir), &json!({ "title": 7 })).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(&*title, "7");
+    for bad in [
+        json!({}),
+        json!({ "title": "t", "milestone": 1 }),
+        json!({ "title": "t", "labels": ["nope"] }),
+        json!({ "title": "t", "assignee": "nobody" }),
+    ] {
+        assert_eq!(plan_create_issue(&c.repo(0, &h, &dir), &bad).unwrap_err().status, 422, "{bad}");
+    }
+    let out = c.commit(WRITER, op).unwrap();
+    let mut logins: std::collections::BTreeMap<i64, String> =
+        [(OWNER, "o".to_owned()), (WRITER, "alice".to_owned()), (READER, "bob".to_owned())].into();
+    let app = graftyard_identity::stateless::ACTIONS_APP;
+    logins.insert(app.bot().0.0, "github-actions[bot]".into());
+    let hosted = HostedDir { home: Some(dir.home()), logins, ..Default::default() };
+    let render = |what: What| Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what };
+    let m = &c.members[0];
+    let reply = render_ok(&render(What::IssueCreated), &ack(out), &m.core, &m.meta).reply();
+    assert_eq!(reply.status, 201);
+    let v = reply.value();
+    assert_eq!((v["number"].clone(), v["title"].clone()), (json!(4), json!("from rest")));
+    assert_eq!((v["user"]["login"].clone(), v["assignees"][0]["login"].clone()), (json!("alice"), json!("alice")));
+    assert_eq!(v["labels"][0]["name"], "bug");
+    assert_eq!(
+        reply.headers.iter().find(|(k, _)| *k == "location").map(|(_, l)| l.as_str()),
+        Some("https://ghes.example.com/api/v3/repos/o/r/issues/4")
+    );
+    keep_rest_as("issue-created", "POST", "/repos/{owner}/{repo}/issues", &reply);
+    // An installation token without `issues: write`: GitHub's 403.
+    let forbidden = render_err(&render(What::IssueCreated), &IssueErr::Forbidden).reply();
+    assert_eq!(
+        (forbidden.status, forbidden.value()["message"].clone()),
+        (403, json!("Resource not accessible by integration"))
+    );
+
+    // The Actions App's status, as `decide` commits it for a `GITHUB_TOKEN` with `statuses: write`.
+    let st = StatusUpdate {
+        id: StatusId(DbId(20)),
+        sha: oid(2),
+        context: "bf77".into(),
+        state: StatusState::Success,
+        target_url: None,
+        description: None,
+        creator: app.bot(),
+    };
+    c.entry(EntryBody::Events(vec![graftyard_git::repo::RepoEvent::Status(st)]), TierSet::METADATA);
+    let m = &c.members[0];
+    let sha = oid(2);
+    let reply =
+        render_ok(&render(What::StatusCreated { sha, id: 20 }), &ack(IssueOut::Id(DbId(20))), &m.core, &m.meta).reply();
+    assert_eq!(reply.status, 201);
+    let creator = reply.value()["creator"].clone();
+    assert_eq!(creator["login"], "github-actions[bot]");
+    assert_eq!((creator["id"].clone(), creator["type"].clone()), (json!(2), json!("Bot")));
+    assert_eq!(creator["html_url"], "https://ghes.example.com/apps/github-actions");
+    assert_eq!(creator["url"], "https://ghes.example.com/api/v3/users/github-actions%5Bbot%5D");
+    let node = NodeId::parse(creator["node_id"].as_str().unwrap()).unwrap();
+    assert_eq!((node.ty, node.id()), (NodeType::Bot, 2));
+    keep_rest_as("status-created-bot", "POST", "/repos/{owner}/{repo}/statuses/{sha}", &reply);
+    // A user's status keeps a user's `simple-user`.
+    let r = c.repo(0, &h, &dir);
+    let user = list_commit_statuses(&r, &sha.hex(), Page::parse("per_page=100")).value().clone();
+    let mine = user.as_array().unwrap().iter().find(|s| s["context"] == "jenkins").unwrap();
+    assert_eq!((mine["creator"]["login"].clone(), mine["creator"]["type"].clone()), (json!("alice"), json!("User")));
+}
+
 /// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the
 /// label the leader holds after the entry, a taken name answers gh's `already_exists`, and an issue opened with the
 /// label is in `GET /repos/o/r/issues?labels=bug&sort=updated` from the next read, newest update first.

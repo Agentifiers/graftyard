@@ -402,6 +402,98 @@ pub fn issue_json(r: &Repo<'_>, it: &Item) -> Value {
     v
 }
 
+const ISSUE_CREATE_DOC: &str = "rest/issues/issues#create-an-issue";
+
+/// The assignee logins a `POST /repos/{o}/{r}/issues` body names (`assignee` and `assignees`), which the edge resolves
+/// to accounts before it plans.
+pub fn issue_create_logins(body: &Value) -> Vec<String> {
+    let mut out: Vec<String> = body.get("assignee").and_then(Value::as_str).map(str::to_owned).into_iter().collect();
+    out.extend(
+        body.get("assignees")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned),
+    );
+    out
+}
+
+/// `POST /repos/{o}/{r}/issues`' command: GraphQL `createIssue`'s `OpenIssue` by the caller, from GHES 3.22's body.
+/// `title` (a string or an integer) is required; `labels` are names (or `{name}` objects) of labels the repository
+/// has, and `assignee`/`assignees` logins the directory knows. `milestone`, `type`, `parent_issue_id` and
+/// `issue_field_values` are refused 422, as `createIssue` refuses what it does not serve. An unknown label or login is
+/// 422 rather than GitHub's silent drop or label create [inference: GHES documents the drop only for a caller without
+/// push access] (`decisions/OPEN-QUESTIONS.md`, F135).
+pub fn plan_create_issue(r: &Repo<'_>, body: &Value) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    use crate::wire::FieldError;
+    use graftyard_git::issues::LabelId;
+    let invalid = |field: &'static str, code: &'static str| {
+        Reply::json(
+            422,
+            crate::wire::validation_error(
+                "Validation Failed",
+                ISSUE_CREATE_DOC,
+                &[FieldError { resource: "Issue", field, code }],
+            ),
+        )
+    };
+    let title = match body.get("title") {
+        Some(Value::String(t)) => t.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => return Err(invalid("title", "missing_field")),
+    };
+    for (k, field) in [("milestone", "milestone"), ("type", "type"), ("parent_issue_id", "parent_issue_id")] {
+        if body.get(k).is_some_and(|v| !v.is_null()) {
+            return Err(invalid(field, "invalid"));
+        }
+    }
+    if body.get("issue_field_values").and_then(Value::as_array).is_some_and(|v| !v.is_empty()) {
+        return Err(invalid("issue_field_values", "invalid"));
+    }
+    let all = r.labels();
+    let mut labels = smallvec::SmallVec::new();
+    if let Some(v) = body.get("labels").filter(|v| !v.is_null()) {
+        for name in label_names(v).ok_or_else(|| invalid("labels", "invalid"))? {
+            let id = all.iter().find(|(_, l)| l.name.0.eq_ignore_ascii_case(&name)).map(|(id, _)| LabelId(*id));
+            let id = id.ok_or_else(|| invalid("labels", "invalid"))?;
+            if !labels.contains(&id) {
+                labels.push(id);
+            }
+        }
+    }
+    let mut assignees = smallvec::SmallVec::new();
+    for login in issue_create_logins(body) {
+        let a = r.dir.by_login(&login).ok_or_else(|| invalid("assignees", "invalid"))?;
+        if !assignees.contains(&a) {
+            assignees.push(a);
+        }
+    }
+    let text = body.get("body").and_then(Value::as_str).unwrap_or("");
+    Ok(graftyard_git::issue_ops::IssueOp::OpenIssue { title: title.into(), body: text.into(), labels, assignees })
+}
+
+/// The 201 of a committed `OpenIssue` from `POST .../issues`: the issue as the leader's tiers hold it after the entry
+/// applied, with `Location`, as GHES 3.22's description gives it.
+pub fn issue_created(acked: &graftyard_raft::Acked<graftyard_git::issue_ops::IssueOut>, after: &Repo<'_>) -> Reply {
+    let graftyard_git::issue_ops::IssueOut::Number(n) = acked.out else {
+        return Reply::error(500, "Internal Server Error", "rest");
+    };
+    match after.item(n) {
+        Some(it) => {
+            let loc = format!("{}/repos/{}/{}/issues/{}", after.host.api(), after.at.owner, after.at.name, n.0);
+            Reply::json(201, issue_json(after, &it)).with("location", loc)
+        }
+        None => Reply::error(500, "Internal Server Error", "rest"),
+    }
+}
+
+/// A refused `OpenIssue` from `POST .../issues`: 401, 403 (GitHub's "Resource not accessible by integration" for a
+/// token without `issues: write`), 404, 503, or 422 for a bad title or label.
+pub fn issue_create_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
+    write_refused(e, ISSUE_CREATE_DOC)
+}
+
 /// `GET /repos/{owner}/{repo}/pulls/{pull_number}`.
 pub fn get_pull(r: &Repo<'_>, n: &str) -> Reply {
     get_pull_asks(r, n).0
