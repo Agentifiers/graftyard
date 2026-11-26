@@ -41,8 +41,8 @@ use std::rc::Rc;
 use graftyard_actions::shard::{JobSpec, WorkflowRun};
 use graftyard_actions::specs::Declared;
 use graftyard_actions::trigger::{
-    Carried, IN_FLIGHT_MAX, Item, PrEvent, PrTarget, PushEvent, RETRY_MS, Stream, Tried, built, merge_group_run,
-    pr_events, pr_target, pull_request_run, push_events, push_run, skips_ci,
+    Carried, IN_FLIGHT_MAX, Item, PrEvent, PrTarget, PushEvent, RETRY_MS, Stream, Tried, built, diff_paths,
+    merge_group_run, pr_events, pr_target, pull_request_run, push_base, push_events, push_run, skips_ci, two_dot,
 };
 use graftyard_git as git;
 use graftyard_git::issues::Consumer;
@@ -501,42 +501,38 @@ async fn pull_request_try(
     Ok(if pr_target(&v) == PrTarget::Pending { Tried::Again } else { Tried::Done })
 }
 
-/// The changed paths a `push`'s `paths` filters read, GitHub's two-dot diff of `before` and `after` [doc: GHES 3.22,
-/// "Workflow syntax", "Git diff comparisons": "Pushes to existing branches: A two-dot diff compares the head and base
-/// SHAs directly"]: `/ui/diff` from `before`, which is `before..after` when `before` is an ancestor. `None`, which runs
-/// every path-filtered workflow, for a new ref, a force push (`before` not an ancestor: the diff against the merge base
-/// would not be two-dot), a diff past the 3,000 files the cache lists, or more than 1,000 commits [doc: same section:
-/// "If a push contains more than 1,000 commits, the workflow will always run"]. GitHub diffs a new branch against
-/// the parent of its deepest new commit [doc: same section], which the cache cannot name yet (`decisions/DECISIONS.md`,
-/// "`push-trigger`").
+/// The changed paths a `push`'s `paths` filters read, GitHub's two-dot diff from `base` (`trigger::push_base`) to
+/// `after` [doc: GHES 3.22, "Workflow syntax", "Git diff comparisons": "Pushes to existing branches: A two-dot diff
+/// compares the head and base SHAs directly"] (F133). `/ui/diff` reads from the merge base of `base` and `after`, which
+/// is the two-dot diff when `base` is an ancestor: an existing ref's fast-forward, and a new branch read from its merge
+/// base with the default branch. A force push's two-dot diff is `trigger::two_dot` of the diffs from that merge base
+/// to each tip. `None`, which runs every path-filtered workflow, without a base or with one that shares no history
+/// with `after`, for a diff past the 3,000 files the cache lists, or more than 1,000 commits [doc: same section: "If a
+/// push contains more than 1,000 commits, the workflow will always run"].
+#[allow(clippy::too_many_arguments)]
 async fn push_paths(
     env: &Env,
     site: &SiteEnv,
     repo: RepoId,
     record: &PlacementRecord,
     p: &PushEvent,
+    base: Option<git::refs::ObjectId>,
     forced: bool,
     ahead: u64,
 ) -> std::result::Result<Option<Vec<String>>, String> {
-    if p.created() || forced || ahead > 1_000 {
-        return Ok(None);
-    }
-    let (before, after) = (p.before.hex(), p.after.hex());
-    let Some(d) = ui(env, site, repo, record, "diff", &[("base", &before), ("head", &after)]).await? else {
+    let Some(base) = base.filter(|_| ahead <= 1_000) else {
         return Ok(None);
     };
-    if d["truncated"].as_bool() == Some(true) {
+    let (base, after) = (base.hex(), p.after.hex());
+    let d = ui(env, site, repo, record, "diff", &[("base", &base), ("head", &after)]).await?;
+    let Some(to_after) = d.as_ref().and_then(diff_paths) else {
         return Ok(None);
+    };
+    if !forced {
+        return Ok(Some(to_after.into_keys().collect()));
     }
-    let mut out = Vec::new();
-    for f in d["files"].as_array().into_iter().flatten() {
-        for k in ["filename", "previous_filename"] {
-            if let Some(n) = f[k].as_str() {
-                out.push(n.to_owned());
-            }
-        }
-    }
-    Ok(Some(out))
+    let d = ui(env, site, repo, record, "diff", &[("base", &after), ("head", &base)]).await?;
+    Ok(d.as_ref().and_then(diff_paths).map(|to_before| two_dot(&to_after, &to_before)))
 }
 
 /// Push `p`'s runs (BF-78): whether the push was forced and the pushed commits from the git cache, nothing when its
@@ -551,21 +547,29 @@ async fn push_runs(
     p: &PushEvent,
 ) -> std::result::Result<usize, String> {
     let (env, repo, record) = (&h.env, f.repo, &f.record);
-    let (before, after) = (p.before.hex(), p.after.hex());
-    // Forced: the old tip is not an ancestor of the new one (`behind_by` > 0 from `before` to `after`).
-    let (forced, ahead) = if p.created() {
-        (false, 0)
-    } else {
-        let cmp = ui(env, site, repo, record, "compare", &[("base", &before), ("head", &after)]).await?;
-        let cmp = cmp.ok_or("compare: no such commit")?;
-        (cmp["behind_by"].as_u64().unwrap_or(0) > 0, cmp["ahead_by"].as_u64().unwrap_or(0))
+    let after = p.after.hex();
+    let base = {
+        let core = h.core.borrow();
+        let fold = &core.as_ref().ok_or("not joined")?.m.group_fold().fold;
+        let default = git::tiers::default_branch(&*fold.core);
+        push_base(p, &default, fold.get(&default))
     };
-    // The pushed commits, oldest first: those `after` reaches and `before` does not, which for a force push are the
-    // new ones. A new ref lists its head commit alone [inference: GitHub lists a new branch's commits that no other
-    // branch holds, a set the cache has no route for].
+    // Forced: the old tip is not an ancestor of the new one (`behind_by` > 0 from `before` to `after`). `shared`: the
+    // base and `after` have a merge base, which the paths diff reads from.
+    let (forced, ahead, shared) = match base {
+        None => (false, 0, false),
+        Some(b) => {
+            let cmp = ui(env, site, repo, record, "compare", &[("base", &b.hex()), ("head", &after)]).await?;
+            let cmp = cmp.ok_or("compare: no such commit")?;
+            let behind = cmp["behind_by"].as_u64().unwrap_or(0);
+            (!p.created() && behind > 0, cmp["ahead_by"].as_u64().unwrap_or(0), !cmp["merge_base"].is_null())
+        }
+    };
+    // The pushed commits, oldest first: those `after` reaches and the base does not, which for a force push are the
+    // new ones and for a new branch those the default branch does not hold. Without a base, the head commit alone.
     let mut raws: Vec<(git::refs::ObjectId, String)> = Vec::new();
-    if !p.created() {
-        let v = ui(env, site, repo, record, "commits", &[("base", &before), ("head", &after)]).await?;
+    if let Some(b) = base {
+        let v = ui(env, site, repo, record, "commits", &[("base", &b.hex()), ("head", &after)]).await?;
         for x in v.ok_or("commits: no such commit")?["commits"].as_array().into_iter().flatten() {
             let id = x["sha"].as_str().and_then(|s| git::refs::ObjectId::parse_hex(s.as_bytes()));
             if let (Some(id), Some(raw)) = (id, x["raw"].as_str()) {
@@ -599,7 +603,7 @@ async fn push_runs(
             .iter()
             .filter_map(|(id, raw)| graftyard_api::webhooks::push_commit(&view, *id, raw.as_bytes()))
             .collect();
-        if commits.is_empty() {
+        if base.is_none() {
             commits.push(head.clone());
         }
         let at = graftyard_types::Timestamp(c.at);
@@ -609,7 +613,7 @@ async fn push_runs(
         console_log!("actions push {} {} at {}: skipped by its head commit", repo.0.0, p.r#ref.display(), c.index.0);
         return Ok(0);
     }
-    let paths = push_paths(env, site, repo, record, p, forced, ahead).await?;
+    let paths = push_paths(env, site, repo, record, p, base.filter(|_| shared), forced, ahead).await?;
     let paths: Option<Vec<&str>> = paths.as_ref().map(|v| v.iter().map(String::as_str).collect());
     let make = |path: &str, src: &str| push_run(repo, c.index, path, src, p, paths.as_deref());
     let actor = actor.as_ref().map(|(a, l)| (*a, l.as_str()));

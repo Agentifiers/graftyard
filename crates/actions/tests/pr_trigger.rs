@@ -1023,3 +1023,43 @@ fn a_head_commit_with_a_skip_marker_skips_push_runs() {
         assert!(!skips_ci(m), "{m:?}");
     }
 }
+
+/// F133: the base a push's `paths` filters and `github.event.commits` read from (`push_base`), and a force push's
+/// two-dot diff (`two_dot`) from the cache's `/ui/diff` answers against the merge base (`diff_paths`). The force push's
+/// trees, by path and blob, are mb `{a: 1, b: 1, c: 1, d: 1}`, before `{a: 2, b: 4, c: 5, d: 1, n: 7}` and after
+/// `{a: 2, b: 3, c: 1, e: 1}`, where after renamed `d` to `e`: so before..after changes `b`, `c`, `d`, `e` and `n`, and
+/// not `a`, which both sides changed to the same blob, nor the three-dot diff's answer `{a, b, d, e}`. A path both
+/// sides removed, or one removed and the other renamed away, is no change.
+#[test]
+fn a_push_reads_paths_from_its_base_and_a_force_push_two_dot() {
+    use graftyard_actions::trigger::{PushEvent, diff_paths, push_base, two_dot};
+    use serde_json::json;
+    let main = name("refs/heads/main");
+    let ev = |r: &str, before: ObjectId| PushEvent { r#ref: name(r), before, after: oid(9), pusher: None };
+    assert_eq!(push_base(&ev("refs/heads/main", oid(4)), &main, Some(oid(5))), Some(oid(4)), "an existing ref: before");
+    assert_eq!(push_base(&ev("refs/heads/dev", oid(4)), &main, Some(oid(5))), Some(oid(4)), "a force push: before");
+    assert_eq!(push_base(&ev("refs/heads/dev", ObjectId::ZERO), &main, Some(oid(5))), Some(oid(5)), "a new branch");
+    assert_eq!(push_base(&ev("refs/heads/main", ObjectId::ZERO), &main, Some(oid(5))), None, "the default branch");
+    assert_eq!(push_base(&ev("refs/tags/v1", ObjectId::ZERO), &main, Some(oid(5))), None, "a new tag");
+    assert_eq!(push_base(&ev("refs/heads/dev", ObjectId::ZERO), &main, None), None, "no default tip");
+
+    let to_after = json!({ "truncated": false, "files": [
+        { "filename": "a", "status": "modified", "sha": "2" },
+        { "filename": "b", "status": "modified", "sha": "3" },
+        { "filename": "e", "previous_filename": "d", "status": "renamed", "sha": "1" },
+    ]});
+    let to_before = json!({ "truncated": false, "files": [
+        { "filename": "a", "status": "modified", "sha": "2" },
+        { "filename": "b", "status": "modified", "sha": "4" },
+        { "filename": "c", "status": "modified", "sha": "5" },
+        { "filename": "n", "status": "added", "sha": "7" },
+    ]});
+    let (a, b) = (diff_paths(&to_after).unwrap(), diff_paths(&to_before).unwrap());
+    assert_eq!(a.keys().collect::<Vec<_>>(), ["a", "b", "d", "e"], "a rename lists both names");
+    assert_eq!(two_dot(&a, &b), ["b", "c", "d", "e", "n"]);
+    let removed = json!({ "files": [{ "filename": "c", "status": "removed", "sha": "1" }] });
+    assert_eq!(two_dot(&diff_paths(&removed).unwrap(), &b), ["a", "b", "c", "n"], "c removed after, changed before");
+    let gone = json!({ "files": [{ "filename": "d", "status": "removed", "sha": "1" }] });
+    assert_eq!(two_dot(&a, &diff_paths(&gone).unwrap()), ["a", "b", "e"], "d renamed away after, removed before");
+    assert_eq!(diff_paths(&json!({ "truncated": true, "files": [] })), None, "a truncated diff runs every filter");
+}
