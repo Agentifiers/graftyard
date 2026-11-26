@@ -25,7 +25,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { EDGE, Git, api, log, logFrom, leaderOf, row, sleep, state as m3, tokens, tools, voterAt } from "../am1/hosted/lib.mjs";
+import { EDGE, Git, api, log, logFrom, leaderOf, row, sleep, state as m3, tokens, tools, voterAt } from "../../am1/hosted/lib.mjs";
 import { judge } from "./b024a-judge.mjs";
 
 const HOST = process.env.HOST ?? "ssh.graftyard.dev";
