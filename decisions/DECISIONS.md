@@ -11927,7 +11927,7 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 
 ### `forks-before-workspace`: base forks are built as their own package before AM3-WP3's fork mode, and in-repo mode is AM3-WP3's done state until then, 2026-11-26
 
-**Status.** Ruled by the lead (T-01a17bda), 2026-11-26: option (B), with (C) as the interim state. It is a plan change only and changes no design text. The package is `build/BUILD-PLAN.md`, AM3-WP2a, assigned to B0-02's thread, with AM3-WP3's owner reviewing the parts the workspace endpoint sits on. Repository format 32.31 and plant 277, held for AM3-WP3's fork mode, move to AM3-WP2a.
+**Status.** Ruled by the lead (T-01a17bda), 2026-11-26: option (B), with (C) as the interim state. It is a plan change only and changes no design text. The package is `build/BUILD-PLAN.md`, AM3-WP2a, assigned to B0-02's thread, with AM3-WP3's owner reviewing the parts the workspace endpoint sits on. Repository format 32.31 and plant 277, held for AM3-WP3's fork mode, move to AM3-WP2a. The lead's rulings for the package (2026-11-26, on B0-02's sizing), which follow the design as written, are in AM3-WP2a's text: a network chain family with `ForkAdded` and the network takedown, the network read from `Names`' `RepoOwner` (0x10.4), the commit point on `Authz` `CreateRepoWith` with `fork_of` (0x12.16), the shard's catch-up of every member chain with namespaced refs, the export scope below ("`fork-pack-scope`"), formats 32.31, 0x12.16, 0x10.4 and network 0x21.1, and two slices.
 
 **Decision.**
 - Base forks are built first, as `design/SHARED.md` already specifies them, in a new package placed before AM3-WP3's fork mode (`build/BUILD-PLAN.md`, AM3-WP2a). That covers:
@@ -11962,3 +11962,19 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 **Flip.**
 - If AM3-WP2a finds that SHARED's fork rules cannot be built as written, for example because the network chain's first-touch completion cannot be made idempotent, follow "How to change the design" in `AGENTS.md` and settle the design before AM3-WP3 builds on it.
 - If an operator decides that agents run in-repo only, retire fork mode instead (`FRAME.md` decision), and AM3-WP2a stays a base package for `gh repo fork`.
+
+### `fork-pack-scope`: an export token for any member repository of a network, or any member's owner, reads the network's packs, 2026-11-26
+
+**Status.** Ruled by the lead (T-01a17bda), 2026-11-26, for AM3-WP2a (`build/BUILD-PLAN.md`). Not built.
+
+**Decision.** `GET export/packs/...` names a network (`export::Route::Pack`, whose chain is `ChainId::Network`). An export token's scope covers that chain when it covers any member repository of the network: `Scope::Repo(r)` for a member `r`, `Scope::Owner(a)` for the owner of any member, and `Scope::Install`. The edge reads the members from `RepoOwner`'s network (Names 0x10.4). A network with one repository, every network on main, is covered exactly as today.
+
+**Why.** Packs are shared by construction: a fork stores no copy of its base's packs, and each new pack lands once under the network's prefix. A fork's owner already reads every base object through the fork's own clone, so the pack route shows them nothing new. If the scope were the root's alone, an org scoped to a fork's owner could not export the packs its own repository's entries name, and its vault or lifeboat would restore entries whose objects it cannot fetch.
+
+**What it beat.**
+- The root's owner only, which is today's `covers` with one owner per network. It leaves a fork's export without its objects.
+- Per-repository pack prefixes inside a network: a pack shared by two members would need copying or reference counting, and SHARED shares packs by network.
+
+**Evidence.** `crates/release/src/view.rs`, `covers` (`Scope::Owner` over `ChainId::Network` today checks one owner); `crates/git/src/export.rs`, `Route::chain`; `design/SHARED.md`, "Fork networks"; `design/DESIGN.md`, journey 2 ("its packs share the network's prefix").
+
+**Flip.** A private fork network in which the root's owner must not read a fork's own objects, such as a private fork of a public repository with commits the root's owner may not see. Then a member's export reads only the packs its own chain's entries name, and `covers` takes the pack's naming chain, not the network. Open in OPEN-QUESTIONS R73.
