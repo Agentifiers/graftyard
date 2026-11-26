@@ -98,6 +98,7 @@ git::issue_ops::IssueOp<git::blob::BlobRef> 43 PutActionsVariable 2b000161016100
 git::issue_ops::IssueOp<git::blob::BlobRef> 44 DeleteActionsVariable 2c000161
 git::issue_ops::IssueOp<git::blob::BlobRef> 45 CreateRun 2d00000161
 git::issue_ops::IssueOp<git::blob::BlobRef> 46 Assign 2e010000
+git::issue_ops::IssueOp<git::blob::BlobRef> 47 Edit 2f01000000
 id::AuthzEvent 0 Opened 000000
 id::AuthzEvent 1 Member 010200
 id::AuthzEvent 2 Grant 02020200
@@ -556,6 +557,7 @@ git::issues::LockReason 0 OffTopic 00
 git::issues::LockReason 1 TooHeated 01
 git::issues::LockReason 2 Resolved 02
 git::issues::LockReason 3 Spam 03
+git::issues::LockReason 4 Unspecified 04
 git::issues::IssueChange 0 Title 000161
 git::issues::IssueChange 1 Body 010161
 git::issues::IssueChange 2 State 020000

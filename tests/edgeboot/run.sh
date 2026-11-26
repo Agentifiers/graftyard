@@ -60,8 +60,11 @@ echo "GET jwks: $c"; [ "$c" = 503 ] || { echo "  FAIL: jwks with no site is not 
 for p in "/api/v3/repos/o/r" "/api/v3/repos/o/r/pulls?state=all&per_page=5" "/api/v3/repos/o/r/issues/1" \
   "/api/v3/repos/o/r/issues/1/comments" "/api/v3/repos/o/r/issues/comments?sort=updated" \
   "/api/v3/repos/o/r/issues/events" "/api/v3/repos/o/r/issues/1/timeline" "/api/graftyard/v1/release/entries?after=0" "/o/r.git/info/refs?service=git-upload-pack" \
-  "/o/r.git/git-upload-pack"; do
+  "/o/r.git/git-upload-pack" "PATCH /api/v3/repos/o/r/issues/comments/1" "DELETE /api/v3/repos/o/r/issues/comments/1" \
+  "PUT /api/v3/repos/o/r/issues/1/lock" "DELETE /api/v3/repos/o/r/issues/1/lock" "/api/v3/repos/o/r/issues/1/assignees/o"; do
   m=GET; case "${p##*/}" in git-upload-pack|comments) m=POST;; esac
+  # A request written "METHOD path" names its method (F137's comment edit and delete, and the lock).
+  case "$p" in *" "*) m=${p%% *}; p=${p#* };; esac
   c=$(curl -s -m 30 -X $m -D "$B/h" -o "$B/body" -w '%{http_code}' "${hdr[@]}" "http://127.0.0.1:$P$p")
   st=$(grep -i '^server-timing' "$B/h" | tr -d '\r')
   echo "$m $p: $c $(head -c 100 "$B/body" | tr -d '\n') | ${st:0:220}"

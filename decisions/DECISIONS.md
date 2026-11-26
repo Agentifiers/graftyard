@@ -12067,3 +12067,34 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/plaindiff/run.sh`, base main `d78527cf`: 19 request pairs, 0 unexpected differences. `issues/comments` and `issues/events` change as intended from main's 404 to 200 `[]` on the seed, which holds no issue; the item and by-id reads stay main's 404.
 
 **Flip.** A fold that records event history, such as a closer or label changes, which would let the events routes serve those kinds. Or a client that needs an event the fold cannot render and accepts a `ghost` actor in its place.
+
+### `issue-writes`: F137's REST issue writes: a multi-field issue `PATCH` is one `Edit` that commits whole or not at all, and comment edits and lock changes ride repository format 32.34, 2026-11-26
+
+**Status.** Built at $0 on branch `issue-writes` (F137's write half). It is native-tested and plant287 catches every mutant; edgeboot passed with test-faults and with PRODUCT, and plaindiff ran. The edge's issue `PATCH` arm is not written yet: by the lead's ruling it widens AM2's single-field `PATCH /issues/{n}` route once that lands on main, so one route serves both shapes; `plan_issue_edit`, `IssueOp::Edit` and `What::IssueUpdated` are built and tested for it. Its hosted proof rides the next graft-m4a row that does a site day and an edge day enabling 32.34.
+
+**Decision.**
+- `IssueOp::Edit { n, changes, labels, assignees }` (tag 47) is a multi-field `PATCH /repos/{o}/{r}/issues/{n}`. `decide` decides each part as its own command against the same view: a `Change` per title, body or state, an `ApplyLabels` diffed from the item's `issue_label` rows, and an `Assign` diffed from its assignees. Any part's refusal refuses the whole edit, so it commits in one entry or not at all. A label set from a caller below triage is dropped, as GHES drops what a caller may not set, so a reader's edit of their own issue's title and state still commits. An event two parts both write is written once.
+- `plan_issue_edit` keeps a body that sets one of `title` or `body` alone as that `Change`, in the format it always had; any other body is an `Edit`. A `state` already in force is no change; a state with no `state_reason` closes as `completed` and reopens as `reopened`, and `duplicate` is `completed`. Labels resolve by name (422 if unknown), assignees by login (an unknown login dropped, as the assignees route drops it). `milestone`, `type`, `issue_field_values` and `duplicate_issue_id` are ignored: the fold has no row for them. The 200 is the issue the leader holds after the entry (`What::IssueUpdated`).
+- `PATCH issues/comments/{id}` is an `EditComment` of a conversation comment and answers 200 with the comment after the entry (`What::IssueCommentUpdated`); a review comment's id is 404, and a missing body 422 `missing_field`. `DELETE issues/comments/{id}` is the existing `DeleteComment` in its own format, answering 204 through `What::Deleted`.
+- `PUT issues/{n}/lock` is a `Change` of `Locked(Some(reason))` and `DELETE` of `Locked(None)`, each 204 (`What::IssueLocked`), refused with the issue routes' errors. A lock that names no reason is `LockReason::Unspecified`, appended to the enum, because `Locked(None)` means unlocked.
+- Repository format 32.34 (`REPO_FORMAT_ISSUE_EDIT`) carries every `Edit`, and an `EditComment` or `Locked` change the edge marks as REST (`IssueCall::rest_edit`), whose replies a release without the three new `What`s cannot render. It carries what 32.33 does. The edge serves the comment edit and the lock, and will serve a multi-field `PATCH`, only once `FormatsEnable` enabled 32.34; until then they answer 404, as on main.
+- `GET issues/{n}/assignees/{assignee}` answers 204 when the item exists and the login's account has write access or more (the owner, or the repository's grants), the accounts `Assign` keeps; else 404. A bot login is 404.
+
+**Why.** F137's sweep found these writes 404, and Octokit's `issues.update`, `updateComment`, `deleteComment`, `lock`, `unlock` and `checkUserCanBeAssignedToIssue` call them. GHES applies an issue `PATCH` as one change, so a client that sets a title and closes the issue never sees one without the other.
+
+**What it beat.**
+- One entry per field (a `Change`, then an `ApplyLabels`, then an `Assign`): a failure halfway leaves a partial edit committed, which GHES never shows.
+- Deciding each part against the view after the earlier parts: the order of the body's fields would change the outcome, and the parts are independent anyway.
+- Refusing a reader's whole edit for the label set: GHES applies the fields the caller may set.
+- A new format for the comment delete: `DeleteComment` renders 204 through `What::Deleted`, which every release already has.
+- Reactions, comment pins, dependencies and issue field values: no fold rows, not built (OPEN-QUESTIONS F137).
+
+**Evidence.**
+- `crates/git/tests/issues.rs`, `a_multi_field_issue_edit_commits_whole_or_not_at_all`: title, body, state and labels in one entry; a too-long title with a body refuses the whole edit and writes no entry, though the body alone commits; a reader's own issue takes title and close and keeps its labels; another's issue refuses the reader whole; a reasonless lock reads `Unspecified` and its unlock clears it; an `Edit` is 32.34 under any principal, a comment edit or lock is 32.34 only when marked, and 32.34 on a title `Change` is malformed.
+- `crates/api/tests/surfaces.rs`, `rest_issue_edits_commit_and_render_as_ghes_does`: the plans, 404s and 422s, the 200s and 204s, the lock's refusal without `tag_name`, the comment's edit and delete, and the assignee check for write, admin, read and no account. Its replies validate against `ghes-3.22.json` with `crates/api/gh/validate.py`; the crate's reply set fails only the four `merge_group` and queue webhook keys, as before.
+- `crates/git/tests/wire_tags.golden` gains `IssueOp` 47 `Edit` and `LockReason` 4 `Unspecified`; `crates/git/tests/fold_corpus.golden` gains version 34's rows, every earlier row unchanged.
+- `tests/m0carried/plant287.py`: 12 of 12 caught.
+- `bash tests/edgeboot/run.sh` and `PRODUCT=1 bash tests/edgeboot/run.sh` pass with 0 wasm traps, with the comment edit and delete, the lock and unlock, and the assignee check among their requests.
+- `tests/plaindiff/run.sh`: the five new request pairs stay main's 404 on the seed, which holds no issue and does not enable 32.34.
+
+**Flip.** A GHES release that applies an issue `PATCH` field by field, or a client that needs a partial edit. Or fold rows for milestones, issue types or field values, which would let the `Edit` carry them.

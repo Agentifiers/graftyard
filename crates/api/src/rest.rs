@@ -552,6 +552,182 @@ pub fn issue_assign_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
     write_refused(e, ASSIGNEES_DOC)
 }
 
+/// `GET /repos/{owner}/{repo}/issues/{issue_number}/assignees/{assignee}` (F137): 204 when the issue exists and the
+/// assignee's permission on the repository, which the edge read (`None` for a login no account claims), is write or
+/// more, the accounts `decide`'s `Assign` keeps; else 404. A bot login is 404: the edge does not judge whether
+/// `graftyard-agent`'s bot is installed here.
+pub fn check_assignee(r: &Repo<'_>, n: &str, perm: Option<graftyard_identity::RepoPermission>) -> Reply {
+    let found = n.parse::<u32>().ok().and_then(|n| r.item(IssueNumber(n))).is_some();
+    if found && perm >= Some(graftyard_identity::RepoPermission::Write) {
+        Reply::empty(204)
+    } else {
+        Reply::not_found()
+    }
+}
+
+const ISSUE_EDIT_DOC: &str = "rest/issues/issues#update-an-issue";
+
+/// `PATCH /repos/{owner}/{repo}/issues/{issue_number}` (F137): the body's `title`, `body`, `state` with
+/// `state_reason`, `labels` and `assignees`, as one command. A body that sets one of `title` or `body` alone is that
+/// `Change`, in the format it always had; a body that sets more is one `IssueOp::Edit` (format 32.34), so the edit
+/// commits whole or not at all. A `state` already in force changes nothing, as GHES leaves it. The fields this
+/// install has no rows for (`milestone`, `type`, `issue_field_values`, `duplicate_issue_id`) are ignored, as GHES ignores
+/// what a caller may not set. An unknown issue is 404; a field of the wrong type, or an unknown label, 422.
+pub fn plan_issue_edit(r: &Repo<'_>, n: &str, body: &Value) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    use graftyard_git::issue_ops::IssueOp;
+    use graftyard_git::issues::{IssueChange, LabelId, StateReason};
+    let Some(it) = n.parse::<u32>().ok().and_then(|n| r.item(IssueNumber(n))) else { return Err(Reply::not_found()) };
+    let invalid = || Reply::error(422, "Validation Failed", ISSUE_EDIT_DOC);
+    let Some(o) = body.as_object() else { return Err(invalid()) };
+    let text = |k: &str| -> Result<Option<Box<str>>, Reply> {
+        match o.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) => Ok(Some(s.as_str().into())),
+            Some(Value::Number(x)) if k == "title" => Ok(Some(x.to_string().into())),
+            Some(_) => Err(invalid()),
+        }
+    };
+    let mut changes: smallvec::SmallVec<[IssueChange; 3]> = smallvec::SmallVec::new();
+    if let Some(t) = text("title")? {
+        changes.push(IssueChange::Title(t));
+    }
+    if o.contains_key("body") {
+        changes.push(IssueChange::Body(text("body")?.unwrap_or_default()));
+    }
+    let reason = match o.get("state_reason").and_then(Value::as_str) {
+        None => None,
+        Some("completed" | "duplicate") => Some(StateReason::Completed),
+        Some("not_planned") => Some(StateReason::NotPlanned),
+        Some("reopened") => Some(StateReason::Reopened),
+        Some(_) => return Err(invalid()),
+    };
+    match o.get("state") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(s)) if s == "open" || s == "closed" => {
+            let open = s == "open";
+            if open != it.row.open {
+                let reason = reason.or(Some(if open { StateReason::Reopened } else { StateReason::Completed }));
+                changes.push(IssueChange::State { open, reason });
+            }
+        }
+        Some(_) => return Err(invalid()),
+    }
+    let labels = match o.get("labels") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let all = r.labels();
+            let names = label_names(&json!({ "labels": v })).ok_or_else(invalid)?;
+            let ids = names.iter().map(|x| {
+                all.iter()
+                    .find(|(_, l)| l.name.0.eq_ignore_ascii_case(x))
+                    .map(|(id, _)| LabelId(*id))
+                    .ok_or_else(invalid)
+            });
+            Some(ids.collect::<Result<_, Reply>>()?)
+        }
+    };
+    let assignees = match o.get("assignees") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(_)) => Some(assignee_logins(body).iter().filter_map(|l| r.dir.by_login(l)).collect()),
+        Some(_) => return Err(invalid()),
+    };
+    Ok(match (changes.as_slice(), &labels, &assignees) {
+        ([IssueChange::Title(_) | IssueChange::Body(_)], None, None) => {
+            IssueOp::Change { n: it.n, change: changes.pop().expect("one change") }
+        }
+        _ => IssueOp::Edit { n: it.n, changes, labels, assignees },
+    })
+}
+
+/// The 200 of a committed issue edit: the issue as the leader's tiers hold it after the entry.
+pub fn issue_updated(after: &Repo<'_>, n: u32) -> Reply {
+    match after.item(IssueNumber(n)) {
+        Some(it) => Reply::json(200, issue_json(after, &it)),
+        None => Reply::not_found(),
+    }
+}
+
+pub fn issue_edit_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
+    write_refused(e, ISSUE_EDIT_DOC)
+}
+
+const LOCK_DOC: &str = "rest/issues/issues#lock-an-issue";
+
+/// `PUT /repos/{owner}/{repo}/issues/{issue_number}/lock` (`lock` true, with the body's `lock_reason`) and `DELETE`
+/// (false): a `Change` of `Locked`. No reason is `LockReason::Unspecified`; another reason is 422.
+pub fn plan_issue_lock(
+    r: &Repo<'_>,
+    n: &str,
+    lock: bool,
+    body: &Value,
+) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    use graftyard_git::issues::{IssueChange, LockReason};
+    let Some(it) = n.parse::<u32>().ok().and_then(|n| r.item(IssueNumber(n))) else { return Err(Reply::not_found()) };
+    let reason = match (lock, body.get("lock_reason")) {
+        (false, _) => None,
+        (true, None | Some(Value::Null)) => Some(LockReason::Unspecified),
+        (true, Some(v)) => Some(match v.as_str() {
+            Some("off-topic") => LockReason::OffTopic,
+            Some("too heated") => LockReason::TooHeated,
+            Some("resolved") => LockReason::Resolved,
+            Some("spam") => LockReason::Spam,
+            _ => return Err(Reply::error(422, "Validation Failed", LOCK_DOC)),
+        }),
+    };
+    Ok(graftyard_git::issue_ops::IssueOp::Change { n: it.n, change: IssueChange::Locked(reason) })
+}
+
+/// A refused lock change: GHES's 403 for a caller below triage, 404, never a release's errors.
+pub fn issue_lock_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
+    write_refused(e, LOCK_DOC)
+}
+
+const COMMENT_EDIT_DOC: &str = "rest/issues/comments#update-an-issue-comment";
+
+/// `PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}` (F137): an `EditComment` of a conversation comment. A
+/// review comment's id, or any other, is 404; a missing or non-string `body` is 422 `missing_field`.
+pub fn plan_edit_issue_comment(
+    r: &Repo<'_>,
+    id: &str,
+    body: &Value,
+) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    let Some(id) = id.parse::<i64>().ok().filter(|id| issue_comment_by_id(r, *id).is_some()) else {
+        return Err(Reply::not_found());
+    };
+    let Some(text) = body.get("body").and_then(Value::as_str).map(Box::<str>::from) else {
+        return Err(Reply::json(
+            422,
+            crate::wire::validation_error(
+                "Validation Failed",
+                COMMENT_EDIT_DOC,
+                &[crate::wire::FieldError { resource: "IssueComment", field: "body", code: "missing_field" }],
+            ),
+        ));
+    };
+    Ok(graftyard_git::issue_ops::IssueOp::EditComment { id: CommentId(DbId(id)), body: text })
+}
+
+/// `DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}` (F137): a `DeleteComment` of a conversation comment;
+/// any other id is 404. Its 204 is `What::Deleted`'s.
+pub fn plan_delete_issue_comment(r: &Repo<'_>, id: &str) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    match id.parse::<i64>().ok().filter(|id| issue_comment_by_id(r, *id).is_some()) {
+        Some(id) => Ok(graftyard_git::issue_ops::IssueOp::DeleteComment { id: CommentId(DbId(id)) }),
+        None => Err(Reply::not_found()),
+    }
+}
+
+/// The 200 of a committed comment edit: the comment as the leader's tiers hold it after the entry.
+pub fn issue_comment_updated(after: &Repo<'_>, id: i64) -> Reply {
+    match issue_comment_by_id(after, id) {
+        Some(v) => Reply::json(200, v),
+        None => Reply::not_found(),
+    }
+}
+
+pub fn issue_comment_edit_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
+    write_refused(e, COMMENT_EDIT_DOC)
+}
+
 /// `GET /repos/{owner}/{repo}/pulls/{pull_number}`.
 pub fn get_pull(r: &Repo<'_>, n: &str) -> Reply {
     get_pull_asks(r, n).0
@@ -1959,7 +2135,7 @@ pub fn label_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
 const ISSUE_LABELS_DOC: &str = "rest/issues/labels#add-labels-to-an-issue";
 
 /// A path segment percent-decoded (a label name such as `good first issue` arrives as `good%20first%20issue`).
-fn unpercent(s: &str) -> String {
+pub fn unpercent(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

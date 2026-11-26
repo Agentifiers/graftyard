@@ -837,6 +837,7 @@ impl Family for Repo {
             git::issue_ops::call::REPO_FORMAT_ASSIGN,
             git::issue_ops::call::REPO_FORMAT_ISSUE_COMMENT,
             git::issue_ops::call::REPO_FORMAT_HOST_PAUSE,
+            git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT,
             #[cfg(feature = "test-format")]
             git::repo::REPO_FORMAT_TEST,
         ]

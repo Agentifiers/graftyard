@@ -1288,6 +1288,116 @@ fn rest_assignees_add_remove_and_replace_render_the_issue() {
     assert_eq!(reply.value()["assignee"]["login"], "bob");
 }
 
+/// F137's REST edits: a multi-field `PATCH /issues/{n}` is one `Edit` whose 200 is the issue after the entry, a single
+/// `title` is the `Change` it always was, a comment `PATCH` answers 200 with the comment and `DELETE` 204, a lock
+/// answers 204 with the issue routes' errors, and `GET .../assignees/{login}` is 204 only for a write-or-more account.
+#[test]
+fn rest_issue_edits_commit_and_render_as_ghes_does() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_err, render_ok};
+    use graftyard_api::rest::{
+        check_assignee, get_issue, plan_delete_issue_comment, plan_edit_issue_comment, plan_issue_edit, plan_issue_lock,
+    };
+    use graftyard_git::issues::{IssueChange, LockReason};
+    use graftyard_identity::RepoPermission;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let logins: std::collections::BTreeMap<i64, String> =
+        [(OWNER, "o".to_owned()), (WRITER, "alice".to_owned()), (READER, "bob".to_owned())].into();
+    let hosted = HostedDir { home: Some(dir.home()), logins, ..Default::default() };
+    let render = |what: What| Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what };
+
+    // A single title is the `Change` it always was; title with state is one `Edit`.
+    let op = plan_issue_edit(&c.repo(0, &h, &dir), "1", &json!({ "title": "t" })).unwrap();
+    assert!(matches!(op, IssueOp::Change { change: IssueChange::Title(_), .. }), "{op:?}");
+    assert_eq!(plan_issue_edit(&c.repo(0, &h, &dir), "99", &json!({ "title": "t" })).unwrap_err().status, 404);
+    for bad in [json!({ "title": ["x"] }), json!({ "labels": ["nope"] }), json!({ "state": "shut" })] {
+        assert_eq!(plan_issue_edit(&c.repo(0, &h, &dir), "1", &bad).unwrap_err().status, 422, "{bad}");
+    }
+    // `state: open` on an open issue changes nothing, so title plus that state is still the one `Change`.
+    let op = plan_issue_edit(&c.repo(0, &h, &dir), "1", &json!({ "title": "t", "state": "open" })).unwrap();
+    assert!(matches!(op, IssueOp::Change { .. }), "{op:?}");
+    let body = json!({ "title": "renamed", "body": "new steps", "state": "closed", "state_reason": "not_planned",
+        "labels": [], "assignees": ["alice", "nobody"] });
+    let op = plan_issue_edit(&c.repo(0, &h, &dir), "1", &body).unwrap();
+    assert!(matches!(op, IssueOp::Edit { .. }), "{op:?}");
+    let out = c.commit(WRITER, op).unwrap();
+    let m = &c.members[0];
+    let reply = render_ok(&render(What::IssueUpdated { n: 1 }), &ack(out), &m.core, &m.meta).reply();
+    assert_eq!(reply.status, 200);
+    let v = reply.value();
+    assert_eq!(
+        (v["title"].clone(), v["body"].clone(), v["state"].clone(), v["state_reason"].clone()),
+        (json!("renamed"), json!("new steps"), json!("closed"), json!("not_planned"))
+    );
+    assert_eq!((v["labels"].clone(), v["assignees"][0]["login"].clone()), (json!([]), json!("alice")));
+    assert_eq!(v["assignees"].as_array().unwrap().len(), 1);
+    keep_rest_as("issue-updated", "PATCH", "/repos/{owner}/{repo}/issues/{issue_number}", &reply);
+    let e = render_err(&render(What::IssueUpdated { n: 1 }), &IssueErr::Forbidden).reply();
+    assert_eq!((e.status, e.value()["message"].clone()), (403, json!("Resource not accessible by integration")));
+
+    // A lock with no reason locks; `DELETE` unlocks; an unknown reason is 422.
+    for (lock, body, locked) in
+        [(true, json!({}), true), (false, Value::Null, false), (true, json!({ "lock_reason": "spam" }), true)]
+    {
+        let op = plan_issue_lock(&c.repo(0, &h, &dir), "1", lock, &body).unwrap();
+        let out = c.commit(WRITER, op).unwrap();
+        let m = &c.members[0];
+        let reply = render_ok(&render(What::IssueLocked), &ack(out), &m.core, &m.meta).reply();
+        assert_eq!(reply.status, 204);
+        assert_eq!(get_issue(&c.repo(0, &h, &dir), "1").value()["locked"], json!(locked), "{lock} {body}");
+    }
+    let op = plan_issue_lock(&c.repo(0, &h, &dir), "1", true, &json!({})).unwrap();
+    assert!(matches!(op, IssueOp::Change { change: IssueChange::Locked(Some(LockReason::Unspecified)), .. }));
+    assert_eq!(
+        plan_issue_lock(&c.repo(0, &h, &dir), "1", true, &json!({ "lock_reason": "x" })).unwrap_err().status,
+        422
+    );
+    assert_eq!(plan_issue_lock(&c.repo(0, &h, &dir), "99", false, &Value::Null).unwrap_err().status, 404);
+    // A refused lock is the issue routes' 403 and 422, never a release's `tag_name`.
+    let e = render_err(&render(What::IssueLocked), &IssueErr::Forbidden).reply();
+    assert_eq!(
+        (e.status, e.value()["documentation_url"].as_str().map(|d| d.contains("lock-an-issue"))),
+        (403, Some(true))
+    );
+    let e = render_err(&render(What::IssueLocked), &IssueErr::Invalid("x")).reply();
+    assert_eq!((e.status, e.value().get("errors")), (422, None));
+
+    // Bob's "me too" on issue 1: `PATCH` answers 200 with the edited comment, `DELETE` 204, then both are 404.
+    let list = list_issue_comments(&c.repo(0, &h, &dir), "1", "").value().clone();
+    let cid = list[0]["id"].as_i64().unwrap().to_string();
+    let e = plan_edit_issue_comment(&c.repo(0, &h, &dir), &cid, &json!({})).unwrap_err();
+    assert_eq!((e.status, e.value()["errors"][0]["code"].clone()), (422, json!("missing_field")));
+    let op = plan_edit_issue_comment(&c.repo(0, &h, &dir), &cid, &json!({ "body": "me too, edited" })).unwrap();
+    let out = c.commit(WRITER, op).unwrap();
+    let m = &c.members[0];
+    let id = cid.parse().unwrap();
+    let reply = render_ok(&render(What::IssueCommentUpdated { id }), &ack(out), &m.core, &m.meta).reply();
+    assert_eq!(
+        (reply.status, reply.value()["body"].clone(), reply.value()["id"].clone()),
+        (200, json!("me too, edited"), json!(id))
+    );
+    keep_rest_as("issue-comment-updated", "PATCH", "/repos/{owner}/{repo}/issues/comments/{comment_id}", &reply);
+    let op = plan_delete_issue_comment(&c.repo(0, &h, &dir), &cid).unwrap();
+    let out = c.commit(WRITER, op).unwrap();
+    let m = &c.members[0];
+    assert_eq!(render_ok(&render(What::Deleted), &ack(out), &m.core, &m.meta).reply().status, 204);
+    assert_eq!(plan_delete_issue_comment(&c.repo(0, &h, &dir), &cid).unwrap_err().status, 404);
+    assert_eq!(plan_edit_issue_comment(&c.repo(0, &h, &dir), &cid, &json!({ "body": "b" })).unwrap_err().status, 404);
+    assert_eq!(list_issue_comments(&c.repo(0, &h, &dir), "1", "").value(), &json!([]));
+
+    // A write-or-more account can be assigned; a reader, a login no account claims, or a missing issue is 404.
+    let r = c.repo(0, &h, &dir);
+    for (n, perm, want) in [
+        ("1", Some(RepoPermission::Write), 204),
+        ("1", Some(RepoPermission::Admin), 204),
+        ("1", Some(RepoPermission::Read), 404),
+        ("1", None, 404),
+        ("99", Some(RepoPermission::Write), 404),
+    ] {
+        assert_eq!(check_assignee(&r, n, perm).status, want, "{n} {perm:?}");
+    }
+}
+
 /// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the
 /// label the leader holds after the entry, a taken name answers gh's `already_exists`, and an issue opened with the
 /// label is in `GET /repos/o/r/issues?labels=bug&sort=updated` from the next read, newest update first.

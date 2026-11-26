@@ -343,6 +343,18 @@ pub enum IssueOp<B = DurableBlob> {
         add: SmallVec<[AccountId; 2]>,
         remove: SmallVec<[AccountId; 2]>,
     },
+    // ---- F137, format 32.34 (`call::REPO_FORMAT_ISSUE_EDIT`) ----
+    /// REST `PATCH /repos/{o}/{r}/issues/{n}` with more than one field: its title, body and state `changes`, and the
+    /// label and assignee sets it names (`None` leaves each as it is), decided as one command, so the whole edit
+    /// commits in one entry or not at all, as GHES applies it. Each part is decided as its own command against the
+    /// same view (`Change`, `ApplyLabels`, `Assign`), and a label set from a caller below triage is dropped, as GHES
+    /// drops it.
+    Edit {
+        n: IssueNumber,
+        changes: SmallVec<[IssueChange; 3]>,
+        labels: Option<SmallVec<[LabelId; 4]>>,
+        assignees: Option<SmallVec<[AccountId; 2]>>,
+    },
 }
 
 impl<B> IssueOp<B> {
@@ -413,6 +425,7 @@ impl<B> IssueOp<B> {
             O::DeleteActionsVariable { scope, name } => O::DeleteActionsVariable { scope, name },
             O::CreateRun(n) => O::CreateRun(n),
             O::Assign { n, add, remove } => O::Assign { n, add, remove },
+            O::Edit { n, changes, labels, assignees } => O::Edit { n, changes, labels, assignees },
         })
     }
 
@@ -549,8 +562,8 @@ impl IssueCmd {
             | IssueOp::CancelTask { .. }
             | IssueOp::CreateRun(_) => both,
             IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => TierSet::CORE,
-            // A body edit may replace a plan-block lease (Core).
-            IssueOp::Change { change: IssueChange::Body(_), .. } => both,
+            // A body edit may replace a plan-block lease (Core); an edit may close or reopen a pull request (Core).
+            IssueOp::Change { change: IssueChange::Body(_), .. } | IssueOp::Edit { .. } => both,
             _ => TierSet::METADATA,
         }
     }
@@ -561,7 +574,7 @@ impl IssueCmd {
         d.extend(crate::repo::authz_chains(Some(view.owner()), view.settings().and_then(|s| s.enterprise)));
         crate::repo::with_install(&mut d, &self.actor);
         let install = ChainId::Authz(graftyard_identity::install_account());
-        if matches!(self.op, IssueOp::Assign { .. }) && !d.contains(&install) {
+        if matches!(self.op, IssueOp::Assign { .. } | IssueOp::Edit { .. }) && !d.contains(&install) {
             d.push(install);
         }
         d
@@ -1006,6 +1019,50 @@ impl IssueCmd {
                 need(RepoPermission::Write)?;
                 get_rec::<LabelRow>(v.meta(), "label", &[int(id.0.0)]).ok_or(IssueErr::NotFound)?;
                 Ok((one(RepoEvent::Labels(LabelEvent::Deleted { id: *id })), IssueOut::Done))
+            }
+            IssueOp::Edit { n, changes, labels, assignees } => {
+                issue(*n)?;
+                // Every part against the same view, so the parts cannot see each other and the order of the body's
+                // fields changes nothing; any refusal refuses the whole edit. An event two parts both write (a title
+                // and a body edit's pause of one task) is written once.
+                let mut evs: SmallVec<[RepoEvent; 4]> = SmallVec::new();
+                let mut part = |op: IssueOp| -> Result<(), IssueErr> {
+                    let cmd = IssueCmd { op, actor: self.actor.clone(), request: self.request };
+                    for e in cmd.decide_in(v, deps, false, None, leases, false, false, pause)?.0 {
+                        if !evs.contains(&e) {
+                            evs.push(e);
+                        }
+                    }
+                    Ok(())
+                };
+                for change in changes {
+                    part(IssueOp::Change { n: *n, change: change.clone() })?;
+                }
+                if let Some(want) = labels
+                    && perm >= Some(RepoPermission::Triage)
+                {
+                    let have: Vec<LabelId> = v
+                        .meta()
+                        .prefix("issue_label", &[n_key(*n)])
+                        .into_iter()
+                        .filter_map(|(k, _)| match k.get(1) {
+                            Some(Val::Int(id)) => Some(LabelId(DbId(*id))),
+                            _ => None,
+                        })
+                        .collect();
+                    let add: SmallVec<[LabelId; 4]> = want.iter().filter(|l| !have.contains(l)).copied().collect();
+                    let remove: SmallVec<[LabelId; 4]> = have.iter().filter(|l| !want.contains(l)).copied().collect();
+                    if !add.is_empty() || !remove.is_empty() {
+                        part(IssueOp::ApplyLabels { n: *n, add, remove })?;
+                    }
+                }
+                if let Some(want) = assignees {
+                    let have = crate::tiers::assignees(v.meta(), *n);
+                    let add = want.iter().filter(|a| !have.contains(a)).copied().collect();
+                    let remove = have.iter().filter(|a| !want.contains(a)).copied().collect();
+                    part(IssueOp::Assign { n: *n, add, remove })?;
+                }
+                Ok((evs, IssueOut::Done))
             }
             IssueOp::Assign { n, add, remove } => {
                 issue(*n)?;
@@ -1653,7 +1710,7 @@ impl IssueCmd {
             | IssueOp::Dismiss { .. }
             | IssueOp::RequestReviews { .. }
             | IssueOp::Resolve { .. } => smallvec![w("pull_requests")],
-            IssueOp::Close { n } | IssueOp::Change { n, .. } => smallvec![on(*n)],
+            IssueOp::Close { n } | IssueOp::Change { n, .. } | IssueOp::Edit { n, .. } => smallvec![on(*n)],
             IssueOp::Comment { on: CommentTarget::Issue(n), .. } => smallvec![w("issues"), on(*n)],
             IssueOp::Comment { on: CommentTarget::Review { .. }, .. } => smallvec![w("pull_requests")],
             IssueOp::Comment { on: CommentTarget::Commit { .. }, .. } => smallvec![w("contents")],
