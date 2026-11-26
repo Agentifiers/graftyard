@@ -51,7 +51,7 @@ Two rounds:
 - **`graft-m2b-ops`:** followed `m3-hosted`'s order:
   1. `mintkey 1` wrote a 0600 key file.
   2. The Secrets Store secret `graft-m2b-mint-wrap-key` (id `3e8ee5c1ff3944c7b9cad80491dd9db0`, store
-     `bfaa0c1573de4775b1b92a12fb89acb4`) was created by an API POST whose body was read from that file. The value
+     `<store>`) was created by an API POST whose body was read from that file. The value
      never reached argv.
   3. `workers/ops/deploy.mjs graft-m2b-ops` (`tests/am1/runs/deploy-ops.sh`).
   4. kid 1's `PutVerifyingKey` was committed on `tokens:0` at index 14.

@@ -15,7 +15,7 @@ This round takes M3-WP1 to WP4's pure halves onto the graft-m1 install. It cover
 The edge's `FORMATS_ENABLED` is `32.1,32.4,32.5,32.6,32.7,16.2,17.2,18.2,20.1`: Names 0x10.2, Tokens 0x11.2, Authz 0x12.2, Identity 0x14.1, push 0x20.7, and repository 32.6 and 32.7 [measured, `wrangler deployments list`]. The edge went through two earlier versions, `8d4c599f` (formats and `LOGINS={}`) and `164585c3` (the `OPS` binding), on the way.
 
 Other hosted state:
-- The Secrets Store secret `graft-m1-mint-wrap-key`, id `e4c5ccc99a244c35a7c5b60e3e641d37`, in store `bfaa0c1573de4775b1b92a12fb89acb4`.
+- The Secrets Store secret `graft-m1-mint-wrap-key`, id `e4c5ccc99a244c35a7c5b60e3e641d37`, in store `<store>`.
 - Kid 1's `PutVerifyingKey`, at index 3 on `tokens:0`. The group was created for it.
 - `tests/m3/hosted/setup.ts` seeded:
   - the org `m3org` (7100001), with the private repository `j4` (1048576) and base permission Write;

@@ -407,6 +407,7 @@ fn same_rest(c: &Chain, tail: &[&str], query: &str) -> (MemStore, MemStore) {
             ["issues"] => "/repos/{owner}/{repo}/issues",
             ["pulls"] => "/repos/{owner}/{repo}/pulls",
             ["pulls", _] => "/repos/{owner}/{repo}/pulls/{pull_number}",
+            ["issues", _] => "/repos/{owner}/{repo}/issues/{issue_number}",
             ["issues", _, "comments"] => "/repos/{owner}/{repo}/issues/{issue_number}/comments",
             ["pulls", _, "reviews"] => "/repos/{owner}/{repo}/pulls/{pull_number}/reviews",
             ["pulls", _, "comments"] => "/repos/{owner}/{repo}/pulls/{pull_number}/comments",
@@ -672,6 +673,21 @@ fn single_object_routes_read_only_their_object() {
         assert!(matches!(row.on, CommentTarget::Issue(IssueNumber(7))), "another item's comment leaked: {row:?}");
     }
     same_rest(&c, &["issues", "7", "comments"], "per_page=1&page=2");
+    // F137: an issue by number, and a retitled, commented pull request's number in its issue form; each holds only
+    // its own item.
+    let d = Dir::new(WRITER);
+    for (n, title, comments, pull) in [("9", "issue 9", 0, false), ("7", "t7", 3, true)] {
+        let (_, meta) = same_rest(&c, &["issues", n], "");
+        assert_eq!(items(&meta), [n.parse::<u32>().unwrap()]);
+        let got = rest_get(&c.repo(0, &host(), &d), &["issues", n], "", Index(9)).unwrap();
+        let v = got.value();
+        assert_eq!((got.status, v["number"].to_string(), v["title"].as_str()), (200, n.to_owned(), Some(title)));
+        assert_eq!((v["comments"].as_u64(), v.get("pull_request").is_some()), (Some(comments), pull), "{v}");
+    }
+    for missing in ["99", "x"] {
+        same_rest(&c, &["issues", missing], "");
+        assert_eq!(rest_get(&c.repo(0, &host(), &d), &["issues", missing], "", Index(9)).unwrap().status, 404);
+    }
     same_rest(&c, &["pulls", "2", "reviews"], "");
     // Review comments are found by a scan of every comment: the member picks them, and sends only #2's.
     let (_, meta) = same_rest(&c, &["pulls", "2", "comments"], "");

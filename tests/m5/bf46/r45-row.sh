@@ -25,14 +25,14 @@ cd "$(dirname "$0")/../../.."
 TAG=${1:?tag}; STEP=${2:?step}
 O=tests/m5/results/raw/bf46r45/$TAG; mkdir -p "$O"
 W=$HOME/.graft-m4a; K=$W/r45; mkdir -p "$K"; chmod 700 "$K"
-STORE=bfaa0c1573de4775b1b92a12fb89acb4
+STORE=${CF_SECRETS_STORE_ID:?}
 OPS=graft-m4a-ops; OPS_PARKED=${OPS_PARKED:-ac4cd9a5}
 EDGE_NAME=graft-m4a-edge MCP_NAME=graft-m4a-mcp AUX_NAME=graft-m4a-mcp-aux SINK=graft-m4a-r45-sink J4SINK=graft-m4-hooksink
 MCPO=https://$MCP_NAME.$CF_WORKERS_SUBDOMAIN.workers.dev
 B="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"; VAPI=$B
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$1" "${@:2}"; }
 scrub() {
-  sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" \
+  sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" \
       -e "s#$PWD/#<checkout>/#g" -e "s#$HOME/#~/#g"
 }
 N=$(ls "$O" | grep -c "^$STEP" || true)

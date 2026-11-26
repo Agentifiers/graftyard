@@ -34,6 +34,10 @@ const reqs = [
   ["rest-pulls", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/pulls?state=all&per_page=5`, tok],
   ["rest-pull-1", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/pulls/1`, tok],
   ["rest-issues", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues?state=all`, tok],
+  // F137: the head serves the single-issue read, and the comment create only once 32.32 is enabled, which this bed
+  // does not enable; the seed holds no issue, so both stay main's 404.
+  ["rest-issue-1", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1`, tok],
+  ["rest-issue-comment", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/comments`, { ...tok, "content-type": "application/json" }, JSON.stringify({ body: "plain" })],
   ["rest-label-write", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/labels`, { ...tok, "content-type": "application/json" }, "LABEL"],
   ["graphql", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "{ repository(owner: \"cw\", name: \"r\") { name } }" })],
 ];

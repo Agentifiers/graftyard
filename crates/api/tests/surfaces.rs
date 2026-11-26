@@ -1175,6 +1175,71 @@ fn rest_issue_create_and_a_bot_status_render_ghes_shapes() {
     assert_eq!((mine["creator"]["login"].clone(), mine["creator"]["type"].clone()), (json!("alice"), json!("User")));
 }
 
+/// F137: `POST /repos/{o}/{r}/issues/{n}/comments` plans `addComment`'s `Comment` on an issue or a pull request's
+/// conversation and renders the pinned `issue-comment` with `Location` from `&Acked`. A missing item is 404 and a
+/// missing `body` 422, before any commit.
+#[test]
+fn rest_issue_comment_create_renders_the_issue_comment() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_err, render_ok};
+    use graftyard_api::rest::plan_create_issue_comment;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let hosted =
+        HostedDir { home: Some(dir.home()), logins: [(WRITER, "alice".to_owned())].into(), ..Default::default() };
+    let render = |n| Render {
+        host: h.name().to_owned(),
+        isolation: false,
+        dir: hosted.clone(),
+        what: What::IssueCommentCreated { n },
+    };
+    for bad in [json!({}), json!({ "body": 7 })] {
+        let e = plan_create_issue_comment(&c.repo(0, &h, &dir), "1", &bad).unwrap_err();
+        assert_eq!((e.status, e.value()["errors"][0]["field"].clone()), (422, json!("body")), "{bad}");
+    }
+    for missing in ["99", "x"] {
+        assert_eq!(
+            plan_create_issue_comment(&c.repo(0, &h, &dir), missing, &json!({ "body": "b" })).unwrap_err().status,
+            404
+        );
+    }
+    // Issue 1 has bob's comment; pull request 2 has none. Each new comment is on its own item, after the others.
+    for (n, kind, count) in [(1u32, "issues", 2), (2, "pull", 1)] {
+        let op =
+            plan_create_issue_comment(&c.repo(0, &h, &dir), &n.to_string(), &json!({ "body": "from rest" })).unwrap();
+        let out = c.commit(WRITER, op).unwrap();
+        let IssueOut::Id(id) = out else { panic!("{out:?}") };
+        let m = &c.members[0];
+        let reply = render_ok(&render(n), &ack(out), &m.core, &m.meta).reply();
+        assert_eq!(reply.status, 201);
+        let v = reply.value();
+        assert_eq!(
+            (v["id"].clone(), v["body"].clone(), v["user"]["login"].clone()),
+            (json!(id.0), json!("from rest"), json!("alice"))
+        );
+        let url = format!("https://ghes.example.com/api/v3/repos/o/r/issues/comments/{}", id.0);
+        assert_eq!(
+            (v["url"].as_str(), v["issue_url"].clone()),
+            (Some(url.as_str()), json!(format!("https://ghes.example.com/api/v3/repos/o/r/issues/{n}")))
+        );
+        assert_eq!(v["html_url"], format!("https://ghes.example.com/o/r/{kind}/{n}#issuecomment-{}", id.0));
+        assert_eq!(reply.headers.iter().find(|(k, _)| *k == "location").map(|(_, l)| l.as_str()), Some(url.as_str()));
+        let list = list_issue_comments(&c.repo(0, &h, &dir), &n.to_string(), "").value().clone();
+        assert_eq!((list.as_array().unwrap().len(), list[count - 1]["id"].clone()), (count, json!(id.0)), "{n}");
+        keep_rest_as(
+            &format!("issue-comment-created-{n}"),
+            "POST",
+            "/repos/{owner}/{repo}/issues/{issue_number}/comments",
+            &reply,
+        );
+    }
+    let forbidden = render_err(&render(1), &IssueErr::Forbidden).reply();
+    assert_eq!(
+        (forbidden.status, forbidden.value()["message"].clone()),
+        (403, json!("Resource not accessible by integration"))
+    );
+    assert_eq!(render_err(&render(1), &IssueErr::Invalid("a body")).reply().status, 422);
+}
+
 /// F20's REST assignment: `POST .../assignees` adds and answers 201 with the issue, `DELETE` removes and answers 200,
 /// an assignees-only `PATCH` replaces the set, and a login no account claims is dropped, as GHES 3.22 drops it. A
 /// `PATCH` that sets any other field is not this route.

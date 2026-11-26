@@ -833,6 +833,7 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_RUNS,
             git::issue_ops::call::REPO_FORMAT_ROUTES,
             git::issue_ops::call::REPO_FORMAT_ASSIGN,
+            git::issue_ops::call::REPO_FORMAT_ISSUE_COMMENT,
             #[cfg(feature = "test-format")]
             git::repo::REPO_FORMAT_TEST,
         ]

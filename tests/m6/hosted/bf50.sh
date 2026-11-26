@@ -14,7 +14,7 @@ BENCH=${BENCH:-https://graft-m6a-bf50.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}
 K=$W/bf50; mkdir -p "$K" && chmod 700 "$K"
 CFAPI="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID:?}"
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$CFAPI$1" "${@:2}"; }
-scrub() { sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<install-subdomain>/g" \
+scrub() { sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<install-subdomain>/g" \
   -e "s/$CF_ZONE_ID/<zone-id>/g" -e "s#$HOME/#~/#g"; }
 F=$(grep -E '^(install|customer_key) ' "$W/install.toml" | sed -E 's/.*= *"([^"]*)"/\1/')
 # bench <path> [json body]: one bench call.
@@ -47,7 +47,7 @@ versions() {
   done
 }
 # graft-ops' setup, as tests/m5/bf46/row.sh and bf47/row.sh do it. STORE is the account's Secrets Store.
-STORE=${STORE:-bfaa0c1573de4775b1b92a12fb89acb4}
+STORE=${STORE:-${CF_SECRETS_STORE_ID:?}}
 OPS=${OPS:-graft-m6a-ops}
 SCRIPTS_WRITE=e086da7e2179491d91ee5f35b3ca210a
 CONTAINERS_WRITE=bdbcd690c763475a985e8641dddc09f7

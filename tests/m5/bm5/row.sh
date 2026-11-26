@@ -33,13 +33,13 @@ O=tests/m5/results/raw/bm5/$TAG; mkdir -p "$O"
 W=$HOME/.graft-m4a; K=$W/bm5; mkdir -p "$K"; chmod 700 "$K"
 OUT=${OUT:?the builds}; DEPLOY=${DEPLOY:?the worktree OUT was built from}; G=$OUT/graftyard
 export RELVIEW=${RELVIEW:?relview}
-STORE=bfaa0c1573de4775b1b92a12fb89acb4
+STORE=${CF_SECRETS_STORE_ID:?}
 OPS=graft-m4a-ops; PARKED=ac4cd9a5-0fc2-400c-8dc8-fdf9391470ef; BUCKET=graft-m4a-releases
 R9=e23f69e9b6073484d0925f84cf64e08d8216cba36baf1ba4b2f50aa2ce2d183e
 B="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$B$1" "${@:2}"; }
 scrub() {
-  sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<install-subdomain>/g" \
+  sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<install-subdomain>/g" \
       -e "s/$CF_ZONE_ID/<zone-id>/g" -e "s#$PWD/#<checkout>/#g" -e "s#$HOME/#~/#g"
 }
 N=$(ls "$O" | grep -c "^$PH" || true)

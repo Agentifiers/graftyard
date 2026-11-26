@@ -1,9 +1,9 @@
 2026-11-24T03:30:06Z
 22a2d2a3
-  graft-m4a-MCP_APP_KEY_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4 (bfaa0c1573de4775b1b92a12fb89acb4); no copy kept
-  graft-m4a-MCP_CLIENT_SECRET_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4
-  graft-m4a-INSIGHTS_APP_KEY_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4 (bfaa0c1573de4775b1b92a12fb89acb4); no copy kept
-  graft-m4a-MCP_SEAL_KEY_A: written to Secrets Store store bfaa0c1573de4775b1b92a12fb89acb4
+  graft-m4a-MCP_APP_KEY_A: written to Secrets Store store <store> (<store>); no copy kept
+  graft-m4a-MCP_CLIENT_SECRET_A: written to Secrets Store store <store>
+  graft-m4a-INSIGHTS_APP_KEY_A: written to Secrets Store store <store> (<store>); no copy kept
+  graft-m4a-MCP_SEAL_KEY_A: written to Secrets Store store <store>
 wrote ~/.graft-m4a/apps/apps.json (public keys and the client secret's hash only)
 no operator route yet (R14): send the two ClaimSlug requests in ~/.graft-m4a/apps/apps-claims.request.json, then run `graftyard apps init --app-ids <graftyard-mcp id>,<graftyard-insights id> --out ~/.graft-m4a/apps`
 2026-11-24T03:30:59.639Z ClaimSlug (graftyard-mcp) on names:915: ok

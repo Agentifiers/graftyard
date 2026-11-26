@@ -60,6 +60,12 @@ pub const REPO_FORMAT_ROUTES: Format = Format { family: 0x20, version: 29 };
 /// it, whoever sends it: it carries an App's claims, a task's included, or none for a user. The edge sends it only once
 /// `FormatsEnable` enabled it.
 pub const REPO_FORMAT_ASSIGN: Format = Format { family: 0x20, version: 30 };
+/// F137: a REST `POST /repos/{o}/{r}/issues/{n}/comments` (`IssueCall::rest_comment`), whose 201 a release without
+/// `What::IssueCommentCreated` cannot render after the entry commits, and which an App's token authors as its bot
+/// account (`AppId::bot`), as 32.29 does for an issue. It carries an App's claims, a task's included, or none for a
+/// user, as 32.30 does. A member that cannot read it refuses it before it commits, and the edge sends it only once
+/// `FormatsEnable` enabled it. 32.31 is AM2's forks (another branch).
+pub const REPO_FORMAT_ISSUE_COMMENT: Format = Format { family: 0x20, version: 32 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
@@ -82,6 +88,9 @@ pub struct IssueCall {
     /// Format 32.29 (`REPO_FORMAT_ROUTES`): an `OpenIssue` from REST `POST .../issues`, whose reply is
     /// `What::IssueCreated`.
     pub rest_issue: bool,
+    /// Format 32.32 (`REPO_FORMAT_ISSUE_COMMENT`): an issue `Comment` from REST `POST .../issues/{n}/comments`, whose
+    /// reply is `What::IssueCommentCreated`.
+    pub rest_comment: bool,
     /// What the leader renders from the `&Acked`, opaque here (`graftyard_api::hosted::Render`).
     pub render: Value,
     /// The blob `op` names, rebuilt by the member that admits the command. Never sent.
@@ -123,6 +132,10 @@ impl IssueCall {
         // 32.30 likewise: an assignment change is never an agent, task, lease, or review command.
         if matches!(self.op, IssueOp::Assign { .. }) {
             return REPO_FORMAT_ASSIGN;
+        }
+        // 32.32 likewise: a REST issue comment, whatever claims its token carries.
+        if self.rest_comment {
+            return REPO_FORMAT_ISSUE_COMMENT;
         }
         if self.reviews {
             return REPO_FORMAT_REVIEWS;
@@ -181,6 +194,7 @@ impl IssueCall {
             leases: false,
             reviews: false,
             rest_issue: false,
+            rest_comment: false,
         }
     }
 
@@ -188,6 +202,12 @@ impl IssueCall {
     /// task, hook, or agent command, so the mark takes no other format's place.
     pub fn single_comment<B>(op: &IssueOp<B>) -> bool {
         matches!(op, IssueOp::Comment { on: crate::issues::CommentTarget::Review { review: None, .. }, .. })
+    }
+
+    /// Whether `op` is a comment on an issue or a pull request's conversation, which 32.32 marks when it comes from
+    /// REST.
+    pub fn issue_comment<B>(op: &IssueOp<B>) -> bool {
+        matches!(op, IssueOp::Comment { on: crate::issues::CommentTarget::Issue(_), .. })
     }
 
     /// Records the `DurableBlob` the admitting member rebuilt for the blob `op` names. The blob is its oid and size:
@@ -282,6 +302,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             crate::repo::REPO_FORMAT_RUNS,
             REPO_FORMAT_ROUTES,
             REPO_FORMAT_ASSIGN,
+            REPO_FORMAT_ISSUE_COMMENT,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
@@ -305,7 +326,9 @@ impl<'de> Deserialize<'de> for IssueCall {
         // 32.29 carries an App's claims, or none for a user, as 32.16 does.
         let routes = fmt(REPO_FORMAT_ROUTES);
         // 32.30 carries an App's claims, a task claim included, or none for a user.
-        let assign = fmt(REPO_FORMAT_ASSIGN);
+        // 32.32 carries what 32.30 does.
+        let comment = fmt(REPO_FORMAT_ISSUE_COMMENT);
+        let assign = fmt(REPO_FORMAT_ASSIGN) || comment;
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         let task_claim = w.claims.as_ref().is_some_and(|c| c.task.is_some());
         if !tasks && (w.agent_session.is_some() || (task_claim && !assign)) {
@@ -336,6 +359,7 @@ impl<'de> Deserialize<'de> for IssueCall {
         c.agent = agent;
         c.reviews = reviews && IssueCall::single_comment(&c.op);
         c.rest_issue = routes && matches!(c.op, IssueOp::OpenIssue { .. });
+        c.rest_comment = comment && IssueCall::issue_comment(&c.op);
         // One form per command: a format that does not match the command is malformed.
         let got = c.format();
         if !fmt(got) {
@@ -388,7 +412,7 @@ impl IssueCall {
         } else if self.op.is_lease() {
             cmd.decide_lease(&view, deps, s.at())?
         } else {
-            let bot = self.format() == REPO_FORMAT_ROUTES;
+            let bot = matches!(self.format(), REPO_FORMAT_ROUTES | REPO_FORMAT_ISSUE_COMMENT);
             cmd.decide_in(&view, deps, self.agent_events(), self.session.as_ref(), leases, self.reviews, bot)?
         };
         let authz = self.render_lacks_authz().then(|| owner_authz(s.fold(), deps)).flatten();

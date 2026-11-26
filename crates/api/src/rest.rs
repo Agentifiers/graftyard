@@ -622,6 +622,66 @@ fn paged_values(r: &Repo<'_>, path: &str, query: &str, all: Vec<Value>) -> Reply
     }
 }
 
+/// `GET /repos/{owner}/{repo}/issues/{issue_number}` (F137): the pinned `issue`. A pull request's number answers its
+/// issue form, with `pull_request`, as GHES 3.22 does [doc: GHES 3.22 REST, "Get an issue"].
+pub fn get_issue(r: &Repo<'_>, n: &str) -> Reply {
+    match n.parse::<u32>().ok().and_then(|n| r.item(IssueNumber(n))) {
+        Some(it) => Reply::json(200, issue_json(r, &it)),
+        None => Reply::not_found(),
+    }
+}
+
+const ISSUE_COMMENT_DOC: &str = "rest/issues/comments#create-an-issue-comment";
+
+/// `POST /repos/{owner}/{repo}/issues/{issue_number}/comments` (F137): `addComment`'s `Comment` on the issue, or on a
+/// pull request's conversation. A missing or non-string `body` is GHES 3.22's 422 `missing_field`; an empty one is
+/// refused by `decide` as GraphQL's is.
+pub fn plan_create_issue_comment(
+    r: &Repo<'_>,
+    n: &str,
+    body: &Value,
+) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    let Some(n) = n.parse::<u32>().ok().map(IssueNumber).filter(|n| r.item(*n).is_some()) else {
+        return Err(Reply::not_found());
+    };
+    let Some(text) = body.get("body").and_then(Value::as_str) else {
+        return Err(Reply::json(
+            422,
+            crate::wire::validation_error(
+                "Validation Failed",
+                ISSUE_COMMENT_DOC,
+                &[crate::wire::FieldError { resource: "IssueComment", field: "body", code: "missing_field" }],
+            ),
+        ));
+    };
+    Ok(graftyard_git::issue_ops::IssueOp::Comment { on: CommentTarget::Issue(n), body: text.into(), reply_to: None })
+}
+
+/// The 201 of a committed issue comment, as the leader's tiers hold it after the entry applied, with `Location`.
+pub fn issue_comment_created(
+    acked: &graftyard_raft::Acked<graftyard_git::issue_ops::IssueOut>,
+    after: &Repo<'_>,
+    n: u32,
+) -> Reply {
+    let graftyard_git::issue_ops::IssueOut::Id(id) = acked.out else {
+        return Reply::error(500, "Internal Server Error", "rest");
+    };
+    let id = CommentId(id);
+    let found = after.item(IssueNumber(n)).zip(after.comments_of(IssueNumber(n)).into_iter().find(|(c, _)| *c == id));
+    match found {
+        Some((it, (id, row))) => {
+            let v = issue_comment_json(after, &it, id, &row);
+            let loc = v["url"].as_str().unwrap_or_default().to_owned();
+            Reply::json(201, v).with("location", loc)
+        }
+        None => Reply::error(500, "Internal Server Error", "rest"),
+    }
+}
+
+pub fn issue_comment_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
+    write_refused(e, ISSUE_COMMENT_DOC)
+}
+
 /// `GET /repos/{owner}/{repo}/issues/{issue_number}/comments`, oldest first.
 pub fn list_issue_comments(r: &Repo<'_>, n: &str, query: &str) -> Reply {
     let Some(n) = n.parse::<u32>().ok().map(IssueNumber) else { return Reply::not_found() };

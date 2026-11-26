@@ -1042,10 +1042,13 @@ async fn commit_issue_rid(
         )));
     }
     let rest_issue = what == What::IssueCreated;
+    let rest_comment = matches!(what, What::IssueCommentCreated { .. });
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let mut call = IssueCall::new(op, who.clone(), rid, serde_json::to_value(&render)?);
     // 32.29 (`bf77-routes`) for a REST issue create, whose reply only a member of that release renders.
     call.rest_issue = rest_issue && !matches!(call.op, IssueOp::OpenPr { .. });
+    // 32.32 (F137) for a REST issue comment, likewise.
+    call.rest_comment = rest_comment && IssueCall::issue_comment(&call.op);
     // Format 32.8, once `FormatsEnable` enabled it, only for a command that can write an agent event: a pull request
     // opened by an App or with a user-to-server token (`AgentMeta` when its App is an `AgentApp`), and a review of a
     // pull request that has `AgentMeta` (`AgentGate`). Every other command keeps its format and its bytes; under a
@@ -1799,6 +1802,7 @@ fn rest_decided(method: &Method, tail: &[&str]) -> bool {
             | (Method::Delete, ["releases", _] | ["releases", "assets", _])
             | (Method::Post, ["statuses", _])
             | (Method::Post, ["issues"])
+            | (Method::Post, ["issues", _, "comments"])
             | (Method::Put | Method::Delete, ["branches", .., "protection"])
             | (Method::Post, ["git", "refs"])
             | (Method::Patch, ["git", "refs", ..])
@@ -1975,7 +1979,10 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let routes_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ROUTES);
     // F20's assignment routes are served only once 32.30 is enabled; until then they answer as before (404).
     let assign_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ASSIGN);
-    c.decided.set(rest_decided(&method, tail) && (routes_on || tail != ["issues"]));
+    // F137's REST issue comment is served only once 32.32 is enabled; until then it answers as before (404).
+    let comment_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_COMMENT);
+    let comment_route = matches!(tail, ["issues", _, "comments"]);
+    c.decided.set(rest_decided(&method, tail) && (routes_on || tail != ["issues"]) && (comment_on || !comment_route));
     let merge_of = rest_merge(&method, tail);
     c.leader_reads.set(merge_of.is_some());
     // A REST merge reads its rows and the owner's `Authz`, both fresh, for the repository it guesses the name names
@@ -2089,10 +2096,10 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     if graftyard_api::trust::opted_in(agent_accept.as_deref()) {
         rd.dir.install = crate::install_authz(c).await;
     }
-    // A status an App sets, or an issue it opens through REST, names its bot account, which the tiers do not name yet.
-    if routes_on
-        && let (Method::Post, ["statuses", _] | ["issues"], Some(Actor::App { app, .. })) =
-            (&method, tail, who.as_ref().map(|w| w.actor))
+    // A status an App sets, or an issue or a comment it writes through REST, names its bot account, which the tiers
+    // do not name yet.
+    if (routes_on && matches!(tail, ["statuses", _] | ["issues"]) || comment_on && comment_route)
+        && let (Method::Post, Some(Actor::App { app, .. })) = (&method, who.as_ref().map(|w| w.actor))
         && let Some(l) = bot_login(c, app).await
     {
         rd.dir.logins.insert(app.bot().0.0, l);
@@ -2162,6 +2169,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             ask_merges(c, &rd.repo, asks, merge_computes(&r, who.as_ref()));
             reply
         }
+        (Method::Get, ["issues", n]) => rest::get_issue(&r, n),
         (Method::Get, ["issues", n, "comments"]) => rest::list_issue_comments(&r, n, query),
         (Method::Get, ["pulls", n, "reviews"]) => rest::list_reviews(&r, n, query),
         (Method::Get, ["pulls", n, "comments"]) => rest::list_review_comments(&r, n, query),
@@ -2211,6 +2219,21 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Ok(op) => {
                     commit_issue(c, &rd, &who, to_wire(op), What::ReviewCommentCreated { n: n.parse().unwrap_or(0) })
                         .await?
+                }
+                Err(x) => x,
+            }
+        }
+        // F137: GHES's REST issue comment, `addComment`'s `Comment`, on an issue or a pull request's conversation.
+        // Served only once `FormatsEnable` enabled 32.32, whose members render its 201; until then it is 404, as before.
+        (Method::Post, ["issues", n, "comments"]) if comment_on => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_create_issue_comment(&r, n, &body(req.bytes().await?)) {
+                Ok(op) => {
+                    let what = What::IssueCommentCreated { n: n.parse().unwrap_or(0) };
+                    commit_issue(c, &rd, &who, to_wire(op), what).await?
                 }
                 Err(x) => x,
             }
@@ -2794,6 +2817,7 @@ mod tests {
             (Delete, "releases/assets/9"),
             (Post, "statuses/abc"),
             (Post, "issues"),
+            (Post, "issues/1/comments"),
             (Put, "branches/main/protection"),
             (Delete, "branches/rel/v1/protection"),
             (Post, "git/refs"),

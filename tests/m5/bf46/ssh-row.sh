@@ -34,13 +34,13 @@ TAG=${1:?tag}; STEP=${2:?step}
 O=tests/m5/results/raw/bf46ssh/$TAG; mkdir -p "$O"
 W=$HOME/.graft-m3f; K=$W/bf46; mkdir -p "$K"; chmod 700 "$K"
 A=${CLOUDFLARE_ACCOUNT_ID:?}
-STORE=bfaa0c1573de4775b1b92a12fb89acb4
+STORE=${CF_SECRETS_STORE_ID:?}
 OPS=graft-m3f-ops; VAPI=; OPS_PARKED=${OPS_PARKED:-3ed6e453}
 S="graft-m3f-site-a graft-m3f-site-b graft-m3f-site-c"
 IMG=registry.cloudflare.com/$A/graft-m3f-gitshard@sha256:7d5c7540889f6256b7f62669e0f29a6dea629f877ad131dae52c8350ba5ab749
 B="https://api.cloudflare.com/client/v4/accounts/$A"
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$B$1" "${@:2}"; }
-scrub() { sed -e "s/$A/<cf-account-id>/g" -e "s/${CF_WORKERS_SUBDOMAIN:?}/<sub>/g" -e "s#$HOME/#~/#g" -e "s#$PWD/#<checkout>/#g"; }
+scrub() { sed -e "s/$A/<cf-account-id>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/${CF_WORKERS_SUBDOMAIN:?}/<sub>/g" -e "s#$HOME/#~/#g" -e "s#$PWD/#<checkout>/#g"; }
 N=$(ls "$O" | grep -c "^$STEP\(-[0-9]*\)\?\.log$" || true)
 L="$O/$STEP$( [ "$N" -gt 0 ] && echo "-$((N + 1))" ).log"
 log() { { date -u +%FT%TZ; git rev-parse --short HEAD; cat; date -u +%FT%TZ; } | scrub >"$L"; cat "$L"; }

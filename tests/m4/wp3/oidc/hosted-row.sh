@@ -44,7 +44,7 @@ cd "$(dirname "$0")/../../../.."
 TAG=${1:?tag}; STEP=${2:?step}
 O=tests/m4/raw/wp3/oidc-hosted/$TAG; mkdir -p "$O"
 W=$HOME/.graft-m4a; K=$W/bf70; mkdir -p "$K"; chmod 700 "$K"
-STORE=bfaa0c1573de4775b1b92a12fb89acb4
+STORE=${CF_SECRETS_STORE_ID:?}
 # Each tag's own repositories (m3org/bf70-<tag>, -cac, -fork): a deleted name stays taken until its retain_until, 90
 # days, so r1's m3org/bf70 and bf70-cac cannot be created again (422 "name already exists"). r1 ran as bf70.
 export BF70_REPO=${BF70_REPO:-bf70-$TAG}
@@ -53,7 +53,7 @@ SCRIPTS="graft-m4a-site-a graft-m4a-site-b graft-m4a-site-c graft-m4a-edge $OPS"
 B="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$1" "${@:2}"; }
 scrub() {
-  sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" \
+  sed -e "s/$CLOUDFLARE_ACCOUNT_ID/<install-account>/g" -e "s/$CF_SECRETS_STORE_ID/<store>/g" -e "s/$CF_WORKERS_SUBDOMAIN/<sub>/g" \
       -e "s#$PWD/#<checkout>/#g" -e "s#$HOME/#~/#g"
 }
 N=$(ls "$O" | grep -c "^$STEP" || true)
