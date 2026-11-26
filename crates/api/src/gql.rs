@@ -422,8 +422,11 @@ impl Obj for Node<'_> {
             "updatedAt" => Some(leaf(iso(it.row.updated))),
             "author" => Some(account(r, it.row.author)),
             "milestone" => Some(Out::Null),
+            // A `UserConnection`: an App's bot account, which is no `User`, is left out, as GitHub lists bots only in
+            // `assignedActors` [inference: the schema's `Issue.assignees` is `UserConnection!`].
             "assignees" => {
-                let nodes = r.assignees_of(n).into_iter().map(|id| Box::new(Account { r, id }) as Box<dyn Obj>);
+                let users = r.assignees_of(n).into_iter().filter(|a| graftyard_identity::AppId::of_bot(*a).is_none());
+                let nodes = users.map(|id| Box::new(Account { r, id }) as Box<dyn Obj>);
                 Some(obj(Conn::window("UserConnection", nodes.collect(), a)))
             }
             "labels" => Some(obj(Conn::window("LabelConnection", labels(r, r.labels_of(n)), a))),

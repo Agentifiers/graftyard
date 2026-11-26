@@ -817,9 +817,9 @@ pub enum LeaseEnforce { Advisory, AgentsExclusive }
 // Agent-layer entries: variants added to SHARED's event enums, each with its `tier_of`. Core rows are what pushes,
 // minting, and lease checks read (a merge also reads its pull row and writes `Merged`, both Metadata). `LeaseAcquire`
 // sets `granted` to the entry's `at`, and `LeaseRenew` changes only `expires`.
+// F20: after an issue opens only `Assigned` moves its assignees; a bot is its App's `AppId::bot` account ("`app-bot`").
 pub enum AgentRepoEvent {   // flattened into `RepoEvent`
-    Assigned { n: IssueNumber, assignees: SmallVec<[AccountId; 2]>, actor: Actor },          // Metadata
-    IssueEdited { n: IssueNumber, actor: Actor, title: bool, body: bool },                  // Metadata
+    Assigned { n: IssueNumber, add: SmallVec<[AccountId; 2]>, remove: SmallVec<[AccountId; 2]>, actor: Actor }, // Metadata
     TaskCreated(AgentTask),                                       // Core and Metadata, as PrOpened
     TaskUpdated { session: SessionId, state: Option<TaskApiState>, pr: Option<PrNumber>, summary: Option<Box<str>>,
                   actor: Actor },                                 // Core always; Metadata too for pr and summary

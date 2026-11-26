@@ -494,6 +494,64 @@ pub fn issue_create_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
     write_refused(e, ISSUE_CREATE_DOC)
 }
 
+const ASSIGNEES_DOC: &str = "rest/issues/assignees";
+
+/// The logins a REST assignment names: `assignees` of `POST`/`DELETE .../assignees` and of an issue `PATCH`, each a
+/// login or GHES 3.22's `{login}` object.
+pub fn assignee_logins(body: &Value) -> Vec<String> {
+    let one = |v: &Value| v.as_str().or_else(|| v.get("login").and_then(Value::as_str)).map(str::to_owned);
+    body.get("assignees").and_then(Value::as_array).into_iter().flatten().filter_map(one).collect()
+}
+
+/// `POST` and `DELETE /repos/{o}/{r}/issues/{n}/assignees`, and a `PATCH .../issues/{n}` whose body sets only
+/// `assignees` (which replaces the set): one `Assign` of the accounts the directory knows. GHES 3.22 drops a login it
+/// cannot assign rather than refusing it (`issues/add-assignees`: "Assignees are silently ignored otherwise"), so an
+/// unknown login changes nothing, and `decide` drops one without push access. `None` for a `PATCH` that sets any other
+/// field, which this route does not serve.
+pub fn plan_issue_assignees(
+    r: &Repo<'_>,
+    method: &str,
+    n: &str,
+    body: &Value,
+) -> Option<Result<graftyard_git::issue_ops::IssueOp, Reply>> {
+    if method == "PATCH" && body.as_object().is_none_or(|o| o.len() != 1 || !o.contains_key("assignees")) {
+        return None;
+    }
+    let Some(n) = n.parse::<u32>().ok().map(graftyard_git::issues::IssueNumber).filter(|n| r.item(*n).is_some()) else {
+        return Some(Err(Reply::not_found()));
+    };
+    if method != "DELETE" && body.get("assignees").is_some_and(|v| !v.is_null() && !v.is_array()) {
+        return Some(Err(Reply::error(422, "Validation Failed", ASSIGNEES_DOC)));
+    }
+    let named: Vec<graftyard_types::AccountId> =
+        assignee_logins(body).iter().filter_map(|l| r.dir.by_login(l)).collect();
+    let have = r.assignees_of(n);
+    let (add, remove): (Vec<_>, Vec<_>) = match method {
+        "POST" => (named, Vec::new()),
+        "DELETE" => (Vec::new(), named),
+        _ => (named.clone(), have.into_iter().filter(|a| !named.contains(a)).collect()),
+    };
+    Some(Ok(graftyard_git::issue_ops::IssueOp::Assign {
+        n,
+        add: add.into_iter().collect(),
+        remove: remove.into_iter().collect(),
+    }))
+}
+
+/// The reply of a committed `Assign`: the issue as the leader's tiers hold it after the entry, 201 for `POST`
+/// (`issues/add-assignees`) and 200 otherwise.
+pub fn issue_assigned(after: &Repo<'_>, n: u32, created: bool) -> Reply {
+    match after.item(graftyard_git::issues::IssueNumber(n)) {
+        Some(it) => Reply::json(if created { 201 } else { 200 }, issue_json(after, &it)),
+        None => Reply::not_found(),
+    }
+}
+
+/// A refused `Assign`: 401, 403 for a token without `issues: write`, 404, or 503.
+pub fn issue_assign_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
+    write_refused(e, ASSIGNEES_DOC)
+}
+
 /// `GET /repos/{owner}/{repo}/pulls/{pull_number}`.
 pub fn get_pull(r: &Repo<'_>, n: &str) -> Reply {
     get_pull_asks(r, n).0

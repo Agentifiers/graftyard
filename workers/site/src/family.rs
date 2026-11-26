@@ -832,6 +832,7 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_SSH,
             git::repo::REPO_FORMAT_RUNS,
             git::issue_ops::call::REPO_FORMAT_ROUTES,
+            git::issue_ops::call::REPO_FORMAT_ASSIGN,
             #[cfg(feature = "test-format")]
             git::repo::REPO_FORMAT_TEST,
         ]

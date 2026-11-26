@@ -155,6 +155,15 @@ pub fn payload(r: &Repo<'_>, w: &Webhook, hook: Option<(HookId, &HookRow)>, at: 
             let it = r.item(*n)?;
             envelope(r, *actor, with_action(obj(json!({ "issue": issue(r, &it) }))))
         }
+        Subject::Assignee { n, assignee, actor } => {
+            let it = r.item(*n)?;
+            let who = simple_user(r.host, r.dir, Some(*assignee));
+            let body = match it.pull {
+                Some(_) => json!({ "number": n.0, "pull_request": pull_request(r, &it), "assignee": who }),
+                None => json!({ "issue": issue(r, &it), "assignee": who }),
+            };
+            envelope(r, *actor, with_action(obj(body)))
+        }
         Subject::Comment { n, id, actor } => {
             let it = r.item(*n)?;
             let row = r.comments_of(*n).into_iter().find(|(c, _)| c == id)?.1;

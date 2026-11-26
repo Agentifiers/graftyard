@@ -9,7 +9,8 @@
 //!   the isolate's counts, and its last `RECENT_MAX` accepted deliveries. Without it the route does not exist.
 //!
 //! Every `POST` is a webhook: 202 `{"accepted": event}`, 200 `{"duplicate": true}`, or the refusal's status. A
-//! `graftyard_task` delivery answers as its task's `TaskBox` does (`taskbox::deliver`). No
+//! `graftyard_task` delivery answers as its task's `TaskBox` does (`taskbox::deliver`), and an `issues.assigned`
+//! delivery naming `graftyard-agent[bot]` answers as the task create it sends does (`taskbox::assigned`). No
 //! request path calls the Cloudflare API, and nothing logs a body or a secret.
 
 use std::cell::RefCell;
@@ -24,6 +25,8 @@ use crate::{Intake, Seen, intake};
 const FRONT_HEADER: &str = "x-graftyard-agents-front";
 const VERSION_HEADER: &str = "x-graftyard-controller-version";
 const STATUS_PATH: &str = "/_controller/status";
+/// `graftyard-agent`'s bot login, as the host renders it in an `issues.assigned` delivery.
+const AGENT_BOT: &str = "graftyard-agent[bot]";
 /// How many accepted deliveries the status route lists.
 const RECENT_MAX: usize = 20;
 
@@ -109,6 +112,15 @@ async fn webhook(mut req: Request, env: &Env) -> Result<Response> {
         Intake::Accepted { event, .. } if event == graftyard_git::hooks::TASK_EVENT => {
             let payload: serde_json::Value = serde_json::from_slice(&body)?;
             crate::taskbox::deliver(env, &payload).await
+        }
+        // An issue assigned to `graftyard-agent`'s bot: the controller's one task create (`taskbox::assigned`).
+        Intake::Accepted { event, action: Some(a), .. } if event == "issues" && a == "assigned" => {
+            let payload: serde_json::Value = serde_json::from_slice(&body)?;
+            if payload["assignee"]["login"] == AGENT_BOT {
+                crate::taskbox::assigned(env, &payload).await
+            } else {
+                reply(202, json!({ "accepted": event }))
+            }
         }
         Intake::Accepted { event, .. } => reply(202, json!({ "accepted": event })),
         Intake::Duplicate => reply(200, json!({ "duplicate": true })),

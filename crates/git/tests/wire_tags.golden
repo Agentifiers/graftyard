@@ -49,6 +49,7 @@ git::repo::RepoEvent 44 ActionsSecret 2c0001610000
 git::repo::RepoEvent 45 ActionsVariable 2d0001610000
 git::repo::RepoEvent 46 WorkflowJob 2e020201000161016101010101010101010101010101010101010101010161000000010000
 git::repo::RepoEvent 47 Compacted 2f00000c726566732f68656164732f610101
+git::repo::RepoEvent 48 Assigned 3001000000
 git::issue_ops::IssueOp<git::blob::BlobRef> 0 OpenIssue 00016101610000
 git::issue_ops::IssueOp<git::blob::BlobRef> 1 OpenPr 01020000016101610001010101010101010101010101010101010101010101010101010101010101010101010101010101
 git::issue_ops::IssueOp<git::blob::BlobRef> 2 Close 0201
@@ -95,6 +96,7 @@ git::issue_ops::IssueOp<git::blob::BlobRef> 42 DeleteActionsSecret 2a000161
 git::issue_ops::IssueOp<git::blob::BlobRef> 43 PutActionsVariable 2b000161016100
 git::issue_ops::IssueOp<git::blob::BlobRef> 44 DeleteActionsVariable 2c000161
 git::issue_ops::IssueOp<git::blob::BlobRef> 45 CreateRun 2d00000161
+git::issue_ops::IssueOp<git::blob::BlobRef> 46 Assign 2e010000
 id::AuthzEvent 0 Opened 000000
 id::AuthzEvent 1 Member 010200
 id::AuthzEvent 2 Grant 02020200

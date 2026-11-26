@@ -606,6 +606,12 @@ pub enum What {
     },
     /// `POST /repos/{o}/{r}/issues`: 201 with the pinned `issue` object and `Location` (`bf77-routes`).
     IssueCreated,
+    /// An `Assign` (F20, format 32.30): REST `POST`/`DELETE .../issues/{n}/assignees` and an assignees-only issue
+    /// `PATCH`, the issue after the entry: 201 for `POST` (`created`), 200 otherwise.
+    IssueAssigned {
+        n: u32,
+        created: bool,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -752,6 +758,7 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         // [measured: gh 2.102.1, "unexpected end of JSON input"].
         What::Protection { branch } => WireReply::of(&crate::protection::saved(acked, &r, branch)),
         What::IssueCreated => WireReply::of(&crate::rest::issue_created(acked, &r)),
+        What::IssueAssigned { n, created } => WireReply::of(&crate::rest::issue_assigned(&r, *n, *created)),
         What::ActionsConfig => WireReply::of(&match acked.out {
             IssueOut::Created => Reply::json(201, serde_json::json!({})),
             _ => Reply::empty(204),
@@ -786,6 +793,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         }
         What::Protection { .. } => WireReply::of(&crate::protection::refused(e)),
         What::IssueCreated => WireReply::of(&crate::rest::issue_create_refused(e)),
+        What::IssueAssigned { .. } => WireReply::of(&crate::rest::issue_assign_refused(e)),
         What::ActionsConfig => WireReply::of(&match e {
             IssueErr::Exists => Reply::error(409, "Already exists", "rest/actions/variables"),
             e => crate::webhooks::refused(e),

@@ -1175,6 +1175,54 @@ fn rest_issue_create_and_a_bot_status_render_ghes_shapes() {
     assert_eq!((mine["creator"]["login"].clone(), mine["creator"]["type"].clone()), (json!("alice"), json!("User")));
 }
 
+/// F20's REST assignment: `POST .../assignees` adds and answers 201 with the issue, `DELETE` removes and answers 200,
+/// an assignees-only `PATCH` replaces the set, and a login no account claims is dropped, as GHES 3.22 drops it. A
+/// `PATCH` that sets any other field is not this route.
+#[test]
+fn rest_assignees_add_remove_and_replace_render_the_issue() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_ok};
+    use graftyard_api::rest::plan_issue_assignees;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let (alice, bob) = (AccountId(DbId(WRITER)), AccountId(DbId(READER)));
+    let plan = |c: &Chain, m: &str, body: Value| plan_issue_assignees(&c.repo(0, &h, &dir), m, "1", &body);
+    // A reader is dropped by `decide`, as GHES drops an assignee without push access.
+    let op = plan(&c, "POST", json!({ "assignees": ["bob"] })).unwrap().unwrap();
+    c.commit(WRITER, op).unwrap();
+    assert_eq!(c.repo(0, &h, &dir).assignees_of(IssueNumber(1)), [alice]);
+    c.collaborator(READER, graftyard_identity::RepoPermission::Write);
+    assert!(plan(&c, "PATCH", json!({ "title": "t", "assignees": ["bob"] })).is_none());
+    assert_eq!(plan_issue_assignees(&c.repo(0, &h, &dir), "POST", "99", &json!({})).unwrap().unwrap_err().status, 404);
+    // Issue 1 opened with alice. `POST` of bob and an unknown login adds bob only.
+    let op = plan(&c, "POST", json!({ "assignees": ["bob", "nobody"] })).unwrap().unwrap();
+    let IssueOp::Assign { add, remove, .. } = &op else { panic!("{op:?}") };
+    assert_eq!((add.as_slice(), remove.as_slice()), (&[bob][..], &[][..]));
+    // `PATCH` with only `assignees` replaces: bob added, alice removed.
+    let op2 = plan(&c, "PATCH", json!({ "assignees": [{ "login": "bob" }] })).unwrap().unwrap();
+    let IssueOp::Assign { add, remove, .. } = &op2 else { panic!("{op2:?}") };
+    assert_eq!((add.as_slice(), remove.as_slice()), (&[bob][..], &[alice][..]));
+    let out = c.commit(WRITER, op).unwrap();
+    let logins: std::collections::BTreeMap<i64, String> =
+        [(OWNER, "o".to_owned()), (WRITER, "alice".to_owned()), (READER, "bob".to_owned())].into();
+    let hosted = HostedDir { home: Some(dir.home()), logins, ..Default::default() };
+    let render = |what: What| Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what };
+    let m = &c.members[0];
+    let reply = render_ok(&render(What::IssueAssigned { n: 1, created: true }), &ack(out), &m.core, &m.meta).reply();
+    assert_eq!(reply.status, 201);
+    let mut got: Vec<String> =
+        reply.value()["assignees"].as_array().unwrap().iter().map(|a| a["login"].as_str().unwrap().into()).collect();
+    got.sort();
+    assert_eq!(got, ["alice", "bob"]);
+    keep_rest_as("issue-assignees-added", "POST", "/repos/{owner}/{repo}/issues/{issue_number}/assignees", &reply);
+    // `DELETE` of alice: 200, bob alone.
+    let op = plan(&c, "DELETE", json!({ "assignees": ["alice"] })).unwrap().unwrap();
+    let out = c.commit(WRITER, op).unwrap();
+    let m = &c.members[0];
+    let reply = render_ok(&render(What::IssueAssigned { n: 1, created: false }), &ack(out), &m.core, &m.meta).reply();
+    assert_eq!((reply.status, reply.value()["assignees"].as_array().unwrap().len()), (200, 1));
+    assert_eq!(reply.value()["assignee"]["login"], "bob");
+}
+
 /// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the
 /// label the leader holds after the entry, a taken name answers gh's `already_exists`, and an issue opened with the
 /// label is in `GET /repos/o/r/issues?labels=bug&sort=updated` from the next read, newest update first.
