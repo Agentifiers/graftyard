@@ -715,6 +715,7 @@ git::task::TaskErr 9 NotWriter 09
 git::task::TaskErr 10 AgentsOff 0a
 git::task::TaskErr 11 ForkMode 0b
 git::task::TaskErr 12 NoRunApps 0c
+git::task::TaskErr 13 Demoted 0d
 git::transfer::TransferErr 0 NotReserved 00
 git::transfer::TransferErr 1 WrongEnterprise 01
 git::transfer::TransferErr 2 NotRead 02

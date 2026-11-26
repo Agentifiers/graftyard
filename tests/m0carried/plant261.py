@@ -2,7 +2,8 @@
 """LM-3, L0-14's demoted user (`crates/git/src/task.rs`, `decide`'s Graftyard-run create; the count from
 `crates/raft/src/member/leader.rs`, `decide`, through `Scratch::set_actor_writes` and `Command::actor`): a demoted
 creator allowed, the leader never handing the count to the command, the command naming no actor, and the count read
-past the window so a writer under DEMOTE_PER_MIN is refused, and the entry's earlier writes left uncounted. Run from the repository root:
+past the window so a writer under DEMOTE_PER_MIN is refused, the entry's earlier writes left uncounted, and a demoted
+creator refused as a non-writer instead of `Demoted` (F139). Run from the repository root:
 
     python3 tests/m0carried/plant261.py          # every mutant
     python3 tests/m0carried/plant261.py 0 2      # by number
@@ -28,6 +29,8 @@ MUTANTS = [
      '            (IssueOp::CreateRun(_), Actor::User(_)) => None,', T),
     ("one write short demotes", TASK, '            if ctx.writes >= graftyard_raft::admit::DEMOTE_PER_MIN {',
      '            if ctx.writes + 1 >= graftyard_raft::admit::DEMOTE_PER_MIN {', T),
+    ("a demoted creator gets the non-writer's refusal (F139)", TASK, '                        return Err(TaskErr::Demoted);',
+     '                        return Err(TaskErr::NotWriter);', T),
     ("the entry's earlier writes are not counted", LEAD, '                                *in_entry.entry(a).or_insert(0) += 1;',
      '                                let _ = in_entry.entry(a).or_insert(0);', T),
 ]
