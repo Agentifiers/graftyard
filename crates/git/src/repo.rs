@@ -430,6 +430,14 @@ pub enum RepoEvent {
         remove: SmallVec<[AccountId; 2]>,
         actor: Option<AccountId>,
     },
+    // AM3-WP3's host pause, format 32.33 (`crate::issue_ops::call::REPO_FORMAT_HOST_PAUSE`): tag 49.
+    /// Core and Metadata. The agent block's `TaskResumed`: a writer's `Assign` that adds the controller's bot clears a
+    /// paused Graftyard-run task of the issue in the same command, so the task reads `queued` (Core) and its `snapshot`
+    /// is the index the entry follows (Metadata).
+    TaskResumed {
+        session: SessionId,
+        snapshot: graftyard_types::Index,
+    },
 }
 
 impl RepoEvent {
@@ -2019,6 +2027,8 @@ impl Record for RepoEvent {
             RepoEvent::Compacted(c) => return tagged(out, 47, c),
             // F20, 32.30: tag 48.
             RepoEvent::Assigned { n, add, remove, actor } => return tagged(out, 48, &(n, add, remove, actor)),
+            // AM3-WP3's host pause, 32.33: tag 49.
+            RepoEvent::TaskResumed { session, snapshot } => return tagged(out, 49, &(session, snapshot)),
         };
         e.u8(0);
         e.u128(push.0.0);

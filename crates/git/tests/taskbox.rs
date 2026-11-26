@@ -313,3 +313,32 @@ fn the_base_task_is_sent_each_state_until_the_base_answers_it() {
     c.cancel();
     assert_eq!(c.unreported(), None);
 }
+
+/// The host pause: the box follows the base's task after an issue delivery. A paused base stops the Sandbox, whose
+/// later reports are late; a resumed base starts a new Sandbox from the base and owes the base `in_progress`; any other
+/// base state, or a final box, moves nothing.
+#[test]
+fn the_box_follows_the_base_s_pause_and_resume() {
+    use graftyard_git::task::TaskApiState::{InProgress, Queued, WaitingForUser};
+    let base = |state| Input::Base { state, version: "v2".into() };
+    let mut b = started();
+    b.on(pushed(sb(1), ObjectId([1; 20])), 10).unwrap();
+    b.answered(InProgress, 200);
+    assert_eq!(b.on(base(InProgress), 20), Ok(Act::Keep), "a writer's edit or reassignment moves nothing");
+    assert_eq!(b.on(base(Queued), 20), Ok(Act::Keep), "only a paused box resumes");
+    assert_eq!(b.on(base(WaitingForUser), 30), Ok(Act::Stop));
+    assert!(matches!(b.task.state, TaskState::Paused { .. }));
+    assert_eq!(b.unreported(), None, "the base set the pause itself");
+    assert_eq!(b.on(pushed(sb(1), ObjectId([2; 20])), 40), Err(Report::Late { from: sb(1) }));
+    assert_eq!(b.on(alarm(false, "v1"), HEARTBEAT.as_millis() as u64), Ok(Act::Keep), "a paused box starts nothing");
+    assert_eq!(b.on(base(WaitingForUser), 50), Ok(Act::Keep), "a second edit changes nothing");
+    assert_eq!(b.on(base(Queued), 60), Ok(Act::Start { sandbox: sb(2), from: Resume::Base }));
+    assert_eq!(b.task.state, TaskState::Running { sandbox: sb(2), last_push: None });
+    assert_eq!(b.version.as_deref(), Some("v2"));
+    assert_eq!(b.unreported(), Some(InProgress));
+    // A final box follows nothing.
+    let mut c = started();
+    c.cancel();
+    assert_eq!(c.on(base(WaitingForUser), 1), Ok(Act::Keep));
+    assert_eq!(c.task.state, TaskState::Cancelled);
+}

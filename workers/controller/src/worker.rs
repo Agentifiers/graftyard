@@ -9,9 +9,10 @@
 //!   the isolate's counts, and its last `RECENT_MAX` accepted deliveries. Without it the route does not exist.
 //!
 //! Every `POST` is a webhook: 202 `{"accepted": event}`, 200 `{"duplicate": true}`, or the refusal's status. A
-//! `graftyard_task` delivery answers as its task's `TaskBox` does (`taskbox::deliver`), and an `issues.assigned`
-//! delivery naming `graftyard-agent[bot]` answers as the task create it sends does (`taskbox::assigned`). No
-//! request path calls the Cloudflare API, and nothing logs a body or a secret.
+//! `graftyard_task` delivery answers as its task's `TaskBox` does (`taskbox::deliver`). An `issues.edited` or
+//! `issues.assigned` delivery hands the base's state of the issue's open tasks to their boxes (`taskbox::follow`, the
+//! host pause), and one naming `graftyard-agent[bot]` on an issue with no open task answers as the task create it sends
+//! does (`taskbox::assigned`). No request path calls the Cloudflare API, and nothing logs a body or a secret.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -113,13 +114,16 @@ async fn webhook(mut req: Request, env: &Env) -> Result<Response> {
             let payload: serde_json::Value = serde_json::from_slice(&body)?;
             crate::taskbox::deliver(env, &payload).await
         }
-        // An issue assigned to `graftyard-agent`'s bot: the controller's one task create (`taskbox::assigned`).
-        Intake::Accepted { event, action: Some(a), .. } if event == "issues" && a == "assigned" => {
+        // An issue edited or assigned: its open tasks' boxes follow the base, which may have paused or resumed them
+        // (`taskbox::follow`). Assigned to `graftyard-agent`'s bot with no open task: the controller's one task
+        // create (`taskbox::assigned`).
+        Intake::Accepted { event, action: Some(a), .. } if event == "issues" && (a == "assigned" || a == "edited") => {
             let payload: serde_json::Value = serde_json::from_slice(&body)?;
-            if payload["assignee"]["login"] == AGENT_BOT {
+            let open = crate::taskbox::follow(env, &payload).await?;
+            if a == "assigned" && payload["assignee"]["login"] == AGENT_BOT && open == 0 {
                 crate::taskbox::assigned(env, &payload).await
             } else {
-                reply(202, json!({ "accepted": event }))
+                reply(202, json!({ "accepted": event, "followed": open }))
             }
         }
         Intake::Accepted { event, .. } => reply(202, json!({ "accepted": event })),

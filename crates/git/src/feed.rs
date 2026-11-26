@@ -315,6 +315,9 @@ pub fn events(
             RepoEvent::TaskUpdated { session, state: Some(s), .. } => {
                 out.push(ActivityEvent::Task { task: session.clone(), state: *s })
             }
+            RepoEvent::TaskResumed { session, .. } => {
+                out.push(ActivityEvent::Task { task: session.clone(), state: crate::task::TaskApiState::Queued })
+            }
             RepoEvent::PathSet(p) => out.push(ActivityEvent::AgentPush {
                 refname: p.refname.clone(),
                 head: p.head,
@@ -434,6 +437,9 @@ impl Ring {
                 RepoEvent::TaskCreated(t) => out.push(ActivityEvent::Task { task: t.session.clone(), state: t.state }),
                 RepoEvent::TaskUpdated { session, state: Some(st), .. } => {
                     out.push(ActivityEvent::Task { task: session.clone(), state: *st })
+                }
+                RepoEvent::TaskResumed { session, .. } => {
+                    out.push(ActivityEvent::Task { task: session.clone(), state: crate::task::TaskApiState::Queued })
                 }
                 RepoEvent::PathSet(p) => out.push(ActivityEvent::AgentPush {
                     refname: p.refname.clone(),

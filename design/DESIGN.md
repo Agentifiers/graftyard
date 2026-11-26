@@ -820,7 +820,7 @@ pub enum LeaseEnforce { Advisory, AgentsExclusive }
 // F20: after an issue opens only `Assigned` moves its assignees; a bot is its App's `AppId::bot` account ("`app-bot`").
 pub enum AgentRepoEvent {   // flattened into `RepoEvent`
     Assigned { n: IssueNumber, add: SmallVec<[AccountId; 2]>, remove: SmallVec<[AccountId; 2]>, actor: Actor }, // Metadata
-    TaskCreated(AgentTask),                                       // Core and Metadata, as PrOpened
+    TaskCreated(AgentTask), TaskResumed { session: SessionId, snapshot: Index }, // Core and Metadata (resume: in Assigned's)
     TaskUpdated { session: SessionId, state: Option<TaskApiState>, pr: Option<PrNumber>, summary: Option<Box<str>>,
                   actor: Actor },                                 // Core always; Metadata too for pr and summary
     AgentGate(AgentGate),                                         // Core, in the APPROVE review's entry

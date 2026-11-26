@@ -15,8 +15,8 @@ use graftyard_raft::{EntryBody, Fold, Format, LogEntry, PREV_ZERO, Term, digest}
 use graftyard_types::{AccountId, DbId, Index, RepoId, Tier, Timestamp};
 use serde_json::Value;
 
-/// The newest repository format: version 30, F20's assignees (`REPO_FORMAT_ASSIGN`).
-const NEWEST: u16 = 30;
+/// The newest repository format: version 33, AM3-WP3's host pause (`REPO_FORMAT_HOST_PAUSE`).
+const NEWEST: u16 = 33;
 
 /// The first format version a kind can be committed at, by wire tag: the version that introduced it
 /// (`crate::repo::RepoEvent`'s comments). Tags 0 to 26, Milestones 1 and 2, from version 1.
@@ -34,7 +34,8 @@ fn first_version(tag: usize) -> u16 {
         44 | 45 => 23,
         46 => 24,
         47 => 25,
-        _ => 30,
+        48 => 30,
+        _ => 33,
     }
 }
 

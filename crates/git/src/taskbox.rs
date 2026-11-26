@@ -32,6 +32,11 @@
 //!   .../tasks/{id}` with the state `TaskState::api` gives, under `graftyard-agent`'s token, until the base answered it
 //!   (`TaskBox::unreported`, `TaskBox::answered`; OPEN-QUESTIONS A59). `Cancelled` is never sent: only the cancel
 //!   endpoint sets it, and it is what started the box's own cancel.
+//! - **The host pause.** The base pauses and resumes a task itself (`decisions/DECISIONS.md`, "`host-pause`"): a
+//!   non-writer's title or body edit sets it `waiting_for_user`, and a writer's reassignment to the controller's bot
+//!   queues it again. On `issues.edited` and `issues.assigned` for the task's issue the host reads the base's task and
+//!   hands its state to the box (`Input::Base`), which follows it with no permission check of its own: a pause stops
+//!   the Sandbox, and a resume starts a new one from the base, on the snapshot the base moved.
 
 use std::time::Duration;
 
@@ -81,6 +86,9 @@ pub enum Input {
     /// The alarm: whether the container runs, the version this object runs now, and `graft-agents-front`'s
     /// `ControllerPointer`.
     Alarm { running: bool, version: String, pointer: Pointer },
+    /// The base's task, read after an `issues.edited` or `issues.assigned` delivery for its issue: its `state`, and
+    /// the version this object runs now, for a resume's Sandbox.
+    Base { state: TaskApiState, version: String },
 }
 
 /// The `ControllerPointer` as the alarm read it from `graft-agents-front`.
@@ -201,6 +209,29 @@ impl TaskBox {
                 self.task.step(event).map_err(Report::Refused)?;
                 self.heard = now;
                 Ok(if self.task.state.is_final() { Act::Stop } else { Act::Keep })
+            }
+            Input::Base { state, version } => {
+                if self.task.state.is_final() {
+                    return Ok(Act::Keep);
+                }
+                let paused = matches!(self.task.state, TaskState::Paused { .. });
+                match state {
+                    // Paused on the base: the box pauses and its Sandbox stops. The base already reads the state.
+                    TaskApiState::WaitingForUser if !paused => {
+                        self.task.step(TaskEvent::IssueEdited { by_writer: false }).expect("a live task pauses");
+                        self.base = Some(TaskApiState::WaitingForUser);
+                        self.hold = None;
+                        Ok(Act::Stop)
+                    }
+                    // Resumed on the base (`TaskResumed`): queued again, and started on a new Sandbox from the base,
+                    // since the issue it works from is the base's new snapshot.
+                    TaskApiState::Queued if paused => {
+                        self.task.state = TaskState::Queued;
+                        self.base = Some(TaskApiState::Queued);
+                        self.start(&version, now).map_err(Report::Refused)
+                    }
+                    _ => Ok(Act::Keep),
+                }
             }
             Input::Alarm { running, version, pointer } => {
                 if self.task.state.is_final() {

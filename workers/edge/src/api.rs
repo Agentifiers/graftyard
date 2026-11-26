@@ -1072,6 +1072,10 @@ async fn commit_issue_rid(
         && !call.leases
         && IssueCall::single_comment(&call.op)
         && c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_REVIEWS);
+    // 32.33 (`host-pause`) for every title or body edit and assignment change once it is enabled, whether or not the
+    // issue has a task: its entry may pause or resume the issue's Graftyard-run tasks, and carries a body edit's leases.
+    call.pause = IssueCall::pausable(&call.op)
+        && c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_HOST_PAUSE);
     if !c.cfg.enabled.contains(&call.format()) {
         let f = call.format();
         return Ok(unavailable(&format!(
