@@ -1,0 +1,20 @@
+2026-11-26T06:36:54.3371396Z Current runner version: '2.338.2'
+2026-11-26T06:36:54.3377447Z Runner name: 'bf77-f132-1'
+2026-11-26T06:36:54.3377925Z Machine name: '172'
+2026-11-26T06:36:54.3380423Z Prepare workflow directory
+2026-11-26T06:36:54.3793915Z Prepare all required actions
+2026-11-26T06:36:54.3911927Z Complete job name: call / deploy
+2026-11-26T06:36:55.4607815Z ##[group]Run echo "F132 version=tag"
+2026-11-26T06:36:55.4608171Z [36;1mecho "F132 version=tag"[0m
+2026-11-26T06:36:55.4637149Z shell: /usr/sbin/bash -e {0}
+2026-11-26T06:36:55.4637645Z ##[endgroup]
+2026-11-26T06:36:55.4821628Z F132 version=tag
+2026-11-26T06:36:55.4918334Z ##[group]Run t=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=f132" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+2026-11-26T06:36:55.4918590Z [36;1mt=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=f132" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')[0m
+2026-11-26T06:36:55.4918860Z [36;1mprintf %s "$t" | cut -d. -f2 | python3 -c 'import base64,json,sys; p=sys.stdin.read().strip(); c=json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4))); print("F132 job_workflow_ref=" + c["job_workflow_ref"]); print("F132 workflow_ref=" + c["workflow_ref"]); print("F132 event_name=" + c["event_name"])'[0m
+2026-11-26T06:36:55.4933336Z shell: /usr/sbin/bash -e {0}
+2026-11-26T06:36:55.4933401Z ##[endgroup]
+2026-11-26T06:36:58.8493321Z F132 job_workflow_ref=m3org/bf77-shared/.github/workflows/called.yml@refs/tags/v1
+2026-11-26T06:36:58.8501739Z F132 workflow_ref=m3org/bf77-caller/.github/workflows/caller.yml@refs/heads/main
+2026-11-26T06:36:58.8502450Z F132 event_name=workflow_dispatch
+2026-11-26T06:36:58.8641086Z Cleaning up orphan processes

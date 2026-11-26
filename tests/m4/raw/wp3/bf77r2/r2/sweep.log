@@ -1,0 +1,8 @@
+git#1#net:65624 200
+git#1#net:65623 200
+git#1#net:65622 200
+git#0#net:65624 200
+git#0#net:65622 200
+{"torn_down": 6, "codes": {"200": 6}}
+sweep: no shard container running
+exit 0

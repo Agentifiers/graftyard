@@ -1,0 +1,28 @@
+2026-11-26T06:29:42.0922345Z Current runner version: '2.338.2'
+2026-11-26T06:29:42.0928011Z Runner name: 'bf77-1'
+2026-11-26T06:29:42.0928505Z Machine name: '172'
+2026-11-26T06:29:42.0930923Z Prepare workflow directory
+2026-11-26T06:29:42.1353164Z Prepare all required actions
+2026-11-26T06:29:42.1469187Z Complete job name: default
+2026-11-26T06:29:42.2230642Z ##[group]Run set -u
+2026-11-26T06:29:42.2231156Z [36;1mset -u[0m
+2026-11-26T06:29:42.2231189Z [36;1mapi() { curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "authorization: token $GITHUB_TOKEN" -H 'content-type: application/json' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$2" ${3:+--data "$3"}; }[0m
+2026-11-26T06:29:42.2231276Z [36;1mecho "BF77 $GITHUB_JOB read $(api GET '')"[0m
+2026-11-26T06:29:42.2231305Z [36;1mecho "BF77 $GITHUB_JOB issue $(api POST /issues '{"title":"bf77"}')"[0m
+2026-11-26T06:29:42.2231333Z [36;1mecho "BF77 $GITHUB_JOB status $(api POST /statuses/$GITHUB_SHA '{"state":"success","context":"bf77"}')"[0m
+2026-11-26T06:29:42.2231399Z [36;1mecho "BF77 $GITHUB_JOB artifacts $(api GET /actions/artifacts)"[0m
+2026-11-26T06:29:42.2231539Z [36;1mrm -rf p && git init -q p && cd p[0m
+2026-11-26T06:29:42.2231566Z [36;1mgit -c user.name=bf77 -c user.email=bf77@example.invalid commit -q --allow-empty -m bf77[0m
+2026-11-26T06:29:42.2231662Z [36;1mauth="authorization: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"[0m
+2026-11-26T06:29:42.2231693Z [36;1mif git -c http.extraHeader="$auth" push -q "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/bf77-$GITHUB_JOB" 2>/dev/null[0m
+2026-11-26T06:29:42.2231742Z [36;1mthen echo "BF77 $GITHUB_JOB push accepted"; else echo "BF77 $GITHUB_JOB push refused"; fi[0m
+2026-11-26T06:29:42.2482293Z shell: /usr/sbin/bash -e {0}
+2026-11-26T06:29:42.2483316Z env:
+2026-11-26T06:29:42.2483676Z   GITHUB_TOKEN: ***
+2026-11-26T06:29:42.2483715Z ##[endgroup]
+2026-11-26T06:29:43.6364026Z BF77 default read 200
+2026-11-26T06:29:45.3428052Z BF77 default issue 403
+2026-11-26T06:29:46.8271976Z BF77 default status 403
+2026-11-26T06:29:47.3633160Z BF77 default artifacts 403
+2026-11-26T06:29:49.4849924Z BF77 default push refused
+2026-11-26T06:29:49.5094605Z Cleaning up orphan processes

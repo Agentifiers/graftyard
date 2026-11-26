@@ -364,3 +364,34 @@ The lead's GO, after AM2's kill row frees graft-m4a, $3 stop per row.
 - `tests/bf77bed/run.sh`: the edge's own wasm in local workerd, the base edge (main `01781349`) and the head edge on one bed, 32.29 enabled. Output: base `default`, `ro` and `rw` each "issue 404, status 401", the PAT's issue 404 and its status 201; head `default` and `ro` "issue 403, status 403" with "Resource not accessible by integration" on both, `rw` "issue 201, status 201", the issue `#1 user github-actions[bot] Bot` with `Location` `.../repos/cw/r/issues/1`, the status `creator` `{"login":"github-actions[bot]","id":2,"type":"Bot","node_id":"BOT_kgAC","html_url":"https://cw.example/apps/github-actions"}`, the PAT's issue 201 (user and assignee `cw`) and status 201 (creator `cw`). 0 unexpected answers on either edge.
 - `tests/plaindiff/run.sh` (base main `01781349`): 7 request pairs, 0 unexpected differences.
 - `tests/m0carried/plant259.py`: 10 of 10 caught, the REST issue's bot author included.
+
+## BF-77 token half rerun: PASS (graft-m4a, 2026-11-26 06:21Z to 06:42Z, $0.19)
+
+The lead's GO after `bf77-routes` merged (main `4b41325c`), $3 stop for both days and the row. Raws in `tests/m4/raw/wp3/bf77r2/r2/`.
+
+**Days.**
+- Site day, 06:21Z to 06:23Z (`tests/m4/wp3/bf74/row.sh site`, test-faults, workers.dev host): a `777ea0b0`, b `c45c5df4`, c `de2bbc0f`, from `4b41325c`. Every earlier flag kept, and the same set after as before: `GRAFTYARD_ACTIONS_CACHE`, `ACTIVITY`, `APP_HOOKS`, `AUDIT`, `JOB_TOKENS`, `OIDC_CLAIMS`, `OIDC_HEAD_REF`, `PR_TRIGGER` and `REUSABLE` at 1; no `GRAFTYARD_PUSH_TRIGGER`. Crons `[]`.
+- Edge day, 06:23Z to 06:28Z (`row.sh edge`, `ADDFMT=32.29`): `d6ab185a` at 100%, `edgever` exit 0. The plain-text binding diff is `FORMATS_ENABLED` alone, 33 formats to 34, with 32.29 added and none dropped (21.7, 21.8, 21.9 and 32.28 kept).
+
+**Row** (`tests/m4/wp3/bf77/bf77.mjs` with `TOKEN_ONLY=1 TOK_REPO=bf77-tok2`: the delete half passed on 2026-11-25 and was not rerun; `bf77-tok` is held Deleted). Run 2627626 in the private `m3org/bf77-tok2` (repo:65621), three jobs on an unmodified runner 2.338.2:
+
+| Job | read | issue | status | artifacts | push |
+| --- | --- | --- | --- | --- | --- |
+| `default` | 200 | 403 | 403 | 403 | refused |
+| `ro` (`contents: read`) | 200 | 403 | 403 | 403 | refused |
+| `rw` (`contents`, `issues`, `statuses: write`) | 200 | 201 | 201 | 403 | accepted |
+
+Every line matches WANT, and after the pushes the branches are `bf77-rw` and `main` only. Read back through the admin's PAT: the `rw` issue #1's `user` and the `rw` status's `creator` are both `{"login": "github-actions[bot]", "id": 2, "type": "Bot", "node_id": "BOT_kgAC"}`, with the issue's `user.html_url` at `/apps/github-actions`.
+
+**First attempt.** The first `POST /orgs/m3org/repos` (06:29:05Z) answered 503: all three members answered 409 "claim unanswered" for repo:65621, about 6 minutes after the site day. The create had in fact landed (the repository read 200 at once), and the rerun of the driver went straight through. The same refusal is m3-finish's pre-create one (`tests/m3/results/m3-finish.md`, "claim unanswered": a registry claim that timed out). It is the window's only edge 503 (`attempt1.out`).
+
+**Sheds** (`tests/fanout/tieroff503.py`, 06:27:47Z to 06:42Z, after the edge day): elect 0, tierOff 0, edge 503 1 (the create above, neither verdict).
+
+**Side checks on the same day** (`tests/m4/wp3/bf77/side.mjs`):
+- **F132's edge half: PASS.** A `workflow_dispatch` of `caller.yml` in the public `m3org/bf77-caller` calls `m3org/bf77-shared`'s `called.yml` at tag v1, beside a branch also named v1. Run 1376422: one job, `call / deploy`, `Success`; it printed `version=tag`; its ID token's `job_workflow_ref` is `m3org/bf77-shared/.github/workflows/called.yml@refs/tags/v1`, its `workflow_ref` `m3org/bf77-caller/.github/workflows/caller.yml@refs/heads/main`, its `event_name` `workflow_dispatch`; no token in the log (`f132/result.json`). The first attempt's runners wrote to a relative path and never connected; the fix resolved it, and the second attempt took the same run.
+- **F129: PASS.** One job's ID token in `m3org/bf77-f129` (`tests/m4/wp3/bf74/token.mjs`, audience `bf74`) was taken by `tests/m4/wp3/bf77/lag.py`: BF-74's `rp.py` with its clock 60 s behind the edge's (the edge's `Date`, the orb 31.4 s behind it), plus the `nbf` check a lagging relying party makes. The token's `nbf` is `iat` − 600; the relying party's now was `iat` − 37, so `nbf_ok`, the signature verified under the published key, both fetches answered 200, and it accepted (`f129/lag60.out`). The same token at no lag is also accepted (`lag0.out`). `rp.py` sent `curl/8.5.0` (`--agent`), since workers.dev refuses urllib's agent (F130). The token file was shredded.
+
+**Cost.** `acctcost.py` from 06:21:05Z: $0.19 for the prefix (containers $0.12), under the $3 stop. graft-m4a's UTC day stood at $1.68 before and $1.88 after.
+
+**Teardown.** `m3org/bf77-tok2`, `bf77-caller`, `bf77-shared` and `bf77-f129` deleted (404 after). `teardown.py --sweep` tore down 6 shard containers and then found none running. No runner process is left. m4a is left with sites `777ea0b0` / `c45c5df4` / `de2bbc0f`, edge `d6ab185a`, ops `ac4cd9a5`, every cron `[]`.
+

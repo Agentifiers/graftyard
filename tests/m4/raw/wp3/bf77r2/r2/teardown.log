@@ -1,0 +1,5 @@
+2026-11-26T06:40:13.526Z m3org/bf77-caller: DELETE 204, anonymous read 404
+2026-11-26T06:40:23.255Z m3org/bf77-shared: DELETE 204, anonymous read 404
+2026-11-26T06:40:26.459Z m3org/bf77-f129: DELETE 204, anonymous read 404
+2026-11-26T06:40:29.644Z m3org/bf77-tok2: DELETE 204, admin read 200
+2026-11-26T06:41:07.753Z m3org/bf77-tok2: admin read 404 after delete

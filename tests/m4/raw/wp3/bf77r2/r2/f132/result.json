@@ -1,0 +1,25 @@
+{
+  "run": 1376422,
+  "jobs": [
+    [
+      1376423,
+      "call / deploy",
+      "Success"
+    ]
+  ],
+  "read": {
+    "version": "tag",
+    "job_workflow_ref": "m3org/bf77-shared/.github/workflows/called.yml@refs/tags/v1",
+    "workflow_ref": "m3org/bf77-caller/.github/workflows/caller.yml@refs/heads/main",
+    "event_name": "workflow_dispatch"
+  },
+  "checks": {
+    "called_job_succeeded": true,
+    "tag_not_branch": true,
+    "job_workflow_ref": true,
+    "workflow_ref": true,
+    "event_name": true,
+    "no_token_in_logs": true
+  },
+  "ok": true
+}
