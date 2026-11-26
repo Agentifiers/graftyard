@@ -736,6 +736,9 @@ pub struct RepoScratch<'a> {
     base: &'a RepoFold,
     tag: TierSet,
     at: Timestamp,
+    /// The leader's count of the deciding command's actor's committed writes in the last `DEMOTE_WINDOW`
+    /// (`Scratch::set_actor_writes`), for a Graftyard-run create's demoted-actor rule; 0 when none was set.
+    actor_writes: u32,
     core: Overlay<'a, dyn Read + 'a>,
     meta: Option<Overlay<'a, dyn Read + 'a>>,
 }
@@ -757,6 +760,11 @@ impl RepoScratch<'_> {
     /// The entry's time: the leader's `now` when it decides, the entry's `at` when a follower verifies.
     pub fn at(&self) -> Timestamp {
         self.at
+    }
+
+    /// The deciding command's actor's committed writes in the last `DEMOTE_WINDOW`, as the leader set it.
+    pub fn actor_writes(&self) -> u32 {
+        self.actor_writes
     }
 
     /// The index the fold has applied, which this entry follows: what a task's `snapshot` records.
@@ -831,6 +839,10 @@ pub fn dir_or_file(a: &RefName, b: &RefName) -> bool {
 impl Scratch for RepoScratch<'_> {
     type Event = RepoEvent;
 
+    fn set_actor_writes(&mut self, n: u32) {
+        self.actor_writes = n;
+    }
+
     /// `ExtendLeases` on the core tier, as `RepoTiers::on_extend` applies it.
     fn extend(&mut self, x: graftyard_raft::ExtendLeases) {
         if has(self.tag, Tier::Core) {
@@ -898,6 +910,7 @@ impl Fold for RepoFold {
             base: self,
             tag: tiers,
             at,
+            actor_writes: 0,
             core: Overlay::new(&self.core as &dyn Read),
             meta: self.meta.loaded().then(|| Overlay::new(&self.meta as &dyn Read)),
         }
@@ -2363,6 +2376,13 @@ impl Command for RepoCmd {
             RepoCmd::Counts(c) => c.tiers(),
             RepoCmd::ConsumerCursor(_) => TierSet::CORE,
             RepoCmd::RunChecks(c) => c.tiers(),
+        }
+    }
+    /// A Graftyard-run create reads its user's committed writes: a demoted actor may not create one.
+    fn actor(&self) -> Option<graftyard_raft::admit::ActorKey> {
+        match self {
+            RepoCmd::Issue(c) => c.demote_actor(),
+            _ => None,
         }
     }
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
