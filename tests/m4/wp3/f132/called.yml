@@ -1,0 +1,12 @@
+# F132's called workflow, in m3org/<repo>-shared at tag v1 (and, printing "branch", on a branch also named v1).
+on:
+  workflow_call:
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: echo "F132 version=TAG"
+      - name: ID token claims (never the token)
+        run: |
+          t=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=f132" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          printf %s "$t" | cut -d. -f2 | python3 -c 'import base64,json,sys; p=sys.stdin.read().strip(); c=json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4))); print("F132 job_workflow_ref=" + c["job_workflow_ref"]); print("F132 workflow_ref=" + c["workflow_ref"]); print("F132 event_name=" + c["event_name"])'
