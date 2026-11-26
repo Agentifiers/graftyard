@@ -11280,6 +11280,24 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **Not exercised by BM-6's drill:** the `ZERO_ACKS` path to `ReplaceMember` (24 h drained, with every call from both other sites missed). The drill replaces on a customer-signed `SiteLost` at fault + 10 min, the operator's path in journey 5, under a full-day fault (orchestrator ruling C, 2026-11-25). `ZERO_ACKS` needs the site drained for 24 h (`crates/release/src/group.rs`) and, from each other site, at least `MIN_CALLS` (300) calls to it with every one missed (`crates/release/src/gate.rs`), so it would add a day of drain before the replace could start. It stays covered by `crates/release/src/tests/group/replace.rs`.
 
+### `cold-view-rows`: a cold `Release` view asks every site's registry row's member, not one row's names, 2026-11-26
+
+**Decision.** A `Release` view refresh that knows no voters, because the isolate holds no view or its last refresh failed, reads every site's `MemberRegistry` row for `release` at once (at most `ROWS_MS`, half of VIEW_CALL_MS) and asks each row's member, the newest generation first, before the bootstrap names of the view's genesis record, else of the newest row (`crates/lookup/src/view.rs`, `members` and `cold_targets`). A warm isolate whose last refresh answered keeps its genesis record's names with no registry read.
+
+**Why.** m6aL2 on graft-m6a (`tests/m6/results/m6-wp1.md`, "m6aL2"). From 02:44Z every graft-ops cron run logged `view: release#4#fN: no answer`, and the `ReplaceMember`'s `IntentDone` never committed. A cold graft-ops isolate took the record from `registry_record`: the first site to answer, site 0, whose row named generation 4 (`release#4#f0`, A's member since m6aL's `home`). Its bootstrap names were `#4#f0` on A, which answered 503 under the fault, and `#4#f1` and `#4#f2`, which answered 409 "member not joined". The voters, `release#5#f0` on the spare, `#2#f1` and `#1#f2`, each answered `/view` with count 15, config index 47 and term 8, and site 3's row named `#5#f0` at generation 5. A row names only its own site's member, so no one row is the group's record.
+
+**What it beat.**
+- **`registry_record` taking the newest row instead of the first:** site 3's generation-5 row's bootstrap names are `#5#f0`, `#5#f1` and `#5#f2`, and only `#5#f0` is a member.
+- **Following the config a member reports in `/status`:** it needs one member to answer first, which is the call that failed. The rows are written by the members on every config change and answer from every live site.
+- **Reading the sites' `release_copy` only:** a copy moves the view, but submitting an entry needs a member that answers, and the copy names no member.
+
+**Evidence.**
+- m6aL2's members' `/view` and registry rows, read at $0 on 2026-11-26.
+- `a_cold_view_asks_every_sites_row_before_one_rows_bootstrap_names` (`crates/lookup/src/view.rs`), on m6aL2's four rows. It fails under main's rule (one row's bootstrap names, panicking at its first assertion) and passes with the fix.
+- `tests/m0carried/plant267.py`: 3 mutants, all caught.
+
+**Flip.** If a hosted cold isolate takes longer to reach the view than VIEW_CALL_MS because of the registry reads, or reads a row's member that is not in the group: then ask the rows' members only after the record's names have failed.
+
 #### `controller-task`: the controller's `Task` is a pure state machine in `graftyard_git::controller` (2026-11-24)
 
 **Status.** Code-only (AM3-WP1's second slice); no controller runs it yet.
