@@ -11280,6 +11280,23 @@ beta endpoint's `inherit`), or a binding type a read returns in a form an upload
 
 **Not exercised by BM-6's drill:** the `ZERO_ACKS` path to `ReplaceMember` (24 h drained, with every call from both other sites missed). The drill replaces on a customer-signed `SiteLost` at fault + 10 min, the operator's path in journey 5, under a full-day fault (orchestrator ruling C, 2026-11-25). `ZERO_ACKS` needs the site drained for 24 h (`crates/release/src/group.rs`) and, from each other site, at least `MIN_CALLS` (300) calls to it with every one missed (`crates/release/src/gate.rs`), so it would add a day of drain before the replace could start. It stays covered by `crates/release/src/tests/group/replace.rs`.
 
+### `warm-lapse`: a move's warm of the next leader's shard is a start, not a client's request, 2026-11-26
+
+**Decision.** A repository group's planned move step that moves its leader asks the next leader site's network shard to catch up with `warm=start` (`workers/site/src/member.rs`, `warm_url`, called by `shard_warm`). The shard reads that as `Caller::Start` (`crates/git/src/shard.rs`): it still starts a stopped container and waits for the catch-up, but does not count the call as a request. A shard no client read in `WARM_FOR` then lapses `PROMOTE_LAPSE` (10 min) after the move's last ask, not after `WARM_FOR` (24 h). A shard a client reads keeps its day as before. This covers every move kind, `ReplaceMember`, `RestorePlacement` and `Home`, since each warm goes through `shard_warm`.
+
+**Why.** OPEN-QUESTIONS R67. In m6aL the warm left 25 network shards up on the spare and 25 on the restored site a, about $5.4 an hour together. In m6aL2 it left 50 on the spare and 6 elsewhere with no client: containers were $9.17 of the row's $10.03, and left alone they would have run a day. The call came in as a client's, which sets `INACTIVITY` (6 h) and renews it until `WARM_FOR`.
+
+**What it beat.**
+- **Tearing each destination's shards down at the move's end or at `IntentDone` (the orchestrator's first framing):** it needs the coordinator or graft-ops to bind every site's `GitShard` class and to decide which shards no config reads. A start lapses by itself, and the shards a client read stay up.
+- **`warm=1`, the keep-warm call a new leadership sends (`prsync::warm`):** it never starts a stopped shard, so the move would go cold on every idle group, which `WARM_BEFORE_TRANSFER` exists to avoid (G11).
+
+**Evidence.**
+- `a_moves_warm_ask_starts_the_shard_but_keeps_it_no_longer_than_promote_lapse` (`workers/site/src/member.rs`) reads the move's own URL through the shard's `caller`, `serve` and `promote_lapse`. It fails on main, where the call reads as `Client`, and passes with the fix.
+- `tests/m0carried/plant266.py`: 3 mutants, all caught.
+- Hosted proof: the container count an hour after m6aL2's continuation, and BM-6's drill.
+
+**Flip.** If a move's next leader site's shard is stopped by the lapse while that move's later steps still wait on it, so steps go cold that would have been warm: then the coordinator keeps the warm alive until its group is `Done`.
+
 #### `controller-task`: the controller's `Task` is a pure state machine in `graftyard_git::controller` (2026-11-24)
 
 **Status.** Code-only (AM3-WP1's second slice); no controller runs it yet.
