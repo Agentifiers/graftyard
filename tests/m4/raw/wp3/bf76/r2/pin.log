@@ -1,0 +1,18 @@
+2026-11-26T10:20:05Z
+191f35058
+2026-11-26T10:20:43.579Z policy PUT {"tags":false,"pin_map":null}: 200; now {"pin_map":null,"tags":false}
+2026-11-26T10:20:43.580Z ok   org policy: tags false, no approved map: {"pin_map":null,"tags":false}
+2026-11-26T10:20:45.337Z run 1770273 (pin.yml on pin)
+2026-11-26T10:20:48.482Z runner 1 (id 1770275)
+2026-11-26T10:21:24.092Z ok   the pinned job concluded Failure (want Failure)
+2026-11-26T10:21:24.092Z ok   Set up job downloads actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 at the upstream SHA (as written, no substitution)
+2026-11-26T10:21:24.092Z ok   the step's lines: ##[warning]...GHESNotSupportedError true, ##[error]@actions/artifact v2.0.0+, upl... true
+2026-11-26T10:21:24.092Z ok   the error is in the action's own step (step at 1168, error at 2288), not at Set up job
+2026-11-26T10:21:24.388Z ok   check run 1770274: completed/failure, annotations_count 3
+2026-11-26T10:21:24.790Z ok   REST: Graftyard's annotation, failure, names /organizations/m3org/settings/actions/pin-map and graftyard-actions/upload-artifact@aeb6043f: {"annotation_level":"failure","blob_href":"https://graft-m4a-edge.<sub>.workers.dev/m3org/bf76-r2/blob/aa66a3d46d9e988195a566f8e871ee6e526304e5/.github","end_column":null,"end_line":1,"message":"`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` is upload-artifact v4+, which GHES does not support. Approve the pin map at https://graft-m4a-edge.<sub>.workers.d
+2026-11-26T10:21:24.790Z ok   REST: the step's own failure annotation with GHES's message: {"annotation_level":"failure","blob_href":"https://graft-m4a-edge.<sub>.workers.dev/m3org/bf76-r2/blob/aa66a3d46d9e988195a566f8e871ee6e526304e5/.github","end_column":null,"end_line":18,"message":"@actions/artifact v2.0.0+, upload-artifact@v4+ and download-artifact@v4+ are not currently s
+2026-11-26T10:21:29.552Z ok   GraphQL CheckRun.annotations on PR #1 (commit aa66a3d4): 3 annotations, ours {"annotationLevel":"FAILURE","location":{"end":{"line":1},"start":{"line":1}},"message":"`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02` is upload-artifact v4+, which GHES does not support. Approve the pin map at https://graft-m4a-edge.<sub>.workers.dev/organizations/m
+2026-11-26T10:21:29.553Z ok   GraphQL: the step's failure annotation too
+2026-11-26T10:21:29.553Z BF-76 pin PASS (2026-11-26T10:20:05.921Z to 2026-11-26T10:21:29.553Z)
+2026-11-26T10:21:29.553Z sheds: python3 tests/fanout/tieroff503.py 2026-11-26T10:20:05.921Z 2026-11-26T10:21:29.553Z graft-m4a-edge
+pin exit 0

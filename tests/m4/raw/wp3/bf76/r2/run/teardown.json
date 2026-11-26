@@ -1,0 +1,17 @@
+{
+ "phase": "teardown",
+ "ok": true,
+ "from": "2026-11-26T10:22:59.611Z",
+ "to": "2026-11-26T10:23:04.791Z",
+ "fails": [],
+ "lines": [
+  {
+   "ok": true,
+   "what": "tag substitution off: {\"pin_map\":null,\"tags\":false}"
+  },
+  {
+   "ok": true,
+   "what": "m3org/bf76-r2: DELETE 204, anonymous read after 404"
+  }
+ ]
+}

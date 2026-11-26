@@ -1,0 +1,11 @@
+
+√ Connected to GitHub
+
+Current runner version: '2.338.2'
+2026-11-26 10:20:49Z: Listening for Jobs
+2026-11-26 10:20:55Z: Running job: pinned
+2026-11-26 10:21:19Z: Job pinned completed with result: Failed
+√ Removed .credentials
+√ Removed .runner
+Runner listener exit with 0 return code, stop the service, no retry needed.
+Exiting runner...
