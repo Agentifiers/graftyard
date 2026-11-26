@@ -1051,7 +1051,7 @@ async fn commit_issue_rid(
     call.rest_issue = rest_issue && !matches!(call.op, IssueOp::OpenPr { .. });
     // 32.32 (F137) for a REST issue comment, likewise.
     call.rest_comment = rest_comment && IssueCall::issue_comment(&call.op);
-    // 32.34 (F137) for a REST comment edit or lock change, likewise; an `Edit` is always 32.34.
+    // 32.35 (F137) for a REST comment edit or lock change, likewise; an `Edit` is always 32.35.
     call.rest_edit = rest_edit && IssueCall::edit_mark(&call.op);
     // Format 32.8, once `FormatsEnable` enabled it, only for a command that can write an agent event: a pull request
     // opened by an App or with a user-to-server token (`AgentMeta` when its App is an `AgentApp`), and a review of a
@@ -2092,7 +2092,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // F137's REST issue comment is served only once 32.32 is enabled; until then it answers as before (404).
     let comment_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_COMMENT);
     let comment_route = matches!(tail, ["issues", _, "comments"]);
-    // F137's REST edits (a comment edit, a lock change, a multi-field issue edit) are served only once 32.34 is
+    // F137's REST edits (a comment edit, a lock change, a multi-field issue edit) are served only once 32.35 is
     // enabled; until then they answer as before (404).
     let writes_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT);
     let writes_route =
@@ -2418,7 +2418,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             }
         }
         // F141 and F137: an issue `PATCH`. A body naming exactly one of `title` and `body` is one `Change` (32.33, which
-        // may pause the issue's tasks in the same entry), with the assignment route's 200. Any other body, once 32.34 is
+        // may pause the issue's tasks in the same entry), with the assignment route's 200. Any other body, once 32.35 is
         // enabled, is one `Edit` that commits whole or not at all, with `What::IssueUpdated`'s; an assignees-only body
         // is F20's arm above. Until its format is enabled, each shape answers as before (404).
         (Method::Patch, ["issues", n])
@@ -2447,7 +2447,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Err(x) => x,
             }
         }
-        // F137: a REST comment edit (200 `issue-comment`) and a lock change (204), each in 32.34, served only once it is
+        // F137: a REST comment edit (200 `issue-comment`) and a lock change (204), each in 32.35, served only once it is
         // enabled; a comment delete commits the existing `DeleteComment` in its own format, and answers 204.
         (Method::Patch, ["issues", "comments", cid]) if writes_on => {
             let who = match need(&who) {

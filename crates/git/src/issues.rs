@@ -143,7 +143,7 @@ pub enum StateReason {
     Reopened,
 }
 
-/// GitHub's lock reasons. `Unspecified` (format 32.34, `call::REPO_FORMAT_ISSUE_EDIT`) is a lock that names none, as
+/// GitHub's lock reasons. `Unspecified` (format 32.35, `call::REPO_FORMAT_ISSUE_EDIT`) is a lock that names none, as
 /// REST `PUT .../issues/{n}/lock` with no `lock_reason` sets: `Locked(None)` is an unlock, so a reasonless lock needs
 /// a value of its own. Added at the end, so every row an earlier release wrote decodes as before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -343,7 +343,7 @@ pub enum IssueOp<B = DurableBlob> {
         add: SmallVec<[AccountId; 2]>,
         remove: SmallVec<[AccountId; 2]>,
     },
-    // ---- F137, format 32.34 (`call::REPO_FORMAT_ISSUE_EDIT`) ----
+    // ---- F137, format 32.35 (`call::REPO_FORMAT_ISSUE_EDIT`) ----
     /// REST `PATCH /repos/{o}/{r}/issues/{n}` with more than one field: its title, body and state `changes`, and the
     /// label and assignee sets it names (`None` leaves each as it is), decided as one command, so the whole edit
     /// commits in one entry or not at all, as GHES applies it. Each part is decided as its own command against the

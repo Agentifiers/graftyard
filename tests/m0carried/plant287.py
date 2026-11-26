@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """F137's REST issue writes (`crates/git/src/issue_ops.rs`, `IssueOp::Edit`; `crates/git/src/issue_ops/call.rs`,
-format 32.34; `crates/api/src/rest.rs`, `plan_issue_update`, `plan_issue_lock`, `plan_edit_issue_comment`,
+format 32.35; `crates/api/src/rest.rs`, `plan_issue_update`, `plan_issue_lock`, `plan_edit_issue_comment`,
 `plan_delete_issue_comment`, `check_assignee`; `crates/api/src/hosted.rs`, the three new `What`s). The edge's arms
 are checked by both edgeboots and plaindiff. Run from the repository root:
 
@@ -28,12 +28,12 @@ MUTANTS = [
      G),
     ("an `Edit` keeps 32.33's format, which a 32.33 member reads without the arm", C,
      '        if self.rest_edit || matches!(self.op, IssueOp::Edit { .. }) {', '        if self.rest_edit {', G),
-    ("a 32.34 comment edit or lock reads back unmarked", C,
+    ("a 32.35 comment edit or lock reads back unmarked", C,
      '        c.rest_edit = edit && IssueCall::edit_mark(&c.op);', '        c.rest_edit = false;', G),
-    ("32.34 marks any `Change`, so a title edit has two forms", C,
+    ("32.35 marks any `Change`, so a title edit has two forms", C,
      '            IssueOp::EditComment { .. } | IssueOp::Change { change: crate::issues::IssueChange::Locked(_), .. }',
      '            IssueOp::EditComment { .. } | IssueOp::Change { .. }', G),
-    ("a single title is an `Edit`, so it needs 32.34 where it never did", R,
+    ("a single title is an `Edit`, so it needs 32.35 where it never did", R,
      '        ([IssueChange::Title(_) | IssueChange::Body(_)], None, None) => {',
      '        ([IssueChange::Body(_)], None, None) => {', A),
     ("a `state` already in force is a change", R, '            if open != it.row.open {', '            if true {', A),

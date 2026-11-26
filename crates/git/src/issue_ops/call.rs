@@ -80,8 +80,9 @@ pub const REPO_FORMAT_HOST_PAUSE: Format = Format { family: 0x20, version: 33 };
 /// whose replies a release without `What::IssueUpdated`, `What::IssueCommentUpdated` and `What::IssueLocked` cannot
 /// render after the entry commits. It carries what 32.33 does: an App's claims, a task's included, or none for a
 /// user, and for an `Edit` the pause and a body edit's lease events. A member that cannot read it refuses it before it
-/// commits, and the edge sends it only once `FormatsEnable` enabled it.
-pub const REPO_FORMAT_ISSUE_EDIT: Format = Format { family: 0x20, version: 34 };
+/// commits, and the edge sends it only once `FormatsEnable` enabled it. 32.34 is the forks' (another branch): a new
+/// format is above every format on main when it merges.
+pub const REPO_FORMAT_ISSUE_EDIT: Format = Format { family: 0x20, version: 35 };
 /// AM3-WP2a, base forks (`build/BUILD-PLAN.md`): `RepoEvent::Genesis` (tag 50), whose fork's core `fork` row names the
 /// repository's network. A member that cannot read it refuses it before it commits, and the edge sends it only once
 /// `FormatsEnable` enabled it.
@@ -114,8 +115,8 @@ pub struct IssueCall {
     /// Format 32.33 (`REPO_FORMAT_HOST_PAUSE`): the edge enabled it and the command is `pausable`, so its entry may
     /// pause or resume the issue's Graftyard-run tasks.
     pub pause: bool,
-    /// Format 32.34 (`REPO_FORMAT_ISSUE_EDIT`): a REST comment edit or lock change (`IssueCall::edit_mark`), whose
-    /// reply only a 32.34 member renders. An `Edit` is always 32.34.
+    /// Format 32.35 (`REPO_FORMAT_ISSUE_EDIT`): a REST comment edit or lock change (`IssueCall::edit_mark`), whose
+    /// reply only a 32.35 member renders. An `Edit` is always 32.35.
     pub rest_edit: bool,
     /// What the leader renders from the `&Acked`, opaque here (`graftyard_api::hosted::Render`).
     pub render: Value,
@@ -155,7 +156,7 @@ impl IssueCall {
         if self.op.is_secret() {
             return crate::secrets::REPO_FORMAT_SECRETS;
         }
-        // 32.34 likewise: a multi-field issue edit, or a REST comment edit or lock change.
+        // 32.35 likewise: a multi-field issue edit, or a REST comment edit or lock change.
         if self.rest_edit || matches!(self.op, IssueOp::Edit { .. }) {
             return REPO_FORMAT_ISSUE_EDIT;
         }
@@ -243,7 +244,7 @@ impl IssueCall {
         )
     }
 
-    /// Whether `op` is a command 32.34 marks when it comes from REST: a comment edit, or a lock change.
+    /// Whether `op` is a command 32.35 marks when it comes from REST: a comment edit, or a lock change.
     pub fn edit_mark<B>(op: &IssueOp<B>) -> bool {
         matches!(
             op,
@@ -383,7 +384,7 @@ impl<'de> Deserialize<'de> for IssueCall {
         // 32.30 carries an App's claims, a task claim included, or none for a user, and 32.32 and 32.33 what 32.30 does.
         let comment = fmt(REPO_FORMAT_ISSUE_COMMENT);
         let pause = fmt(REPO_FORMAT_HOST_PAUSE);
-        // 32.34 carries what 32.33 does.
+        // 32.35 carries what 32.33 does.
         let edit = fmt(REPO_FORMAT_ISSUE_EDIT);
         let assign = fmt(REPO_FORMAT_ASSIGN) || comment || pause || edit;
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
@@ -471,7 +472,7 @@ impl IssueCall {
         };
         // The entry's time: an invitation's `expires` is set from it and checked against it.
         let view = RepoView::new(s.fold().tiers(), core, meta, s.at());
-        // 32.33 carries a body edit's lease events too, and so does a 32.34 `Edit`, which carries its pause.
+        // 32.33 carries a body edit's lease events too, and so does a 32.35 `Edit`, which carries its pause.
         let edit = matches!(self.op, IssueOp::Edit { .. });
         let leases = self.format() == crate::repo::REPO_FORMAT_LEASES || self.pause || edit;
         let (evs, out) = if self.op.is_task() {

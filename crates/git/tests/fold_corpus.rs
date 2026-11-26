@@ -16,7 +16,7 @@ use graftyard_types::{AccountId, DbId, Index, RepoId, Tier, Timestamp};
 use serde_json::Value;
 
 /// The newest repository format: version 34, F137's REST edits (`REPO_FORMAT_ISSUE_EDIT`).
-const NEWEST: u16 = 34;
+const NEWEST: u16 = 35;
 
 /// The first format version a kind can be committed at, by wire tag: the version that introduced it
 /// (`crate::repo::RepoEvent`'s comments). Tags 0 to 26, Milestones 1 and 2, from version 1.

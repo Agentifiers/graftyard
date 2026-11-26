@@ -1652,12 +1652,12 @@ fn hook_commands_are_admin_only_and_a_create_alone_is_pinged() {
     c.agree();
 }
 
-/// F137's multi-field REST `PATCH` (format 32.34): one `Edit` writes every part in one entry or nothing. A title,
+/// F137's multi-field REST `PATCH` (format 32.35): one `Edit` writes every part in one entry or nothing. A title,
 /// body, state and label set commit together; with one bad part (a title over the limit) nothing is written, though
 /// each other part alone would commit. Each part keeps its own command's rule: a reader may edit their own issue's
 /// title and close it, but their label set is dropped, as GHES drops it. A reasonless lock is `Unspecified` and
-/// reads locked; its unlock clears it. An `Edit` crosses the binding only as 32.34, and the comment edit and lock
-/// marks as 32.34.
+/// reads locked; its unlock clears it. An `Edit` crosses the binding only as 32.35, and the comment edit and lock
+/// marks as 32.35.
 #[test]
 fn a_multi_field_issue_edit_commits_whole_or_not_at_all() {
     use graftyard_git::issue_ops::call::{IssueCall, REPO_FORMAT_ISSUE_EDIT, REPO_FORMAT_ISSUES};
@@ -1748,7 +1748,7 @@ fn a_multi_field_issue_edit_commits_whole_or_not_at_all() {
     c.commit(WRITER, lock(None)).unwrap();
     assert_eq!(row(&c, n).locked, None);
 
-    // The wire: an `Edit` is 32.34 under any principal; a comment edit and a lock are 32.34 only when marked, and the
+    // The wire: an `Edit` is 32.35 under any principal; a comment edit and a lock are 32.35 only when marked, and the
     // mark on any other command is malformed.
     let blobless = |op: IssueOp| op.map_blob(|_| Err::<graftyard_git::blob::BlobRef, ()>(())).expect("no blob");
     let call = |op| IssueCall::new(blobless(op), who(WRITER), RequestId(Ulid(90)), serde_json::json!({}));
@@ -1765,11 +1765,11 @@ fn a_multi_field_issue_edit_commits_whole_or_not_at_all() {
         m.rest_edit = IssueCall::edit_mark(&m.op);
         assert_eq!(m.format(), REPO_FORMAT_ISSUE_EDIT);
         let wire = serde_json::to_value(&m).unwrap();
-        assert_eq!(wire["format"], serde_json::json!([0x20, 34]));
+        assert_eq!(wire["format"], serde_json::json!([0x20, 35]));
         let back: IssueCall = serde_json::from_value(wire).unwrap();
         assert!(back.rest_edit, "{back:?}");
     }
     let mut wire = serde_json::to_value(call(IssueOp::Change { n, change: IssueChange::Title("t".into()) })).unwrap();
-    wire["format"] = serde_json::json!([0x20, 34]);
-    assert!(serde_json::from_value::<IssueCall>(wire).is_err(), "32.34 marks only an edit, a comment edit or a lock");
+    wire["format"] = serde_json::json!([0x20, 35]);
+    assert!(serde_json::from_value::<IssueCall>(wire).is_err(), "32.35 marks only an edit, a comment edit or a lock");
 }

@@ -624,15 +624,15 @@ pub enum What {
     IssueCommentCreated {
         n: u32,
     },
-    /// `PATCH /repos/{o}/{r}/issues/{n}` (F137, format 32.34 for a multi-field `Edit`): 200 with the pinned `issue`.
+    /// `PATCH /repos/{o}/{r}/issues/{n}` (F137, format 32.35 for a multi-field `Edit`): 200 with the pinned `issue`.
     IssueUpdated {
         n: u32,
     },
-    /// `PATCH /repos/{o}/{r}/issues/comments/{id}` (F137, format 32.34): 200 with the pinned `issue-comment`.
+    /// `PATCH /repos/{o}/{r}/issues/comments/{id}` (F137, format 32.35): 200 with the pinned `issue-comment`.
     IssueCommentUpdated {
         id: i64,
     },
-    /// `PUT` and `DELETE /repos/{o}/{r}/issues/{n}/lock` (F137, format 32.34): 204, refused with the issue routes'
+    /// `PUT` and `DELETE /repos/{o}/{r}/issues/{n}/lock` (F137, format 32.35): 204, refused with the issue routes'
     /// errors.
     IssueLocked,
 }

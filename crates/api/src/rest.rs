@@ -541,7 +541,7 @@ pub fn plan_issue_assignees(
 /// `PATCH /repos/{o}/{r}/issues/{n}` whose body names exactly one of `title` and `body` (F141): one title or body
 /// `Change`, so one command, all or nothing as GHES 3.22 commits an issue update. A `body` of `null` clears it, as GHES
 /// allows; a `title` is a string or a number, as on create. `None` for any other body, a second field or `state`
-/// included, which M4-WP4's atomic multi-field update (32.34) serves; until then it answers as before. The reply is
+/// included, which M4-WP4's atomic multi-field update (32.35) serves; until then it answers as before. The reply is
 /// the assignment route's (`What::IssueAssigned` with `created: false`): the issue after the entry, 200.
 pub fn plan_issue_edit(
     r: &Repo<'_>,
@@ -598,7 +598,7 @@ pub fn check_assignee(r: &Repo<'_>, n: &str, perm: Option<graftyard_identity::Re
 /// `PATCH /repos/{owner}/{repo}/issues/{issue_number}` (F137) with a body `plan_issue_edit` does not take: the body's
 /// `title`, `body`, `state` with `state_reason`, `labels` and `assignees`, as one command. A body that comes to one
 /// of `title` or `body` alone (another field a no-op) is that `Change`, in the format it always had; any other is one
-/// `IssueOp::Edit` (format 32.34), so the edit commits whole or not at all. A `state` already in force changes nothing, as GHES leaves it. The fields this
+/// `IssueOp::Edit` (format 32.35), so the edit commits whole or not at all. A `state` already in force changes nothing, as GHES leaves it. The fields this
 /// install has no rows for (`milestone`, `type`, `issue_field_values`, `duplicate_issue_id`) are ignored, as GHES ignores
 /// what a caller may not set. An unknown issue is 404; a field of the wrong type, or an unknown label, 422.
 pub fn plan_issue_update(r: &Repo<'_>, n: &str, body: &Value) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
