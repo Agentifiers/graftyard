@@ -960,7 +960,10 @@ pub async fn graftyard_route(c: &Ctx<'_>, req: &mut Request, rest: &str) -> Resu
         return crate::agents::respond(c, Reply::error(401, "Requires authentication", "rest")).map(Some);
     };
     let reply = match read(c, o, r, Some(&who)).await? {
-        Ok(rd) => admin_route(c, req, &rd, &who, tail).await?,
+        Ok(rd) => match tail {
+            ["runs", id, "approve"] if req.method() == Method::Post => approve_run(c, &rd, &who, id).await?,
+            _ => admin_route(c, req, &rd, &who, tail).await?,
+        },
         Err(x) => x,
     };
     crate::agents::respond(c, reply.with("content-type", "application/json; charset=utf-8")).map(Some)
@@ -997,7 +1000,7 @@ pub async fn rest_read(c: &Ctx<'_>, rd: &Read, view: &graftyard_api::view::Repo<
     let created = jobs
         .iter()
         .filter_map(|j| match &j.state {
-            JobState::Queued { since, .. } => Some(*since),
+            JobState::Queued { since, .. } | JobState::Held { since, .. } => Some(*since),
             JobState::Completed { at, .. } => Some(*at),
             _ => None,
         })
@@ -1030,14 +1033,15 @@ pub async fn rest_read(c: &Ctx<'_>, rd: &Read, view: &graftyard_api::view::Repo<
             200,
             graftyard_actions::rest::workflow_run(&x, &run, &jobs, &created, &graftyard_wire::time::iso(crate::now())),
         ),
+        // `agent-ci`: a held run lists no jobs, and its jobs read as not found, until it is approved.
         ["runs", _, "jobs"] => {
             let mut out = Vec::new();
-            for j in &jobs {
+            for j in graftyard_actions::rest::visible_jobs(&jobs) {
                 out.push(render(j).await?);
             }
             Reply::json(200, json!({ "total_count": out.len(), "jobs": out }))
         }
-        ["jobs", j] => match jobs.iter().find(|row| Some(row.spec.id.0.0) == id(j)) {
+        ["jobs", j] => match graftyard_actions::rest::visible_jobs(&jobs).find(|row| Some(row.spec.id.0.0) == id(j)) {
             Some(row) => Reply::json(200, render(row).await?),
             None => Reply::not_found(),
         },
@@ -1074,6 +1078,71 @@ pub async fn cancel_run(c: &Ctx<'_>, rd: &Read, who: &Principal, run: &str) -> R
         return Ok(Reply::error(409, "Cannot cancel a workflow run that is completed.", "rest/actions/workflow-runs"));
     }
     Ok(match runsvc_call(c, chain, &json!({ "op": "cancel", "run": run, "admin": me.0 })).await {
+        Ok((s, v)) => Reply::json(s, v["body"].clone()),
+        Err(e) => unavailable(&e),
+    })
+}
+
+/// `agent-ci`: `POST /api/graftyard/v1/repos/{o}/{r}/actions/runs/{run_id}/approve`, a writer's approval of an agent
+/// run held under `ci: Approve` (`decisions/DECISIONS.md`, "`agent-ci`"). GHES 3.22 has no approve route, so this is
+/// Graftyard's own. Write access, or an App token with `actions: write`; an `ActorKind::Agent` token is refused with
+/// GitHub's 403, as `decide` refuses an agent's approvals. 201 `{}` once `ApproveRun` committed, which re-queues the
+/// run; 404 for a run of another repository, 409 for a run not waiting for approval, 503 until 0x15.13 is enabled.
+pub async fn approve_run(c: &Ctx<'_>, rd: &Read, who: &Principal, run: &str) -> Result<Reply> {
+    const DOC: &str = "rest/actions/workflow-runs";
+    if !c.cfg.enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_AGENT_CI) {
+        return Ok(unavailable("approval needs Actions format 21.13, which FormatsEnable has not enabled"));
+    }
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    let folds: Vec<&dyn graftyard_identity::AuthzRead> =
+        rd.dir.authz.iter().map(|a| a as &dyn graftyard_identity::AuthzRead).collect();
+    let forbidden = || Reply::error(403, "Resource not accessible by integration", DOC);
+    let install = crate::install_authz(c).await;
+    let install = install.as_ref().map(|f| f as &dyn graftyard_identity::AuthzRead);
+    if matches!(graftyard_git::agent::actor_kind(who, install), graftyard_git::agent::ActorKind::Agent(_)) {
+        return Ok(forbidden());
+    }
+    let needs = [("actions", graftyard_identity::Access::Write)];
+    if graftyard_identity::token_allows(c.token_fields.borrow().as_ref(), &needs, &access)
+        != graftyard_identity::Decision::Allow
+    {
+        return Ok(Reply::error(403, "Resource not accessible by personal access token", DOC));
+    }
+    // The approver the shard records: a user, or for an App token the App's bot account (`AppId::bot`).
+    let admin = match who {
+        Principal {
+            actor: Actor::App { app, .. },
+            credential: graftyard_identity::Credential::Stateless(claims),
+            ..
+        } => {
+            if graftyard_identity::authorize_app(claims, &needs, &folds, &access) != graftyard_identity::Decision::Allow
+            {
+                return Ok(forbidden());
+            }
+            app.bot()
+        }
+        Principal { actor: Actor::User(u), .. } => {
+            if graftyard_identity::permission(who, &folds, &access) < Some(RepoPermission::Write) {
+                return Ok(Reply::not_found());
+            }
+            u.0
+        }
+        _ => return Ok(forbidden()),
+    };
+    let Ok(run) = run.parse::<i64>() else { return Ok(Reply::not_found()) };
+    let chain = ChainId::Actions(rd.repo.owner, actions_shard(rd.repo.id));
+    let v = match shard_read(c, chain, json!({ "run": run })).await {
+        Ok(v) => v,
+        Err(e) => return Ok(unavailable(&e)),
+    };
+    let Ok(row) = serde_json::from_value::<graftyard_actions::shard::RunRow>(v["run"].clone()) else {
+        return Ok(Reply::not_found());
+    };
+    if row.run.repo != rd.repo.id {
+        return Ok(Reply::not_found());
+    }
+    Ok(match runsvc_call(c, chain, &json!({ "op": "approve", "run": run, "admin": admin })).await {
+        Ok((409, _)) => Reply::error(409, "This run is not waiting for approval.", DOC),
         Ok((s, v)) => Reply::json(s, v["body"].clone()),
         Err(e) => unavailable(&e),
     })

@@ -504,6 +504,52 @@ impl Stream {
     }
 }
 
+/// What `AgentPolicy.ci` does to a run (`agent-ci`; `design/DESIGN.md`, Shape, "Agent actors in the layer": "Actions
+/// runs for its pushes follow the repository's agent policy and use fork-PR semantics (read-only token, no secrets)
+/// even after approval, until `AgentGate` holds for that exact head").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentRun {
+    /// Not an agent's run: created as before.
+    No,
+    /// An agent's run under `CiMode::Approve`, the default: created held (`ActionsOp::CreateRunHeld`) and marked fork.
+    Held,
+    /// An agent's run under `CiMode::AutoReadOnly`: queued at once, marked fork.
+    ReadOnly,
+}
+
+impl AgentRun {
+    /// The run as created: marked fork, so its jobs get a read-only `GITHUB_TOKEN`, no ID token, and no secret.
+    pub fn mark(self, run: &mut WorkflowRun) {
+        if self != AgentRun::No {
+            run.fork = true;
+        }
+    }
+}
+
+/// Whether a run on `head_ref` (a `push` run's ref, or a pull request's head branch) is an agent's, and what the
+/// repository's policy does with it. An agent's run is one whose ref is under a Graftyard-run task's prefix
+/// (`refs/heads/graftyard/`) or an `AgentApp`'s `confine` (`prefixes`): an `ActorKind::Agent` may push nowhere else
+/// (`graftyard_git::agent::refuse_update`), and a `Refs` entry names no App, so the ref is what the trigger can read.
+/// A human's push under those prefixes is held too [inference: the safe side]. `gated` is `AgentGate` holding for the
+/// run's head (`graftyard_git::merge::agent_gate_holds`); it ends the fork semantics, so the run is created as any
+/// other.
+pub fn agent_run(
+    ci: graftyard_git::agent::CiMode,
+    head_ref: &RefName,
+    prefixes: &[graftyard_identity::glob::RefPattern],
+    gated: bool,
+) -> AgentRun {
+    let under = head_ref.starts_with(graftyard_git::task::RUN_PREFIX)
+        || prefixes.iter().any(|p| p.matches(head_ref.as_bytes()));
+    if gated || !under {
+        return AgentRun::No;
+    }
+    match ci {
+        graftyard_git::agent::CiMode::Approve => AgentRun::Held,
+        graftyard_git::agent::CiMode::AutoReadOnly => AgentRun::ReadOnly,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,6 +599,43 @@ mod tests {
 
     /// One `GroupBuilt` of two pull requests starts a run on each queue ref, at each ref's own tip, and the shard's run
     /// key tells the two apart although they share the entry and the workflow file (SHARED, Idempotent run creation).
+    #[test]
+    fn an_agent_run_is_held_or_read_only_by_policy_and_ends_at_the_gate() {
+        use graftyard_git::agent::CiMode::{Approve, AutoReadOnly};
+        use graftyard_identity::glob::RefPattern;
+        let confine = [RefPattern::parse("refs/heads/claude/**").unwrap()];
+        let task = name("refs/heads/graftyard/run-7/fix");
+        let confined = name("refs/heads/claude/fix");
+        let human = name("refs/heads/claude-notes");
+        // A Graftyard task's branch is an agent's with no App rows; a confine names one only with them.
+        assert_eq!(agent_run(Approve, &task, &[], false), AgentRun::Held);
+        assert_eq!(agent_run(Approve, &confined, &[], false), AgentRun::No);
+        assert_eq!(agent_run(Approve, &confined, &confine, false), AgentRun::Held);
+        assert_eq!(agent_run(AutoReadOnly, &confined, &confine, false), AgentRun::ReadOnly);
+        // A sibling ref outside the confine, and main, are no agent's.
+        assert_eq!(agent_run(Approve, &human, &confine, false), AgentRun::No);
+        assert_eq!(agent_run(Approve, &name("refs/heads/main"), &confine, false), AgentRun::No);
+        // `AgentGate` holding for the head ends the fork semantics under either mode.
+        assert_eq!(agent_run(Approve, &task, &confine, true), AgentRun::No);
+        assert_eq!(agent_run(AutoReadOnly, &confined, &confine, true), AgentRun::No);
+        let mut run = WorkflowRun {
+            id: RunId(DbId(0)),
+            repo: RepoId(DbId(1)),
+            workflow: ".github/workflows/ci.yml".into(),
+            event: "push".into(),
+            head_sha: [1; 20],
+            head_ref: confined.display().into(),
+            trigger: (ChainId::Repo(RepoId(DbId(1))), Index(2)),
+            attempt: 1,
+            concurrency: None,
+            fork: false,
+        };
+        AgentRun::No.mark(&mut run);
+        assert!(!run.fork);
+        AgentRun::ReadOnly.mark(&mut run);
+        assert!(run.fork);
+    }
+
     #[test]
     fn a_group_of_two_starts_a_run_on_each_queue_ref() {
         let e = group(&[(3, 0xa1, 0x01), (5, 0xb2, 0xa1)]);

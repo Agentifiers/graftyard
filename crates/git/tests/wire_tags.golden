@@ -776,6 +776,7 @@ actions::shard::ActionsEvent 17 RunPlanned 11020000
 actions::shard::ActionsEvent 18 JobOutputs 120200
 actions::shard::ActionsEvent 19 RunEvent 13020161
 actions::shard::ActionsEvent 20 JobAnnotations 140200
+actions::shard::ActionsEvent 21 RunHeld 1502
 actions::shard::ActionsOp 0 CreateRun 0002020161016101010101010101010101010101010101010101010161067265706f3a310101000000
 actions::shard::ActionsOp 1 Job 01020100
 actions::shard::ActionsOp 2 ExpireLeases 02
@@ -802,6 +803,8 @@ actions::shard::ActionsOp 22 CreateRunPlanned 1602020161016101010101010101010101
 actions::shard::ActionsOp 23 FinishWith 1702010000
 actions::shard::ActionsOp 24 CreateRunPush 1802020161016101010101010101010101010101010101010101010161067265706f3a3101010000000000016100
 actions::shard::ActionsOp 25 FinishAnnotated 190201000000
+actions::shard::ActionsOp 26 CreateRunHeld 1a0002020161016101010101010101010101010101010101010101010161067265706f3a310101000000
+actions::shard::ActionsOp 27 ApproveRun 1b02
 actions::shard::ActionsActor 0 Operator 00
 actions::shard::ActionsActor 1 Admin 0102
 actions::shard::ActionsActor 2 Runner 0202
@@ -834,6 +837,7 @@ actions::JobState 1 Queued 010001
 actions::JobState 2 Assigned 020201
 actions::JobState 3 InProgress 030201
 actions::JobState 4 Completed 040001
+actions::JobState 5 Held 050001
 actions::JobEvent 0 NeedsMet 00
 actions::JobEvent 1 NeedsFailed 01
 actions::JobEvent 2 Matched 0202
@@ -843,9 +847,11 @@ actions::JobEvent 5 Finished 0500
 actions::JobEvent 6 LeaseExpired 06
 actions::JobEvent 7 QueueExpired 07
 actions::JobEvent 8 Cancel 08
+actions::JobEvent 9 Approved 09
 actions::RunStatus 0 Queued 00
 actions::RunStatus 1 InProgress 01
 actions::RunStatus 2 Completed 0200
+actions::RunStatus 3 Held 03
 git::run_checks::RunChecksOut 0 Applied 0001
 git::run_checks::RunChecksOut 1 Gone 01
 git::run_checks::RunChecksOut 2 Unavailable 02

@@ -11830,3 +11830,36 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 **Note on the demoted-actor create's count (AM3-WP3's rest, part 2; the lead, 2026-11-26).** It counts writes in the replicated `Recent` window by their entry times, which are approximate across leaders (`crates/raft/src/admit.rs`, `between`) [inference]. That is fine for a 60-a-minute threshold.
 
 **Flip.** If GHES 3.22 is shown to answer an assignee without push access with 422 rather than dropping it, refuse in `plan_issue_assignees`. If GitHub lists a bot assignee in `Issue.assignees`, stop filtering it. If the controller needs to create from an issue assigned before 32.30 was enabled (an `IssueOpened` row), it cannot: such a row names no assigner, so a writer must reassign the bot.
+
+### `agent-ci`: `AgentPolicy.ci` holds an agent's run as `action_required` until a writer approves it through a Graftyard route, in Actions format 0x15.13, 2026-11-26
+
+**Status.** Built on branch `am3-rest` (AM3-WP3's rest, part 4) at $0, native. The lead ruled the shape (option B), 2026-11-26. Its hosted proof needs a site day with `GRAFTYARD_AGENT_CI=1` after the day that ships 0x15.13's reader, and an edge day that enables 21.13.
+
+**Decision.**
+- A run is an agent's when the ref it runs on (a `push` run's ref, or a same-repository pull request's head branch) is under `refs/heads/graftyard/` or any `AgentApp`'s `confine` (`trigger::agent_run`). A `Refs` entry names no App, so the ref is what the trigger can read, and an `ActorKind::Agent` may push nowhere else. A human's push under those prefixes is held too [inference: the safe side].
+- Under `ci: Approve`, the default, `ActionsTrigger` sends the create as `ActionsOp::CreateRunHeld` (appended, tag 26; operator only, through the create it wraps), whose entry also carries `ActionsEvent::RunHeld` (appended, tag 21): every job of the run moves to `JobState::Held` (appended, tag 5) keeping its `needs`. No runner matches a held job, `RunOwner` writes no check suite or check run for the run, and its status is `RunStatus::Held` (appended, tag 3).
+- GHES reads render a held run `status: "completed"`, `conclusion: "action_required"`, and list no jobs (`rest::visible_jobs`), as GitHub renders a fork pull request's run awaiting approval.
+- `POST /api/graftyard/v1/repos/{o}/{r}/actions/runs/{run_id}/approve` approves: write access for a user, or `actions: write` for an App or a fine-grained token. An `ActorKind::Agent` token gets 403 "Resource not accessible by integration", as `decide` refuses an agent's approvals. It commits `ActionsOp::ApproveRun` (appended, tag 27; admin), which sends `JobEvent::Approved` (appended, tag 9) to each held job: a job with no needs queues, the rest wait on their needs. 201 `{}`; 404 for another repository's run or a user without write; 409 for a run not waiting; 503 until 21.13 is enabled.
+- Under `ci: AutoReadOnly` the run queues at once. Under either mode the run is created `fork`, so its jobs get a read-only `GITHUB_TOKEN`, no ID token, and no secret, even after approval. The trigger creates it as any other run once `AgentGate` holds for that exact head (`merge::agent_gate_holds`), as `design/DESIGN.md`, Shape, says.
+- Actions format 0x15.13 (`ACTIONS_FORMAT_AGENT_CI`) carries both ops, so a member that reads up to 0x15.12 refuses them before they commit. The site sends a held create only when its site day set `GRAFTYARD_AGENT_CI`; until then every run is created as on main, and no response changes.
+
+**Why.**
+- GHES 3.22 has no approve route: github/rest-api-description, `descriptions/ghes-3.22`, has no `/actions/runs/{run_id}/approve` path, and `web/src/api/ghes.d.ts` has only `/actions/runs/{run_id}/approvals` (the read of past reviews). Serving one under `/api/v3` would add a route GHES 3.22 does not have.
+- GitHub renders a run awaiting approval as completed with conclusion `action_required` and no jobs. Read on github.com, 2026-11-26: microsoft/vscode run 45730441605, vercel/next.js 45738824925, and rust-lang/rust 42870897683 each read `completed`/`action_required` with jobs `total_count` 0 [measured, `gh api`]. pingdotgg/t3code 45741914396 read the same when the lead checked it earlier that day, and read `completed`/`failure` with 0 jobs when this entry was written. A GHES client therefore sees a held run as GitHub shows one and has no GHES-API way to approve it, so approval is through the Graftyard route or the web UI.
+- Holding the jobs in the shard keeps the broker's queue and `RunOwner` unchanged: neither sees a held job until `Approved` moves it.
+
+**What it beat.**
+- (A) A GHES-shaped approve route under `/api/v3`: GHES 3.22 has none, so it changes the GHES surface (the lead, 2026-11-26).
+- (C) Approval by `AgentGate` alone: CI would not run until a human approved the pull request, which is a later step than approving CI.
+- Detecting an agent's run by the pusher: the `Refs` entry names no App, and adding it would change the entry's bytes.
+
+**Evidence.**
+- `crates/actions/src/job.rs`, `a_held_job_waits_for_approval_then_queues_or_waits_for_its_needs`.
+- `crates/actions/src/rest.rs`, `a_run_and_its_jobs_render_ghes_fields_and_states` (the held run's words and its empty job list).
+- `crates/actions/src/trigger.rs`, `an_agent_run_is_held_or_read_only_by_policy_and_ends_at_the_gate`.
+- `crates/actions/tests/gates.rs`, `an_agent_run_waits_for_approval_then_runs_as_a_fork_run`: an admin cannot create a held run; held jobs take no runner and write no check for two minutes; a runner cannot approve; an admin's approval queues the first job and leaves the second pending; a second approval is refused; the run completes with `fork` set, its needs in order, and its checks written.
+- `crates/git/tests/wire_tags.golden`: the six appended tags.
+- `tests/m0carried/plant262.py`: 11 of 11 caught.
+- `tests/edgeboot/run.sh`, with and without `PRODUCT=1`: PASS, 0 wasm traps (`GRAFTYARD_AGENT_CI` unset, so every run is created as on main).
+
+**Flip.** If GHES adds an approve route, serve it as GHES shapes it and keep this one as an alias. If agents push under prefixes humans also use, so that holding humans' runs costs more than it protects, record the pusher's App on the `Refs` entry and detect by it. If GitHub is shown to list a held run's jobs, stop filtering them in `visible_jobs`.

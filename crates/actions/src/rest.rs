@@ -35,10 +35,10 @@ pub fn conclusion_word(c: Conclusion) -> &'static str {
 }
 
 /// A job's `status` and `conclusion`. `Pending` (needs unmet) is GHES's `waiting`; `Assigned` is still `queued`
-/// until the runner acquires it.
+/// until the runner acquires it. A `Held` job is listed by no read (`visible_jobs`), so its words are `Pending`'s.
 pub fn job_status(s: &JobState) -> (&'static str, Option<&'static str>) {
     match s {
-        JobState::Pending { .. } => ("waiting", None),
+        JobState::Pending { .. } | JobState::Held { .. } => ("waiting", None),
         JobState::Queued { .. } | JobState::Assigned { .. } => ("queued", None),
         JobState::InProgress { .. } => ("in_progress", None),
         JobState::Completed { conclusion, .. } => ("completed", Some(conclusion_word(*conclusion))),
@@ -50,7 +50,16 @@ fn run_status(s: RunStatus) -> (&'static str, Option<&'static str>) {
         RunStatus::Queued => ("queued", None),
         RunStatus::InProgress => ("in_progress", None),
         RunStatus::Completed(c) => ("completed", Some(conclusion_word(c))),
+        // `agent-ci`: a run awaiting a writer's approval, as GitHub renders a fork pull request's run awaiting
+        // approval (`decisions/DECISIONS.md`, "`agent-ci`").
+        RunStatus::Held => ("completed", Some("action_required")),
     }
+}
+
+/// The jobs GHES lists for a run: none of a run held for approval, whose jobs GitHub creates only once it is approved
+/// (`decisions/DECISIONS.md`, "`agent-ci`").
+pub fn visible_jobs(jobs: &[JobRow]) -> impl Iterator<Item = &JobRow> {
+    jobs.iter().filter(|j| !matches!(j.state, JobState::Held { .. }))
 }
 
 fn hex(b: &[u8; 20]) -> String {
@@ -332,5 +341,14 @@ mod tests {
             job_status(&JobState::Assigned { runner: RunnerId(DbId(5)), lease_until: Timestamp(1) }).0,
             "queued"
         );
+
+        // `agent-ci`: a run held for approval reads as GitHub's run awaiting approval, with no jobs listed; once its
+        // jobs are released it reads as any other.
+        let held = [row(12, JobState::Held { needs: Default::default(), since: Timestamp(1) })];
+        let h = workflow_run(&c, &run, &held, "2026-11-14T00:00:00Z", "2026-11-14T00:00:00Z");
+        assert_eq!((h["status"].as_str(), h["conclusion"].as_str()), (Some("completed"), Some("action_required")));
+        assert_eq!(visible_jobs(&held).count(), 0);
+        let both = [done.clone(), held[0].clone()];
+        assert_eq!(visible_jobs(&both).map(|j| j.spec.id).collect::<Vec<_>>(), [done.spec.id]);
     }
 }
