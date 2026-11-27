@@ -22,8 +22,8 @@ States:
 | 2 | A3 end to end, fork mode | none | pending code | AM3-WP2a (base forks, B0-02's thread; head 0 merged at `dab9ffc7`), then AM3-WP3's workspace endpoint, fork-mode token rules and `Push::deps()`'s base chain. Until then a Graftyard-run create under `agents_workspace: Fork` keeps its 422 (`TaskErr::ForkMode`; DECISIONS "`forks-before-workspace`"). Then a hosted run of A3 in fork mode |
 | 3 | Prompt-only tasks included | `lm3-inrepo.md`, A3 line: "A second, prompt-only task created by m3-admin over the task API", r1 (running) | in AM2's row (in-repo) | The fork-mode prompt-only task waits with clause 2. A3 step 10 also has Bob's cancel reach his feed poll within 2 s and stop the Sandbox. That cancel is in L0-14's "every create and cancel at the controller within 5 s" and `lm3-batch.md`'s cancelled task, not in the A3 line |
 | 4 | Task rules row (L0-14) rerun | `lm3-inrepo.md`, line "L0-14 rerun" (`tests/m0/run/agent-l014.ts` as written), r1 (running). The demoted create passed in `lm3-batch.md` r1 (403 after 65 writes in 44 s, 201 after the window) | in AM2's row | AM2 plans to record some token kinds as "not fielded" (graftyard-insights, the MCP token, and an `AgentApp`'s user token) and to fill the 100-task cap with external tasks. The lead rules on whether that is the row as written. The fork-mode cases (none in L0-14's text) need nothing |
-| 5 | Containment row (L0-02) rerun | M0 prototype only: `tests/m0/results/m0-wp14.md`, L0-02 (0 of 800 succeeded on the M0-WP14 router). The production router is built (`graftyard_git::outbound`, plant240) and hosted inside `graft-controller`'s `TaskBox` (`workers/controller/src/taskbox.rs`, `outbound`), but only the scripted harness has ever sent traffic through it | pending a row (in-repo); the fork-mode push target is pending code (clause 2) | No thread owns this. The plan below reruns all 8 classes of attempts, 100 each, from a Sandbox under the product `TaskBox` on graft-m4a, in-repo. The fork push target's refusals are covered natively (`crates/git/tests/outbound.rs` replays every variant in both modes), and the hosted fork run waits for clause 2 |
-| 6 | Ceiling row (L0-03) rerun | M0 prototype only: `tests/m0/results/m0-wp13.md`, L0-03 (2,900 of 2,900 refused). Partly in AM2's row: LF-9's in-repo line (a `graftyard-workspace` token pushing to the base outside its prefix, 100) and B0-36's push with no live task (100, shipped and widened permissions) | partly in AM2's row; the rest pending a row (in-repo); the fork-after-cancel cell is pending code (clause 2) | No thread owns the other cells: another task's prefix, `.github/workflows/` inside the token's own prefix, a token minted with no `graftyard_task`, a token whose task completed, and the base (`graftyard-agent`) token's merges by REST `PUT .../merge`, GraphQL `mergePullRequest`, a git fast-forward and `PATCH /git/refs` (the edge serves no `POST /merges`). The plan below runs every cell that exists in-repo, over git, REST and GraphQL. In-repo the base is the push target, so "a workspace token pushes to the base" becomes "outside its prefix" (contradiction 2) |
+| 5 | Containment row (L0-02) rerun | This file, "Row A results", r1 (2026-11-27, graft-m4a, main `d8720692`): 0 of 800 succeeded through the product router in `graft-controller`'s `TaskBox`, the four controls held in the same Sandbox, and the canary counted nothing. M0's prototype result stays in `tests/m0/results/m0-wp14.md` | **met** | The token scan is the harness's own; the `TaskBox`'s container env (only `GRAFTYARD_SANDBOX` and `GRAFTYARD_START`) is code read, not measured |
+| 6 | Ceiling row (L0-03) rerun | This file, "Row A results", r1: shipped (r1a) 1,200 of 1,200 refused, controls before 10 of 10 (after: void, driver), ruled met by the lead; widened 1,200 of 1,200 refused, controls 10 of 10 before and after. LF-9's base cell and B0-36's no-live-task cell are cited from `lm3-inrepo.md` | **met** | Unserved surfaces (GraphQL `createRef`, `updateRef`, `createCommitOnBranch`; REST `POST .../merges`) are recorded, not counted |
 | 7 | Agent CI row (L0-04) rerun | `lm3-inrepo.md`, line "L0-04 rerun", r1 (running): one agent push under `auto_read_only` with a two-job workflow on `graft-runners`. `agent-ci` passed its own lines in `lm3-batch.md` r1 (held, approve, AutoReadOnly queued at once, `fork: true`) | in AM2's row; likely pending code | AM2 found no code that holds back a job that references a secret: a fork-marked run gets empty secrets, so "jobs that reference secrets wait" will probably fail as built. AM2 will measure it and report. The row also says "on the A1 replay", and AM2 runs one push (contradiction 3) |
 | 8 | A Sandbox killed mid-task resumes | `lm3-kill.md`, run r2 (2026-11-25, graft-m4a, main `e1613fc6`): PASS. 10 of 10 restarted under a new `SandboxId`, at most 4 s of work lost, 20 of 20 late replays refused, counted and logged. Kills hit 4 times before the first push, 3 between pushes and 3 during a push. r1 was void | met (scripted harness) | The row says "The real-harness case is AM3-WP3's". No thread owns it, and no real model harness exists for the `TaskBox`: only `tests/am3/hosted/kill/harness.py` (AM2, 2026-11-26). The lead decides whether LM-3 needs it. If so, it needs a harness image, a model key and model spend (the option under "Not in the row" below) |
 | 9 | A bad controller at 1% swaps back | `lm3.md`, run r2 (2026-11-25, graft-m4a, main `09494b06`): PASS by the lead's ruling on the fail line. The gate breached on the front's counts (170 5xx of 170) and the agents `graft-ops` committed the `ControllerPointer` with the deploy token invalid. 0 webhooks went to c2 from a stale pin. 2 of 15,923 went to c2 unpinned, inside `POINTER_TTL`. r1 failed (A56) | met | Nothing. A57 (the gate's slow `release/errors` read) does not gate the clause |
@@ -121,6 +121,68 @@ script exports `CF_SECRETS_STORE_ID`, and the driver stops at its first line whe
 | Shard container time for `m3org/gate-<tag>` and its pushes | one shard warm for about 45 minutes, as in the kill row | $0.10 to $0.25 |
 | Stand-ins and the probe on the runner account | Workers and Secrets Store use inside the included plan, as in `lm3-kill.md` ($0.00) | $0.00 |
 | **Row A total** | | **$0.40 to $0.95**, stop **$2.00** across graft-m4a and the runner account's `graft-agents-m4a-`, read by `state` before every step; past it the row tears down and reports |
+
+## Row A results (r1, 2026-11-27, graft-m4a)
+
+The lead's GO from main `d8720692`, driven by `tests/am3/hosted/gate-row.sh` and `gate.mjs` on branch `row-a-gate`; raw
+rows in `tests/am3/raw/gate-r1/`. No site day and no edge day. Spend from 2026-11-27T00:00:00Z, the lead's baseline:
+graft-m4a $0.32 at the start (00:50Z), $1.80 at the end (03:22Z); the runner account's `graft-agents-m4a-` $0.37
+(containers). The row's own spend is $1.85, under the $2.00 stop.
+
+**L0-02: PASS.** One prompt-only task's Sandbox ran the adapted harness (`tests/am3/hosted/gate/attempts.py`) through the
+product router.
+
+| Class | Attempts | Succeeded | How each was blocked |
+| --- | --- | --- | --- |
+| `unlisted_host` | 100 | 0 | `UnlistedHost` 28, transport blocked 24, raw connect without the canary 12, local DNS stub 12, `PlainHttp` 8, host 404 8, raw connect timeout 8 |
+| `read_token` | 100 | 0 | no credential found (env, `/proc/*/environ`, git config, credential store, file grep) |
+| `push_other_repo` | 100 | 0 | router refused 83, host rejected 17 |
+| `gist` | 100 | 0 | `Gist` 60, `OwnerPath` 20, `PathEncoding` 20 |
+| `graphql` | 100 | 0 | `GraphQL` 100 |
+| `status_or_checkrun` | 100 | 0 | `StatusOrCheckRun` 84, `MethodOverride` 16 |
+| `model_forbidden` | 100 | 0 | `ModelPayload` 80, `ModelFileBatch` 20 |
+| `unknown_go_module` | 100 | 0 | `UnknownGoModule` 78, `PathEncoding` 11, `RegistryMethod` 11 |
+
+Controls in the same Sandbox, all held: the clone of the base, a push inside the task's prefix (acked by the box), a clean
+model call (200, the stand-in counted 1 `keyed clean`), and the known Go module (200, 1 `GET known`). The canary counted
+0 arrivals.
+
+**L0-03: met (shipped, the lead's ruling) and PASS (widened).** Tasks A, B and C held live by the hold harness; tokens
+minted through the probe's `/mint`.
+
+| Cell (100 each over git and REST) | Shipped (r1a) | Widened | Refusal |
+| --- | --- | --- | --- |
+| A's workspace token into B's prefix | 200 of 200 | 200 of 200 | "may push only refs/heads/graftyard/<A>/*/**" (git; 422 over REST) |
+| A's workspace token, a workflow file inside A's prefix | 200 of 200 | 200 of 200 | "is a protected path; agents may not change it" |
+| A workspace token with no `graftyard_task` | 200 of 200 | 200 of 200 | "push needs a live task; the token names no task" |
+| C's token after C completed | 200 of 200 | 200 of 200 | "push needs a live task" |
+| A's agent token merges m3-admin's pull request: REST `PUT .../merge`, GraphQL `mergePullRequest`, git fast-forward of `main`, `PATCH .../git/refs/heads/main` (100 each) | 400 of 400 | 400 of 400 | shipped: 403 on all four; widened: 403 on the two merges, and on the ref surfaces "app 3801088 may push only refs/heads/graftyard/<A>/*/**" |
+| Controls: A's workspace token inside A's prefix (10) | 10 of 10 accepted before; after: void | 10 of 10 before and 10 of 10 after | |
+
+Shipped's after-controls shared one scratch history with the workflow cell, so each carried its
+`.github/workflows` file and was refused as a protected path, for the driver's reason. The lead ruled the pass met on its
+1,200 refusals, each naming its own rule, and its before-controls. The driver now starts every cell and control set from
+a seed commit. Unserved surfaces, 10 each, recorded and not counted: GraphQL `createRef`, `updateRef` and
+`createCommitOnBranch` answer 200 with the error "a mutation runs through plan"; REST `POST .../merges` answers 404.
+
+**Driver findings on the way** (each fixed in `row-a-gate`):
+- The edge serves no REST ref read, no REST `POST .../pulls` and no `contents` read, so the row makes refs over git, opens
+  its pull request with GraphQL `createPullRequest`, and reads the harness's results by fetching its `results` branch.
+- The product router takes a Go proxy at the registry host's root (`outbound::go_module`); M0's router took it under
+  `/go/`. The harness drops the prefix, and the row's copy of the registry stand-in answers both.
+- A Graftyard-run task's `completed` is its App's to report (`IssueOp::UpdateTask`); m3-admin's `PATCH` is 403, so the
+  row waits for the harness's `Finished` and cleans up with cancel.
+- One L0-03 pass (1,260 attempts at about 2.3 s) outlasts the kill harness's 50-minute hold, so the row's hold image
+  (`tests/am3/hosted/gate/hold/`) holds 100 minutes.
+- Re-putting the App records to widen them clears graftyard-agent's webhook, since agents init's request carries none.
+  The first widened tasks stayed queued with no delivery; the row now sets the hook again after `widen` and `restore`.
+
+**Teardown.** Both repositories deleted, agents disabled, both installations removed, the stand-ins, probe, controller,
+front, deploy token and bucket deleted, and the runner store holds only `graft-agents-m4a-MODEL_KEY_A`, kept for AM2's
+real-harness row (`KEEP_SECRETS`). The container check found `graft-agents-m4a-controller-taskbox` with 2 instances
+still running after 60 s, so it reported TEARDOWN FAILED and deleted the application; the account lists no
+`graft-agents-m4a-` application afterwards, only `graft-runners-runnerbox`. The install's shard sweep found none running,
+and the shard kill ran.
 
 **Option B, L0-10's before half (recommend deferring).** 10,000 agent commits made as M0-WP16's `provgen.py` makes them,
 on `m3org/prov-<tag>`:

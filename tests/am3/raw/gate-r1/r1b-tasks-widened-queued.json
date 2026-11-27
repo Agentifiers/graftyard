@@ -1,0 +1,17 @@
+[
+  {
+    "label": "A",
+    "id": "01a21ad3-a7f4-8fda-9f17-f10ddd06988e",
+    "prefix": "refs/heads/graftyard/01a21ad3-a7f4-8fda-9f17-f10ddd06988e/"
+  },
+  {
+    "label": "B",
+    "id": "01a21ad3-bec1-82d8-a67f-09d62edf2be4",
+    "prefix": "refs/heads/graftyard/01a21ad3-bec1-82d8-a67f-09d62edf2be4/"
+  },
+  {
+    "label": "C",
+    "id": "01a21ad3-d45e-830d-bb79-7d47a1ab8de0",
+    "prefix": "refs/heads/graftyard/01a21ad3-d45e-830d-bb79-7d47a1ab8de0/"
+  }
+]

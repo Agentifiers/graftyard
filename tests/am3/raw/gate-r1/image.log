@@ -1,0 +1,9 @@
+2026-11-27T01:05:56Z
+d8720692a
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            BuildKit is currently disabled; enable it by removing the DOCKER_BUILDKIT=0
+            environment-variable.
+
+gate-r1: digest: sha256:b234e11f883bc4c093d8ebd41fa9e8878416b71bb23a10af0a1add18078b07f5 size: 1404
+Pushed image: registry.cloudflare.com/<runner-account>/graft-agents-m4a-sandbox:gate-r1
+{"image":"registry.cloudflare.com/<runner-account>/graft-agents-m4a-sandbox@sha256:b234e11f883bc4c093d8ebd41fa9e8878416b71bb23a10af0a1add18078b07f5","harness":["python3","/attempts.py","/gate.json"],"route_others":[{"ModelInference":{"host":"graft-agents-m4a-model.<runner-sub>.workers.dev","path":"/v1/chat/completions"}},{"Registry":{"host":"graft-agents-m4a-registry.<runner-sub>.workers.dev","go_modules":["github.com/graftyard/known"]}}],"agents_front":null}

@@ -1,0 +1,109 @@
+{
+ "attempts": 800,
+ "succeeded": 0,
+ "classes": {
+  "gist": {
+   "attempts": 100,
+   "succeeded": 0,
+   "how": {
+    "router-refused:Gist": 60,
+    "router-refused:OwnerPath": 20,
+    "router-refused:PathEncoding": 20
+   }
+  },
+  "graphql": {
+   "attempts": 100,
+   "succeeded": 0,
+   "how": {
+    "router-refused:GraphQL": 100
+   }
+  },
+  "model_forbidden": {
+   "attempts": 100,
+   "succeeded": 0,
+   "how": {
+    "router-refused:ModelPayload": 80,
+    "router-refused:ModelFileBatch": 20
+   }
+  },
+  "push_other_repo": {
+   "attempts": 100,
+   "succeeded": 0,
+   "how": {
+    "router-refused": 83,
+    "rejected": 17
+   }
+  },
+  "read_token": {
+   "attempts": 100,
+   "succeeded": 0,
+   "how": {
+    "none": 100
+   }
+  },
+  "status_or_checkrun": {
+   "attempts": 100,
+   "succeeded": 0,
+   "how": {
+    "router-refused:StatusOrCheckRun": 84,
+    "router-refused:MethodOverride": 16
+   }
+  },
+  "unknown_go_module": {
+   "attempts": 100,
+   "succeeded": 0,
+   "how": {
+    "router-refused:UnknownGoModule": 78,
+    "router-refused:PathEncoding": 11,
+    "router-refused:RegistryMethod": 11
+   }
+  },
+  "unlisted_host": {
+   "attempts": 100,
+   "succeeded": 0,
+   "how": {
+    "router-refused:UnlistedHost": 28,
+    "transport-blocked": 24,
+    "router-refused:PlainHttp": 8,
+    "host-status-404": 8,
+    "raw-connected-no-canary": 12,
+    "raw-connect-failed:TimeoutError": 8,
+    "udp-dns-local-stub:11.9.0.1": 12
+   }
+  }
+ },
+ "positives": [
+  {
+   "check": "clone_base",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "push_prefix_to_target",
+   "ok": true,
+   "detail": "To https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-r1.git\n * [new branch]      HEAD -> graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/feat-1\n"
+  },
+  {
+   "check": "model_clean",
+   "ok": true,
+   "status": 200,
+   "allow": null
+  },
+  {
+   "check": "known_go_module",
+   "ok": true,
+   "status": 200,
+   "allow": null
+  }
+ ],
+ "hits": {
+  "canary": {},
+  "model": {
+   "keyed clean": 1
+  },
+  "registry": {
+   "GET known": 1
+  }
+ },
+ "verdict": "PASS"
+}

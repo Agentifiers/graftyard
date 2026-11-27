@@ -14,7 +14,8 @@
 #   install | hook  kill-row.sh's: both Apps installed on m3org (kill.mjs), graftyard-agent's webhook to the front
 #   standins        graft-agents-m4a-canary, -model, -registry on the runner account (tests/m0/src/wp14's scripts,
 #                   renamed), each counting every arrival; MODEL_KEY a random value for the row, put in the runner store
-#                   and on -model; M0_TOKEN for the counters, in a 0600 file
+#                   as graft-agents-m4a-MODEL_KEY_ROWA (never _A, the real-harness row's key, which teardown keeps) and
+#                   on -model; M0_TOKEN for the counters, in a 0600 file
 #   repos           m3org/gate-<tag>, m3org/gate-other-<tag>, and m3-admin's pull request (gate.mjs repos)
 #   image           tests/am3/hosted/gate/gate.json (no secret) and the L0-02 image, pushed to the runner registry;
 #                   $K/taskbox.json with HARNESS = the adapted harness and ROUTE_OTHERS = the model and registry arms
@@ -22,12 +23,14 @@
 #                   the front exists
 #   l002            the stand-ins' counters zeroed; one prompt-only task on m3org/gate-<tag>; polls the task's
 #                   `results` branch for the harness's class files (gate.mjs results); reads each counter; writes
-#                   $O/l002.json with the verdict; completes the task
-#   l003-setup      the controller again with kill-row's harness image in hold mode (AM2's `harness.py`, which holds
-#                   while refs/heads/hold/<task> exists), no model arm; tasks A, B and C, their holds; C's workspace
-#                   token minted while C lives; C completed
-#   l003 <pass>     gate.mjs l003 for `shipped` or `widened`
-#   l003-release    the holds deleted, so A and B report Finished
+#                   $O/l002.json with the verdict; cancels the task (its Sandbox sleeps after Finished)
+#   l003-setup <pass>  for `shipped`, the controller again with the hold harness (gate/hold, AM2's
+#                   `harness.py` held up to 100 minutes while refs/heads/hold/<task> exists), no model arm; for
+#                   `widened`, both Apps widened first (gate.mjs widen). Then the pass's own tasks A, B and C with their
+#                   holds, each waited to in_progress; C's workspace token minted while C lives; C released and waited
+#                   to `completed`
+#   l003 <pass>     gate.mjs l003 for `shipped` or `widened`, on that pass's tasks
+#   l003-release <pass>  A's and B's holds deleted, so they report Finished; after `widened`, both Apps restored
 #   teardown        both repositories deleted; both installations removed; the stand-ins deleted; lf7-day.sh's teardown
 #                   (every graft-agents-m4a- script, the probe included, secret, token, bucket); every container
 #                   application of graft-agents-m4a- listed, failing loudly while any instance runs, then deleted; the
@@ -123,14 +126,15 @@ standins)
       [ -s "$K/model.key" ] || python3 -c 'import os; print("rowa-" + os.urandom(24).hex())' >"$K/model.key" )
     for s in canary model registry; do
       mkdir -p "$K/$s"
-      sed -e "s/graft-wp14-$s/$P-$s/" -e "s#\"\\.\\./src/wp14/$s.ts\"#\"$PWD/tests/m0/src/wp14/$s.ts\"#" \
+      src=$PWD/tests/m0/src/wp14/$s.ts; [ $s = registry ] && src=$PWD/tests/am3/hosted/gate/registry.ts
+      sed -e "s/graft-wp14-$s/$P-$s/" -e "s#\"\\.\\./src/wp14/$s.ts\"#\"$src\"#" \
         tests/m0/wp14/graft-wp14-$s.jsonc >"$K/$s/wrangler.jsonc"
       (cd "$K/$s" && runner npx --prefix "$OLDPWD/tests/m0" wrangler deploy -c wrangler.jsonc 2>&1 | grep -E "Current Version|rror" | tail -2)
       runner npx --prefix tests/m0 wrangler secret put M0_TOKEN --name $P-$s <"$K/m0.token" 2>&1 | tail -1
     done
     runner npx --prefix tests/m0 wrangler secret put MODEL_KEY --name $P-model <"$K/model.key" 2>&1 | tail -1
     # The row's model key in the runner store, where the TaskBox's MODEL_KEY binding reads it.
-    ( umask 077; jq -Rc '{name: "'$P'-MODEL_KEY_A", value: ., scopes: ["workers"]}' <"$K/model.key" >"$K/model.body" )
+    ( umask 077; jq -Rc '{name: "'$P'-MODEL_KEY_ROWA", value: ., scopes: ["workers"]}' <"$K/model.key" >"$K/model.body" )
     rapi "$RB/secrets_store/stores/$RSTORE/secrets" -X POST -H 'content-type: application/json' --data-binary "[$(cat "$K/model.body")]" |
       jq -c '{store_put: .success, errors: [.errors[]?.code]}'
     shred -u "$K/model.body"
@@ -163,7 +167,7 @@ print(json.dumps({"ca": "/etc/cloudflare/certs/cloudflare-containers-ca.crt", "h
 PY
     taskbox tests/am3/hosted/gate gate '["python3", "/attempts.py", "/gate.json"]' \
       "$(jq -nc --arg m "$model" --arg r "$reg" '[{ModelInference: {host: $m, path: "/v1/chat/completions"}},
-        {Registry: {host: $r, go_modules: ["github.com/graftyard/known"]}}]')" "\"$P-MODEL_KEY_A\""
+        {Registry: {host: $r, go_modules: ["github.com/graftyard/known"]}}]')" "\"$P-MODEL_KEY_ROWA\""
   } 2>&1 | log ;;
 controller)
   spend >/dev/null || exit 3
@@ -208,17 +212,35 @@ json.dump(v, open(f"{o}/l002.json", "w"), indent=1)
 print(f"L0-02: {v['verdict']}: {succeeded} of {attempts} succeeded over {len(rows)} classes, "
       f"controls ok {[p.get('check') for p in pos if p.get('ok')]}, canary arrivals {canary}")
 PY
-    gate complete "gate-$TAG" "$id"
+    gate cancel "gate-$TAG" "$id"
   } 2>&1 | log ;;
 l003-setup)
   spend || exit 3
-  { # kill-row's harness in hold mode (AM2's `harness.py` from am3-rest: it holds while refs/heads/hold/<task> exists).
-    taskbox tests/am3/hosted/kill hold "[\"python3\", \"/harness.py\", \"$EDGE_HOST\", \"m3org/gate-$TAG\", \"1\", \"15\"]" '[]' null
-    day controller | tail -2
-    for l in A B C; do gate task "gate-$TAG" "$l" | tail -1; done | tee "$O/tasks.json.lines"
-    jq -s . "$O/tasks.json.lines" >"$O/tasks.json"
-    for id in $(jq -r '.[].id' "$O/tasks.json"); do gate hold "gate-$TAG" "$id"; done
-    c=$(jq -r '.[] | select(.label == "C") | .id' "$O/tasks.json")
+  pass=${3:?shipped or widened}
+  { # Fresh tasks per pass: the hold-mode harness (AM2's `harness.py`) keeps a task live for at most 50 minutes. The
+    # controller runs it once, from the first pass, with the front bound.
+    if [ "$pass" = shipped ]; then
+      FRONTB=1 taskbox tests/am3/hosted/gate/hold hold "[\"python3\", \"/harness.py\", \"$EDGE_HOST\", \"m3org/gate-$TAG\", \"1\", \"15\"]" '[]' null
+      day controller | tail -2
+    else
+      # `widen` re-puts both App records from agents init's request, whose `webhook` is null, so the webhook is set
+      # again after it (r1's first widened setup: three tasks stayed queued, no `created` delivery reached the box).
+      gate widen && bash "$0" "$TAG" hook | tail -1
+    fi
+    : >"$O/tasks-$pass.lines"
+    for l in A B C; do
+      t=$(gate task "gate-$TAG" "$l-$pass" | tail -1); echo "$t" | jq -c --arg l $l '. + {label: $l}' | tee -a "$O/tasks-$pass.lines"
+      gate hold "gate-$TAG" "$(echo "$t" | jq -r .id)"
+    done
+    jq -s . "$O/tasks-$pass.lines" >"$O/tasks-$pass.json"
+    for id in $(jq -r '.[].id' "$O/tasks-$pass.json"); do
+      for i in $(seq 1 48); do
+        s=$(node -e "import('./tests/am1/hosted/lib.mjs').then(async ({api, tokens}) => console.log((await api('GET', '/api/graftyard/v1/repos/m3org/gate-$TAG/tasks/$id', tokens.admin)).body?.state))")
+        [ "$s" = in_progress ] && break; sleep 10
+      done
+      echo "task $id: $s"
+    done
+    c=$(jq -r '.[] | select(.label == "C") | .id' "$O/tasks-$pass.json")
     # C's workspace token while C lives, through the probe's /mint, kept 0600 for gate.mjs and shredded at teardown.
     ( umask 077; jq -nc --arg r "gate-$TAG" --arg t "$c" \
         '{app: "workspace", installation: 7190004, body: {repositories: [$r], graftyard_task: $t}}' |
@@ -230,16 +252,20 @@ l003-setup)
 l003)
   spend || exit 3
   pass=${3:?shipped or widened}
-  { gate l003 "$O" "$TAG" "$pass" "$PROBE_URL" "$K/probe.token" "$O/tasks.json"
+  { gate l003 "$O" "$TAG" "$pass" "$PROBE_URL" "$K/probe.token" "$O/tasks-$pass.json"
     echo "l003 $pass exit $?"
   } 2>&1 | log ;;
 l003-release)
-  { for id in $(jq -r '.[] | select(.label != "C") | .id' "$O/tasks.json"); do gate release "gate-$TAG" "$id"; done; } 2>&1 | log ;;
+  pass=${3:?shipped or widened}
+  { for id in $(jq -r '.[] | select(.label != "C") | .id' "$O/tasks-$pass.json"); do gate release "gate-$TAG" "$id"; done
+    [ "$pass" = widened ] && gate restore && bash "$0" "$TAG" hook | tail -1
+  } 2>&1 | log ;;
 teardown)
   { gate delete "$TAG"
     node tests/am3/hosted/kill.mjs uninstall
     for s in canary model registry; do runner npx --prefix tests/m0 wrangler delete --name $P-$s --force 2>&1 | tail -1; done
-    day teardown | tail -6
+    # The real-harness row's model key (AM2, 2026-11-27) stays; this row's own key goes with its other secrets.
+    KEEP_SECRETS="$P-MODEL_KEY_A" day teardown | tail -6
     for i in 1 2 3 4 5 6; do
       left=$(containers | jq -s '[.[] | select(.running > 0)]')
       [ "$left" = "[]" ] && break

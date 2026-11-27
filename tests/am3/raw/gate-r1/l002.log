@@ -1,0 +1,21 @@
+2026-11-27T01:12:24Z
+d8720692a
+{"label":"l002","id":"01a21a8f-bdbe-8233-90d0-9e5f4bc0892e","prefix":"refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/"}
+2026-11-27T01:12:32.208Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+2026-11-27T01:13:05.204Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+2026-11-27T01:13:38.244Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+2026-11-27T01:14:10.619Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+2026-11-27T01:14:43.687Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+2026-11-27T01:15:16.800Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+2026-11-27T01:15:49.156Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+2026-11-27T01:16:21.360Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+2026-11-27T01:16:53.721Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+2026-11-27T01:17:26.590Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+spend since 2026-11-27T00:00:00Z: graft-m4a $0.54, runner graft-agents-m4a- $0.0
+2026-11-27T01:18:02.715Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: not there yet
+2026-11-27T01:18:35.988Z results refs/heads/graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/results: 9 files
+canary hits: {}
+model hits: {"keyed clean":1}
+registry hits: {"GET known":1}
+L0-02: PASS: 0 of 800 succeeded over 8 classes, controls ok ['clone_base', 'push_prefix_to_target', 'model_clean', 'known_go_module'], canary arrivals 0
+2026-11-27T01:18:39.040Z complete 01a21a8f-bdbe-8233-90d0-9e5f4bc0892e: 403 {"documentation_url":"https://docs.github.com/enterprise-server@3.22/graftyard/tasks","message":"Must be the task's App, its requester, or a repository admin","status":"403"}
