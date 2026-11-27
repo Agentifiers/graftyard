@@ -732,3 +732,42 @@ fn the_graftyard_task_payload_is_what_the_controller_starts_from() {
     cancel["action"] = json!("cancelled");
     assert_eq!(Task::of_delivery(&cancel, InRepo, budget).map(|x| x.0), Some(Delivery::Cancelled));
 }
+
+/// L0-14's off phase as the edge serves `POST .../tasks` without `kind`: the session header's refusal
+/// (`tasks::agent_session_create`), then the commit, whose refusal `tasks::refused` renders. While `agents_enabled` is
+/// off every creator answers 422, the session header's included (F151); once on, the header's create is the
+/// non-writer's 403 and a plain create goes on to `decide`.
+#[test]
+fn every_graftyard_run_create_answers_422_while_agents_are_off() {
+    let mut w = World::new();
+    let run =
+        || IssueOp::CreateRun(task_rules::NewRun { issue: None, prompt: Some("fix it".into()), summary: "".into() });
+    let edge = |w: &mut World, who: Principal, session: bool| -> u16 {
+        if let Some(r) = tasks::agent_session_create(&run(), session, &w.ident.owner) {
+            return r.status;
+        }
+        let rid = w.rid();
+        match w.commit(RepoCmd::Issue(Box::new(IssueCall::new(run(), who, rid, Value::Null)))) {
+            Err(RepoErr::Issue { err, .. }) => tasks::refused(&err).status,
+            o => panic!("{o:?}"),
+        }
+    };
+    let creators = [
+        (user(WRITER), true),
+        (user(WRITER), false),
+        (app(RUN), false),
+        (app(CLAUDE), false),
+        (user(VIA_APP), false),
+        (user(VIA_MCP), false),
+        (user(READER), false),
+    ];
+    for (who, session) in creators {
+        assert_eq!(edge(&mut w, who.clone(), session), 422, "{who:?}, session header {session}");
+    }
+    w.ident.owner.apply(&AuthzEvent::OrgAgents { enabled: true, workspace: graftyard_identity::WorkspaceMode::InRepo });
+    assert_eq!(tasks::agent_session_create(&run(), true, &w.ident.owner).map(|r| r.status), Some(403));
+    assert!(tasks::agent_session_create(&run(), false, &w.ident.owner).is_none());
+    let ext =
+        IssueOp::CreateTask(NewTask { session: "fix-1".into(), requester: None, issue: None, summary: "".into() });
+    assert!(tasks::agent_session_create(&ext, true, &w.ident.owner).is_none());
+}

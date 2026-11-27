@@ -349,10 +349,16 @@ pub fn session_page(r: &Repo<'_>, log: Option<&SessionLog>, json: bool) -> Reply
 
 /// A Graftyard-run create from an agent-session actor (`X-Graftyard-Agent-Session` on a user token) is refused as a
 /// non-human's, with the reply `decide` gives an App's create (`design/AGENT-LAYER.md`, Shape, "Tasks and the activity
-/// feed"; L0-14). The header is the request's, not the command's, so the edge refuses it before the commit. Any other
-/// command, and a create without the header, goes on.
-pub fn agent_session_create(op: &IssueOp<graftyard_git::blob::BlobRef>, agent_session: bool) -> Option<Reply> {
-    (agent_session && matches!(op, IssueOp::CreateRun(_))).then(|| refused(&IssueErr::Task(TaskErr::NotWriter)))
+/// feed"; L0-14). The header is the request's, not the command's, so the edge refuses it before the commit. The owner's
+/// switch comes first, as in `decide`: while `agents_enabled` is off the create answers 422, whoever sends it (F151).
+/// Any other command, and a create without the header, goes on.
+pub fn agent_session_create(
+    op: &IssueOp<graftyard_git::blob::BlobRef>,
+    agent_session: bool,
+    owner: &dyn AuthzRead,
+) -> Option<Reply> {
+    let err = if owner.policy().agents_enabled { TaskErr::NotWriter } else { TaskErr::AgentsOff };
+    (agent_session && matches!(op, IssueOp::CreateRun(_))).then(|| refused(&IssueErr::Task(err)))
 }
 
 /// `POST /tasks`. `kind: external` is an `AgentApp`'s external task (`NewTask`). Without `kind`, `issue_number` or
@@ -566,13 +572,6 @@ mod tests {
             parse_create(&json!({ "prompt": "x", "prefix": "refs/heads/main" }), None).unwrap(),
             parse_create(&json!({ "prompt": "x" }), None).unwrap()
         );
-        // With `X-Graftyard-Agent-Session` a Graftyard-run create gets the non-writer's 403; an external create and a
-        // create without it go on to `decide`.
-        let run = parse_create(&json!({ "prompt": "x" }), None).unwrap();
-        assert_eq!(agent_session_create(&run, true).map(|r| r.status), Some(403));
-        assert!(agent_session_create(&run, false).is_none());
-        let ext = parse_create(&json!({ "kind": "external", "session": "fix-1" }), None).unwrap();
-        assert!(agent_session_create(&ext, true).is_none());
         let id = SessionId::parse("3.fix", None).unwrap();
         assert!(matches!(
             parse_patch(id.clone(), &json!({ "state": "in_progress", "pr_number": 4 })),
