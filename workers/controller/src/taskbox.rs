@@ -12,9 +12,11 @@
 //! What the object does:
 //!
 //! - **Start.** `POST /start` (from this script's own code, never the Internet) with the task, its outbound route,
-//!   the harness's command, and the two installations. The container starts with no Internet, this version's
-//!   `sandbox` image, and the harness as its entrypoint, with `GRAFTYARD_SANDBOX` and `GRAFTYARD_START` (the commit
-//!   to start from, empty for the base); its HTTP and HTTPS go to `Outbound` with `{ task, sandbox }` as props.
+//!   the harness's command, and `graftyard-agent`'s installation stores the box queued and answers 202 at once; the
+//!   alarm it sets reads `graftyard-workspace`'s installation and starts the first Sandbox (`first_start`, F156). The
+//!   container starts with no Internet, this version's `sandbox` image, and the harness as its entrypoint, with
+//!   `GRAFTYARD_SANDBOX` and `GRAFTYARD_START` (the commit to start from, empty for the base); its HTTP and HTTPS go
+//!   to `Outbound` with `{ task, sandbox }` as props.
 //! - **Outbound.** `TaskBox::admit` refuses a Sandbox the task no longer holds (counted in `late`, logged).
 //!   `graftyard_git::outbound` refuses or rewrites the request; the host attaches the credential, sends it with
 //!   `redirect: "manual"`, and for a receive-pack reads the host's report (`acked_pushes`), so `last_push` moves only
@@ -67,16 +69,19 @@ const REPORT_HOST: &str = "controller.graftyard.internal";
 const INACTIVITY_MS: f64 = 6.0 * 3_600_000.0;
 /// How long the alarm waits for `graft-agents-front`'s pointer [guess]; past it the pointer is `Unread`.
 const POINTER_READ_MS: u64 = 2_000;
-/// When a new box's first alarm comes, which opens its lease and draft (A3 step 6, "at once").
-const OPEN_AFTER: Duration = Duration::from_secs(1);
+/// The storage key a `cancelled` delivery that reached the object before its `created` one leaves (F156).
+const CANCELLED_FIRST: &str = "cancelled_first";
 /// A cached token is reminted this long before it expires.
 const TOKEN_SLACK_MS: u64 = 300_000;
 /// A task's model budget until the controller's settings hold the org's [guess]; the wall is the design's 60 minutes.
 const BUDGET: TaskBudget = TaskBudget { task_tokens: 2_000_000, org_month_tokens: 200_000_000, wall: TASK_WALL };
 
-/// A signed `graftyard_task` delivery (`worker.rs`, after `intake` accepted it): `created` starts the task's box, and
-/// `cancelled` stops it. The box is the object named by the task's id, so a repeated `created` finds its box and
-/// changes nothing (409), and two deliveries never start two Sandboxes. Bindings: `GRAFTYARD_HOST`, the install's
+/// A signed `graftyard_task` delivery (`worker.rs`, after `intake` accepted it): `created` stores the task's box, and
+/// `cancelled` cancels it. The box is the object named by the task's id, so a repeated `created` finds its box and
+/// changes nothing (409), and two deliveries never start two Sandboxes. Each answers once the box has stored the
+/// delivery (202), before any Sandbox starts or stops: the delivery queue is one at a time per hook, so a delivery held
+/// for the start held every later one (F156). The start, with `graftyard-workspace`'s installation, runs in the box's
+/// alarm (`first_start`), which Cloudflare retries, and the stop in its next alarm. Bindings: `GRAFTYARD_HOST`, the install's
 /// host; `HARNESS`, the harness's command as a JSON array; `ROUTE_OTHERS`, the route's model and registry arms as JSON
 /// (`graftyard_git::outbound::Allowed`), `[]` for a harness that calls no model. In-repo mode only (AM3-WP3's
 /// minimum): the host refuses a fork-mode create, so the workspace is the base.
@@ -97,14 +102,7 @@ pub async fn deliver(env: &Env, payload: &Value) -> Result<Response> {
     let route = Route::of(&task, &host, others).ok_or_else(|| err("no route for the task"))?;
     let repo = task.base.name.as_str().to_owned();
     let agent = payload["installation"]["id"].as_i64().ok_or_else(|| err("the delivery names no installation"))?;
-    let workspace = workspace_installation(env, &host, &task).await?;
-    let start = Start {
-        task,
-        route,
-        command,
-        agent: Inst { installation: agent, repo: repo.clone() },
-        workspace: Inst { installation: workspace, repo },
-    };
+    let start = Start { task, route, command, agent: Inst { installation: agent, repo }, workspace: None };
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(Some(serde_json::to_string(&start)?.into()));
     stub.fetch_with_request(Request::new_with_init("https://taskbox/start", &init)?).await
@@ -237,7 +235,9 @@ pub struct Start {
     pub route: Route,
     pub command: Vec<String>,
     pub agent: Inst,
-    pub workspace: Inst,
+    /// `graftyard-workspace`'s installation, read by the box's first start; `None` until then (F156).
+    #[serde(default)]
+    pub workspace: Option<Inst>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -410,13 +410,16 @@ impl TaskBox {
     }
 
     async fn heartbeat(&self) -> Result<()> {
+        let started = self.first_start().await?;
         // The pointer read awaits a fetch, which lets other events into the object, so the box is loaded after it:
         // loaded first, a push acked during the read would be lost when the alarm saved.
         let pointer = self.pointer().await;
         let Some(mut s) = self.load().await? else { return Ok(()) };
         let running = self.container()?.running();
         let input = Input::Alarm { running, version: version(&self.env), pointer };
-        let act = s.b.on(input, now_ms()).map_err(err)?;
+        // The alarm that just started the first Sandbox does not judge it: a container still coming up is no loss.
+        let act =
+            if started && !s.b.task.state.is_final() { Act::Keep } else { s.b.on(input, now_ms()).map_err(err)? };
         if !matches!(act, Act::Keep | Act::Renew) {
             console_log!("graft-controller: task {} alarm: {:?}, hold {:?}", s.b.task.id.text(), act, s.b.hold);
         }
@@ -425,12 +428,54 @@ impl TaskBox {
         self.push_log().await?;
         self.open_task().await?;
         self.report_base().await?;
-        // A final box keeps its alarm until the base answered its last state and its session log's push.
+        // A final box keeps its alarm until the base answered its last state and its session log's push, and while a
+        // container still runs, so a Sandbox a start began as a cancel landed is stopped at the next alarm (F156).
         let unreported = self.load().await?.is_some_and(|s| s.b.unreported().is_some() || s.b.log_due());
-        if !s.b.task.state.is_final() || unreported {
+        if !s.b.task.state.is_final() || unreported || self.container()?.running() {
             self.state.storage().set_alarm(HEARTBEAT).await?;
         }
         Ok(())
+    }
+
+    /// A queued box's first start (F156), in the alarm, off the delivery's path: `graftyard-workspace`'s installation on
+    /// the push target, then the first Sandbox from the base. The box is loaded again after each await, since a
+    /// `cancelled` delivery may have landed meanwhile: a final box starts nothing, and a container a start began before
+    /// the cancel stops (`after_start`). A failed read counts toward `START_TRIES`, after which the task fails and the
+    /// base is told, so no delivery answered 202 leaves its task queued.
+    async fn first_start(&self) -> Result<bool> {
+        let Some(s) = self.load().await? else { return Ok(false) };
+        if !s.b.start_due() {
+            return Ok(false);
+        }
+        let host = host(&s.start.route).ok_or_else(|| err("the route names no host"))?.to_owned();
+        let read = match &s.start.workspace {
+            Some(w) => Ok(w.installation),
+            None => workspace_installation(&self.env, &host, &s.b.task).await,
+        };
+        let Some(mut s) = self.load().await? else { return Ok(false) };
+        if !s.b.start_due() {
+            return Ok(false);
+        }
+        let installation = match read {
+            Ok(i) => i,
+            Err(e) => {
+                console_log!("graft-controller: task {} first start: {e}", s.b.task.id.text());
+                s.b.unstarted(&e.to_string());
+                self.save(&s).await?;
+                return Ok(false);
+            }
+        };
+        s.start.workspace = Some(Inst { installation, repo: s.start.agent.repo.clone() });
+        let act = s.b.start(&version(&self.env), now_ms()).map_err(err)?;
+        self.save(&s).await?;
+        self.act(&act, &s).await?;
+        let Some(s) = self.load().await? else { return Ok(true) };
+        let c = self.container()?;
+        if s.b.after_start(c.running()) == Act::Stop {
+            c.destroy(None).await?;
+            console_log!("graft-controller: task {} cancelled during its start", s.b.task.id.text());
+        }
+        Ok(true)
     }
 
     /// A request the Sandbox made, from `Outbound`.
@@ -632,7 +677,10 @@ impl TaskBox {
         let (scheme, app, inst) = match cred {
             Cred::None | Cred::ModelKey => return Ok(Ok(None)),
             Cred::Agent(sc) => (sc, "AGENT", &s.start.agent),
-            Cred::Workspace(sc) => (sc, "WORKSPACE", &s.start.workspace),
+            Cred::Workspace(sc) => match &s.start.workspace {
+                Some(w) => (sc, "WORKSPACE", w),
+                None => return Ok(Ok(None)),
+            },
         };
         let now = now_ms();
         let cached =
@@ -885,21 +933,22 @@ impl DurableObject for TaskBox {
             return self.outbound(req, props).await;
         }
         match (req.method(), req.path().as_str()) {
+            // Storage only, no other I/O, so no other request runs in between: a `cancelled` delivery that came first
+            // (its `CANCELLED_FIRST` mark) is final, and the box is stored `Cancelled` and never starts.
             (Method::Post, "/start") => {
                 let start: Start = req.json().await?;
                 if self.load().await?.is_some() {
                     return reply(409, json!({ "message": "this task has a box" }));
                 }
-                let mut b = tb::TaskBox::new(start.task.clone());
-                let act = b.start(&version(&self.env), now_ms()).map_err(err)?;
+                let first = self.state.storage().get::<bool>(CANCELLED_FIRST).await?.unwrap_or(false);
+                let b = tb::TaskBox::queued(start.task.clone(), first);
                 let s = Stored { b, start };
                 self.save(&s).await?;
-                self.act(&act, &s).await?;
-                // The first alarm comes at once and opens the lease and the draft (`open_task`), outside this
-                // delivery's attempt deadline.
-                self.state.storage().set_alarm(OPEN_AFTER).await?;
-                self.report_base().await?;
-                reply(201, json!({ "state": s.b.task.state }))
+                if s.b.start_due() {
+                    self.state.storage().set_alarm(Duration::ZERO).await?;
+                }
+                console_log!("graft-controller: task {} stored {:?}", s.b.task.id.text(), s.b.task.state);
+                reply(202, json!({ "state": s.b.task.state }))
             }
             (Method::Post, "/base") => {
                 let Some(mut s) = self.load().await? else { return reply(404, json!({ "message": "no box" })) };
@@ -913,17 +962,26 @@ impl DurableObject for TaskBox {
                 if matches!(act, Act::Start { .. }) {
                     self.state.storage().set_alarm(HEARTBEAT).await?;
                     self.report_base().await?;
+                } else if s.b.start_due() {
+                    self.state.storage().set_alarm(Duration::ZERO).await?;
                 }
                 console_log!("graft-controller: task {} base {}: {:?}", s.b.task.id.text(), state.as_str(), act);
                 reply(200, json!({ "state": s.b.task.state }))
             }
+            // Storage only, as `/start`. The next alarm stops a running container; a start running in the alarm finds
+            // the box final after its launch and stops the container it began (`after_start`).
             (Method::Get, "/cancel") => {
-                let Some(mut s) = self.load().await? else { return reply(404, json!({ "message": "no box" })) };
-                let act = s.b.cancel();
+                let Some(mut s) = self.load().await? else {
+                    self.state.storage().put(CANCELLED_FIRST, true).await?;
+                    let id = self.state.id().name().unwrap_or_default();
+                    console_log!("graft-controller: task {id} cancelled before its box");
+                    return reply(202, json!({ "state": "Cancelled", "box": false }));
+                };
+                s.b.cancel();
                 self.save(&s).await?;
-                self.act(&act, &s).await?;
+                self.state.storage().set_alarm(Duration::ZERO).await?;
                 console_log!("graft-controller: task {} cancelled", s.b.task.id.text());
-                reply(200, json!({ "state": s.b.task.state }))
+                reply(202, json!({ "state": s.b.task.state }))
             }
             (Method::Get, "/status") => {
                 let running = self.container().map(|c| c.running()).unwrap_or(false);

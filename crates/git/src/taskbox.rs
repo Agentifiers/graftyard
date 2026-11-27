@@ -67,6 +67,9 @@ pub const HOLD_MAX: Duration = Duration::from_secs(60 * 60);
 /// How many tries the host makes at a task's lease and draft before the task goes on without them [guess]: the start
 /// and two alarms.
 pub const OPEN_TRIES: u8 = 3;
+/// How many tries the host makes at what a new box's first start needs before the task fails [guess]: the intake's
+/// alarm and two heartbeats, about a minute.
+pub const START_TRIES: u8 = 3;
 /// The branch the task's draft pull request opens from, under the task's prefix; the harness pushes its work there.
 pub fn work_branch(id: &graftyard_identity::SessionId) -> String {
     format!("{}{}/work", crate::task::RUN_PREFIX, id.text())
@@ -111,6 +114,9 @@ pub struct TaskBox {
     /// How many tries at the lease and the draft failed, at most `OPEN_TRIES`.
     #[serde(default)]
     pub open_tries: u8,
+    /// How many tries at the first start's inputs failed, at most `START_TRIES` (F156).
+    #[serde(default)]
+    pub start_tries: u8,
 }
 
 /// Where a task's session log is.
@@ -188,7 +194,24 @@ impl TaskBox {
             leased: false,
             draft: None,
             open_tries: 0,
+            start_tries: 0,
         }
+    }
+
+    /// A `created` delivery's box as the host first stores it, before any Sandbox (F156). A `cancelled` delivery that
+    /// reached the object first left `cancelled_first`, and that cancel is final: the box is stored `Cancelled` and never
+    /// starts. Otherwise it is queued until its alarm's first start (`start_due`).
+    pub fn queued(task: Task, cancelled_first: bool) -> TaskBox {
+        let mut b = TaskBox::new(task);
+        if cancelled_first {
+            b.cancel();
+        }
+        b
+    }
+
+    /// Whether the box still owes its task's first start: queued, with no Sandbox ever started.
+    pub fn start_due(&self) -> bool {
+        self.task.state == TaskState::Queued && self.generation == 0
     }
 
     fn next_id(&mut self) -> SandboxId {
@@ -237,6 +260,27 @@ impl TaskBox {
         }
         self.heard = now;
         Ok(())
+    }
+
+    /// What the host does once a start's launch returned, with `running` the container's state (F156): the object takes
+    /// other requests across the launch's awaits, so a cancel that landed meanwhile left the box final, and the
+    /// container that start began stops.
+    pub fn after_start(&self, running: bool) -> Act {
+        if running && self.task.state.is_final() { Act::Stop } else { Act::Keep }
+    }
+
+    /// The host could not gather what a queued box's first start needs (`graftyard-workspace`'s installation): one
+    /// more failed try. At `START_TRIES` the task ends `Failed { reason }`, which `unreported` then owes the base, so a
+    /// delivery answered 202 never leaves its task queued (F156). A box that started, or is final, changes nothing.
+    pub fn unstarted(&mut self, why: &str) {
+        if !self.start_due() {
+            return;
+        }
+        self.start_tries = self.start_tries.saturating_add(1);
+        if self.start_tries >= START_TRIES {
+            let reason = format!("the controller could not start the task: {why}");
+            self.task.step(TaskEvent::Failed { reason: reason.into() }).expect("a queued task fails");
+        }
     }
 
     /// The first-party delivery's `cancelled`: the task ends `Cancelled` and its Sandbox stops. A final task changes
@@ -360,9 +404,14 @@ impl TaskBox {
                     }
                     // Resumed on the base (`TaskResumed`): queued again, and started on a new Sandbox from the base,
                     // since the issue it works from is the base's new snapshot.
+                    // A box paused before its first start goes back to waiting for it (`start_due`), which reads
+                    // what that start needs (F156).
                     TaskApiState::Queued if paused => {
                         self.task.state = TaskState::Queued;
                         self.base = Some(TaskApiState::Queued);
+                        if self.generation == 0 {
+                            return Ok(Act::Keep);
+                        }
                         self.start(&version, now).map_err(Report::Refused)
                     }
                     _ => Ok(Act::Keep),

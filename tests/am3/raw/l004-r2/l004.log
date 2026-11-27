@@ -1,0 +1,16 @@
+2026-11-27T11:14:54Z
+e0d76645a
+spend since 2026-11-27T10:45:29Z: graft-m4a $0.07, graft-agents-m4a- $0, graft-runners $0.0, total $0.07 (stop $1.50)
+2026-11-27T11:15:06.584Z {"task":201,"id":"01a21cb7-84df-8896-923c-7b32ba821b63","requester":"m3-admin"}
+2026-11-27T11:15:10.502Z {"hold":true}
+2026-11-27T11:15:10.503Z {"check":"the task's requester is m3-admin","ok":true}
+2026-11-27T11:15:19.143Z {"check":"the task runs","ok":true}
+2026-11-27T11:16:47.689Z {"work_head":"fe0d910ed646e1ed62606d226cfcfab11c759c62","heads":["fe0d910ed646e1ed62606d226cfcfab11c759c62","d2bc40af522fd7d2dc866ccac5bceb978eacd036","e114fcaeb58e3826f74a67106ee5a39a94cbe261"]}
+2026-11-27T11:16:49.059Z {"pr":1,"draft":true,"node_head":"fe0d910ed646e1ed62606d226cfcfab11c759c62"}
+2026-11-27T11:16:49.326Z {"check":"the pull request's head is the harness's second push","ok":true}
+2026-11-27T11:20:51.952Z {"timeout":"the run waiting on the current head","ms":240000}
+2026-11-27T11:20:51.953Z {"run":null}
+2026-11-27T11:20:51.953Z {"check":"a run whose `secret` job waits on the current head","ok":false}
+VERDICT l004 FAIL a run whose `secret` job waits on the current head
+l004 exit 1
+spend since 2026-11-27T10:45:29Z: graft-m4a $0.1, graft-agents-m4a- $0.0, graft-runners $0.0, total $0.1 (stop $1.50)

@@ -1,0 +1,27 @@
+2026-11-27T11:01:12Z
+e0d76645a
+spend since 2026-11-27T10:45:29Z: graft-m4a $0.04, graft-agents-m4a- $0, graft-runners $0.0, total $0.04 (stop $1.50)
+kept as live: --var GRAFTYARD_AGENT_CI=1 --var GRAFTYARD_ARTIFACTS_V4=1 --var GRAFTYARD_REUSABLE=1 --var GRAFTYARD_SECRETS_WAIT=1; added: --var GRAFTYARD_SECRETS_BRANCH=1
+TREE e0d76645a
+2026-11-27T11:01:15Z
+e0d76645a
+5
+1
+2026-11-27T11:01:15Z
+e0d76645a
+before {"script":"graft-m4a-site-a","created_on":"2026-11-27T10:24:21.136413Z","versions":["f8e982af 100"]}
+before {"script":"graft-m4a-site-b","created_on":"2026-11-27T10:24:31.367992Z","versions":["c34c352c 100"]}
+before {"script":"graft-m4a-site-c","created_on":"2026-11-27T10:24:40.846345Z","versions":["ba9de861 100"]}
+deploy exit 1
+node:internal/errors:999
+  const err = new Error(message);
+Error: Command failed: npx --prefix ~/tmp/wt-l004/tests/m0 wrangler deploy -c graft-m4a-site-c.jsonc
+    at genericNodeError (node:internal/errors:999:15)
+    at wrappedFn (node:internal/errors:544:14)
+    at checkExecSyncError (node:child_process:990:11)
+{"graft-m4a-site-a":[]}
+after {"script":"graft-m4a-site-a","created_on":"2026-11-27T11:02:06.341741Z","versions":["1ac863ab 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_ARTIFACTS_V4=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
+{"graft-m4a-site-b":[]}
+after {"script":"graft-m4a-site-b","created_on":"2026-11-27T11:02:15.733151Z","versions":["2750c3c5 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_ARTIFACTS_V4=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
+{"graft-m4a-site-c":[]}
+after {"script":"graft-m4a-site-c","created_on":"2026-11-27T11:02:24.270552Z","versions":["240322f5 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_ARTIFACTS_V4=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
