@@ -1148,6 +1148,11 @@ impl IssueCmd {
                     Some(n) => (*n, crate::tiers::milestone(v.meta(), *n).ok_or(IssueErr::NotFound)?.id),
                     None => (crate::tiers::milestone_last(v.meta()) + 1, v.next_id(Tier::Metadata)?),
                 };
+                // An App's milestone is its bot's, as an App's REST issue is: GHES names a creator for every milestone.
+                let actor = match self.actor.actor {
+                    Actor::App { app, .. } => Some(app.bot()),
+                    _ => me,
+                };
                 let ev = MilestoneEvent::Defined {
                     n,
                     id,
@@ -1155,7 +1160,7 @@ impl IssueCmd {
                     description: description.clone(),
                     open: *open,
                     due_on: *due_on,
-                    actor: me,
+                    actor,
                 };
                 Ok((one(RepoEvent::Milestones(ev)), IssueOut::Id(id)))
             }
@@ -1870,9 +1875,11 @@ impl IssueCmd {
             | IssueOp::EditWithMilestone { n, .. }
             | IssueOp::SetMilestone { n, .. } => smallvec![on(*n)],
             IssueOp::OpenIssueWithMilestone { .. } => smallvec![w("issues")],
-            // An App's milestone write needs `issues` [inference: GHES 3.22's description files the milestone routes
-            // under the `issues` category].
-            IssueOp::DefineMilestone { .. } | IssueOp::DeleteMilestone { .. } => smallvec![w("issues")],
+            // GHES 3.22's "Permissions required for GitHub Apps" lists the milestone writes under both "Issues" and
+            // "Pull requests" write, as the label writes are.
+            IssueOp::DefineMilestone { .. } | IssueOp::DeleteMilestone { .. } => {
+                smallvec![w("issues"), w("pull_requests")]
+            }
             IssueOp::Comment { on: CommentTarget::Issue(n), .. } => smallvec![w("issues"), on(*n)],
             IssueOp::Comment { on: CommentTarget::Review { .. }, .. } => smallvec![w("pull_requests")],
             IssueOp::Comment { on: CommentTarget::Commit { .. }, .. } => smallvec![w("contents")],

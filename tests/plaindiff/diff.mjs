@@ -89,6 +89,11 @@ const reqs = [
   ["rest-issue-1-patch-milestone", "PATCH", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1`, { ...tok, "content-type": "application/json" }, JSON.stringify({ milestone: 1 })],
   ["rest-label-write", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/labels`, { ...tok, "content-type": "application/json" }, "LABEL"],
   ["graphql", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "{ repository(owner: \"cw\", name: \"r\") { name } }" })],
+  // Milestones head 2: with 32.37 off, gh's milestone list and `milestone(number:)` are main's `undefinedField`, and an
+  // issue's or pull request's `milestone`, which no row names, main's `null`.
+  ["graphql-milestones", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "query RepositoryMilestoneList($endCursor:String$name:String!$owner:String!$states:[MilestoneState!]!){repository(owner: $owner, name: $name){milestones(states: $states, first: 100, after: $endCursor){nodes{id,title},pageInfo{hasNextPage,endCursor}}}}", variables: { endCursor: null, name: seed.repo, owner: seed.login, states: ["OPEN"] } })],
+  ["graphql-milestone-1", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: `{ repository(owner: "${seed.login}", name: "${seed.repo}") { milestone(number: 1) { title } } }` })],
+  ["graphql-item-milestones", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: `{ repository(owner: "${seed.login}", name: "${seed.repo}") { issues(first: 5) { nodes { number milestone { title } } } pullRequests(first: 5) { nodes { number milestone { title } } } } }` })],
 ];
 const mask = (s) => s.replace(/bx\dr\d+/g, "LABELNAME").replace(/"(node_id|id)":(\d+|"[^"]*")/g, '"$1":"*"')
   .replace(/[0-9A-F]{4,8}:[0-9A-F]{4,8}:[0-9A-F]{4,10}:[0-9A-F]{4,10}:[0-9A-F]{6,10}/g, "RID");
