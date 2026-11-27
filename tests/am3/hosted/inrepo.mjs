@@ -476,7 +476,9 @@ if (line === "repo") {
   // #ib assigned to m3-ci's bot when the edge accepts that assignment.
   const ia = (await api("POST", `${V3}/issues`, admin, { title: "l014 assigned to graftyard-agent" })).body?.number;
   const ib = (await api("POST", `${V3}/issues`, admin, { title: "l014 assigned to another bot" })).body?.number;
-  const slug = (await api("GET", "/api/v3/app", null, undefined, { authorization: `Bearer ${appJwt()}` })).body?.slug;
+  // The edge serves no `GET /app`, so run 1's slug read gave none and #ib went unassigned; m3-ci's slug is the one its
+  // record registers (`tests/am1/hosted/app-perms.mjs`).
+  const slug = (await api("GET", "/api/v3/app", null, undefined, { authorization: `Bearer ${appJwt()}` })).body?.slug ?? "m3-ci";
   const off = await api("PATCH", "/api/graftyard/v1/orgs/m3org/agents", admin, { agents_enabled: false });
   ev({ agents_off: off.status, enabled: off.body?.agents_enabled });
   const aa = await api("POST", `${V3}/issues/${ia}/assignees`, admin, { assignees: [BOT_LOGIN] });
@@ -485,23 +487,24 @@ if (line === "repo") {
   ev({ ia, ib, assign_ours: aa.status, assign_other: ab.status, other_bot: `${slug}[bot]`, ib_assignees: other });
   if (!other.includes(`${slug}[bot]`)) gap(`another bot's assignment: the edge did not assign ${slug}[bot] (${ab.status}); #ib has no bot assignment`);
   // Demotion counts m3-member's committed writes in the last DEMOTE_WINDOW (60 s) at the create's own entry, and task
-  // creates do not count (graftyard_raft::admit). So each burst of DEMOTE_BURST creates follows 72 committed comments
-  // (2xx, counted, not just sent) made within DEMOTE_FRESH_MS, and the burst runs while all of them are inside the
-  // window. A demote that commits fewer, or takes longer, is retried; three failures stop the cell as a driver gap.
-  // Run 1 sent 64 comments per 25 creates without checking either, and 52 creates came after the window drained.
-  const DEMOTE_BURST = 5, DEMOTE_FRESH_MS = 20_000;
-  const demote = async () => {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const t0 = Date.now();
-      let sent = 0, ok = 0;
-      await Promise.all(Array.from({ length: 16 }, async () => {
-        while (sent < 72) { sent++; const r = await api("POST", `${V3}/issues/${ia}/comments`, member, { body: `ping ${sent}` }); if (r.status === 201) ok++; }
-      }));
-      const ms = Date.now() - t0;
-      ev({ demote: { attempt, ok, ms } });
-      if (ok >= 72 && ms <= DEMOTE_FRESH_MS) return t0;
-    }
-    throw new Error("driver: could not commit 72 writes within 20 s to demote m3-member");
+  // creates do not count (graftyard_raft::admit). Run 1 sent 64 comments per 25 creates without counting what
+  // committed, and 52 creates came after the window drained.
+  // rerun1 found that the shard commits m3-member's comments at about 3 a second: 16 workers got 23 to 33 of 72 answered
+  // 503 "the repository's tier rows did not answer; retry", and 8 workers committed 59 in 22 s. So no burst of 72 fits in
+  // 20 s. Instead, comments flow for the whole demoted cell (`pump`), and each create waits until at least DEMOTE_HELD of
+  // m3-member's committed comments (2xx answers) fall in the last DEMOTE_SEEN_MS. That is 10 s inside DEMOTE_WINDOW, so
+  // the create's own entry still counts them all. Each create logs the count it saw.
+  const DEMOTE_HELD = 66, DEMOTE_SEEN_MS = 50_000;
+  const pump = () => {
+    const p = { ok: [], shed: 0, stop: false };
+    p.done = Promise.all(Array.from({ length: 6 }, async () => {
+      for (let n = 0; !p.stop; n++) {
+        const r = await api("POST", `${V3}/issues/${ia}/comments`, member, { body: `ping ${n}` });
+        if (r.status === 201) p.ok.push(Date.now()); else p.shed++;
+      }
+    }));
+    p.held = () => p.ok.filter((t) => Date.now() - t < DEMOTE_SEEN_MS).length;
+    return p;
   };
   const SESS = "graftyard_run.00000000-0000-4000-8000-000000000001";
   const creators = [
@@ -516,14 +519,21 @@ if (line === "repo") {
   const cells = {};
   const cell = (k, st, ok) => { cells[k] ??= { statuses: {}, off: 0 }; cells[k].statuses[st] = (cells[k].statuses[st] ?? 0) + 1; if (!ok) cells[k].off++; };
   const runCase = async (phase, [k, t, body, headers], want) => {
-    let since = 0;
+    const p = k.startsWith("demoted") ? pump() : null;
+    const held = [];
     for (let i = 0; i < N; i++) {
-      // A burst ends DEMOTE_BURST creates in, or 30 s after its demote began, so every create's window still holds
-      // the 72 writes.
-      if (k.startsWith("demoted") && (i % DEMOTE_BURST === 0 || Date.now() - since > 30_000)) since = await demote();
+      if (p) {
+        const t0 = Date.now();
+        while (p.held() < DEMOTE_HELD) {
+          if (Date.now() - t0 > 180_000) { p.stop = true; await p.done; throw new Error(`driver: m3-member's window never held ${DEMOTE_HELD} writes`); }
+          await sleep(500);
+        }
+        held.push(p.held());
+      }
       const r = await api("POST", `${V1}/tasks`, t(), body(i), headers ?? {});
       cell(`${phase}/${k}`, `${r.status} ${short(r.body?.message)}`, want(r.status));
     }
+    if (p) { p.stop = true; await p.done; ev({ demote: { phase, comments: p.ok.length, shed: p.shed, held_min: Math.min(...held), held_max: Math.max(...held) } }); }
     const c = cells[`${phase}/${k}`];
     ev({ cell: `${phase}/${k}`, ...c });
     check(c.off === 0, `${phase}: ${k}, ${N} of ${N} refused`);
