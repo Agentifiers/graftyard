@@ -1,0 +1,6 @@
+2026-11-27T00:58:36Z
+d8720692a
+{"count":585,"prev":"29c55cb2fdef3c8609b184a2506792d7d6a6bb5c59f6555183b82f3a31da6788"}
+wrote unsigned Keys to ~/.graft-m4a/gate/keys.unsigned, prev 29c55cb2fdef3c8609b184a2506792d7d6a6bb5c59f6555183b82f3a31da6788
+{"digest":"680fdff0996a8e4c46f73448d245fdd792f4aebc476202e59fbc1cf1744d23bf","index":1421,"status":201}
+{"count":586,"keys":{"agents_executor":"a9c0fe12372ffcb6d96e9efaf7ceb6670c234cfedad620078ef23c174647c8cb","customer":"031923da25f100f1e0586087cd86b749be1ae6d26a75f4fa8cc6112f2dd882bd","drain":"477de5269050c38534d965f1a4d95c17f2f0fe1a4089bfa51c0b598d8c67c70b","executor":"d387253b7e8b191191dfd4508252587bf37f0dcad90ed180e2b8b42d85aaef1b","generation":13,"release":"dbde3befb57425850c8dc215410af552b1a23eede0ecc7c42dd2299076f3893f","vendor":null}}

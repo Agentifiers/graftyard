@@ -1,0 +1,17 @@
+2026-11-27T02:35:08Z
+d8720692a
+2026-11-27T02:35:12.540Z graftyard-agent: record and installation widened
+2026-11-27T02:35:14.619Z graftyard-workspace: record and installation widened
+{"status":200,"url":"https://graft-agents-m4a-front.<runner-sub>.workers.dev/","secret":"********","events":null}
+{"label":"A","id":"01a21adb-9907-8018-a6da-ffc857aced22","prefix":"refs/heads/graftyard/01a21adb-9907-8018-a6da-ffc857aced22/"}
+2026-11-27T02:35:26.240Z hold hold/01a21adb-9907-8018-a6da-ffc857aced22: ok
+{"label":"B","id":"01a21adb-c0c5-82b1-a96d-8342afddcd8e","prefix":"refs/heads/graftyard/01a21adb-c0c5-82b1-a96d-8342afddcd8e/"}
+2026-11-27T02:35:30.848Z hold hold/01a21adb-c0c5-82b1-a96d-8342afddcd8e: ok
+{"label":"C","id":"01a21adb-d2a2-8ff9-9304-30cbc9edf37d","prefix":"refs/heads/graftyard/01a21adb-d2a2-8ff9-9304-30cbc9edf37d/"}
+2026-11-27T02:35:36.099Z hold hold/01a21adb-d2a2-8ff9-9304-30cbc9edf37d: ok
+task 01a21adb-9907-8018-a6da-ffc857aced22: in_progress
+task 01a21adb-c0c5-82b1-a96d-8342afddcd8e: in_progress
+task 01a21adb-d2a2-8ff9-9304-30cbc9edf37d: in_progress
+C's token held
+2026-11-27T02:35:56.105Z release hold/01a21adb-d2a2-8ff9-9304-30cbc9edf37d: ok
+2026-11-27T02:36:08.028Z complete 01a21adb-d2a2-8ff9-9304-30cbc9edf37d: completed

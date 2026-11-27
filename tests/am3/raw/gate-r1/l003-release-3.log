@@ -1,0 +1,7 @@
+2026-11-27T03:18:45Z
+d8720692a
+2026-11-27T03:18:48.025Z release hold/01a21adb-9907-8018-a6da-ffc857aced22: ok
+2026-11-27T03:18:50.257Z release hold/01a21adb-c0c5-82b1-a96d-8342afddcd8e: ok
+2026-11-27T03:18:52.010Z graftyard-agent: record and installation shipped
+2026-11-27T03:18:53.763Z graftyard-workspace: record and installation shipped
+{"status":200,"url":"https://graft-agents-m4a-front.<runner-sub>.workers.dev/","secret":"********","events":null}

@@ -1,0 +1,16 @@
+2026-11-27T02:23:09Z
+d8720692a
+2026-11-27T02:23:12.066Z graftyard-agent: record and installation widened
+2026-11-27T02:23:13.677Z graftyard-workspace: record and installation widened
+{"label":"A","id":"01a21ad0-92cb-8aa4-bf49-e773e754b36c","prefix":"refs/heads/graftyard/01a21ad0-92cb-8aa4-bf49-e773e754b36c/"}
+2026-11-27T02:23:19.310Z hold hold/01a21ad0-92cb-8aa4-bf49-e773e754b36c: ok
+{"label":"B","id":"01a21ad0-a8b9-8f01-b873-c671c852e246","prefix":"refs/heads/graftyard/01a21ad0-a8b9-8f01-b873-c671c852e246/"}
+2026-11-27T02:23:25.608Z hold hold/01a21ad0-a8b9-8f01-b873-c671c852e246: ok
+{"label":"C","id":"01a21ad0-c185-8216-975f-3624c903933b","prefix":"refs/heads/graftyard/01a21ad0-c185-8216-975f-3624c903933b/"}
+2026-11-27T02:23:30.698Z hold hold/01a21ad0-c185-8216-975f-3624c903933b: ok
+task 01a21ad0-92cb-8aa4-bf49-e773e754b36c: in_progress
+task 01a21ad0-a8b9-8f01-b873-c671c852e246: in_progress
+task 01a21ad0-c185-8216-975f-3624c903933b: in_progress
+C's token held
+2026-11-27T02:23:50.547Z release hold/01a21ad0-c185-8216-975f-3624c903933b: ok
+2026-11-27T02:24:02.423Z complete 01a21ad0-c185-8216-975f-3624c903933b: completed

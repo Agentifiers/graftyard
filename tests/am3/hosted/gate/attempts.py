@@ -4,7 +4,9 @@
 # `TaskBox`: it reads `x-graftyard-refused` instead of `x-wp14-refused`; the router sets no allow or via-router header,
 # so an answer with neither is the target's own; the config comes from the image (`/gate.json`, written by
 # `gate-row.sh image`) and the box's env (`GRAFTYARD_SANDBOX`); and when every class is written it reports `Finished`
-# to the box. The Sandbox's stdout reaches no log the row reads, so it pushes /work/out/*.json to
+# to the box. The product router takes a Go proxy at the registry host's root (`/<module>/@...`,
+# `graftyard_git::outbound::go_module`) where M0's stand-in router took it under `/go/`, so every registry path here
+# drops M0's `/go` prefix; the stand-in answers both. The Sandbox's stdout reaches no log the row reads, so it pushes /work/out/*.json to
 # `<prefix>results` on the base through the host arm, and `gate.mjs results` reads them there. The rest is M0's text.
 #
 # M0-WP14 (L0-02) containment harness. Runs INSIDE the Sandbox, where the controller's outbound router intercepts every
@@ -361,15 +363,15 @@ def c_model_bad():
 # ---------------------------------------------------------------- 8. unknown Go module
 def c_go_unknown():
     V = [
-        ("latest", ["https://%s/go/github.com/evil/pkg/@latest" % REG]),
-        ("v-list", ["https://%s/go/github.com/evil/pkg/@v/list" % REG]),
-        ("v-info", ["https://%s/go/github.com/evil/pkg/@v/v1.0.0.info" % REG]),
-        ("v-zip", ["https://%s/go/evil.test/mod/@v/v0.1.0.zip" % REG]),
-        ("case-escape", ["https://%s/go/github.com/!e!v!i!l/pkg/@latest" % REG]),
-        ("known-prefix-evil-suffix", ["https://%s/go/github.com/graftyard/knownevil/@latest" % REG]),
-        ("known-subpath", ["https://%s/go/github.com/graftyard/known/sub/@latest" % REG]),
-        ("encoded-path", ["https://%s/go/github.com%%2Fevil%%2Fpkg/@latest" % REG]),
-        ("query-upstream", ["https://%s/go/github.com/graftyard/known/@latest?go-get=1&upstream=evil" % REG]),
+        ("latest", ["https://%s/github.com/evil/pkg/@latest" % REG]),
+        ("v-list", ["https://%s/github.com/evil/pkg/@v/list" % REG]),
+        ("v-info", ["https://%s/github.com/evil/pkg/@v/v1.0.0.info" % REG]),
+        ("v-zip", ["https://%s/evil.test/mod/@v/v0.1.0.zip" % REG]),
+        ("case-escape", ["https://%s/github.com/!e!v!i!l/pkg/@latest" % REG]),
+        ("known-prefix-evil-suffix", ["https://%s/github.com/graftyard/knownevil/@latest" % REG]),
+        ("known-subpath", ["https://%s/github.com/graftyard/known/sub/@latest" % REG]),
+        ("encoded-path", ["https://%s/github.com%%2Fevil%%2Fpkg/@latest" % REG]),
+        ("query-upstream", ["https://%s/github.com/graftyard/known/@latest?go-get=1&upstream=evil" % REG]),
     ]
     recs = []
     for i in range(N):
@@ -402,7 +404,7 @@ def positives():
         try: mt = json.loads(body).get("usage", {}).get("total_tokens", 0)
         except Exception: pass
     recs.append({"check": "model_clean", "ok": ok, "status": status, "allow": allow(hdr)})
-    code, status, hdr, body = curl(["https://%s/go/%s/@latest" % (REG, KNOWN_GO)])
+    code, status, hdr, body = curl(["https://%s/%s/@latest" % (REG, KNOWN_GO)])
     recs.append({"check": "known_go_module", "ok": 200 <= status < 300, "status": status, "allow": allow(hdr)})
     json.dump({"positives": recs, "model_tokens": mt}, open("%s/_positives.json" % OUT, "w"))
 
