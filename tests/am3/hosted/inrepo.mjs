@@ -617,7 +617,8 @@ if (line === "repo") {
   const lat = [];
   let missing = 0;
   for (const e of timed) {
-    const re = e.action === "created" ? new RegExp(`task ${e.id} (started|base)`) : new RegExp(`task ${e.id} cancelled`);
+    // F156: the box logs `stored` when it takes the delivery, before the Sandbox starts.
+    const re = e.action === "created" ? new RegExp(`task ${e.id} (stored|started|base)`) : new RegExp(`task ${e.id} cancelled`);
     const hit = lines.filter((l) => re.test(l.m)).sort((a, b) => a.at - b.at)[0];
     if (!hit) { missing++; continue; }
     lat.push(hit.at - e.t);
