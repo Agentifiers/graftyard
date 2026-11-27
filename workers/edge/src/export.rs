@@ -6,9 +6,9 @@
 //!   trust anchor's before any `Keys` entry) and refused once its `jti`'s `JtiRevoked` row is read, through the same
 //!   READ_CACHE as `ghs_` (`ident::jti_revoked`); or a registered lifeboat's signed tail, snapshot, or pack pull
 //!   (`lifeboat_claims`), which is install-scoped. Anything else is 401.
-//! - **Scope.** `in_scope` runs before any read: an org token's repository chain is checked against the repository's
-//!   owner from `RepoOwner`, a pack against every member of its network (`export_token::covers_network`,
-//!   "`fork-pack-scope`"), and the feed needs an install token.
+//! - **Scope.** `in_scope` runs before any read: an org token's repository chain or pack is checked against the
+//!   repository's owner from `RepoOwner`, a forked network's pack needs an install token
+//!   (`export_token::covers_network`, "`fork-pack-scope`"), and the feed needs an install token.
 //! - **Reads.** Batches list the `EXPORT` bucket after the cursor. Entries come from a learner or follower
 //!   (`graftyard_lookup::log_rows`, never the leader), or, below the member's stored log, from the archive object the
 //!   member names, read as it streams (`export::ArchiveRows`). Snapshots and packs stream from the site buckets, so
@@ -148,36 +148,20 @@ fn owned_repo(chain: Option<ChainId>) -> Option<RepoId> {
 }
 
 /// Whether a narrower scope than the install's covers `network`'s packs (`decisions/DECISIONS.md`,
-/// "`fork-pack-scope`"): the root first, whose owner its `RepoOwner` row names, then the other members from one
-/// network chain read, reading a fork's owner only for an `Owner` scope and stopping at the first that covers. A root
-/// with no `RepoOwner` row is not found, as before forks.
+/// "`fork-pack-scope`"): main's check against the root's owner from its `RepoOwner` row, and then, only for a token
+/// that check covers, one network chain read for whether the network has a fork, which leaves the install's alone.
+/// A root with no `RepoOwner` row is not found, as on main.
 async fn pack_covered(c: &Ctx<'_>, scope: Scope, network: NetworkId) -> std::result::Result<bool, Fail> {
-    let root_id = network.root();
-    let root = Box::pin(crate::repo_by_id(c, root_id)).await.map_err(|_| ExportError::NotFound)?;
-    if export_token::covers_network(scope, [(root_id, Some(root.owner))]) {
-        return Ok(true);
+    let root = Box::pin(crate::repo_by_id(c, network.root())).await.map_err(|_| ExportError::NotFound)?;
+    if !export_token::covers_network(scope, network, root.owner, false) {
+        return Ok(false);
     }
-    let members = Box::pin(crate::forks::network_members(c, network, &root.record)).await.map_err(unavailable)?;
-    let forks = members.into_iter().filter(|m| *m != root_id);
-    if !matches!(scope, Scope::Owner(_)) {
-        return Ok(export_token::covers_network(scope, forks.map(|m| (m, None))));
-    }
-    for m in forks {
-        // A fork not yet finished has no `RepoOwner` row and covers nothing; a `Names` read that failed is an outage.
-        let owner = match Box::pin(crate::repo_by_id(c, m)).await {
-            Ok(r) => r.owner,
-            Err(e) if e.ends_with("has no RepoOwner row") => continue,
-            Err(e) => return Err(unavailable(e)),
-        };
-        if export_token::covers_network(scope, [(m, Some(owner))]) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let forked = Box::pin(crate::forks::network_forked(c, network, &root.record)).await.map_err(unavailable)?;
+    Ok(export_token::covers_network(scope, network, root.owner, forked))
 }
 
 async fn read(c: &Ctx<'_>, route: &Route, claims: &ExportClaims, root: &str) -> std::result::Result<Response, Fail> {
-    // A pack names a network, which any member's repository or owner scope covers.
+    // A pack names a network: the root's owner covers it until the network forks.
     let pack_scope = match route {
         Route::Pack { network, .. } if claims.scope != Scope::Install => {
             Some(Box::pin(pack_covered(c, claims.scope, *network)).await?)

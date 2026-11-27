@@ -269,19 +269,16 @@ pub(crate) async fn network_forks(
     Ok(ids.into_iter().map(|i| RepoId(graftyard_types::DbId(i))).collect())
 }
 
-/// Every member of `network`, ascending, from one network chain read under the root's placement `record`: the root
-/// and the forks its chain lists. The root alone when the chain has no group, or when a member of the release before
-/// `{"members"}` answers without the key.
-pub(crate) async fn network_members(
+/// Whether `network` has a fork, from one network chain read under the root's placement `record`: the default
+/// answer's `forks`, the count main's members give too. No group is no fork.
+pub(crate) async fn network_forked(
     c: &Ctx<'_>,
     network: NetworkId,
     record: &graftyard_types::PlacementRecord,
-) -> std::result::Result<Vec<RepoId>, String> {
-    let root = vec![network.root()];
-    let Some(v) = network_read(c, network, record, json!({ "members": true })).await? else { return Ok(root) };
-    let Some(m) = v.get("members").cloned() else { return Ok(root) };
-    let ids: Vec<i64> = serde_json::from_value(m).map_err(|e| format!("{network:?} members: {e}"))?;
-    Ok(ids.into_iter().map(|i| RepoId(graftyard_types::DbId(i))).collect())
+) -> std::result::Result<bool, String> {
+    let Some(v) = network_read(c, network, record, json!({})).await? else { return Ok(false) };
+    let n = v.get("forks").and_then(Value::as_u64).ok_or_else(|| format!("{network:?}: no fork count in {v}"))?;
+    Ok(n > 0)
 }
 
 /// The fork fields of `GET /repos/{o}/{r}` (`design/SHARED.md`, the `rest:repos` row; `build/BUILD-PLAN.md`,

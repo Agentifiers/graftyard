@@ -11993,21 +11993,25 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - If AM3-WP2a finds that SHARED's fork rules cannot be built as written, for example because the network chain's first-touch completion cannot be made idempotent, follow "How to change the design" in `AGENTS.md` and settle the design before AM3-WP3 builds on it.
 - If an operator decides that agents run in-repo only, retire fork mode instead (`FRAME.md` decision), and AM3-WP2a stays a base package for `gh repo fork`.
 
-### `fork-pack-scope`: an export token for any member repository of a network, or any member's owner, reads the network's packs, 2026-11-26
+### `fork-pack-scope`: a network's packs are covered as on main until it forks, then only by an `Install` export token, 2026-11-26
 
-**Status.** Ruled by the lead (T-01a17bda), 2026-11-26, for AM3-WP2a (`build/BUILD-PLAN.md`). Built in head 4 at $0 (`graftyard_identity::export_token::covers_network`, the edge's `export::pack_covered`), as the Decision line reads. Its last sentence does not hold, and the lead has to choose. Today `Scope::Repo(r)` never covers `ChainId::Network`, so a repository-scoped token cannot read even a root-only network's packs. Under the Decision line it now reads them, so a one-repository network is not "covered exactly as today". Keeping the old rule for a root would leave a fork's repository scope covered while the root's own is not. Not hosted.
+**Status.** Ruled by the lead (T-01a17bda), 2026-11-26, for AM3-WP2a (`build/BUILD-PLAN.md`), and narrowed by the lead on 2026-11-27 after head 4 built the first ruling's "any member" line, which contradicted its own "covered exactly as today". "Covered exactly as today" won. Built at $0 (`graftyard_identity::export_token::covers_network`, the edge's `export::pack_covered`). Not hosted.
 
-**Decision.** `GET export/packs/...` names a network (`export::Route::Pack`, whose chain is `ChainId::Network`). An export token's scope covers that chain when it covers any member repository of the network: `Scope::Repo(r)` for a member `r`, `Scope::Owner(a)` for the owner of any member, and `Scope::Install`. The edge reads the members from `RepoOwner`'s network (Names 0x10.4). A network with one repository, every network on main, is covered exactly as today.
+**Decision.** `GET export/packs/...` names a network (`export::Route::Pack`, whose chain is `ChainId::Network`).
+- A network with one repository, which is every network on main, is covered exactly as on main: by `Scope::Install`, and by `Scope::Owner(a)` when `a` owns the root repository, from its `RepoOwner` row (`release::view::covers` with that owner). `Scope::Repo` never covers a network chain.
+- Once the network has a fork, only `Scope::Install` covers its packs. The edge learns that from one read of the network chain (`forks::network_forked`, the chain's fork count; no group is no fork), made only for a token that main's check already covers.
 
-**Why.** Packs are shared by construction: a fork stores no copy of its base's packs, and each new pack lands once under the network's prefix. A fork's owner already reads every base object through the fork's own clone, so the pack route shows them nothing new. If the scope were the root's alone, an org scoped to a fork's owner could not export the packs its own repository's entries name, and its vault or lifeboat would restore entries whose objects it cannot fetch.
+**Why.** A network's packs hold every member's objects, including objects pushed only to another owner's private fork. Under "any member", the root owner's Repo or Owner token would read fork B's unpushed objects, and fork B's token would read the root's. Nothing on main needs a narrower token to read a forked network's packs: the vault pulls with an `Install` token (`cli/src/vault.rs`, `graftyard vault init`).
 
 **What it beat.**
-- The root's owner only, which is today's `covers` with one owner per network. It leaves a fork's export without its objects.
-- Per-repository pack prefixes inside a network: a pack shared by two members would need copying or reference counting, and SHARED shares packs by network.
+- **Any member** (the first ruling, as head 4 built it): `Scope::Repo(r)` for any member `r`, `Scope::Owner(a)` for the owner of any member. It leaks objects across owners, as above.
+- **Every member**: a Repo or Owner scope that covers all of a network's members could read its packs safely. Nothing needs it yet.
+- **`Install` alone, forked or not**: it would take away the root owner's pack reads on a network that never forked, which main serves (`workers/edge/src/export.rs` on main, `owned_repo` reading a network's root owner for an org token), so a managed tenant's per-org export (`design/DESIGN.md`, "Install operations", Vault) would lose its objects.
+- **Per-repository pack prefixes inside a network**: a pack shared by two members would need copying or reference counting, and SHARED shares packs by network.
 
-**Evidence.** `crates/release/src/view.rs`, `covers` (`Scope::Owner` over `ChainId::Network` today checks one owner); `crates/git/src/export.rs`, `Route::chain`; `design/SHARED.md`, "Fork networks"; `design/DESIGN.md`, journey 2 ("its packs share the network's prefix").
+**Evidence.** `crates/release/src/view.rs`, `covers` (`Scope::Owner` over `ChainId::Network` checks the root's owner; `Scope::Repo` over a network is false); `crates/git/src/export.rs`, `Route::chain`; `design/SHARED.md`, "Fork networks"; `design/DESIGN.md`, journey 2 ("its packs share the network's prefix"). Tests: `export_token::tests::a_networks_packs_are_covered_as_on_main_until_it_forks_then_by_the_install_alone`, including a two-owner network, and the forked cases in `crates/git/tests/export.rs`, `bf49_vault_pulls_every_endpoint_then_the_revoked_jti_is_refused_within_read_cache`.
 
-**Flip.** A private fork network in which the root's owner must not read a fork's own objects, such as a private fork of a public repository with commits the root's owner may not see. Then a member's export reads only the packs its own chain's entries name, and `covers` takes the pack's naming chain, not the network. Open in OPEN-QUESTIONS R73.
+**Flip.** A Repo- or Owner-scoped vault or export that needs a forked network's packs. Then build the every-member rule, not any-member.
 
 ### `fork-refns`: a fork's refs live in git's namespace layout on its network's disk, and its shard calls name the namespace, 2026-11-27
 

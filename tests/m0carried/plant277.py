@@ -73,7 +73,7 @@ REFNS = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'catchup', 'a_f
 ROOTONLY = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'catchup', 'a_root_only_networks_cursor']
 FORKPR = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'issues', 'a_pull_request_head_in_another']
 FIELDS = ['cargo', 'test', '-q', '-p', 'graftyard-edge', '--lib', 'forks::tests::']
-PACKSCOPE = ['cargo', 'test', '-q', '-p', 'graftyard-identity', '--lib', 'a_networks_packs_are_covered']
+PACKSCOPE = ['cargo', 'test', '-q', '-p', 'graftyard-identity', '--lib', 'a_networks_packs_are_covered_as_on_main']
 JOIN = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'catchup', 'a_fork_that_does_not_answer']
 MUTANTS = [
     ("a fork's Genesis writes no fork row", TIERS,
@@ -231,12 +231,17 @@ MUTANTS = [
     ("network_count reads the direct count, not the network's", FORKS,
      'let total = answer.and_then(|v| v.get("total")).and_then(Value::as_u64).unwrap_or(direct);\n',
      'let total = direct;\n', FIELDS),
-    ("a member's repository scope does not cover the network's packs", EXPORTTOK,
-     '        Scope::Repo(r) => members.into_iter().any(|(m, _)| m == r),\n',
-     '        Scope::Repo(r) => members.into_iter().next().is_some_and(|(m, _)| m == r),\n', PACKSCOPE),
-    ("an owner of only a fork does not cover the network's packs", EXPORTTOK,
-     '        Scope::Owner(a) => members.into_iter().any(|(_, o)| o == Some(a)),\n',
-     '        Scope::Owner(a) => members.into_iter().next().is_some_and(|(_, o)| o == Some(a)),\n', PACKSCOPE),
+    ("a forked network's packs are covered as an unforked one's, so the root's owner reads a fork's objects",
+     EXPORTTOK,
+     '    if forked { scope == Scope::Install } else { covers(scope, ChainId::Network(network), Some(root_owner)) }\n',
+     '    covers(scope, ChainId::Network(network), Some(root_owner))\n', PACKSCOPE),
+    ("a forked network's packs are covered by any owner's token", EXPORTTOK,
+     '    if forked { scope == Scope::Install } else { covers(scope, ChainId::Network(network), Some(root_owner)) }\n',
+     '    if forked { !matches!(scope, Scope::Repo(_)) } else { covers(scope, ChainId::Network(network), Some(root_owner)) }\n',
+     PACKSCOPE),
+    ("an unforked network's packs are covered by its root's repository scope", EXPORTTOK,
+     '    if forked { scope == Scope::Install } else { covers(scope, ChainId::Network(network), Some(root_owner)) }\n',
+     '    if forked { scope == Scope::Install } else { scope != Scope::Owner(AccountId(DbId(8))) }\n', PACKSCOPE),
 ]
 
 if __name__ == '__main__':

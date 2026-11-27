@@ -274,6 +274,21 @@ fn bf49_vault_pulls_every_endpoint_then_the_revoked_jti_is_refused_within_read_c
             .map_err(|e| e.status()),
         Err(404)
     );
+    // Its own network's pack is served as on main until the network forks to another owner, whose private objects
+    // the pack may hold; then only the install's token reads it (DECISIONS "`fork-pack-scope`").
+    let own = Route::Pack { network: NetworkId(DbId(1)), id: pack };
+    for (forked, scope, ok) in [
+        (false, org_claims.scope, true),
+        (true, org_claims.scope, false),
+        (true, Scope::Owner(AccountId(DbId(41))), false),
+        (true, Scope::Install, true),
+    ] {
+        let covers = |c| match c {
+            ChainId::Network(n) => export_token::covers_network(scope, n, org, forked),
+            c => export_token::covers(scope, c, owner(c)),
+        };
+        assert_eq!(export::serve(&own, &covers, &inst, at.0, ROOT).is_ok(), ok, "forked {forked}, {scope:?}");
+    }
 
     // Revocation: `DELETE export/token` commits `RevokeJti` under the token's own jti.
     let t_revoke = Timestamp(now + 4_000);

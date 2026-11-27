@@ -1085,7 +1085,7 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
 /// (`tests/am1/results/lm1-memory.md`, round 21). Its pages never clear the disk (`apply_refs`, not `put_refs_page`):
 /// the fork's stale refs go with a delete of each name its namespace holds that no page lists, which the disk cannot
 /// list here, so a re-join after an archive keeps a deleted fork branch until the next rehydrate [inference: a rare
-/// case, a fork whose log was archived while this disk lagged it].
+/// case, a fork whose log was archived while this disk lagged it; OPEN-QUESTIONS F159].
 async fn join<I: ShardIo, S: Saved, L: ChainLog>(
     io: &I,
     saved: &S,

@@ -13,7 +13,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 use graftyard_release::{InstallId, KeyId, Scope};
-use graftyard_types::{AccountId, ChainId, CredentialKey, CredentialShard, DbId, RepoId, Timestamp, Ulid};
+use graftyard_types::{AccountId, ChainId, CredentialKey, CredentialShard, DbId, NetworkId, RepoId, Timestamp, Ulid};
 use serde::{Deserialize, Serialize};
 
 use crate::stateless::CLOCK_SKEW;
@@ -150,15 +150,11 @@ pub fn covers(scope: Scope, chain: ChainId, owner: Option<AccountId>) -> bool {
 }
 
 /// Whether an export under `scope` covers a network chain's packs (`decisions/DECISIONS.md`, "`fork-pack-scope`"):
-/// `Scope::Install`, `Scope::Repo(r)` for any member `r`, or `Scope::Owner(a)` for the owner of any member. `members`
-/// are the network's repositories, each with its owner where the caller read it; it is walked only until one covers,
-/// so a caller may read the owners lazily, root first.
-pub fn covers_network(scope: Scope, members: impl IntoIterator<Item = (RepoId, Option<AccountId>)>) -> bool {
-    match scope {
-        Scope::Install => true,
-        Scope::Repo(r) => members.into_iter().any(|(m, _)| m == r),
-        Scope::Owner(a) => members.into_iter().any(|(_, o)| o == Some(a)),
-    }
+/// for a network of one repository exactly as `covers` does on main, with its root's owner (`Install`, or `Owner` of
+/// the root; `Repo` never), and only `Install` once the network has a fork, because its packs hold every member's
+/// objects, a private fork's unpushed ones included.
+pub fn covers_network(scope: Scope, network: NetworkId, root_owner: AccountId, forked: bool) -> bool {
+    if forked { scope == Scope::Install } else { covers(scope, ChainId::Network(network), Some(root_owner)) }
 }
 
 impl ExportClaims {
@@ -265,32 +261,21 @@ mod tests {
     }
 
     #[test]
-    fn a_networks_packs_are_covered_by_any_members_repo_or_owner_scope() {
-        let (root, fork, deep) = (RepoId(DbId(40)), RepoId(DbId(41)), RepoId(DbId(42)));
-        let (base_org, fork_owner, deep_owner) = (AccountId(DbId(7)), AccountId(DbId(8)), AccountId(DbId(9)));
-        let members = [(root, Some(base_org)), (fork, Some(fork_owner)), (deep, Some(deep_owner))];
-        // A fork's repository scope covers its network's packs; another network's repository does not.
-        assert!(covers_network(Scope::Repo(fork), members));
-        assert!(covers_network(Scope::Repo(deep), members));
-        assert!(!covers_network(Scope::Repo(RepoId(DbId(50))), members));
-        // The owner of only a fork covers; an owner of nothing in the network does not.
-        assert!(covers_network(Scope::Owner(fork_owner), members));
-        assert!(!covers_network(Scope::Owner(AccountId(DbId(10))), members));
-        // An owner whose member's owner was not read is not covered by that member.
-        assert!(!covers_network(Scope::Owner(fork_owner), [(root, Some(base_org)), (fork, None)]));
-        assert!(covers_network(Scope::Install, members));
-        assert!(covers_network(Scope::Install, []));
-        // A network with one repository: its root's repository scope and owner cover it (the Decision line).
-        assert!(covers_network(Scope::Repo(root), [(root, None)]));
-        assert!(covers_network(Scope::Owner(base_org), [(root, Some(base_org))]));
-        // The walk stops at the first member that covers, so a caller reading owners lazily reads no more.
-        let mut read = 0;
-        let lazy = members.iter().map(|m| {
-            read += 1;
-            *m
-        });
-        assert!(covers_network(Scope::Owner(base_org), lazy));
-        assert_eq!(read, 1);
+    fn a_networks_packs_are_covered_as_on_main_until_it_forks_then_by_the_install_alone() {
+        let (root, fork) = (RepoId(DbId(40)), RepoId(DbId(41)));
+        let (base_org, fork_owner) = (AccountId(DbId(7)), AccountId(DbId(8)));
+        let net = NetworkId::of_root(root);
+        // One repository, as every network on main: the install and the root's owner, never a repository scope.
+        assert!(covers_network(Scope::Install, net, base_org, false));
+        assert!(covers_network(Scope::Owner(base_org), net, base_org, false));
+        assert!(!covers_network(Scope::Owner(fork_owner), net, base_org, false));
+        assert!(!covers_network(Scope::Repo(root), net, base_org, false));
+        // Two owners, the fork's private: the packs hold both owners' objects, so neither owner's token nor either
+        // repository's reads them, only the install's.
+        assert!(covers_network(Scope::Install, net, base_org, true));
+        for scope in [Scope::Owner(base_org), Scope::Owner(fork_owner), Scope::Repo(root), Scope::Repo(fork)] {
+            assert!(!covers_network(scope, net, base_org, true), "{scope:?}");
+        }
     }
 
     #[test]
