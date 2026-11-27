@@ -10,8 +10,19 @@ import { readFileSync } from "node:fs";
 const [F, B, ALLOW = ""] = process.argv.slice(2);
 const [allowName, allowValue] = ALLOW.split("=");
 // Requests the head is meant to answer differently: the base's and the head's status, and the head's body.
-const CHANGED = { "rest-pulls": [404, 200, "[]"], "rest-issue-comments": [404, 200, "[]"], "rest-issue-events": [404, 200, "[]"] };
+// A body given as a function is a check of the head's body.
+const CHANGED = { "rest-pulls": [404, 200, "[]"], "rest-issue-comments": [404, 200, "[]"], "rest-issue-events": [404, 200, "[]"],
+  // label-routes: one label by name, which main answered 404, is the label; a write-access login can be assigned.
+  "rest-label-get": [404, 200, (b) => JSON.parse(b).name === "plain"],
+  "rest-repo-assignee": [404, 204, ""],
+  // A reader's label delete, which main answered 404, is refused 403 with the route's own documentation.
+  "rest-label-delete-reader": [404, 403, (b) => JSON.parse(b).documentation_url.endsWith("/rest/issues/labels#delete-a-label")] };
+// Requests whose only allowed difference is the error body's `documentation_url`, with the head's page: a refusal a
+// route renders through `What::Deleted` named the releases page on main.
+const DOC_MOVED = { "rest-issue-comment-delete-reader": "/rest/issues/comments#delete-an-issue-comment" };
 const seed = JSON.parse(readFileSync(`${B}/seed.json`, "utf8"));
+const seed2 = JSON.parse(readFileSync(`${B}/seed2.json`, "utf8"));
+const reader = { authorization: `token ${seed2.token}`, "user-agent": "gh/2.102.1" };
 const auth = { authorization: "Basic " + Buffer.from(`x:${seed.token}`).toString("base64") };
 const tok = { authorization: `token ${seed.token}`, "user-agent": "gh/2.102.1" };
 const p = `/${seed.login}/${seed.repo}.git`;
@@ -55,10 +66,20 @@ const reqs = [
   // F137's writes: a comment edit and a lock change are served only once 32.35 is enabled, which this bed does not
   // enable; a comment delete and the assignee check are served on the head, and with no issue all stay main's 404.
   ["rest-issue-comment-1-edit", "PATCH", `/api/v3/repos/${seed.login}/${seed.repo}/issues/comments/1`, { ...tok, "content-type": "application/json" }, JSON.stringify({ body: "plain" })],
-  ["rest-issue-comment-1-delete", "DELETE", `/api/v3/repos/${seed.login}/${seed.repo}/issues/comments/1`, tok],
+  ["rest-issue-comment-1-delete", "DELETE", `/api/v3/repos/${seed.login}/${seed.repo}/issues/comments/999999`, tok],
   ["rest-issue-1-lock", "PUT", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/lock`, { ...tok, "content-type": "application/json" }, "{}"],
   ["rest-issue-1-unlock", "DELETE", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/lock`, tok],
   ["rest-issue-1-assignee", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1/assignees/${seed.login}`, tok],
+  // label-routes (`seed2.mjs`: the reader `cw2`, issue 1 with the owner's comment, the label `plain`). The update is
+  // served only once 32.36 is enabled, which this bed does not enable; the reader's deletes are refused in `decide`.
+  ["rest-label-get", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/labels/plain`, tok],
+  ["rest-label-missing", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/labels/none`, tok],
+  ["rest-label-update", "PATCH", `/api/v3/repos/${seed.login}/${seed.repo}/labels/plain`, { ...tok, "content-type": "application/json" }, JSON.stringify({ color: "000000" })],
+  ["rest-label-delete-missing", "DELETE", `/api/v3/repos/${seed.login}/${seed.repo}/labels/none`, tok],
+  ["rest-label-delete-reader", "DELETE", `/api/v3/repos/${seed.login}/${seed.repo}/labels/plain`, reader],
+  ["rest-issue-comment-delete-reader", "DELETE", `/api/v3/repos/${seed.login}/${seed.repo}/issues/comments/${seed2.comment}`, reader],
+  ["rest-repo-assignee", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/assignees/${seed.login}`, tok],
+  ["rest-repo-assignee-reader", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/assignees/cw2`, tok],
   ["rest-label-write", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/labels`, { ...tok, "content-type": "application/json" }, "LABEL"],
   ["graphql", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "{ repository(owner: \"cw\", name: \"r\") { name } }" })],
 ];
@@ -67,7 +88,14 @@ const mask = (s) => s.replace(/bx\dr\d+/g, "LABELNAME").replace(/"(node_id|id)":
 
 async function one(edge, [, m, path, h, body0]) {
   const body = body0 === "LABEL" ? JSON.stringify({ name: `bx${edge}r${Date.now() % 100000}`, color: "ffffff" }) : body0;
-  const r = await fetch(F + path, { method: m, headers: { ...h, "x-cw-edge": String(edge) }, body });
+  let r = await fetch(F + path, { method: m, headers: { ...h, "x-cw-edge": String(edge) }, body });
+  // A read the members shed under the bed's load (`read_failed`: 503, `retry-after: 1`) is asked again, as a client
+  // that honors Retry-After does: main's tier-row read for `GET assignees/{login}` was shed on two fresh beds.
+  for (let i = 0; i < 3 && m === "GET" && r.status === 503 && r.headers.get("retry-after") === "1"; i++) {
+    await r.arrayBuffer();
+    await new Promise((s) => setTimeout(s, 1000));
+    r = await fetch(F + path, { method: m, headers: { ...h, "x-cw-edge": String(edge) }, body });
+  }
   const headers = [...r.headers].filter(([k]) => !VOL.has(k)).sort();
   return { status: r.status, headers, body: mask(Buffer.from(await r.arrayBuffer()).toString("latin1")) };
 }
@@ -81,11 +109,16 @@ for (const q of reqs) {
   const allowed = !same && q[0] === allowName && a.status === b.status && a.body === b.body && ra === undefined
     && rb === allowValue && JSON.stringify(a.headers) === JSON.stringify(b.headers.filter(([k]) => k !== "retry-after"));
   const ch = CHANGED[q[0]];
-  const changed = !same && ch && a.status === ch[0] && b.status === ch[1] && b.body === ch[2];
+  const changed = !same && ch && a.status === ch[0] && b.status === ch[1]
+    && (typeof ch[2] === "function" ? ch[2](b.body) : b.body === ch[2]);
+  const doc = (x) => { try { return JSON.parse(x.body).documentation_url; } catch { return undefined; } };
+  const moved = !same && DOC_MOVED[q[0]] && a.status === b.status && JSON.stringify(a.headers) === JSON.stringify(b.headers)
+    && doc(a) !== doc(b) && doc(b)?.endsWith(DOC_MOVED[q[0]]) && a.body.replace(doc(a), doc(b)) === b.body;
   const verdict = same ? "identical" : allowed ? `differs only by retry-after: ${rb} (allowed)`
-    : changed ? `changed as intended: ${a.status} -> ${b.status}` : "DIFFERS";
+    : changed ? `changed as intended: ${a.status} -> ${b.status}`
+    : moved ? `differs only by documentation_url (intended): ${doc(a)} -> ${doc(b)}` : "DIFFERS";
   console.log(`${q[0]}: base ${a.status} retry-after ${ra ?? "-"} | head ${b.status} retry-after ${rb ?? "-"} | ${verdict} | ${a.body.slice(0, 80).replace(/\n/g, " ")}`);
-  if (!same && !allowed && !changed) {
+  if (!same && !allowed && !changed && !moved) {
     bad++;
     console.log(`  base ${JSON.stringify(a).slice(0, 400)}\n  head ${JSON.stringify(b).slice(0, 400)}`);
   }

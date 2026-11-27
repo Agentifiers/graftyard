@@ -125,7 +125,10 @@ pub async fn repo_route(
             commit_issue(c, rd, &who, op, What::Hook { created }).await?
         }
         (Method::Delete, [n]) => match id(n) {
-            Some(i) => commit_issue(c, rd, &who, IssueOp::DeleteHook { id: i }, What::Deleted).await?,
+            Some(i) => {
+                let doc = "rest/repos/webhooks#delete-a-repository-webhook";
+                crate::api::commit_deleted(c, rd, &who, IssueOp::DeleteHook { id: i }, doc).await?
+            }
             None => Reply::not_found(),
         },
         (Method::Post, [_, "pings"])

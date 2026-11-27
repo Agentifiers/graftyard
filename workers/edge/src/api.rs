@@ -1010,7 +1010,19 @@ pub(crate) async fn commit_issue_as(
     what: What,
     rid: graftyard_types::RequestId,
 ) -> Result<Reply> {
-    commit_issue_rid(c, rd, who, op, what, None, rid).await
+    commit_issue_rid(c, rd, who, op, what, None, rid, None).await
+}
+
+/// `commit_issue` of a command whose 204 is `What::Deleted`, refused with `doc`, the route's own documentation path
+/// (`Render::doc`), as GHES names it; a release's delete keeps the releases page through `commit_issue`.
+pub(crate) async fn commit_deleted(
+    c: &Ctx<'_>,
+    rd: &Read,
+    who: &Principal,
+    op: IssueOp<BlobRef>,
+    doc: &str,
+) -> Result<Reply> {
+    commit_issue_rid(c, rd, who, op, What::Deleted, None, c.rid, Some(doc)).await
 }
 
 /// `commit_issue` with the session a pull request's creator named in `X-Graftyard-Agent-Session` (AM1-WP3), which
@@ -1024,9 +1036,13 @@ async fn commit_issue_in(
     what: What,
     session: Option<graftyard_identity::SessionId>,
 ) -> Result<Reply> {
-    commit_issue_rid(c, rd, who, op, what, session, c.rid).await
+    commit_issue_rid(c, rd, who, op, what, session, c.rid, None).await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each wrapper supplies a different subset: a session, a request id, a doc"
+)]
 async fn commit_issue_rid(
     c: &Ctx<'_>,
     rd: &Read,
@@ -1035,6 +1051,7 @@ async fn commit_issue_rid(
     what: What,
     session: Option<graftyard_identity::SessionId>,
     rid: graftyard_types::RequestId,
+    doc: Option<&str>,
 ) -> Result<Reply> {
     if !c.cfg.enabled.contains(&REPO_FORMAT_ISSUES) {
         return Ok(unavailable(&format!(
@@ -1045,7 +1062,9 @@ async fn commit_issue_rid(
     let rest_issue = what == What::IssueCreated;
     let rest_comment = matches!(what, What::IssueCommentCreated { .. });
     let rest_edit = matches!(what, What::IssueCommentUpdated { .. } | What::IssueLocked);
-    let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
+    let rest_label = matches!(what, What::LabelUpdated { .. });
+    let render =
+        Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what, doc: doc.map(Into::into) };
     let mut call = IssueCall::new(op, who.clone(), rid, serde_json::to_value(&render)?);
     // 32.29 (`bf77-routes`) for a REST issue create, whose reply only a member of that release renders.
     call.rest_issue = rest_issue && !matches!(call.op, IssueOp::OpenPr { .. });
@@ -1053,6 +1072,8 @@ async fn commit_issue_rid(
     call.rest_comment = rest_comment && IssueCall::issue_comment(&call.op);
     // 32.35 (F137) for a REST comment edit or lock change, likewise; an `Edit` is always 32.35.
     call.rest_edit = rest_edit && IssueCall::edit_mark(&call.op);
+    // 32.36 (F137) for a REST label update, likewise.
+    call.rest_label = rest_label && IssueCall::label_mark(&call.op);
     // Format 32.8, once `FormatsEnable` enabled it, only for a command that can write an agent event: a pull request
     // opened by an App or with a user-to-server token (`AgentMeta` when its App is an `AgentApp`), and a review of a
     // pull request that has `AgentMeta` (`AgentGate`). Every other command keeps its format and its bytes; under a
@@ -1580,7 +1601,7 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
         }
         _ => None,
     };
-    let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
+    let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what, doc: None };
     let call = MergeCall { cmd, render: serde_json::to_value(&render)? };
     let mut body = json!({ "rid": c.rid.to_string(), "cmd": { "merge": call } });
     if let Some(a) = admit {
@@ -1913,6 +1934,7 @@ fn rest_decided(method: &Method, tail: &[&str]) -> bool {
             | (Method::Post, ["issues", _, "comments"])
             | (Method::Patch | Method::Delete, ["issues", "comments", _])
             | (Method::Put | Method::Delete, ["issues", _, "lock"])
+            | (Method::Patch | Method::Delete, ["labels", _])
             | (Method::Put | Method::Delete, ["branches", .., "protection"])
             | (Method::Post, ["git", "refs"])
             | (Method::Patch, ["git", "refs", ..])
@@ -2095,13 +2117,16 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // F137's REST edits (a comment edit, a lock change, a multi-field issue edit) are served only once 32.35 is
     // enabled; until then they answer as before (404).
     let writes_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT);
+    // F137's label update is served only once 32.36 is enabled; until then it answers as before (404).
+    let label_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_LABEL_UPDATE);
     let writes_route =
         matches!((&method, tail), (Method::Patch, ["issues", "comments", _]) | (_, ["issues", _, "lock"]));
     c.decided.set(
         rest_decided(&method, tail)
             && (routes_on || tail != ["issues"])
             && (comment_on || !comment_route)
-            && (writes_on || !writes_route),
+            && (writes_on || !writes_route)
+            && (label_on || !matches!((&method, tail), (Method::Patch, ["labels", _]))),
     );
     let merge_of = rest_merge(&method, tail);
     c.leader_reads.set(merge_of.is_some());
@@ -2343,6 +2368,35 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Err(x) => x,
             }
         }
+        // F137: one label by name. The read and the delete need no format; the update is 32.36's, served only once
+        // `FormatsEnable` enabled it, and answers as before (404) until then.
+        (Method::Get, ["labels", name]) => rest::get_label(&r, name),
+        (Method::Delete, ["labels", name]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_delete_label(&r, name) {
+                Ok(op) => commit_deleted(c, &rd, &who, to_wire(op), rest::LABEL_DELETE_DOC).await?,
+                Err(x) => x,
+            }
+        }
+        (Method::Patch, ["labels", name]) if label_on => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_update_label(&r, name, &body(req.bytes().await?)) {
+                Ok(op) => {
+                    let what = match &op {
+                        IssueOp::DefineLabel { id: Some(id), .. } => What::LabelUpdated { id: id.0.0 },
+                        _ => What::LabelCreated,
+                    };
+                    commit_issue(c, &rd, &who, to_wire(op), what).await?
+                }
+                Err(x) => x,
+            }
+        }
         (Method::Post, ["pulls", n, "comments"]) => {
             let who = match need(&who) {
                 Ok(w) => w,
@@ -2468,7 +2522,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Err(x) => return Ok(x),
             };
             match rest::plan_delete_issue_comment(&r, cid) {
-                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::Deleted).await?,
+                Ok(op) => commit_deleted(c, &rd, &who, to_wire(op), rest::ISSUE_COMMENT_DELETE_DOC).await?,
                 Err(x) => x,
             }
         }

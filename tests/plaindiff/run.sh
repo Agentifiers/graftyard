@@ -50,4 +50,5 @@ pid=$(pgrep -f -n "wrangler dev --port $P ")
 stop() { [ -n "$pid" ] && { kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null; }; }
 trap stop EXIT
 [ -f "$B/seed.json" ] || { echo "the bed did not seed"; exit 1; }
+node "$here/seed2.mjs" "http://127.0.0.1:$P" "$B" || exit 1
 node "$here/diff.mjs" "http://127.0.0.1:$P" "$B" "${1:-}"

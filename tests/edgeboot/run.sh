@@ -70,7 +70,9 @@ for p in "/api/v3/repos/o/r" "/api/v3/repos/o/r/pulls?state=all&per_page=5" "/ap
   "/api/v3/repos/o/r/issues/1/comments" "/api/v3/repos/o/r/issues/comments?sort=updated" \
   "/api/v3/repos/o/r/issues/events" "/api/v3/repos/o/r/issues/1/timeline" "/api/graftyard/v1/release/entries?after=0" "/o/r.git/info/refs?service=git-upload-pack" \
   "/o/r.git/git-upload-pack" "PATCH /api/v3/repos/o/r/issues/1" "PATCH /api/v3/repos/o/r/issues/comments/1" "DELETE /api/v3/repos/o/r/issues/comments/1" \
-  "PUT /api/v3/repos/o/r/issues/1/lock" "DELETE /api/v3/repos/o/r/issues/1/lock" "/api/v3/repos/o/r/issues/1/assignees/o"; do
+  "PUT /api/v3/repos/o/r/issues/1/lock" "DELETE /api/v3/repos/o/r/issues/1/lock" "/api/v3/repos/o/r/issues/1/assignees/o" \
+  "/api/v3/repos/o/r/labels/bug" "PATCH /api/v3/repos/o/r/labels/bug" "DELETE /api/v3/repos/o/r/labels/bug" \
+  "/api/v3/repos/o/r/assignees/o"; do
   m=GET; case "${p##*/}" in git-upload-pack|comments) m=POST;; esac
   # A request written "METHOD path" names its method: F141's issue PATCH, through its 32.33 gate, and F137's comment
   # edit and delete, the lock, through 32.35's (both off here: 404, never a trap).
