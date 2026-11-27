@@ -1,0 +1,13 @@
+{
+ "commands": [
+  "pr edit 2 -R o/r -m v1.0"
+ ],
+ "operation": "PullRequestByNumber",
+ "query": "\n\tquery PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\tpullRequest(number: $pr_number) {id,author{login,...on User{id,name}},url,title,body,baseRefName,reviewRequests(first: 100) {nodes {requestedReviewer {__typename,...on User{login,name},...on Bot{login},...on Team{organization{login}name,slug}}}},labels(first:100){nodes{id,name,description,color},totalCount},milestone{number,title,description,dueOn},assignees(first:100){nodes{id,login,name,databaseId},totalCount},number}\n\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "owner": "o",
+  "pr_number": 2,
+  "repo": "r"
+ }
+}

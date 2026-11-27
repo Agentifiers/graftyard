@@ -166,11 +166,16 @@ impl Chain {
 
     /// Decides `ops` in order as one entry on member 0's tiers, as the leader does, and commits what passed.
     pub fn commit_all(&mut self, ops: Vec<(i64, IssueOp)>) -> Vec<Result<IssueOut, IssueErr>> {
+        self.commit_all_as(ops.into_iter().map(|(a, op)| (who(a), op)).collect())
+    }
+
+    /// `commit_all` for any caller, such as an installation token's.
+    pub fn commit_all_as(&mut self, ops: Vec<(Principal, IssueOp)>) -> Vec<Result<IssueOut, IssueErr>> {
         let m = &self.members[0];
         let mut view = RepoView::new(tiers(), &m.core, &m.meta, self.now);
         let (mut events, mut outs) = (Vec::new(), Vec::new());
         for (actor, op) in ops {
-            let cmd = IssueCmd { op, actor: who(actor), request: RequestId(Ulid(self.next_request)) };
+            let cmd = IssueCmd { op, actor, request: RequestId(Ulid(self.next_request)) };
             self.next_request += 1;
             let wanted: Vec<ChainId> = cmd.deps(&view).into_iter().collect();
             let d: Vec<_> = wanted.iter().map(|c| self.deps.iter().find(|(k, _)| k == c).unwrap().clone()).collect();
@@ -220,6 +225,51 @@ impl Chain {
 
     pub fn commit(&mut self, actor: i64, op: IssueOp) -> Result<IssueOut, IssueErr> {
         self.commit_all(vec![(actor, op)]).pop().unwrap()
+    }
+
+    pub fn commit_as(&mut self, actor: &Principal, op: IssueOp) -> Result<IssueOut, IssueErr> {
+        self.commit_all_as(vec![(actor.clone(), op)]).pop().unwrap()
+    }
+
+    /// App `app` installed on the owner for this repository with `perms`, and the caller its installation token: the
+    /// installation's row on the owner's `Authz` and the token's `jti` shard, as the leader reads them.
+    pub fn install_app(&mut self, app: i64, perms: &[(&str, graftyard_identity::Access)]) -> Principal {
+        use graftyard_identity::{
+            AppId, InstallationId, InstallationRow, Jti, Kid, PermissionSet, RepoScope, stateless::InstallationClaims,
+        };
+        let permissions = PermissionSet(perms.iter().map(|(k, a)| (Box::from(*k), *a)).collect());
+        let claims = InstallationClaims {
+            app: AppId(DbId(app)),
+            installation: InstallationId(DbId(app + 1)),
+            repos: RepoScope::Selected(smallvec![REPO]),
+            permissions: permissions.clone(),
+            jti: Jti(Ulid(0x0193_0000_0000_0000_0000_0000_0000_0000 + app as u128)),
+            iat: self.now,
+            exp: Timestamp(self.now.0 + 3_600_000),
+            kid: Kid(1),
+            task: None,
+        };
+        let row = InstallationRow { app: claims.app, repos: claims.repos.clone(), permissions };
+        for (c, d) in &mut self.deps {
+            if let (ChainId::Authz(o), IdentityDep::Authz(a)) = (c, d)
+                && *o == AccountId(DbId(OWNER))
+            {
+                a.apply(&AuthzEvent::Installation {
+                    id: claims.installation,
+                    row: Some(row.clone()),
+                    not_before: Timestamp(0),
+                });
+            }
+        }
+        let p = Principal::installation(&claims);
+        for c in credential_chains(&p.credential_shard(), None) {
+            if let ChainId::Tokens(s) = c
+                && !self.deps.iter().any(|(k, _)| *k == c)
+            {
+                self.deps.push((c, IdentityDep::Tokens(TokensFold::new(s))));
+            }
+        }
+        p
     }
 
     /// An outside collaborator's row, as an accepted invitation's entry writes it.

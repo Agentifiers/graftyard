@@ -41,6 +41,12 @@ pub trait Directory {
     fn agent_app(&self, _app: AppId) -> bool {
         false
     }
+    /// Whether `FormatsEnable` enabled 32.37, so GraphQL serves `Repository.milestones` and `milestone`; until then
+    /// they are `undefinedField`, as REST's milestone reads are 404. A member recording a narrow read records their
+    /// rows either way, and the edge's directory decides.
+    fn milestones(&self) -> bool {
+        true
+    }
     /// The selection `key` names: `select`'s, over the tiers, unless this directory holds the one a member made over
     /// its whole fold (`crate::narrow`), because the rows the edge holds are only the selected ones.
     fn pick(&self, _key: &str, select: &mut dyn FnMut() -> Pick) -> Pick {
