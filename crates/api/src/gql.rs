@@ -1183,7 +1183,8 @@ impl Obj for Release<'_> {
             "immutable" => leaf(false),
             "createdAt" => leaf(iso(self.row.created)),
             "publishedAt" => leaf(self.row.published.map(iso)),
-            "author" => account(r, rec.author),
+            // `Release.author` is a `User`, which an App's bot account (F160, 32.38) is not: `null`, as before.
+            "author" => account(r, rec.author.filter(|a| graftyard_identity::AppId::of_bot(*a).is_none())),
             _ => return None,
         })
     }

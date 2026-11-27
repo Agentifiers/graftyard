@@ -658,9 +658,9 @@ impl IssueCmd {
     /// `decide`, where `agent` says the command is format 32.8 (`crate::repo::REPO_FORMAT_AGENT`), so its entry may
     /// carry `AgentMeta`, `AgentGate`, and `AgentPolicy`. The agent refusals write nothing and apply in any format.
     /// `reviews` says it is format 32.22 (`call::REPO_FORMAT_REVIEWS`), so a review comment outside a review submits
-    /// its review as `ReviewEvent::SingleComment`. `bot_author` says it is format 32.29 (`call::REPO_FORMAT_ROUTES`) or
-    /// 32.32 (`call::REPO_FORMAT_ISSUE_COMMENT`), so an App's `OpenIssue` or issue `Comment` is authored by its bot
-    /// account (`AppId::bot`). `pause` says it is format 32.33 (`call::REPO_FORMAT_HOST_PAUSE`) and holds the index the
+    /// its review as `ReviewEvent::SingleComment`. `bot_author` says it is format 32.29 (`call::REPO_FORMAT_ROUTES`),
+    /// 32.32 (`call::REPO_FORMAT_ISSUE_COMMENT`) or 32.38 (`call::REPO_FORMAT_APP_AUTHOR`), so an App's `OpenIssue`,
+    /// `Comment`, release create or asset upload is authored by its bot account (`AppId::bot`). `pause` says it is format 32.33 (`call::REPO_FORMAT_HOST_PAUSE`) and holds the index the
     /// entry follows: a title or body edit by a caller below write pauses the issue's live Graftyard-run tasks, and a
     /// human writer's `Assign` that adds the controller's bot resumes its paused ones with that index as their snapshot,
     /// each in the command's own events.
@@ -718,6 +718,11 @@ impl IssueCmd {
             }
         };
         let me = actor_id(&self.actor);
+        // Who a command `bot_author` marks authors: an App's bot account (formats 32.29, 32.32, 32.38), else `me`.
+        let by = match self.actor.actor {
+            Actor::App { app, .. } if bot_author => Some(app.bot()),
+            _ => me,
+        };
         let need = |p: RepoPermission| if perm >= Some(p) { Ok(()) } else { Err(IssueErr::Forbidden) };
         let author_or = |author: Option<AccountId>, p: RepoPermission| {
             if author.is_some() && author == me { Ok(()) } else { need(p) }
@@ -746,13 +751,9 @@ impl IssueCmd {
                 let n = IssueNumber(v.last_number() + 1);
                 // A REST create by an App (32.29) is its bot's, as GHES shows `github-actions[bot]` as `user`; an
                 // App's GraphQL `createIssue` (32.9) keeps its author-less bytes.
-                let author = match self.actor.actor {
-                    Actor::App { app, .. } if bot_author => Some(app.bot()),
-                    _ => me,
-                };
                 let capture = IssueCapture {
                     id: v.next_id(Tier::Core)?,
-                    author,
+                    author: by,
                     title: title.clone(),
                     body: body.clone(),
                     labels: labels.clone(),
@@ -932,7 +933,7 @@ impl IssueCmd {
                 // commenter who holds one gets no review there.
                 let single = match on {
                     CommentTarget::Review { n, review: None, at } => {
-                        let who = int(me.map_or(0, |a| a.0.0));
+                        let who = int(by.map_or(0, |a| a.0.0));
                         let verdict =
                             get_rec::<crate::tiers::VerdictRow>(v.core(), "review_verdict", &[n_key(*n), who]);
                         match verdict.map(|r| r.state) {
@@ -954,22 +955,24 @@ impl IssueCmd {
                     Some((n, review, at)) => CommentTarget::Review { n: *n, review: Some(*review), at: at.clone() },
                     None => on.clone(),
                 };
-                // A REST issue comment by an App (32.32) is its bot's, as an issue it opens through REST is (32.29).
-                let author = match (self.actor.actor, &on) {
-                    (Actor::App { app, .. }, CommentTarget::Issue(_)) if bot_author => Some(app.bot()),
-                    _ => me,
+                // A REST issue comment by an App (32.32) is its bot's, as an issue it opens through REST is (32.29), and
+                // so is its review comment and that comment's review (32.38).
+                let ev = CommentEvent::Created {
+                    id: CommentId(id),
+                    on,
+                    author: by,
+                    body: body.clone(),
+                    reply_to: *reply_to,
                 };
-                let ev =
-                    CommentEvent::Created { id: CommentId(id), on, author, body: body.clone(), reply_to: *reply_to };
                 let mut evs = one(RepoEvent::Comment(ev));
                 if let Some((n, review, at)) = single {
                     evs.push(RepoEvent::Review(if reviews {
-                        ReviewEvent::SingleComment { id: review, n, reviewer: me, commit: at.commit }
+                        ReviewEvent::SingleComment { id: review, n, reviewer: by, commit: at.commit }
                     } else {
                         ReviewEvent::Submitted {
                             id: review,
                             n,
-                            reviewer: me,
+                            reviewer: by,
                             state: ReviewState::Commented,
                             commit: at.commit,
                             body: "".into(),
@@ -1462,7 +1465,8 @@ impl IssueCmd {
                     Some(i) => *i,
                     None => RepoReleaseId(v.next_id(if create.is_some() { Tier::Core } else { Tier::Metadata })?),
                 };
-                let author = old.map_or(me, |o| o.rec.author);
+                // An App's release create is its bot's (32.38); an update keeps the release's author.
+                let author = old.map_or(by, |o| o.rec.author);
                 let record = ReleaseRecord {
                     tag: tag.clone(),
                     target,
@@ -1500,7 +1504,8 @@ impl IssueCmd {
                     content_type: content_type.clone(),
                     blob: blob.blob(),
                 };
-                let ev = RepoEvent::ReleaseAsset { release: *release, id, asset: Some(asset), actor: me };
+                // An App's upload is its bot's (32.38): the event's actor is the asset's uploader.
+                let ev = RepoEvent::ReleaseAsset { release: *release, id, asset: Some(asset), actor: by };
                 Ok((one(ev), IssueOut::Id(id.0)))
             }
             IssueOp::DeleteAsset { id } => {

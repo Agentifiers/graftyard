@@ -1102,6 +1102,12 @@ async fn commit_issue_rid(
     // issue has a task: its entry may pause or resume the issue's Graftyard-run tasks, and carries a body edit's leases.
     call.pause = IssueCall::pausable(&call.op)
         && c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_HOST_PAUSE);
+    // 32.38 (F160) for an App's release create, asset upload or review comment, which `decide` then authors by its bot;
+    // a review comment's single-comment review rides it as 32.22's does.
+    call.app_bot = matches!(who.actor, Actor::App { .. })
+        && IssueCall::bot_mark(&call.op)
+        && c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_APP_AUTHOR);
+    call.reviews |= call.app_bot && IssueCall::single_comment(&call.op);
     // F155: a row this command's `decide` writes may name the App's bot account, which the tiers did not name when the
     // edge read its logins; its login goes into the render, or the reply names `ghost[bot]`.
     if let Some(app) = call.names_bot()

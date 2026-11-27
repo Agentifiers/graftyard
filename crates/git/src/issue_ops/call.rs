@@ -96,6 +96,13 @@ pub const REPO_FORMAT_LABEL_UPDATE: Format = Format { family: 0x20, version: 36 
 /// commits, and the edge sends it only once `FormatsEnable` enabled it. It is main's highest repository format plus one
 /// when it merged ("`format-order`").
 pub const REPO_FORMAT_MILESTONES: Format = Format { family: 0x20, version: 37 };
+/// F160 (`decisions/DECISIONS.md`, "`app-bot`"): an App's release create, asset upload or pull-request review comment
+/// (`IssueCall::bot_mark`), which `decide` authors by the App's bot account (`AppId::bot`) as GHES names it, where an
+/// earlier format authors none. The edge marks it (`IssueCall::app_bot`) once `FormatsEnable` enabled it, so a member
+/// that would author it `null` refuses it before it commits; an entry committed before keeps its `null`. It always
+/// carries an App's claims, a task's included, and a review comment's single-comment review as 32.22 does. It is
+/// main's highest repository format plus one when it merged ("`format-order`").
+pub const REPO_FORMAT_APP_AUTHOR: Format = Format { family: 0x20, version: 38 };
 /// AM3-WP2a, base forks (`build/BUILD-PLAN.md`): `RepoEvent::Genesis` (tag 50), whose fork's core `fork` row names the
 /// repository's network. A member that cannot read it refuses it before it commits, and the edge sends it only once
 /// `FormatsEnable` enabled it. It is above every format on main when it merged, not 32.31: an entry takes the highest
@@ -137,6 +144,8 @@ pub struct IssueCall {
     /// Format 32.36 (`REPO_FORMAT_LABEL_UPDATE`): a REST label update (`IssueCall::label_mark`), whose reply only a
     /// 32.36 member renders.
     pub rest_label: bool,
+    /// Format 32.38 (`REPO_FORMAT_APP_AUTHOR`): an App's command `bot_mark` names, authored by its bot.
+    pub app_bot: bool,
     /// What the leader renders from the `&Acked`, opaque here (`graftyard_api::hosted::Render`).
     pub render: Value,
     /// The blob `op` names, rebuilt by the member that admits the command. Never sent.
@@ -178,6 +187,10 @@ impl IssueCall {
         // 32.37 likewise: a milestone command, or an edit or create that sets one.
         if self.op.is_milestone() {
             return REPO_FORMAT_MILESTONES;
+        }
+        // 32.38 likewise: an App's release create, asset upload or review comment, authored by its bot.
+        if self.app_bot {
+            return REPO_FORMAT_APP_AUTHOR;
         }
         // 32.36 likewise: a REST label update.
         if self.rest_label {
@@ -260,6 +273,7 @@ impl IssueCall {
             pause: false,
             rest_edit: false,
             rest_label: false,
+            app_bot: false,
         }
     }
 
@@ -283,6 +297,17 @@ impl IssueCall {
     /// Whether `op` is a command 32.36 marks when it comes from REST: a `DefineLabel` of an existing label's id.
     pub fn label_mark<B>(op: &IssueOp<B>) -> bool {
         matches!(op, IssueOp::DefineLabel { id: Some(_), .. })
+    }
+
+    /// Whether `op` is a command 32.38 marks when an App sends it: a release create, an asset upload, or a pull-request
+    /// review comment, each of which GHES authors by the App's bot. A release update keeps its author.
+    pub fn bot_mark<B>(op: &IssueOp<B>) -> bool {
+        matches!(
+            op,
+            IssueOp::PutRelease { id: None, .. }
+                | IssueOp::PutAsset { .. }
+                | IssueOp::Comment { on: crate::issues::CommentTarget::Review { .. }, .. }
+        )
     }
 
     /// Whether `op` is a review comment outside a review, which 32.22 gives a `SingleComment` review. Never a lease,
@@ -394,6 +419,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             REPO_FORMAT_ISSUE_EDIT,
             REPO_FORMAT_LABEL_UPDATE,
             REPO_FORMAT_MILESTONES,
+            REPO_FORMAT_APP_AUTHOR,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
@@ -425,7 +451,9 @@ impl<'de> Deserialize<'de> for IssueCall {
         let label = fmt(REPO_FORMAT_LABEL_UPDATE);
         // 32.37 carries what 32.35 does.
         let milestones = fmt(REPO_FORMAT_MILESTONES);
-        let assign = fmt(REPO_FORMAT_ASSIGN) || comment || pause || edit || label || milestones;
+        // 32.38 always carries an App's claims, a task claim included.
+        let bots = fmt(REPO_FORMAT_APP_AUTHOR);
+        let assign = fmt(REPO_FORMAT_ASSIGN) || comment || pause || edit || label || milestones || bots;
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         let task_claim = w.claims.as_ref().is_some_and(|c| c.task.is_some());
         if !tasks && (w.agent_session.is_some() || (task_claim && !assign)) {
@@ -435,7 +463,7 @@ impl<'de> Deserialize<'de> for IssueCall {
         {
             (true, Some(c)) => Principal::installation(&c),
             (false, Some(_)) | (true, None)
-                if !agent && !tasks && !hooks && !reviews && !secrets && !routes && !assign =>
+                if bots || !agent && !tasks && !hooks && !reviews && !secrets && !routes && !assign =>
             {
                 return Err(serde::de::Error::custom(
                     "claims ride only in format 32.8 or 32.9, and 32.9 always has them",
@@ -454,12 +482,13 @@ impl<'de> Deserialize<'de> for IssueCall {
         // In 32.14 the tag carries the mark, and `agent` is implied (`agent_events`).
         c.leases = leases && !c.op.is_lease();
         c.agent = agent;
-        c.reviews = reviews && IssueCall::single_comment(&c.op);
+        c.reviews = (reviews || bots) && IssueCall::single_comment(&c.op);
         c.rest_issue = routes && matches!(c.op, IssueOp::OpenIssue { .. });
         c.rest_comment = comment && IssueCall::issue_comment(&c.op);
         c.pause = pause && IssueCall::pausable(&c.op);
         c.rest_edit = edit && IssueCall::edit_mark(&c.op);
         c.rest_label = label && IssueCall::label_mark(&c.op);
+        c.app_bot = bots && IssueCall::bot_mark(&c.op);
         // One form per command: a format that does not match the command is malformed.
         let got = c.format();
         if !fmt(got) {
@@ -530,23 +559,25 @@ impl IssueCall {
         Ok((evs, IssueCallOut { out, render: self.render.clone(), authz }))
     }
 
-    /// `IssueCmd::decide_in`'s `bot_author`: formats 32.29 and 32.32, and a create with a milestone (32.37), which is
-    /// authored as 32.29's is.
+    /// `IssueCmd::decide_in`'s `bot_author`: formats 32.29, 32.32 and 32.38, and a create with a milestone (32.37),
+    /// which is authored as 32.29's is.
     fn bot_author(&self) -> bool {
-        matches!(self.format(), REPO_FORMAT_ROUTES | REPO_FORMAT_ISSUE_COMMENT)
+        matches!(self.format(), REPO_FORMAT_ROUTES | REPO_FORMAT_ISSUE_COMMENT | REPO_FORMAT_APP_AUTHOR)
             || matches!(self.op, IssueOp::OpenIssueWithMilestone { .. })
     }
 
     /// The App whose bot account (`AppId::bot`) this command's `decide` may name in a row its reply renders, so the edge
     /// reads the bot's login into the render first (F155): an App's `OpenIssue` or issue `Comment` under `bot_author`,
-    /// its create with a milestone, its commit status, and its milestone create. A milestone update keeps the creator
-    /// the tiers already name, and an `Assign`'s actor is never rendered (`tiers::assigned_by` drops bots).
+    /// its create with a milestone, its commit status, its milestone create, and under 32.38 its release create, asset
+    /// upload and review comment. A milestone or release update keeps the author the tiers already name, and an
+    /// `Assign`'s actor is never rendered (`tiers::assigned_by` drops bots).
     pub fn names_bot(&self) -> Option<graftyard_identity::AppId> {
         let Actor::App { app, .. } = self.actor.actor else { return None };
         let named = match &self.op {
-            IssueOp::OpenIssue { .. } | IssueOp::Comment { on: crate::issues::CommentTarget::Issue(_), .. } => {
-                self.bot_author()
-            }
+            IssueOp::OpenIssue { .. }
+            | IssueOp::Comment { .. }
+            | IssueOp::PutRelease { id: None, .. }
+            | IssueOp::PutAsset { .. } => self.bot_author(),
             IssueOp::OpenIssueWithMilestone { .. }
             | IssueOp::RecordStatus(_)
             | IssueOp::DefineMilestone { n: None, .. } => true,

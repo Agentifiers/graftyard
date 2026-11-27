@@ -854,6 +854,7 @@ impl Family for Repo {
             git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT,
             git::issue_ops::call::REPO_FORMAT_LABEL_UPDATE,
             git::issue_ops::call::REPO_FORMAT_MILESTONES,
+            git::issue_ops::call::REPO_FORMAT_APP_AUTHOR,
             #[cfg(feature = "test-format")]
             git::repo::REPO_FORMAT_TEST,
         ]

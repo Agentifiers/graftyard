@@ -859,3 +859,173 @@ fn an_apps_reply_names_its_bot_by_the_login_the_edge_read() {
         }
     }
 }
+
+/// F160 (32.38): an App's release create, asset upload and review comment are authored by its bot account, as GHES
+/// names it, in the 201 and in every later REST read; its review comment's review too. GraphQL's `Release.author`, a
+/// `User`, stays `null` for it. The same commands sent unmarked (an edge before 32.38, so format 32.9) keep `null`, and those committed
+/// rows stay `null` after 32.38 commands land beside them: replay never rewrites them. A user's commands never take the
+/// mark, and an App's release update keeps the release's author.
+#[test]
+fn an_apps_release_asset_and_review_comment_name_its_bot_under_32_38() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_ok};
+    use graftyard_git::blob::{BlobRef, BlobStore};
+    use graftyard_git::issue_ops::call::{REPO_FORMAT_APP_AUTHOR, REPO_FORMAT_APP_CALLS, REPO_FORMAT_REVIEWS};
+    use graftyard_git::issues::{CommentTarget, DiffSide, LineAnchor, RepoReleaseId};
+    type Op = IssueOp<BlobRef>;
+    let mut w = World::new();
+    w.set("refs/heads/feature", oid(30));
+    let n = IssueNumber(number(&open_pr(&mut w, user(WRITER), "refs/heads/feature", false)));
+    let bot = PLAIN.bot();
+    let logins: std::collections::BTreeMap<i64, String> =
+        [(OWNER, "o".to_owned()), (WRITER, "alice".to_owned()), (bot.0.0, "plain-app[bot]".to_owned())].into();
+    let host = Host::new("graftyard.example", false).unwrap();
+    let dir = HostedDir { home: Some(at(REPO)), logins: logins.clone(), ..HostedDir::default() };
+    let render =
+        |what: What| Render { host: "graftyard.example".into(), isolation: false, dir: dir.clone(), what, doc: None };
+    let release = |tag: &str, id: Option<i64>| Op::PutRelease {
+        id: id.map(|i| RepoReleaseId(DbId(i))),
+        tag: name(tag),
+        target: oid(1),
+        name: tag.into(),
+        body: "".into(),
+        draft: false,
+        prerelease: false,
+        latest: true,
+    };
+    // An upload's blob, placed and confirmed as the admitting member does (`IssueCall::confirm`).
+    let (sites, buckets) = {
+        use graftyard_git::mem::MemBucket;
+        use graftyard_types::{Site, SiteLink, SiteTable};
+        let site = |id: u8, region| Site {
+            id: SiteId(id),
+            script: format!("s{id}"),
+            account: "x".into(),
+            region,
+            jurisdiction: None,
+            bucket: format!("b{id}"),
+            release: None,
+            link: SiteLink::Binding { member_class: "Member".into() },
+            spare: false,
+        };
+        (SiteTable(vec![site(0, Region::Enam), site(1, Region::Weur)]), [MemBucket::default(), MemBucket::default()])
+    };
+    let bk = [(SiteId(0), &buckets[0]), (SiteId(1), &buckets[1])];
+    let store = BlobStore { sites: &sites, buckets: &bk, copies: graftyard_git::Copies::TwoRegions };
+    let meta = graftyard_git::ObjectMeta { chain: ChainId::Repo(REPO), request: RequestId(Ulid(1)) };
+    let placed = futures_executor::block_on(store.place(REPO, b"asset", None, meta)).unwrap();
+    let asset = |rel: DbId, file: &str| Op::PutAsset {
+        release: RepoReleaseId(rel),
+        name: file.into(),
+        label: None,
+        content_type: "application/octet-stream".into(),
+        blob: placed.blob(),
+    };
+    let comment = |line| Op::Comment {
+        on: CommentTarget::Review {
+            n,
+            review: None,
+            at: LineAnchor { commit: oid(30), path: "a.rs".into(), line, start_line: None, side: DiffSide::Right },
+        },
+        body: "looks off".into(),
+        reply_to: None,
+    };
+    // Each command as the edge marks it: `app_bot` (and a review comment's 32.22 review) only once 32.38 is enabled.
+    let send = |w: &mut World, op: Op, who: Principal, on: bool, what: What| {
+        let mut call = IssueCall::new(op, who, RequestId(Ulid(0)), serde_json::to_value(render(what)).unwrap());
+        call.app_bot = on && matches!(call.actor.actor, Actor::App { .. }) && IssueCall::bot_mark(&call.op);
+        call.reviews = (on || matches!(call.actor.actor, Actor::User(_))) && IssueCall::single_comment(&call.op);
+        // The edge reads the bot's login for exactly the commands 32.38 authors by it (`names_bot`, F155).
+        assert_eq!(call.names_bot().is_some(), call.app_bot, "{:?}", call.op);
+        let format = call.format();
+        // The leader decides what crosses the binding, so that is what commits.
+        let mut wire: IssueCall = serde_json::from_value(serde_json::to_value(&call).unwrap()).unwrap();
+        assert_eq!(wire, call, "every mark crosses the binding");
+        if let Op::PutAsset { .. } = wire.op {
+            wire.confirm(futures_executor::block_on(store.confirm(REPO, placed.blob().oid, 5)).unwrap());
+        }
+        match w.commit_all_acked(vec![RepoCmd::Issue(Box::new(wire))]).pop().unwrap() {
+            Ok(a) => match &a.out {
+                RepoOut::Issue(c) => (a.map(|_| c.out.clone()), format),
+                x => panic!("{x:?}"),
+            },
+            Err(e) => panic!("{e:?}"),
+        }
+    };
+    let id = |a: &graftyard_raft::Acked<IssueOut>| match a.out {
+        IssueOut::Id(d) => d,
+        ref o => panic!("{o:?}"),
+    };
+
+    // Before 32.38: format 32.9, authored by no one, as on main.
+    let (old_rel, f) = send(&mut w, release("refs/tags/v0", None), app(PLAIN), false, What::ReleaseCreated);
+    assert_eq!(f, REPO_FORMAT_APP_CALLS);
+    let old_rel = id(&old_rel);
+    let (old_asset, _) = send(&mut w, asset(old_rel, "old.bin"), app(PLAIN), false, What::ReleaseCreated);
+    let old_asset = id(&old_asset);
+    let (old_comment, f) = send(&mut w, comment(1), app(PLAIN), false, What::ReviewCommentCreated { n: n.0 });
+    assert_eq!(f, REPO_FORMAT_APP_CALLS, "an App's review comment before 32.38 has no single-comment review mark");
+    let old_comment = id(&old_comment);
+
+    // 32.38: the App's bot, in each 201.
+    let (rel, f) = send(&mut w, release("refs/tags/v1", None), app(PLAIN), true, What::ReleaseCreated);
+    assert_eq!(f, REPO_FORMAT_APP_AUTHOR);
+    let f1 = w.fold();
+    let created = render_ok(&render(What::ReleaseCreated), &rel, &f1.core, &f1.meta).reply();
+    assert_eq!((created.status, created.value()["author"]["login"].clone()), (201, json!("plain-app[bot]")));
+    assert_eq!(created.value()["author"]["type"], json!("Bot"));
+    let rel = id(&rel);
+    let (up, f) = send(&mut w, asset(rel, "app.bin"), app(PLAIN), true, What::ReleaseCreated);
+    assert_eq!(f, REPO_FORMAT_APP_AUTHOR);
+    let f2 = w.fold();
+    let uploaded = render_ok(&render(What::ReleaseCreated), &up, &f2.core, &f2.meta).reply();
+    assert_eq!((uploaded.status, uploaded.value()["uploader"]["login"].clone()), (201, json!("plain-app[bot]")));
+    let up = id(&up);
+    let (rc, f) = send(&mut w, comment(2), app(PLAIN), true, What::ReviewCommentCreated { n: n.0 });
+    assert_eq!(f, REPO_FORMAT_APP_AUTHOR);
+    let f3 = w.fold();
+    let commented = render_ok(&render(What::ReviewCommentCreated { n: n.0 }), &rc, &f3.core, &f3.meta).reply();
+    assert_eq!((commented.status, commented.value()["user"]["login"].clone()), (201, json!("plain-app[bot]")));
+    assert_eq!(commented.value()["user"]["type"], json!("Bot"));
+    let rc = id(&rc);
+    // An App's release update keeps the release's author, and a user's commands take no mark.
+    let (_, f) = send(&mut w, release("refs/tags/v0", Some(old_rel.0)), app(PLAIN), true, What::ReleaseUpdated);
+    assert_eq!(f, REPO_FORMAT_APP_CALLS, "an update is not 32.38");
+    let (_, f) = send(&mut w, release("refs/tags/v1", Some(rel.0)), user(WRITER), true, What::ReleaseUpdated);
+    assert_ne!(f, REPO_FORMAT_APP_AUTHOR, "a user's update of the App's release keeps its bot author");
+    let (by_user, f) = send(&mut w, release("refs/tags/v2", None), user(WRITER), true, What::ReleaseCreated);
+    assert_ne!(f, REPO_FORMAT_APP_AUTHOR);
+    let (_, f) = send(&mut w, comment(3), user(WRITER), true, What::ReviewCommentCreated { n: n.0 });
+    assert_eq!(f, REPO_FORMAT_REVIEWS);
+
+    // Later reads, from the fold with every entry applied: the 32.38 rows name the bot, the 32.9 rows stay `null`.
+    let f = w.fold();
+    let r = Repo { host: &host, at: at(REPO), core: &f.core, meta: &f.meta, dir: &dir };
+    let rel_of = |i: DbId| graftyard_api::release::get(&r, i.0).value().clone();
+    assert_eq!(rel_of(rel)["author"]["login"], json!("plain-app[bot]"));
+    assert_eq!(rel_of(rel)["assets"][0]["uploader"]["login"], json!("plain-app[bot]"));
+    assert_eq!(rel_of(old_rel)["author"], json!(null), "a 32.9 release stays authorless, its update too");
+    assert_eq!(rel_of(old_rel)["assets"][0]["uploader"], json!(null), "a 32.9 upload stays null");
+    assert_eq!(rel_of(id(&by_user))["author"]["login"], json!("alice"));
+    let _ = (up, old_asset);
+    let comments = graftyard_api::rest::list_review_comments(&r, &n.0.to_string(), "").value().clone();
+    let user_of = |c: DbId| {
+        comments.as_array().unwrap().iter().find(|v| v["id"] == json!(c.0)).map(|v| v["user"]["login"].clone())
+    };
+    assert_eq!(user_of(rc), Some(json!("plain-app[bot]")));
+    assert_eq!(user_of(old_comment), Some(json!(null)), "a 32.9 review comment stays authorless");
+    // The App's comment's single-comment review is its bot's too; the 32.9 one wrote a review with no reviewer.
+    let reviews = graftyard_api::rest::list_reviews(&r, &n.0.to_string(), "").value().clone();
+    let by_bot: Vec<_> =
+        reviews.as_array().unwrap().iter().filter(|v| v["user"]["login"] == "plain-app[bot]").collect();
+    assert_eq!(by_bot.len(), 1, "{reviews}");
+    assert_eq!(by_bot[0]["state"], json!("COMMENTED"));
+    // GraphQL's `Release.author` is a `User`, so a bot author stays `null` there; a user's release names its user.
+    let gql = |tag: &str| {
+        let q = format!(
+            "{{ repository(owner: \"o\", name: \"r7\") {{ release(tagName: \"{tag}\") {{ author {{ login }} }} }} }}"
+        );
+        let req = graftyard_api::exec::Request::parse(&q, None, None).unwrap();
+        graftyard_api::graphql::query(&req, Some(&r))["data"]["repository"]["release"]["author"].clone()
+    };
+    assert_eq!((gql("v1"), gql("v2")), (json!(null), json!({ "login": "alice" })));
+}

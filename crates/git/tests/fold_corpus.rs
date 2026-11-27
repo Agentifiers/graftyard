@@ -15,8 +15,8 @@ use graftyard_raft::{EntryBody, Fold, Format, LogEntry, PREV_ZERO, Term, digest}
 use graftyard_types::{AccountId, DbId, Index, RepoId, Tier, Timestamp};
 use serde_json::Value;
 
-/// The newest repository format: version 37, milestones (`REPO_FORMAT_MILESTONES`).
-const NEWEST: u16 = 37;
+/// The newest repository format: version 38, F160's App-authored rows (`REPO_FORMAT_APP_AUTHOR`).
+const NEWEST: u16 = 38;
 
 /// The first format version a kind can be committed at, by wire tag: the version that introduced it
 /// (`crate::repo::RepoEvent`'s comments). Tags 0 to 26, Milestones 1 and 2, from version 1.
