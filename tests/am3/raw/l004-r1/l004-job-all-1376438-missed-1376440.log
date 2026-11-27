@@ -1,0 +1,15 @@
+2026-11-27T06:36:21.2257893Z Current runner version: '2.338.2'
+2026-11-27T06:36:21.2273868Z Runner name: 'graftyard-hosted-4b226aa2'
+2026-11-27T06:36:21.2274546Z Machine name: '8f6967f9b4f399cc3f95e9e8940a2ac77c37ec4c8ba55a2a083a581c228aadc'
+2026-11-27T06:36:21.2280487Z Prepare workflow directory
+2026-11-27T06:36:21.3239976Z Prepare all required actions
+2026-11-27T06:36:21.3379123Z Complete job name: missed
+2026-11-27T06:36:21.4924703Z ##[group]Run printf 'secret %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"
+2026-11-27T06:36:21.4925100Z [36;1mprintf 'secret %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"[0m
+2026-11-27T06:36:21.5064497Z shell: /usr/bin/bash -e {0}
+2026-11-27T06:36:21.5066100Z env:
+2026-11-27T06:36:21.5067016Z   GRAFTYARD_ACTIONS: true
+2026-11-27T06:36:21.5067087Z   S: 
+2026-11-27T06:36:21.5067143Z ##[endgroup]
+2026-11-27T06:36:21.5531348Z secret e3b0c44298fc1c14 0
+2026-11-27T06:36:21.5878709Z Cleaning up orphan processes

@@ -1,0 +1,47 @@
+{"t":1795761321761,"task":201,"id":"01a21bb7-6179-85b9-af45-b039f52a0109","requester":"m3-admin"}
+{"t":1795761327931,"hold":true}
+{"t":1795761327932,"check":"the task's requester is m3-admin","ok":true}
+{"t":1795761334570,"check":"the task runs","ok":true}
+{"t":1795761354340,"work_head":"0f3cf250744450c78ae13cf232f055c98d1933b1","heads":["0f3cf250744450c78ae13cf232f055c98d1933b1","af42c27ee3a4bf34ffa1171d97a55fedc5d417e6","d2667fcca3b76fa683ddf5fa97041bc9a5e69e53"]}
+{"t":1795761355640,"pr":1,"draft":true,"node_head":"0f3cf250744450c78ae13cf232f055c98d1933b1"}
+{"t":1795761355923,"check":"the pull request's head is the harness's second push","ok":true}
+{"t":1795761359316,"run":{"id":1376442,"fork":true,"head_sha":"1597b011aabf6b71a52616aca2cc71e5d00df9a1","jobs":[{"id":1376443,"name":"plain","state":"Queued","waits_on":null,"status":"queued","conclusion":null,"steps":0,"started_at":null},{"id":1376444,"name":"missed","state":"Queued","waits_on":null,"status":"queued","conclusion":null,"steps":0,"started_at":null},{"id":1376445,"name":"secret","state":"SecretsWait","waits_on":"0f3cf250744450c78ae13cf232f055c98d1933b1","status":"waiting","conclusion":null,"steps":0,"started_at":null}],"created_at":"2026-11-27T06:36:04Z"}}
+{"t":1795761359317,"check":"the agent run is marked fork","ok":true}
+{"t":1795761383736,"job":"plain","started_at":"2026-11-27T06:36:22Z","run_to_start_ms":18000,"conclusion":"success","log":{"status":200,"hash":null,"len":null,"real":false,"empty":false,"raw_value_in_log":false,"token_write":403}}
+{"t":1795761383736,"check":"`plain` starts within 30 s of its run (18000 ms)","ok":true}
+{"t":1795761383736,"check":"`plain`'s token cannot write (403)","ok":true}
+{"t":1795761386506,"job":"missed","started_at":"2026-11-27T06:36:22Z","run_to_start_ms":18000,"conclusion":"success","log":{"status":200,"hash":"e3b0c44298fc1c14","len":0,"real":false,"empty":true,"raw_value_in_log":false,"token_write":null}}
+{"t":1795761386506,"check":"`missed` starts within 30 s of its run (18000 ms)","ok":true}
+{"t":1795761386506,"check":"`missed` (a reference the scanner misses) runs with an empty secret","ok":true}
+{"t":1795761388216,"secret_job":{"id":1376445,"name":"secret","state":"SecretsWait","waits_on":"0f3cf250744450c78ae13cf232f055c98d1933b1","status":"waiting","conclusion":null,"steps":0,"started_at":null}}
+{"t":1795761388216,"check":"`secret` waits on its own head (SecretsWait, GHES waiting, no step run)","ok":true}
+{"t":1795761389477,"negative":"the requester's approval (m3-admin)","status":200,"review":"APPROVED"}
+{"t":1795761452048,"after":"the requester's approval (m3-admin)","secret_job":{"id":1376445,"name":"secret","state":"SecretsWait","waits_on":"0f3cf250744450c78ae13cf232f055c98d1933b1","status":"waiting","conclusion":null,"steps":0,"started_at":null}}
+{"t":1795761452048,"check":"the requester's approval (m3-admin) releases nothing for 60 s","ok":true}
+{"t":1795761455255,"negative":"m3-member's approval of an older head","status":200,"review":"APPROVED"}
+{"t":1795761517636,"after":"m3-member's approval of an older head","secret_job":{"id":1376445,"name":"secret","state":"SecretsWait","waits_on":"0f3cf250744450c78ae13cf232f055c98d1933b1","status":"waiting","conclusion":null,"steps":0,"started_at":null}}
+{"t":1795761517636,"check":"m3-member's approval of an older head releases nothing for 60 s","ok":true}
+{"t":1795761519019,"approve":200,"review":"APPROVED"}
+{"t":1795761821274,"timeout":"`secret` released","ms":300000}
+{"t":1795761821274,"released":null,"approve_to_release_ms":null}
+{"t":1795761821274,"check":"m3-member's approval of the current head releases `secret`","ok":false}
+{"t":1795761821275,"secret_done":null,"log":null}
+{"t":1795761821275,"check":"the released `secret` reads the real secret (its hash and length; the value never printed)","ok":false}
+{"t":1795761821275,"check":"the released job's token write is still refused (undefined)","ok":true}
+{"t":1795761821275,"check":"the released job started after the approval","ok":false}
+{"t":1795761833897,"runs":3,"other_secret_jobs":[{"state":"SecretsWait","waits_on":"15285ff28adab1401e0f98991c37f81cbb62ecaf","steps":0},{"state":"SecretsWait","waits_on":"b037bf87c00f531e3b349299d98be88b3864de01","steps":0}],"secret_lines_read":3,"leaks":0}
+{"t":1795761833897,"check":"every agent run of the pull request is fork","ok":true}
+{"t":1795761833897,"check":"every other head's `secret` stays waiting","ok":true}
+{"t":1795761833897,"check":"no job of an agent run read the secret before AgentGate held for its head (0 leaks)","ok":true}
+{"t":1795761835706,"cancel_run":1376446,"status":202}
+{"t":1795761837291,"cancel_run":1376442,"status":202}
+{"t":1795761838722,"cancel_run":1376438,"status":202}
+{"t":1795761841198,"control_push":true}
+{"t":1795761843360,"control_pr":2}
+{"t":1795761850286,"control_run":{"id":1376450,"fork":false,"head_sha":"8715e0e6bb7895cc704b81fc1fbf5902dda6e18e","jobs":[{"id":1376451,"name":"plain","state":"Queued","waits_on":null,"status":"queued","conclusion":null,"steps":0,"started_at":null},{"id":1376452,"name":"missed","state":"Queued","waits_on":null,"status":"queued","conclusion":null,"steps":0,"started_at":null},{"id":1376453,"name":"secret","state":"Queued","waits_on":null,"status":"queued","conclusion":null,"steps":0,"started_at":null}]}}
+{"t":1795761850286,"check":"control: a human's run is not fork and no job waits","ok":true}
+{"t":1795761875515,"control_secret":{"id":1376453,"name":"secret","state":"Completed","waits_on":null,"status":"completed","conclusion":"success","steps":4,"started_at":"2026-11-27T06:44:32Z"},"log":{"status":200,"hash":"2c481d760f655e6e","len":29,"real":true,"empty":false,"raw_value_in_log":false,"token_write":403}}
+{"t":1795761875515,"check":"control: the human run's `secret` reads the secret at once","ok":true}
+{"t":1795761876543,"cancel_control":409}
+{"t":1795761878775,"unhold":true}
+{"t":1795761879662,"cancel_task":200}

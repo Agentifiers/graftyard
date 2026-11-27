@@ -1,0 +1,12 @@
+2026-11-27T06:18:23Z
+3529a45fc
+baseline 2026-11-27T06:18:23Z; spend since 2026-11-27T00:00:00Z before the row:
+env: ‘usd’: No such file or directory
+env: ‘usd’: No such file or directory
+  graft-m4a $2.37, graft-agents-m4a- $, graft-runners $
+running containers: agents [], runners []
+runner store secrets named graft-agents-m4a-: []
+{"script":"graft-m4a-site-a","created_on":"2026-11-26T17:49:09.884916Z","versions":["eb75a6b7 100"]} ["GRAFTYARD_AGENT_CI=1"]
+{"script":"graft-m4a-site-b","created_on":"2026-11-26T17:49:19.062306Z","versions":["a4e60331 100"]} ["GRAFTYARD_AGENT_CI=1"]
+{"script":"graft-m4a-site-c","created_on":"2026-11-26T17:49:27.355991Z","versions":["109a2d06 100"]} ["GRAFTYARD_AGENT_CI=1"]
+{"script":"graft-m4a-edge","created_on":"2026-11-26T20:43:18.711225Z","versions":["f96935c0 100"]} ["FORMATS_ENABLED 40 has 21.14: false"]
