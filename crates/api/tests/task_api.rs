@@ -736,7 +736,7 @@ fn the_graftyard_task_payload_is_what_the_controller_starts_from() {
 /// L0-14's off phase as the edge serves `POST .../tasks` without `kind`: the session header's refusal
 /// (`tasks::agent_session_create`), then the commit, whose refusal `tasks::refused` renders. While `agents_enabled` is
 /// off every creator answers 422, the session header's included (F151); once on, the header's create is the
-/// non-writer's 403 and a plain create goes on to `decide`.
+/// non-writer's 403, an App without `issues: write` gets 403, and a plain create goes on to `decide`.
 #[test]
 fn every_graftyard_run_create_answers_422_while_agents_are_off() {
     let mut w = World::new();
@@ -752,7 +752,14 @@ fn every_graftyard_run_create_answers_422_while_agents_are_off() {
             o => panic!("{o:?}"),
         }
     };
+    // An installation token that reaches the repository without `issues: write`.
+    let mut c = claims(PLAIN);
+    c.permissions = PermissionSet(
+        [("contents", Access::Read), ("metadata", Access::Read)].map(|(n, a)| (n.into(), a)).into_iter().collect(),
+    );
+    let no_issues = Principal::installation(&c);
     let creators = [
+        (no_issues.clone(), false),
         (user(WRITER), true),
         (user(WRITER), false),
         (app(RUN), false),
@@ -765,6 +772,8 @@ fn every_graftyard_run_create_answers_422_while_agents_are_off() {
         assert_eq!(edge(&mut w, who.clone(), session), 422, "{who:?}, session header {session}");
     }
     w.ident.owner.apply(&AuthzEvent::OrgAgents { enabled: true, workspace: graftyard_identity::WorkspaceMode::InRepo });
+    // Once on, the App without the permission gets GHES's 403 for it, and the header's create the non-writer's.
+    assert_eq!(edge(&mut w, no_issues, false), 403);
     assert_eq!(tasks::agent_session_create(&run(), true, &w.ident.owner).map(|r| r.status), Some(403));
     assert!(tasks::agent_session_create(&run(), false, &w.ident.owner).is_none());
     let ext =

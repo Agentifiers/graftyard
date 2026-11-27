@@ -1745,6 +1745,13 @@ impl IssueCmd {
                 match (issues, contents) {
                     (Decision::Allow, Decision::Allow) => Some(RepoPermission::Admin),
                     (Decision::Hidden, _) | (_, Decision::Hidden) => return Err(IssueErr::NotFound),
+                    // After authentication and visibility the org's switch comes first: an App that lacks the
+                    // permission gets a Graftyard-run create's 422 while `agents_enabled` is off (F151).
+                    _ if matches!(self.op, IssueOp::CreateRun(_))
+                        && folds.iter().any(|a| a.owner() == Some(owner) && !a.policy().agents_enabled) =>
+                    {
+                        return Err(IssueErr::Task(crate::task::TaskErr::AgentsOff));
+                    }
                     _ => return Err(IssueErr::Forbidden),
                 }
             }
