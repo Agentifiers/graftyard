@@ -8,7 +8,9 @@ read (`Repo::fix`) and held by its gate entry, the clone front's key built again
 refused, and the format order (`decisions/DECISIONS.md`, "`format-order`"). Head 2's: a fork's shard calls name its
 network (`crates/git/src/shard.rs`, `shard_query`; the edge's `shard_at_url`; the site's warm), the site keys a fork's
 packs by its network (`Family::network`), and the vault and the lifeboat learn a fork's network from its `Genesis`
-and owe its packs there. Later heads append their mutants here. Run from the repository root:
+and owe its packs there. Head 3's: the fork operation (`decisions/DECISIONS.md`, "`fork-create`"): `CreateFork`'s
+commit point, its finisher's order, the network chain's `ForkAdded`, the fork chain's first touch, and a fork's copied
+refs sending no push. Later heads append their mutants here. Run from the repository root:
 
     python3 tests/m0carried/plant277.py          # every mutant
     python3 tests/m0carried/plant277.py 0 2      # by number
@@ -47,6 +49,20 @@ VFORK = ['cargo', 'test', '-q', '-p', 'graftyard-vault', '--test', 'vault', 'a_f
 VBACK = ['cargo', 'test', '-q', '-p', 'graftyard-vault', '--test', 'vault', 'a_backfilled_fork_s_genesis_moves']
 LOWED = ['cargo', 'test', '-q', '-p', 'graftyard-lifeboat', '--test', 'pass', 'a_fork_s_packs_are_owed_under']
 LHELD = ['cargo', 'test', '-q', '-p', 'graftyard-lifeboat-worker', '--lib', 'a_fork_s_chain_is_held_and_waits']
+AUTHZ = 'crates/identity/src/authz.rs'
+FINISH = 'crates/identity/src/finish.rs'
+NETWORK = 'crates/git/src/network.rs'
+LIFE = 'crates/git/src/lifecycle.rs'
+HOOKS = 'crates/git/src/hooks.rs'
+TRIGGER = 'crates/actions/src/trigger.rs'
+FORKS = 'workers/edge/src/forks.rs'
+CREATEFORK = ['cargo', 'test', '-q', '-p', 'graftyard-identity', '--test', 'audit', 'create_fork_needs_an_admin']
+FORKORDER = ['cargo', 'test', '-q', '-p', 'graftyard-identity', '--test', 'audit', 'a_fork_is_finished_in_order']
+NETCHAIN = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'network']
+TOUCH = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'lifecycle', 'fork']
+NOPUSH = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'hooks_gates', 'a_forks_copied_refs']
+NORUN = ['cargo', 'test', '-q', '-p', 'graftyard-actions', '--test', 'pr_trigger', 'push_events_skip']
+BODIES = ['cargo', 'test', '-q', '-p', 'graftyard-edge', '--lib', 'a_forks_commit_and_finish_bodies']
 MUTANTS = [
     ("a fork's Genesis writes no fork row", TIERS,
      '                if network.root() != self.repo {\n', '                if false {\n', CHAIN),
@@ -116,6 +132,44 @@ MUTANTS = [
      '                st.networks.insert(repo, *network);\n', '', LOWED),
     ("the lifeboat gives a network a fork chain's index over its root's", LGIT,
      '            out.entry(net).or_insert(*i);\n', '            out.insert(net, *i);\n', LHELD),
+    # Head 3: the fork operation.
+    ("CreateFork records the new repository as its parent", AUTHZ,
+     '                            parent: *parent,\n', '                            parent: repo,\n', CREATEFORK),
+    ("CreateFork takes any account, not only an owner admin", AUTHZ,
+     '            Some(a) => s.is_admin(UserId(a)),\n',
+     '            Some(a) => s.is_admin(UserId(a)) || matches!(self.op, AuthzOp::CreateFork { .. }),\n', CREATEFORK),
+    ("the finisher touches the fork's chain before the network lists it", FINISH,
+     '            if !network.forks.contains_key(&f.repo) {\n', '            if false {\n', FORKORDER),
+    ("the fork's owner row drops its network, so its packs key under its own id", FINISH,
+     '                NamesOp::RepoOwnerIn { repo: f.repo, owner: f.owner, network: f.network },\n',
+     '                NamesOp::RepoOwner { repo: f.repo, owner: f.owner },\n', FORKORDER),
+    ("a fork never aborts past its deadline", FINISH,
+     '            if now.0 >= f.at.0.saturating_add(', '            if false && now.0 >= f.at.0.saturating_add(',
+     FORKORDER),
+    ("ForkAdded re-lists a fork under another parent", NETWORK,
+     '            Some(_) => return Err(NetworkErr::Conflict),\n', '            Some(_) => {}\n', NETCHAIN),
+    ("ForkAdded takes a parent outside the network", NETWORK,
+     '        if !fold.member(parent) {\n', '        if false {\n', NETCHAIN),
+    ("anyone may write the network chain", NETWORK,
+     '        if !self.cred.is_operator() {\n            return Err(NetworkErr::Forbidden);\n',
+     '        if false {\n            return Err(NetworkErr::Forbidden);\n', NETCHAIN),
+    ("the first touch writes no Genesis, so the fork keys its packs under its own id", LIFE,
+     '                    smallvec![genesis, RepoEvent::Settings(',
+     '                    smallvec![RepoEvent::Settings(',
+     TOUCH),
+    ("the first touch copies a ref outside branches and tags", LIFE,
+     '                    if !(b.starts_with(b"refs/heads/") || b.starts_with(b"refs/tags/")) || !names.insert(r) {\n',
+     '                    if b.is_empty() || !names.insert(r) {\n', TOUCH),
+    ("the first touch copies a ref named twice", LIFE,
+     ' || !names.insert(r) {\n', ' || (!names.insert(r) && false) {\n', TOUCH),
+    ("a fork whose network is its own id is touched", LIFE,
+     '                if network.root() == repo {\n', '                if false {\n', TOUCH),
+    ("a fork's copied refs send push webhooks", HOOKS,
+     '            RepoEvent::Refs { .. } if fork => {}\n', '', NOPUSH),
+    ("a fork's copied refs start push workflows", TRIGGER,
+     '            RepoEvent::Refs { .. } if fork => continue,\n', '', NORUN),
+    ("the edge's CreateFork names the parent as its network", FORKS,
+     '"parent": parent, "network": network } })\n', '"parent": parent, "network": parent } })\n', BODIES),
 ]
 
 if __name__ == '__main__':

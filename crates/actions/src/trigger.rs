@@ -283,8 +283,11 @@ pub fn push_events(e: &LogEntry<RepoEvent>, now: u64) -> Vec<PushEvent> {
     }
     let EntryBody::Events(evs) = &e.body else { return Vec::new() };
     let mut out: Vec<PushEvent> = Vec::new();
+    // A fork's copied refs are not pushes: GitHub starts no workflow when a fork is created.
+    let fork = evs.iter().any(|ev| matches!(ev, RepoEvent::Genesis { .. }));
     for ev in evs {
         let pusher = match ev {
+            RepoEvent::Refs { .. } if fork => continue,
             RepoEvent::Refs { actor, .. } | RepoEvent::Release { actor, .. } => *actor,
             RepoEvent::Merged { by, .. } => Some(by.0),
             _ => continue,

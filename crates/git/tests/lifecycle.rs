@@ -1,15 +1,18 @@
 //! F59's repository finisher on three real `graftyard_raft::Member<RepoCmd>`s. The owner's editable `Authz` fold is
 //! the commit point: only its `Live` name lets a create finish, and only a matching `Deleted` name lets a delete finish.
 
+use graftyard_git::issue_ops::call::REPO_FORMAT_FORKS;
 use graftyard_git::issue_ops::call::{IssueCall, REPO_FORMAT_ISSUES};
 use graftyard_git::issue_ops::{IssueErr, IssueOp};
 use graftyard_git::issues::{MergeMethod, RepoSettings, Visibility};
-use graftyard_git::lifecycle::{Lifecycle, LifecycleErr, LifecycleOp, LifecycleOut, REPO_FORMAT_LIFECYCLE, of_step};
-use graftyard_git::refs::RefName;
+use graftyard_git::lifecycle::{
+    FORK_REFS_MAX, Lifecycle, LifecycleErr, LifecycleOp, LifecycleOut, REPO_FORMAT_LIFECYCLE, fork_of_step, of_step,
+};
+use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_git::repo::{
     REPO_FORMAT_LEASES, REPO_FORMAT_REPOS, REPO_FORMAT_V1, RepoCmd, RepoErr, RepoFold, RepoOut, RepoScratch,
 };
-use graftyard_git::tiers::{created, deleted, get_rec};
+use graftyard_git::tiers::{ForkRow, created, deleted, get_rec};
 use graftyard_identity::{
     AccountKind, Actor, AuthzEvent, AuthzFold, Credential, IdentityDep, NameEpoch, NamesEvent, NamesFold, OrgRole,
     Principal, RepoEntry, RepoName, ScopeSet, TokenKind, TokensEvent, TokensFold, UserId,
@@ -19,8 +22,8 @@ use graftyard_raft::{
     Resolution, Role, Stored,
 };
 use graftyard_types::{
-    AccountId, ChainId, DbId, NameShard, PlacementName, PlacementRecord, Region, ReleaseId, RepoId, RequestId, SiteId,
-    Timestamp, TokenShard, Ulid,
+    AccountId, ChainId, DbId, Index, NameShard, NetworkId, PlacementName, PlacementRecord, Region, ReleaseId, RepoId,
+    RequestId, SiteId, Timestamp, TokenShard, Ulid,
 };
 use smallvec::{SmallVec, smallvec};
 
@@ -313,6 +316,30 @@ fn settings(description: &str) -> RepoSettings {
     }
 }
 
+/// The root `REPO` is forked from, and so its network.
+const ROOT: RepoId = RepoId(DbId(5));
+const NETWORK: NetworkId = NetworkId(DbId(5));
+const CUT: Index = Index(42);
+
+fn rf(name: &str) -> RefName {
+    RefName::parse(name.as_bytes()).unwrap()
+}
+
+fn fork_op(refs: Vec<(RefName, ObjectId)>) -> LifecycleOp {
+    LifecycleOp::Fork {
+        settings: settings("a fork"),
+        name: RepoName::parse("tool").unwrap(),
+        network: NETWORK,
+        parent: ROOT,
+        cut: CUT,
+        refs,
+    }
+}
+
+fn fork_refs() -> Vec<(RefName, ObjectId)> {
+    vec![(rf("refs/heads/main"), ObjectId([1; 20])), (rf("refs/tags/v1"), ObjectId([2; 20]))]
+}
+
 fn init(g: &mut G, settings: RepoSettings) -> Result<LifecycleOut, LifecycleErr> {
     g.lifecycle(LifecycleOp::Init(settings))
 }
@@ -331,6 +358,51 @@ fn init_commits_settings_and_created_once() {
     for site in SITES {
         assert!(g.created(site).is_some(), "{site:?} has the Created row");
         assert_eq!(g.settings(site), Some(wanted.clone()), "the no-op keeps the first settings");
+    }
+}
+
+#[test]
+fn a_forks_first_touch_writes_genesis_settings_created_and_the_parents_refs() {
+    let mut reads = formats();
+    reads.push(REPO_FORMAT_FORKS);
+    let mut g = G::with_reads(reads);
+    assert_eq!(g.lifecycle(fork_op(fork_refs())), Ok(LifecycleOut { changed: true }));
+    g.pass(4_000);
+    for site in SITES {
+        let scratch: RepoScratch<'_> = g.m(site).group_fold().fold.scratch();
+        let core = scratch.core();
+        let row = graftyard_git::tiers::fork(core);
+        assert_eq!(row, Some(ForkRow { network: NETWORK, fork_of: Some((ROOT, CUT)) }), "{site:?}");
+        assert_eq!(graftyard_git::tiers::network(core, REPO), NETWORK);
+        assert!(created(core).is_some(), "{site:?} has the Created row");
+        assert_eq!(get_rec::<RepoSettings>(core, "settings", &[]), Some(settings("a fork")));
+        for (name, oid) in fork_refs() {
+            assert_eq!(scratch.get(&name), Some(oid), "{site:?} reads {name:?}");
+        }
+    }
+    assert_eq!(g.lifecycle(fork_op(fork_refs())), Ok(LifecycleOut { changed: false }), "a re-sent first touch");
+}
+
+#[test]
+fn a_fork_first_touch_is_refused_off_its_rules() {
+    let mut reads = formats();
+    reads.push(REPO_FORMAT_FORKS);
+    let mut g = G::with_reads(reads);
+    let pull = vec![(rf("refs/pull/1/head"), ObjectId([3; 20]))];
+    assert_eq!(g.lifecycle(fork_op(pull)), Err(LifecycleErr::Invalid));
+    let twice = vec![(rf("refs/heads/main"), ObjectId([3; 20])), (rf("refs/heads/main"), ObjectId([4; 20]))];
+    assert_eq!(g.lifecycle(fork_op(twice)), Err(LifecycleErr::Invalid), "a ref named twice");
+    let LifecycleOp::Fork { settings, name, parent, cut, refs, .. } = fork_op(fork_refs()) else { unreachable!() };
+    let own = LifecycleOp::Fork { settings, name, network: NetworkId::of_root(REPO), parent, cut, refs };
+    assert_eq!(g.lifecycle(own), Err(LifecycleErr::Invalid), "a fork's network is never its own");
+    let many: Vec<(RefName, ObjectId)> =
+        (0..=FORK_REFS_MAX).map(|i| (rf(&format!("refs/heads/b{i}")), ObjectId([4; 20]))).collect();
+    assert_eq!(g.lifecycle(fork_op(many)), Err(LifecycleErr::Invalid));
+    g.deps.name(None);
+    assert_eq!(g.lifecycle(fork_op(fork_refs())), Err(LifecycleErr::NotLive));
+    for site in SITES {
+        assert_eq!(g.created(site), None);
+        assert_eq!(g.settings(site), None);
     }
 }
 
@@ -448,6 +520,32 @@ fn lifecycle_wire_shape() {
     let result = old.on(SITES[0], |member, now| member.commit(now, rid, cmd));
     assert!(matches!(result, Err(CallError::Unsupported(unsupported)) if unsupported.format == REPO_FORMAT_LIFECYCLE));
     assert_eq!(old.created(SITES[0]), None);
+
+    let fork = RepoCmd::Lifecycle(Lifecycle { op: fork_op(fork_refs()), request });
+    assert_eq!(fork.format(), REPO_FORMAT_FORKS);
+    let value = serde_json::to_value(&fork).unwrap();
+    assert_eq!(value["lifecycle"]["format"], serde_json::json!([32, 34]));
+    assert_eq!(serde_json::from_value::<RepoCmd>(value.clone()).unwrap(), fork);
+    let mut labelled = value;
+    labelled["lifecycle"]["format"] = serde_json::json!([32, 17]);
+    assert!(serde_json::from_value::<RepoCmd>(labelled).is_err(), "a Fork is never read as 32.17");
+
+    use graftyard_identity::finish::RepoStep;
+    let json_settings = RepoSettings { owner: OTHER_OWNER, enterprise: Some(OTHER_ENTERPRISE), ..settings("a fork") };
+    let init = serde_json::to_string(&json_settings).unwrap().into_boxed_str();
+    let step = RepoStep::Fork {
+        owner: OWNER,
+        enterprise: Some(ENTERPRISE),
+        init: init.clone(),
+        name: RepoName::parse("tool").unwrap(),
+        network: NETWORK,
+        parent: ROOT,
+    };
+    let mapped = fork_of_step(&step, CUT, fork_refs(), request).expect("Fork maps").expect("valid settings JSON");
+    assert_eq!(mapped, Lifecycle { op: fork_op(fork_refs()), request });
+    assert!(of_step(&step, request).is_none(), "of_step has no parent refs");
+    let step = RepoStep::Init { owner: OWNER, enterprise: Some(ENTERPRISE), init };
+    assert!(fork_of_step(&step, CUT, Vec::new(), request).is_none());
 }
 
 #[test]

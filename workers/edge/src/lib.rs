@@ -58,6 +58,7 @@ mod cache;
 mod collab;
 mod colo;
 mod export;
+mod forks;
 mod hooks;
 mod hosted;
 mod ident;
@@ -83,7 +84,7 @@ const UNSUPPORTED_RETRY_AFTER: &str = "5";
 /// A commit with no outcome (`no_outcome`): the REST routes' `Retry-After` for the same answer (`api::unavailable`).
 const NO_OUTCOME_RETRY_AFTER: &str = "5";
 
-fn now() -> Timestamp {
+pub(crate) fn now() -> Timestamp {
     Timestamp(Date::now().as_millis())
 }
 

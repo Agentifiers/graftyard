@@ -266,6 +266,7 @@ async fn batch(
                 for c in chains {
                     let fold = match c {
                         ChainId::Repo(r) => read_repo(env, r).await?,
+                        ChainId::Network(n) => read_network(env, n).await?,
                         c => read(env, c).await?,
                     };
                     f.read(c, fold);
@@ -358,6 +359,101 @@ async fn read_repo(env: &Env, repo: graftyard_types::RepoId) -> std::result::Res
     Ok(AuditRead::Repo(audit::RepoRead { owner: o, enterprise: e, voters, home, life, actions_held }))
 }
 
+/// A network chain's forks through its leader's `fresh`, under the root repository owner's record; no group yet reads
+/// as no forks (AM3-WP2a: the first fork's `ForkAdded` creates it).
+async fn read_network(env: &Env, n: graftyard_types::NetworkId) -> std::result::Result<AuditRead, String> {
+    let (chain, record, _) = network_target(env, n).await?;
+    let site = crate::SiteEnv::read(env).map_err(|e| e.to_string())?;
+    let b = graftyard_lookup::Bindings { env, sites: &site.sites };
+    let q = json!({ "q": { "dep": true } }).to_string();
+    let Some((v, _, _)) = graftyard_lookup::call_opt(&b, chain, &record, "/read", q.as_bytes()).await? else {
+        return Ok(AuditRead::Network(audit::NetworkRead::default()));
+    };
+    let bytes = v
+        .get("value")
+        .and_then(Value::as_str)
+        .and_then(crate::host::unhex)
+        .ok_or_else(|| format!("{chain}: no fold"))?;
+    let fold: graftyard_git::network::NetworkFold = codec::from_bytes(&bytes).map_err(|e| format!("{chain}: {e}"))?;
+    Ok(AuditRead::Network(fold.read()))
+}
+
+/// The network chain's id, record, and owner: the root repository's `RepoOwner` row names the owner whose record
+/// places it (`design/DESIGN.md`, Shape, `Placement`).
+async fn network_target(
+    env: &Env,
+    n: graftyard_types::NetworkId,
+) -> std::result::Result<(ChainId, graftyard_types::PlacementRecord, graftyard_types::AccountId), String> {
+    let owner = crate::member::repo_owner(env, n.root()).await?;
+    let record = crate::member::owner_record(env, owner).await?;
+    Ok((ChainId::Network(n), record, owner))
+}
+
+/// A network step: `ForkAdded`, after creating the chain's group under the root owner's record on first use.
+async fn network_step(
+    env: &Env,
+    n: graftyard_types::NetworkId,
+    step: &graftyard_identity::finish::NetworkStep,
+) -> std::result::Result<bool, String> {
+    use graftyard_git::network::{NetworkCmd, NetworkOp};
+    use graftyard_identity::finish::NetworkStep;
+    let (chain, record, owner) = network_target(env, n).await?;
+    let site = crate::SiteEnv::read(env).map_err(|e| e.to_string())?;
+    let b = graftyard_lookup::Bindings { env, sites: &site.sites };
+    graftyard_lookup::create(&b, chain, &record, &json!({ "owner": owner })).await?;
+    let NetworkStep::ForkAdded { repo, parent } = *step;
+    let cmd = NetworkCmd { cred: graftyard_types::CredentialShard::NONE, op: NetworkOp::ForkAdded { repo, parent } };
+    let cmd = serde_json::to_value(&cmd).map_err(|e| e.to_string())?;
+    let done = graftyard_lookup::commit_as(&b, chain, &record, request_id(chain, &cmd), cmd).await?;
+    if done.get("ok").is_some() {
+        Ok(false)
+    } else if done.get("refused").is_some() {
+        Ok(true)
+    } else {
+        Err(format!("{chain}: {done}"))
+    }
+}
+
+/// The parent's branches and tags for a fork's first touch, read a page at a time from the parent's leader, with the
+/// index they were read at: the fork's `cut`. More than `FORK_REFS_MAX` is refused by the command.
+async fn parent_refs(
+    b: &graftyard_lookup::Bindings<'_>,
+    env: &Env,
+    parent: graftyard_types::RepoId,
+) -> std::result::Result<(Index, Vec<(graftyard_git::refs::RefName, graftyard_git::refs::ObjectId)>), String> {
+    use graftyard_git::group::{RefsReply, refs_query};
+    use graftyard_git::refs::{ObjectId, RefName};
+    let (chain, record, _) = repo_target(env, parent).await?;
+    let (mut out, mut cut) = (Vec::new(), Index(0));
+    for prefix in [&b"refs/heads/"[..], &b"refs/tags/"[..]] {
+        let mut after: Option<String> = None;
+        loop {
+            let q = refs_query(prefix, after.as_deref(), graftyard_git::lifecycle::FORK_REFS_MAX + 1);
+            let (v, _) = graftyard_lookup::call(b, chain, &record, "/read", &q).await?;
+            let page = match serde_json::from_value::<RefsReply>(v).map_err(|e| e.to_string())? {
+                RefsReply::Page { value, index } => {
+                    cut = cut.max(Index(index));
+                    value
+                }
+                RefsReply::Error { error } => return Err(format!("{chain} refs: {error:?}")),
+            };
+            for (n, o) in page.refs {
+                let name = RefName::parse(n.as_bytes()).map_err(|e| format!("{n}: {e:?}"))?;
+                let oid = ObjectId::parse_hex(o.as_bytes()).ok_or_else(|| format!("{n}: bad oid {o}"))?;
+                out.push((name, oid));
+            }
+            if out.len() > graftyard_git::lifecycle::FORK_REFS_MAX {
+                return Ok((cut, out));
+            }
+            match page.next {
+                Some(n) => after = Some(n),
+                None => break,
+            }
+        }
+    }
+    Ok((cut, out))
+}
+
 /// The chain, record, and owner of a repository: its owner's record from the `RepoOwner` row. During a transfer the
 /// row still names the source until the last step, and the group answers through either record's members.
 async fn repo_target(
@@ -446,6 +542,18 @@ async fn repo_step(
             repo_commit(&b, chain, &record, graftyard_git::repo::RepoCmd::Lifecycle(cmd)).await
         }
         RepoStep::DropActions => crate::actions_cache::drop_repo(env, &b, owner, &record, repo).await.map(|()| false),
+        // A fork's first touch: its group under the owner's record, then `Genesis`, the first settings, and the
+        // parent's branches and tags read now from the parent's leader (`graftyard_git::lifecycle`, `Fork`).
+        RepoStep::Fork { owner, parent, .. } => {
+            graftyard_lookup::create(&b, chain, &record, &json!({ "owner": owner })).await?;
+            let (cut, refs) = parent_refs(&b, env, *parent).await?;
+            let mut cmd = graftyard_git::lifecycle::fork_of_step(step, cut, refs, RequestId(Ulid(0)))
+                .expect("a fork step maps to a lifecycle command")?;
+            // The request id names the fork and its parent, not the refs read, so a re-sent first touch after a
+            // parent push is answered from the first one's `request` row.
+            cmd.request = request_id(chain, &json!({ "fork": parent }));
+            repo_commit(&b, chain, &record, graftyard_git::repo::RepoCmd::Lifecycle(cmd)).await
+        }
         RepoStep::Delete { .. } => {
             let mut cmd = graftyard_git::lifecycle::of_step(step, RequestId(Ulid(0)))
                 .expect("a delete step maps to a lifecycle command")?;
@@ -480,6 +588,7 @@ async fn repo_commit(
 async fn submit(env: &Env, step: Step) -> std::result::Result<bool, String> {
     let (chain, cmd) = match &step {
         Step::Repo(r, s) => return repo_step(env, *r, s).await,
+        Step::Network(n, s) => return network_step(env, *n, s).await,
         Step::Names(c, cmd) => (*c, serde_json::to_value(cmd)),
         Step::Tokens(c, cmd) => (*c, serde_json::to_value(cmd)),
         Step::Authz(c, cmd) => (*c, serde_json::to_value(cmd)),

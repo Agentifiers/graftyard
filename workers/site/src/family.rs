@@ -291,6 +291,8 @@ pub enum Kind {
     Release,
     /// An owner's Actions shard (`crate::actions`).
     Actions,
+    /// A fork network's chain (`graftyard_git::network`, AM3-WP2a).
+    Network,
     /// Test installs only: a `repo:` chain joined with no owner hosts the test register, for M1-WP2's rows and the
     /// linearizability run.
     #[cfg(feature = "test-faults")]
@@ -314,7 +316,7 @@ impl Kind {
             // A repository's metadata child (`crate::split`) is hosted by the repository family.
             ChainId::RepoMeta(_) => Some(Kind::Repo),
             ChainId::Actions(..) => Some(Kind::Actions),
-            ChainId::Network(_) => None,
+            ChainId::Network(_) => Some(Kind::Network),
         }
     }
 }
@@ -1920,7 +1922,8 @@ impl Family for Authz {
         // consumer's abort; 0x12.12 M4-WP3's `SealKey` and org secret and variable ops, which the edge sends only once
         // `FormatsEnable` enabled it; 0x12.13 `PATCH /app/hook/config`'s `SetAppHook`, likewise; 0x12.14 the Actions
         // App's installation, which `acquirejob` commits only once `FormatsEnable` enabled it (`gh-token`); 0x12.15
-        // BF-76's substitution policy, which the edge sends only once `FormatsEnable` enabled it (`pin-map`).
+        // BF-76's substitution policy, which the edge sends only once `FormatsEnable` enabled it (`pin-map`); 0x12.16
+        // AM3-WP2a's `CreateFork`, likewise.
         vec![
             id::AUTHZ_FORMAT,
             id::AUTHZ_FORMAT_V2,
@@ -1931,6 +1934,7 @@ impl Family for Authz {
             id::AUTHZ_FORMAT_V13,
             id::AUTHZ_FORMAT_V14,
             id::AUTHZ_FORMAT_V15,
+            id::AUTHZ_FORMAT_V16,
         ]
     }
     /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`): a transfer's
@@ -2120,6 +2124,63 @@ impl Family for Identity {
     fn source(join: &Join) -> Source {
         match join.chain {
             ChainId::Identity(a) => Source::Owner(a),
+            _ => Source::Given,
+        }
+    }
+}
+
+/// `network:<id>` members: the fork network's chain (`graftyard_git::network`; `build/BUILD-PLAN.md`, AM3-WP2a), a
+/// core-tier fold of the network's forks, placed under the root repository owner's record (`design/DESIGN.md`, Shape,
+/// `Placement`: "each network chain whose root repository it holds"). Only the `Audit` finisher writes it, after a
+/// fork's commit point; `{"forks": parent}` lists a repository's direct forks for `GET /forks`, and `{}` the count.
+pub struct Network;
+
+impl Family for Network {
+    type Ev = git::network::NetworkEvent;
+    type Fold = git::network::NetworkFold;
+    type C = git::network::NetworkCmd;
+
+    /// 0x21.1, the family's first format: the finisher sends it only once `FormatsEnable` enabled it.
+    fn reads() -> Vec<Format> {
+        vec![git::network::NETWORK_FORMAT]
+    }
+    fn new_fold(_sql: &SqlStorage, join: &Join) -> git::network::NetworkFold {
+        match join.chain {
+            ChainId::Network(n) => git::network::NetworkFold::new(n),
+            _ => git::network::NetworkFold::default(),
+        }
+    }
+    fn store_fold(fold: &git::network::NetworkFold, _: &[&raft::LogEntry<Self::Ev>], stmts: &mut Vec<Stmt>) {
+        store_blob(fold, stmts);
+    }
+    fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<git::network::NetworkFold> {
+        Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
+    }
+    fn out_json(_fold: &Self::Fold, a: &raft::Acked<git::network::NetworkOut>) -> Value {
+        serde_json::to_value(a.out).unwrap_or(Value::Null)
+    }
+    fn err_json(e: &git::network::NetworkErr) -> Value {
+        match e {
+            git::network::NetworkErr::Forbidden => refusal(e, 403),
+            _ => refusal(e, 422),
+        }
+    }
+    fn read_json(f: &git::network::NetworkFold, q: &Value) -> Value {
+        if let Some(p) = q.get("forks").and_then(Value::as_i64) {
+            return json!({ "forks": f.forks_of(RepoId(DbId(p))).map(|r| r.0.0).collect::<Vec<_>>() });
+        }
+        json!({ "network": f.network.map(|n| n.0.0), "forks": f.forks.len() })
+    }
+    fn fold_bytes(f: &git::network::NetworkFold) -> Vec<u8> {
+        codec::to_bytes(f)
+    }
+    fn dep(chain: ChainId, _bytes: &[u8]) -> Result<IdentityDep, String> {
+        Err(format!("the network chain reads no dependency ({chain})"))
+    }
+    /// The root repository's `RepoOwner` row names the owner whose record places the chain.
+    fn source(join: &Join) -> Source {
+        match (join.chain, join.owner) {
+            (ChainId::Network(n), Some(owner)) => Source::Repo { repo: n.root(), owner },
             _ => Source::Given,
         }
     }

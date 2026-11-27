@@ -22,10 +22,13 @@
 //!   releases the name. A name turned `Deleted` owes the chain's tombstone (`crate::finish::delete`). Both read the
 //!   repository chain only once the rest is read (`RepoRead::life`).
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use graftyard_raft::{EntryBody, LogEntry};
-use graftyard_types::{AccountId, ChainId, CredentialShard, Index, PlacementRecord, RepoId, SiteId, Timestamp};
+use graftyard_types::{
+    AccountId, ChainId, CredentialShard, Index, NetworkId, PlacementRecord, RepoId, SiteId, Timestamp,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::apps::{AppId, ClientId, Slug};
@@ -33,8 +36,8 @@ use crate::authz::{AuthzCmd, AuthzEvent, AuthzFold, AuthzOp, RepoEntry};
 use crate::finish::{self, RepoLife, RepoStep, Step, Transfer, TransferStep, TransferView};
 use crate::identity::{CredentialRef, IdentityFold};
 use crate::names::{
-    Login, LoginKey, NameKey, NamesCmd, NamesEvent, NamesFold, NamesOp, NamesRead, RepoNameKey, account_shard,
-    name_shard,
+    Login, LoginKey, NameKey, NamesCmd, NamesEvent, NamesFold, NamesOp, NamesRead, RepoName, RepoNameKey,
+    account_shard, name_shard,
 };
 use crate::tokens::{TokenKind, TokensCmd, TokensEvent, TokensFold, TokensOp, TokensRead};
 
@@ -151,6 +154,17 @@ pub enum Owed {
         repo: RepoId,
         retain_until: Timestamp,
     },
+    /// A `ForkCreate` on `owner`'s `Authz` chain in an entry of time `at`.
+    Fork {
+        owner: AccountId,
+        key: RepoNameKey,
+        name: RepoName,
+        repo: RepoId,
+        init: Box<str>,
+        parent: RepoId,
+        network: NetworkId,
+        at: Timestamp,
+    },
 }
 
 /// A fold the planner reads, as the site's `dep` read answers it.
@@ -163,6 +177,13 @@ pub enum AuditRead {
     /// A repository chain: the owner and enterprise its `RepoSettings` names (the chain's owner and none before a
     /// `Settings`), and its group's committed voter sites and home.
     Repo(RepoRead),
+    Network(NetworkRead),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NetworkRead {
+    /// Each fork the network chain's `ForkAdded` lists, with the repository it was forked from.
+    pub forks: BTreeMap<RepoId, RepoId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -217,6 +238,16 @@ pub fn authz_owed(owner: AccountId, e: &LogEntry<AuthzEvent>) -> Vec<Owed> {
             AuthzEvent::RepoCreate { key, repo, init } => {
                 Some(Owed::Create { owner, key: key.clone(), repo: *repo, init: init.clone(), at: e.at })
             }
+            AuthzEvent::ForkCreate { key, name, repo, init, parent, network } => Some(Owed::Fork {
+                owner,
+                key: key.clone(),
+                name: name.clone(),
+                repo: *repo,
+                init: init.clone(),
+                parent: *parent,
+                network: *network,
+                at: e.at,
+            }),
             AuthzEvent::RepoName { entry: Some(RepoEntry::Deleted { repo, retain_until }), .. } => {
                 Some(Owed::Delete { owner, repo: *repo, retain_until: *retain_until })
             }
@@ -278,6 +309,12 @@ impl Owed {
             Owed::Delete { owner, repo, .. } => {
                 vec![ChainId::Authz(*owner), ChainId::Names(name_shard(&NameKey::Repo(*repo)))]
             }
+            // As for `Create`, the repository chain is asked for later through the plan's `Err`.
+            Owed::Fork { owner, repo, network, .. } => vec![
+                ChainId::Authz(*owner),
+                ChainId::Names(name_shard(&NameKey::Repo(*repo))),
+                ChainId::Network(*network),
+            ],
         }
     }
 
@@ -400,6 +437,24 @@ pub fn plan<'a>(
             };
             let c = finish::Create { owner: *owner, repo: *repo, init, at: *at };
             finish::create(&c, authz, repo_owner, life, now).map_err(|()| rc)?
+        }
+        Owed::Fork { owner, repo, name, init, parent, network, at, .. } => {
+            let a = ChainId::Authz(*owner);
+            let Some(AuditRead::Authz(authz)) = read(a) else { return Err(a) };
+            let repo_owner = names(ChainId::Names(name_shard(&NameKey::Repo(*repo))))?.repo_owner(*repo);
+            let nc = ChainId::Network(*network);
+            let net = match read(nc) {
+                Some(AuditRead::Network(n)) => n,
+                _ => return Err(nc),
+            };
+            let rc = ChainId::Repo(*repo);
+            let life = match read(rc) {
+                Some(AuditRead::Repo(r)) => Some(r.life),
+                _ => None,
+            };
+            let f =
+                finish::Fork { owner: *owner, repo: *repo, name, init, parent: *parent, network: *network, at: *at };
+            finish::fork(&f, authz, repo_owner, net, life, now)?
         }
         Owed::Delete { owner, repo, retain_until } => {
             let a = ChainId::Authz(*owner);
@@ -596,6 +651,7 @@ pub fn cursor_of(read: &AuditRead) -> Option<Index> {
         AuditRead::Names(f) => Some(f.audit_cursor()),
         AuditRead::Tokens(f) => Some(f.audit_cursor()),
         AuditRead::Authz(f) => Some(f.audit_cursor()),
+        AuditRead::Network(_) => None,
         _ => None,
     }
 }

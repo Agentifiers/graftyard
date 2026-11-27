@@ -72,10 +72,11 @@ for p in "/api/v3/repos/o/r" "/api/v3/repos/o/r/pulls?state=all&per_page=5" "/ap
   "/o/r.git/git-upload-pack" "PATCH /api/v3/repos/o/r/issues/1" "PATCH /api/v3/repos/o/r/issues/comments/1" "DELETE /api/v3/repos/o/r/issues/comments/1" \
   "PUT /api/v3/repos/o/r/issues/1/lock" "DELETE /api/v3/repos/o/r/issues/1/lock" "/api/v3/repos/o/r/issues/1/assignees/o" \
   "/api/v3/repos/o/r/labels/bug" "PATCH /api/v3/repos/o/r/labels/bug" "DELETE /api/v3/repos/o/r/labels/bug" \
-  "/api/v3/repos/o/r/assignees/o"; do
+  "/api/v3/repos/o/r/assignees/o" "POST /api/v3/repos/o/r/forks" "/api/v3/repos/o/r/forks"; do
   m=GET; case "${p##*/}" in git-upload-pack|comments) m=POST;; esac
   # A request written "METHOD path" names its method: F141's issue PATCH, through its 32.33 gate, and F137's comment
-  # edit and delete, the lock, through 32.35's (both off here: 404, never a trap).
+  # edit and delete, the lock, through 32.35's (both off here: 404, never a trap); AM3-WP2a's forks, through the
+  # repository's read gate (no member bound: 503, never a trap).
   case "$p" in *" "*) m=${p%% *}; p=${p#* };; esac
   c=$(curl -s -m 30 -X $m -D "$B/h" -o "$B/body" -w '%{http_code}' "${hdr[@]}" "http://127.0.0.1:$P$p")
   st=$(grep -i '^server-timing' "$B/h" | tr -d '\r')

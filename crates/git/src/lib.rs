@@ -32,6 +32,7 @@ pub mod mem;
 pub mod merge;
 pub mod merge_cache;
 pub mod merge_call;
+pub mod network;
 pub mod outbound;
 pub mod pack;
 pub mod pkt;
