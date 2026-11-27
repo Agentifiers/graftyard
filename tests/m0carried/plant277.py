@@ -10,7 +10,10 @@ network (`crates/git/src/shard.rs`, `shard_query`; the edge's `shard_at_url`; th
 packs by its network (`Family::network`), and the vault and the lifeboat learn a fork's network from its `Genesis`
 and owe its packs there. Head 3's: the fork operation (`decisions/DECISIONS.md`, "`fork-create`"): `CreateFork`'s
 commit point, its finisher's order, the network chain's `ForkAdded`, the fork chain's first touch, and a fork's copied
-refs sending no push. Later heads append their mutants here. Run from the repository root:
+refs sending no push. Head 4's: a fork chain's refs and HEAD in its own namespace on the network's disk
+(`decisions/DECISIONS.md`, "`fork-refns`"), a fork's container calls naming it and its fetch skipping the clone cache,
+`OpenPr`'s fork-head network check, the fork fields, and the export pack scope. Later heads append their mutants here.
+Run from the repository root:
 
     python3 tests/m0carried/plant277.py          # every mutant
     python3 tests/m0carried/plant277.py 0 2      # by number
@@ -63,6 +66,15 @@ TOUCH = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'lifecycle', 'f
 NOPUSH = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'hooks_gates', 'a_forks_copied_refs']
 NORUN = ['cargo', 'test', '-q', '-p', 'graftyard-actions', '--test', 'pr_trigger', 'push_events_skip']
 BODIES = ['cargo', 'test', '-q', '-p', 'graftyard-edge', '--lib', 'a_forks_commit_and_finish_bodies']
+CATCHUP = 'crates/git/src/catchup.rs'
+ISSUEOPS = 'crates/git/src/issue_ops.rs'
+EXPORTTOK = 'crates/identity/src/export_token.rs'
+REFNS = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'catchup', 'a_fork_chains_refs_and_head_land']
+ROOTONLY = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'catchup', 'a_root_only_networks_cursor']
+FORKPR = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'issues', 'a_pull_request_head_in_another']
+FIELDS = ['cargo', 'test', '-q', '-p', 'graftyard-edge', '--lib', 'forks::tests::']
+PACKSCOPE = ['cargo', 'test', '-q', '-p', 'graftyard-identity', '--lib', 'a_networks_packs_are_covered']
+JOIN = ['cargo', 'test', '-q', '-p', 'graftyard-git', '--test', 'catchup', 'a_fork_that_does_not_answer']
 MUTANTS = [
     ("a fork's Genesis writes no fork row", TIERS,
      '                if network.root() != self.repo {\n', '                if false {\n', CHAIN),
@@ -170,6 +182,61 @@ MUTANTS = [
      '            RepoEvent::Refs { .. } if fork => continue,\n', '', NORUN),
     ("the edge's CreateFork names the parent as its network", FORKS,
      '"parent": parent, "network": network } })\n', '"parent": parent, "network": parent } })\n', BODIES),
+    ("a fork chain's refs land where the root's are", SHARD,
+     '        return Some(format!("refs/namespaces/{}/{name}", r.0.0));\n', '        return Some(name.to_owned());\n',
+     REFNS),
+    ("a root push writes a ref inside a fork's namespace", SHARD,
+     '    (!chains.iter().filter_map(fork).any(inside)).then(|| name.to_owned())\n',
+     '    let _ = inside;\n    Some(name.to_owned())\n', REFNS),
+    ("a catch-up applies a fork's ref changes outside its namespace", CATCHUP,
+     '                .filter_map(|(n, o)| Some((crate::shard::fork_ref(net, chains, chain, &n)?, o)))\n',
+     '                .filter_map(|(n, o)| Some((n, o)).filter(|_| !chains.is_empty()))\n', REFNS),
+    ("a rehydrate pages a fork's refs outside its namespace", CATCHUP,
+     '                .filter_map(|(n, o)| Some((crate::shard::fork_ref(network, chains, *chain, n)?, o.clone())))\n',
+     '                .map(|(n, o)| (n.clone(), o.clone()))\n', REFNS),
+    ("a fork that does not answer fails the root's catch-up", CATCHUP,
+     '                    Err(_) => continue,\n', '                    Err(e) => return Err(e),\n', JOIN),
+    ("a fork new to the disk rehydrates the network", CATCHUP,
+     '                if *chain != root && cursor.is_some() && !held {\n',
+     '                if *chain != root && cursor.is_some() && !held && false {\n', JOIN),
+    ("a fork archived past its cursor rehydrates the network", CATCHUP,
+     '                    if *chain == root {\n                        cursor = None;\n',
+     '                    if *chain == root || true {\n                        cursor = None;\n', JOIN),
+    ("a join leaves the fork's cursor at 0, so its catch-up reads archived entries", CATCHUP,
+     '    cursor.advance(chain, head.applied.min(first.unwrap_or(head.applied)));\n', '', JOIN),
+    ("a fork's changed HEAD is never named", CATCHUP,
+     'let Some(h) = head.filter(|h| cursor.head_of(chain) != Some(h.as_str())) else { continue };\n',
+     'let Some(h) = head.filter(|h| chain == chains[0] && cursor.head_of(chain) != Some(h.as_str())) else {\n'
+     '            continue;\n        };\n', REFNS),
+    ("a fork's HEAD is not recorded, so every catch-up names it again", SHARD,
+     '            None => self.fork_heads.push((chain, h)),\n', '            None => drop(h),\n', REFNS),
+    ("a root-only cursor saves an empty fork_heads", SHARD,
+     '    #[serde(default, skip_serializing_if = "SmallVec::is_empty")]\n', '    #[serde(default)]\n', ROOTONLY),
+    ("a root call beside forks names none, so it lists their refs", SHARD,
+     '            format!("&forks={}", ids.join(","))\n', '            format!("{}", ids.len() * 0)\n', QUERY),
+    ("a fork's fetch reads the network's clone cache", EDGE,
+     '    if network.root() != repo {\n        return (None, false);\n',
+     '    if false {\n        return (None, false);\n', FRONT),
+    ("a fork-head pull request reads no Names shard", ISSUEOPS,
+     '            && head.repo != view.repo()\n', '            && false\n', FORKPR),
+    ("a fork head of another network opens", ISSUEOPS,
+     '                    if head_network != crate::tiers::network(v.core(), v.tiers.repo) {\n',
+     '                    if false && head_network != crate::tiers::network(v.core(), v.tiers.repo) {\n', FORKPR),
+    ("a fork head's network is read as its root's own id, so any root of another network opens", ISSUEOPS,
+     '                        None if names.repo_owner(head.repo).is_some() => NetworkId::of_root(head.repo),\n',
+     '                        None if names.repo_owner(head.repo).is_some() => {\n'
+     '                            crate::tiers::network(v.core(), v.tiers.repo)\n                        }\n', FORKPR),
+    ("a repository with no forks renders fork fields and a new ETag", FORKS,
+     '        self != ForkFields::default()\n', '        true\n', FIELDS),
+    ("network_count reads the direct count, not the network's", FORKS,
+     'let total = answer.and_then(|v| v.get("total")).and_then(Value::as_u64).unwrap_or(direct);\n',
+     'let total = direct;\n', FIELDS),
+    ("a member's repository scope does not cover the network's packs", EXPORTTOK,
+     '        Scope::Repo(r) => members.into_iter().any(|(m, _)| m == r),\n',
+     '        Scope::Repo(r) => members.into_iter().next().is_some_and(|(m, _)| m == r),\n', PACKSCOPE),
+    ("an owner of only a fork does not cover the network's packs", EXPORTTOK,
+     '        Scope::Owner(a) => members.into_iter().any(|(_, o)| o == Some(a)),\n',
+     '        Scope::Owner(a) => members.into_iter().next().is_some_and(|(_, o)| o == Some(a)),\n', PACKSCOPE),
 ]
 
 if __name__ == '__main__':

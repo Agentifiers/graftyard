@@ -317,24 +317,73 @@ struct GroupLog<'a> {
     me: SiteId,
     chain: ChainId,
     record: PlacementRecord,
+    /// The network's fork chains a catch-up also reads, each under its own owner's record (`Forks`).
+    forks: Vec<(ChainId, PlacementRecord)>,
+    /// Fork chains whose read answered that the chain has no group: a deleted fork, which `Jobs::run` stops reading.
+    gone: std::cell::RefCell<Vec<ChainId>>,
+}
+
+/// How long a catch-up waits for one read of a fork chain before it leaves that fork out of the run [guess: a
+/// lookup's own `LOOKUP_FOR` is 20 s, and a fork never holds the root's readers that long].
+const FORK_READ: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Storage key: the records of a network's chains other than the root's, which only a fork's call writes (`Forks`).
+fn forks_key(net: NetworkId) -> String {
+    format!("forks:{}", net.0.0)
+}
+
+/// What `forks_key` holds: the root's record and each fork chain's, by the fork's id, so the catch-up reads every
+/// member chain from its own group (`graftyard_git::fork_ref`). A network that no fork's call reached has none, and
+/// its catch-up reads the root chain alone, as before forks.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct Forks {
+    root: Option<PlacementRecord>,
+    forks: Vec<(i64, PlacementRecord)>,
 }
 
 impl GroupLog<'_> {
-    async fn call(&self, path: &str, body: &Value) -> std::result::Result<Value, StoreError> {
+    /// The record that places `chain`: a fork's own, else the primary's.
+    fn record_of(&self, chain: ChainId) -> &PlacementRecord {
+        self.forks.iter().find(|(c, _)| *c == chain).map_or(&self.record, |(_, r)| r)
+    }
+
+    async fn call(&self, chain: ChainId, path: &str, body: &Value) -> std::result::Result<Value, StoreError> {
         let b = Bindings { env: self.env, sites: self.sites };
-        let (v, _) = graftyard_lookup::call(&b, self.chain, &self.record, path, body).await.map_err(StoreError)?;
+        let read = graftyard_lookup::call(&b, chain, self.record_of(chain), path, body);
+        let r = self.bounded(chain, read).await?;
+        if let Err(e) = &r
+            && chain != self.chain
+            && graftyard_lookup::is_no_group(e)
+        {
+            self.gone.borrow_mut().push(chain);
+        }
+        let (v, _) = r.map_err(StoreError)?;
         Ok(v)
     }
 
+    /// A fork chain's read within `FORK_READ`: a fork's group is another owner's placement, and one that stalls must
+    /// not hold the root's catch-up, which leaves the fork out of the run on the error (`catchup::catch_up`).
+    async fn bounded<T>(
+        &self,
+        chain: ChainId,
+        f: impl std::future::Future<Output = T>,
+    ) -> std::result::Result<T, StoreError> {
+        if chain == self.chain {
+            return Ok(f.await);
+        }
+        crate::host::within(FORK_READ, f).await.ok_or_else(|| StoreError(format!("{chain}: no answer in FORK_READ")))
+    }
+
     /// This site's member of the group, by the committed config this isolate holds, else the record's bootstrap name.
-    async fn local(&self) -> Option<graftyard_lookup::Target> {
+    async fn local(&self, chain: ChainId) -> Option<graftyard_lookup::Target> {
         let b = Bindings { env: self.env, sites: self.sites };
-        graftyard_lookup::learn_voters(&b, self.chain, &self.record).await;
-        graftyard_lookup::known_voters(self.chain)
+        let record = self.record_of(chain);
+        graftyard_lookup::learn_voters(&b, chain, record).await;
+        graftyard_lookup::known_voters(chain)
             .into_iter()
             .chain(
-                self.record
-                    .bootstrap_members(self.chain)
+                record
+                    .bootstrap_members(chain)
                     .into_iter()
                     .map(|m| graftyard_lookup::Target { site: m.site, do_name: m.do_name.to_string() }),
             )
@@ -346,6 +395,7 @@ impl GroupLog<'_> {
     /// `catchup-local`).
     async fn local_first(
         &self,
+        chain: ChainId,
         (path, local_path): (&str, &str),
         body: &[u8],
         deadline: std::time::Duration,
@@ -353,42 +403,42 @@ impl GroupLog<'_> {
         leader_body: &Value,
     ) -> std::result::Result<Value, StoreError> {
         let b = Bindings { env: self.env, sites: self.sites };
-        let local = self.local().await;
-        graftyard_lookup::local_first(
-            self.chain,
+        let local = self.local(chain).await;
+        let read = graftyard_lookup::local_first(
+            chain,
             now_ms,
             local,
             local_path,
             usable,
             |t| async move { graftyard_lookup::post_within(&b, t.site, &t.do_name, local_path, body, deadline).await },
-            || async { self.call(path, leader_body).await.map_err(|e| e.0) },
-        )
-        .await
-        .map_err(StoreError)
+            || async { self.call(chain, path, leader_body).await.map_err(|e| e.0) },
+        );
+        self.bounded(chain, read).await?.map_err(StoreError)
     }
 
     /// One `/entries` page: from this site's member of the group when it has committed `from` (committed entries are
     /// the same on every member, and the local one is a call inside the site rather than across regions to the
     /// leader), as a page of up to `ENTRIES_LOCAL_PAGE_BYTES_MAX`; else, or when that read misses the lookup's CALL,
     /// a standard page from the leader.
-    async fn page(&self, from: Index, to: Index) -> std::result::Result<Value, StoreError> {
+    async fn page(&self, chain: ChainId, from: Index, to: Index) -> std::result::Result<Value, StoreError> {
         let path = format!("/entries?from={}&to={}", from.0, to.0);
         let local_path = format!("{path}&local=1&bytes={}", crate::host::ENTRIES_LOCAL_PAGE_BYTES_MAX);
         let usable = |v: &Value| graftyard_lookup::local_page_usable(v, from.0);
-        self.local_first((&path, &local_path), b"{}", graftyard_lookup::CALL, usable, &json!({})).await
+        self.local_first(chain, (&path, &local_path), b"{}", graftyard_lookup::CALL, usable, &json!({})).await
     }
 
     /// The fold's last `Promoted` and `Archived` and its first log index, with the read's index: by read-index on this
     /// site's member, which answers at or above the commit index the leader confirmed, within `FOLLOWER_CALL`; else
     /// through `fresh` on the leader.
-    async fn ranges(&self) -> std::result::Result<Value, StoreError> {
+    async fn ranges(&self, chain: ChainId) -> std::result::Result<Value, StoreError> {
         let body = graftyard_lookup::LOCAL_RANGES.as_bytes();
         let leader = json!({ "q": { "ranges": true } });
         let usable = graftyard_lookup::local_ranges_usable;
-        let v = self.local_first(("/read", "/read"), body, graftyard_lookup::FOLLOWER_CALL, usable, &leader).await?;
+        let paths = ("/read", "/read");
+        let v = self.local_first(chain, paths, body, graftyard_lookup::FOLLOWER_CALL, usable, &leader).await?;
         let mut r = v["value"].clone();
         if !r.is_object() {
-            return Err(StoreError(format!("{}: ranges read answered {v}", self.chain)));
+            return Err(StoreError(format!("{chain}: ranges read answered {v}")));
         }
         r["index"] = v["index"].clone();
         Ok(r)
@@ -399,8 +449,9 @@ impl ChainLog for GroupLog<'_> {
     /// The fold's last `Archived` raises `first` (`RepoFold::first_index`); `applied` is the read's index; and the
     /// `settings` row's default branch, which the shard points HEAD at (G26).
     async fn head(&self, chain: ChainId) -> std::result::Result<Head, StoreError> {
-        let v = self.ranges().await?;
-        if let (ChainId::Repo(r), Some(k)) = (chain, v["fanout"].as_u64()) {
+        let v = self.ranges(chain).await?;
+        // The network's k is its root chain's (`crate::fanout`); a fork chain's fold steps none.
+        if let (ChainId::Repo(r), Some(k), true) = (chain, v["fanout"].as_u64(), chain == self.chain) {
             FANOUT.with(|m| m.borrow_mut().entry(r.0.0).or_default().k = k as u8);
         }
         Ok(Head {
@@ -411,17 +462,13 @@ impl ChainLog for GroupLog<'_> {
     }
     async fn refs_page(
         &self,
-        _c: ChainId,
+        chain: ChainId,
         after: Option<String>,
     ) -> std::result::Result<(RefsPage, Index), StoreError> {
         let q = graftyard_git::group::refs_query(b"", after.as_deref(), graftyard_git::repo::REFS_PAGE_MAX);
-        let v = self.call("/read", &q).await?;
+        let v = self.call(chain, "/read", &q).await?;
         let page: RefsPage = serde_json::from_value(v["value"].clone()).map_err(|e| {
-            StoreError(format!(
-                "{}: refs page: {e}: {}",
-                self.chain,
-                v.to_string().chars().take(200).collect::<String>()
-            ))
+            StoreError(format!("{}: refs page: {e}: {}", chain, v.to_string().chars().take(200).collect::<String>()))
         })?;
         Ok((page, Index(v["index"].as_u64().unwrap_or(0))))
     }
@@ -429,13 +476,13 @@ impl ChainLog for GroupLog<'_> {
     /// elected leader whose commit index lags answers short or empty; `graftyard_git::catchup` applies only what came
     /// and asks again from there. An empty page is retried here a few times first, 250 ms apart, so a leader change
     /// costs a moment rather than the call.
-    async fn entries(&self, _c: ChainId, from: Index, to: Index) -> std::result::Result<Vec<LogPacks>, StoreError> {
+    async fn entries(&self, chain: ChainId, from: Index, to: Index) -> std::result::Result<Vec<LogPacks>, StoreError> {
         let mut out: Vec<LogPacks> = Vec::new();
         for attempt in 0..EMPTY_RETRIES {
             if attempt > 0 {
                 worker::Delay::from(std::time::Duration::from_millis(250)).await;
             }
-            let v = self.page(from, to).await?;
+            let v = self.page(chain, from, to).await?;
             let page: Vec<Value> =
                 serde_json::from_value(v["entries"].clone()).map_err(|e| StoreError(e.to_string()))?;
             for e in page {
@@ -461,16 +508,16 @@ impl ChainLog for GroupLog<'_> {
     }
     /// The fold's last `Promoted`. The fold does not keep the index of the entry that carried it, and no caller reads
     /// it (`ShardHost::rehydrate` reads the range), so the index is the read's applied index, an upper bound.
-    async fn last_promoted(&self, _c: ChainId) -> std::result::Result<Option<(Index, Promoted)>, StoreError> {
-        let v = self.ranges().await?;
+    async fn last_promoted(&self, chain: ChainId) -> std::result::Result<Option<(Index, Promoted)>, StoreError> {
+        let v = self.ranges(chain).await?;
         let p: Option<Promoted> =
             serde_json::from_value(v["promoted"].clone()).map_err(|e| StoreError(e.to_string()))?;
         Ok(p.map(|p| (Index(v["index"].as_u64().unwrap_or(0)), p)))
     }
     /// The chain's rolls, oldest first, from the `ranges` read (`repo_read`). An older member's answer has no
     /// `compactions`, read as none, so its consumed packs load as before (`crate::host` catch-up list).
-    async fn compactions(&self, _c: ChainId) -> std::result::Result<Vec<Compacted>, StoreError> {
-        let v = self.ranges().await?;
+    async fn compactions(&self, chain: ChainId) -> std::result::Result<Vec<Compacted>, StoreError> {
+        let v = self.ranges(chain).await?;
         let cs: Vec<Compacted> =
             serde_json::from_value(v.get("compactions").cloned().unwrap_or_else(|| Value::Array(Vec::new())))
                 .map_err(|e| StoreError(e.to_string()))?;
@@ -553,11 +600,24 @@ impl Jobs {
         // Logs this chain's lookup-mark holders in this isolate: B0-35 m57's catch-ups failed "no member answered" for
         // about 2 min after a term change while the group committed (`decisions/OPEN-QUESTIONS.md`, F101).
         graftyard_lookup::trace_marks(chain);
-        let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record: self.record.clone() };
+        // Every member chain a fork's call named, root first (`Forks`): one storage read, none for a root-only network.
+        let s = self.state.storage();
+        let known: Forks = s.get(&forks_key(self.net)).await.ok().flatten().unwrap_or_default();
+        let forks: Vec<(ChainId, PlacementRecord)> =
+            known.forks.into_iter().map(|(r, rec)| (ChainId::Repo(RepoId(DbId(r))), rec)).collect();
+        let chains: Vec<ChainId> = std::iter::once(chain).chain(forks.iter().map(|(c, _)| *c)).collect();
+        let log = GroupLog {
+            env: &self.env,
+            sites: &site.sites,
+            me: site.id,
+            chain,
+            record: self.record.clone(),
+            forks,
+            gone: Default::default(),
+        };
         // This site's bucket first for each stored pack (`graftyard_git::catchup::own_first`).
         let raw = graftyard_git::catchup::own_first(site.id, buckets(&self.env, &site));
         let bs: Vec<(SiteId, &R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
-        let s = self.state.storage();
         if run.until.is_none() {
             // Checked again here, after the awaits above: a teardown in between deleted `warming` and the alarm, and
             // putting them back would let the alarm restart the container.
@@ -571,7 +631,15 @@ impl Jobs {
         }
         // The page-overlap trace: this object's cursor before the run, as its last run in this isolate left it.
         let before = CURSORS.with(|m| m.borrow().get(&self.key()).copied());
-        let r = host.catch_up(self.net, &[chain], &bs, &log, graftyard_git::catchup::PIECE, run).await;
+        let r = host.catch_up(self.net, &chains, &bs, &log, graftyard_git::catchup::PIECE, run).await;
+        // A fork whose chain has no group is gone: this object stops reading it. Its refs stay on the disk, in its
+        // namespace, which no other repository's view lists, until the next rehydrate.
+        let gone = log.gone.take();
+        if !gone.is_empty() {
+            let mut known: Forks = s.get(&forks_key(self.net)).await.ok().flatten().unwrap_or_default();
+            known.forks.retain(|(r, _)| !gone.contains(&ChainId::Repo(RepoId(DbId(*r)))));
+            let _ = s.put(&forks_key(self.net), &known).await;
+        }
         // The key stays between a run's pieces: a reset there leaves the alarm to start the run again.
         if !r.as_ref().is_ok_and(|c| c.behind) {
             let _ = s.delete(WARMING_KEY).await;
@@ -764,6 +832,31 @@ impl GitShard {
         s.put(LEDGER_KEY, &ledger).await?;
         arm_beat(&s, &ledger, now).await?;
         Response::from_json(&json!({ "slots": slots }))
+    }
+
+    /// Notes that `fork` is a member chain of `net`, under its own `record`, so this object's catch-ups read it
+    /// (`Forks`), and answers the record that places the network's root chain. The first call for a network reads the
+    /// root's owner and record; later ones read only this object's storage.
+    async fn fork_seen(&self, net: NetworkId, fork: RepoId, record: &PlacementRecord) -> Result<PlacementRecord> {
+        let s = self.state.storage();
+        let mut known: Forks = s.get(&forks_key(net)).await.ok().flatten().unwrap_or_default();
+        let root = match known.root.clone() {
+            Some(r) => r,
+            None => {
+                let owner = crate::member::repo_owner(&self.env, net.root()).await.map_err(Error::RustError)?;
+                crate::member::owner_record(&self.env, owner).await.map_err(Error::RustError)?
+            }
+        };
+        // Only a fork new to this object, or a newer record of it (a move), writes: callers holding older copies of
+        // the record during a move would otherwise rewrite the row in turn.
+        let old = known.forks.iter().find(|(r, _)| *r == fork.0.0).map(|(_, r)| r.generation);
+        if known.root.is_none() || old.is_none_or(|g| g < record.generation) {
+            known.root = Some(root.clone());
+            known.forks.retain(|(r, _)| *r != fork.0.0);
+            known.forks.push((fork.0.0, record.clone()));
+            s.put(&forks_key(net), &known).await?;
+        }
+        Ok(root)
     }
 
     /// Puts back `net`'s counts this object stored before it last reset, the first time the object sees `net`
@@ -1016,7 +1109,24 @@ impl DurableObject for GitShard {
             }
         };
         let obj = self.run_key.clone();
-        let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record };
+        // A fork's call: its catch-up reads the root chain under the root's record and this fork's chain under its
+        // own (`Forks`), learned once and kept in storage, so later calls and the alarm read both with no lookup.
+        // A root's call names the forks this object knows (`RefView::RootBeside`), one local storage read, none of
+        // them on a network no fork's call reached, whose calls keep their bytes.
+        let fork = graftyard_git::refns(repo, net);
+        let (root_record, refns) = match fork {
+            None => {
+                let known: Forks = self.state.storage().get(&forks_key(net)).await.ok().flatten().unwrap_or_default();
+                let ids: Vec<RepoId> = known.forks.iter().map(|(r, _)| RepoId(DbId(*r))).collect();
+                let view =
+                    if ids.is_empty() { graftyard_git::RefView::Root } else { graftyard_git::RefView::RootBeside(ids) };
+                (record.clone(), view)
+            }
+            Some(f) => (self.fork_seen(net, f, &record).await?, graftyard_git::RefView::Fork(f)),
+        };
+        let refns = &refns;
+        let gone = Default::default();
+        let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record, forks: Vec::new(), gone };
         // A new leadership's `warm` (`crate::prsync`) and promote-ahead's calls (`crate::archive`) are the callers no
         // client asked for: they run on a running shard, start no stopped one, and never count as its last request.
         // A due range's promotion (`warm=start`) starts one but is no request either, and on a quiet shard it lapses.
@@ -1087,13 +1197,8 @@ impl DurableObject for GitShard {
         // repo:65536 from nothing, and the later one never finished (`tests/m3/results/wire-fix.md`). `wait=<s>`
         // bounds how long this call waits; past it the call answers 503 `warming`.
         let wait = q(&url, "wait").and_then(|v| v.parse::<u64>().ok()).map(std::time::Duration::from_secs);
-        let jobs = Jobs {
-            state: self.state.clone(),
-            env: self.env.clone(),
-            obj: obj.clone(),
-            net,
-            record: log.record.clone(),
-        };
+        let jobs =
+            Jobs { state: self.state.clone(), env: self.env.clone(), obj: obj.clone(), net, record: root_record };
         let caught_up = || jobs.wait(wait);
         // A rehydrate here takes tens of minutes on a hot group, so a caller with another site's shard to try next
         // (`next=1`) is answered 503 `warming` at once, whichever isolate it comes from, rather than waiting out its
@@ -1165,7 +1270,7 @@ impl DurableObject for GitShard {
                 });
                 if due && q(&url, "via").is_none() && !derived {
                     let own = host.load().await.unwrap_or_default();
-                    let (env, sites, me, rec) = (self.env.clone(), site.sites.clone(), site.id, log.record.clone());
+                    let (env, sites, me, rec) = (self.env.clone(), site.sites.clone(), site.id, jobs.record.clone());
                     let slots = slots.clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         // The network's lease on this site's ledger, renewed as it is while the network takes pushes,
@@ -1267,7 +1372,7 @@ impl DurableObject for GitShard {
                     .into_iter()
                     .filter_map(|k| q(&url, k).filter(|v| v.bytes().all(|b| b.is_ascii_hexdigit())).map(|v| (k, v)))
                     .collect();
-                let r = match host.validate(net, tipsn, detailn, agent, derived, disk, body(), &sums).await {
+                let r = match host.validate(net, tipsn, detailn, agent, derived, disk, body(), &sums, refns).await {
                     // The container sweeps the request it kept within the hour.
                     Ok(Validated::MissingBase { .. }) if back => return sent_back(),
                     // The container kept the request: once a catch-up that started after it ran, the same request is
@@ -1297,7 +1402,7 @@ impl DurableObject for GitShard {
                                 Err(e) => return Response::error(e, graftyard_git::validate_status(None)),
                             };
                             let disk = if caught { OnDisk::Held(&held) } else { OnDisk::HeldOnDisk(&held) };
-                            match host.validate(net, tipsn, detailn, agent, derived, disk, None, &[]).await {
+                            match host.validate(net, tipsn, detailn, agent, derived, disk, None, &[], refns).await {
                                 Ok(Validated::MissingBase { held: again }) if !caught => held = again,
                                 Ok(Validated::Busy { .. }) if !caught => {}
                                 r => break r,
@@ -1418,10 +1523,13 @@ impl DurableObject for GitShard {
                 // answer needs only the chain and the want, and in round 26 a composed miss's first byte waited 1.3 to
                 // 68.7 s, behind catch-ups that ran with every tip move. The container answers 409 when it would serve
                 // stock, and only then does the miss wait for a catch-up. The edge sends the body gunzipped.
-                let composable = body.as_deref().is_some_and(|b| {
-                    enc.is_empty()
-                        && graftyard_git::smart::parse_v2(b).is_ok_and(|v| graftyard_git::compose::composable(&v))
-                });
+                // Only a network with no fork is composed: the chain is the root's, and its tip check reads every ref
+                // on the disk, a fork's too (`RefView`).
+                let composable = *refns == graftyard_git::RefView::Root
+                    && body.as_deref().is_some_and(|b| {
+                        enc.is_empty()
+                            && graftyard_git::smart::parse_v2(b).is_ok_and(|v| graftyard_git::compose::composable(&v))
+                    });
                 if composable {
                     let compose = Compose {
                         state: self.state.clone(),
@@ -1460,7 +1568,7 @@ impl DurableObject for GitShard {
                         let r = if tail {
                             host.upload_pack_tail(net, b.clone(), &proto, fill).await
                         } else {
-                            host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true).await
+                            host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true, refns).await
                         }
                         .map_err(se)?;
                         if is_tail(&r) {
@@ -1491,7 +1599,9 @@ impl DurableObject for GitShard {
                                 let r = if tail {
                                     host.upload_pack_tail(net, b.clone(), &proto, fill).await.ok()?
                                 } else {
-                                    host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true).await.ok()?
+                                    host.upload_pack_spooled(net, b.clone(), &proto, &enc, fill, true, refns)
+                                        .await
+                                        .ok()?
                                 };
                                 (r.status_code() == 200).then_some(r)
                             },
@@ -1534,8 +1644,10 @@ impl DurableObject for GitShard {
                         let (proto, enc) = (proto.clone(), enc.clone());
                         async move {
                             let r = match (fill, b) {
-                                (Some(_), Some(b)) => host.upload_pack_spooled(net, b, &proto, &enc, fill, false).await,
-                                (_, b) => host.upload_pack(net, info, b, &proto, &enc).await,
+                                (Some(_), Some(b)) => {
+                                    host.upload_pack_spooled(net, b, &proto, &enc, fill, false, refns).await
+                                }
+                                (_, b) => host.upload_pack(net, info, b, &proto, &enc, refns).await,
                             };
                             match r {
                                 Ok(r) if full(&r) => None,

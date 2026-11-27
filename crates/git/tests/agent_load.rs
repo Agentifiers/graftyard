@@ -648,6 +648,12 @@ fn a_forks_shard_query_names_its_network_and_a_roots_keeps_mains_bytes() {
     assert_eq!(shard_query(fork, network), "repo=131172&net=131171");
     assert_eq!(shard_network(fork, Some(network)), network);
     assert_eq!(shard_network(root, None), NetworkId::of_root(root));
+    // Head 4: a fork's container calls serve its own ref namespace; a root's add nothing.
+    use graftyard_git::{RefView, refns_param};
+    assert_eq!(refns_param(&RefView::Fork(fork)), "&refns=131172");
+    assert_eq!(refns_param(&RefView::Root), "");
+    let other = RepoId(DbId(131180));
+    assert_eq!(refns_param(&RefView::RootBeside(vec![fork, other])), "&forks=131172,131180");
 }
 
 /// AM3-WP2a, 32.34: a fork's `Genesis` names its network in one core row. A root has no such event, and its own

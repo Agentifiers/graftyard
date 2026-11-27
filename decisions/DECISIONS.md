@@ -11995,7 +11995,7 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 
 ### `fork-pack-scope`: an export token for any member repository of a network, or any member's owner, reads the network's packs, 2026-11-26
 
-**Status.** Ruled by the lead (T-01a17bda), 2026-11-26, for AM3-WP2a (`build/BUILD-PLAN.md`). Not built.
+**Status.** Ruled by the lead (T-01a17bda), 2026-11-26, for AM3-WP2a (`build/BUILD-PLAN.md`). Built in head 4 at $0 (`graftyard_identity::export_token::covers_network`, the edge's `export::pack_covered`), as the Decision line reads. Its last sentence does not hold, and the lead has to choose. Today `Scope::Repo(r)` never covers `ChainId::Network`, so a repository-scoped token cannot read even a root-only network's packs. Under the Decision line it now reads them, so a one-repository network is not "covered exactly as today". Keeping the old rule for a root would leave a fork's repository scope covered while the root's own is not. Not hosted.
 
 **Decision.** `GET export/packs/...` names a network (`export::Route::Pack`, whose chain is `ChainId::Network`). An export token's scope covers that chain when it covers any member repository of the network: `Scope::Repo(r)` for a member `r`, `Scope::Owner(a)` for the owner of any member, and `Scope::Install`. The edge reads the members from `RepoOwner`'s network (Names 0x10.4). A network with one repository, every network on main, is covered exactly as today.
 
@@ -12008,6 +12008,56 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 **Evidence.** `crates/release/src/view.rs`, `covers` (`Scope::Owner` over `ChainId::Network` today checks one owner); `crates/git/src/export.rs`, `Route::chain`; `design/SHARED.md`, "Fork networks"; `design/DESIGN.md`, journey 2 ("its packs share the network's prefix").
 
 **Flip.** A private fork network in which the root's owner must not read a fork's own objects, such as a private fork of a public repository with commits the root's owner may not see. Then a member's export reads only the packs its own chain's entries name, and `covers` takes the pack's naming chain, not the network. Open in OPEN-QUESTIONS R73.
+
+### `fork-refns`: a fork's refs live in git's namespace layout on its network's disk, and its shard calls name the namespace, 2026-11-27
+
+**Status.** Built in AM3-WP2a's head 4 at $0 (`build/BUILD-PLAN.md`, AM3-WP2a, Progress), with the fixes from a skeptical review of the first cut. Not hosted.
+
+**Decision.** A network's git cache shard keeps one bare repository for every member, as today. The root's refs stay at their names. Each fork's refs go under `refs/namespaces/<fork id>/` (`graftyard_git::fork_ref`), with that namespace's HEAD pointed at the fork's default branch.
+
+How the shard learns about forks:
+- The shard object stores each fork's placement record (`forks:<net>`) the first time a call with `net=` names that fork. It writes again only for a record of a higher generation.
+- The catch-up reads the root chain under the root owner's record and each known fork chain under its own owner's record. The alarm restarts the run with the same chains.
+- A network that no fork's call has reached reads its one chain and makes no new read.
+
+Catch-up rules:
+- **A fork that fails never holds the root.** A fork chain whose read fails, or takes more than `FORK_READ` (5 s), is left out of that run with its cursor where it was. A fork chain that answers no group is dropped from `forks:<net>`. A failure in another owner's placement never holds the root's catch-up.
+- **A fork joins alone.** A fork new to a disk that already serves the network, or one whose log was archived past its cursor, joins alone (`catchup::join`): its marked and tail packs (`have` skips what the disk holds), its refs paged into its namespace, its HEAD, and its cursor at its first page's index. The network is never rehydrated for it.
+- **One page sequence.** The rehydrate pages every chain's refs in one `PUT /refs` sequence, so the root's first page, which clears what it does not list, never deletes a fork's refs.
+- **HEADs.** The cursor names a fork's HEAD in `fork_heads`, which a root-only cursor never serializes.
+
+Container calls:
+- A fork's call carries `refns=<fork id>`. upload-pack runs stock with `GIT_NAMESPACE`, and validate snapshots only that namespace.
+- A root's call beside forks carries `forks=<ids>`. upload-pack hides exactly those namespaces, and validate leaves them out of the refs it counts as the root's, so a root push of a fork's commits reports them.
+- Neither kind of call is composed: the chain's tip check reads every ref on the disk.
+- A root call on a network with no fork carries neither parameter and runs exactly as before.
+- A root ref of its own under `refs/namespaces/` is written and served as before, unless it falls in a known fork's namespace (below).
+- A fork's fetch neither reads nor fills the clone cache (the edge's `front_key`).
+
+**Why.**
+- **No copies.** git's namespaces give stock upload-pack and receive-pack's checks a per-repository ref view over shared objects with no copy of the refs, and an existing disk needs no rewrite.
+- **Root bytes unchanged.** A root's refs keep their names, and a network with no fork sends no new parameter. So every existing repository's advertisement, fetch and push detail keep main's bytes, which is the GHES compatibility invariant (`containers/git/server`, `TestForkNamespaces`).
+- **Only forked roots compose less.** The cost of forks falls on networks that have them: a root beside forks loses the composed clone path.
+- **Availability.** A fork is another owner's group, so its outage is skipped rather than inherited.
+- **No 20-minute waits.** A fork's first call joins its chain alone because a whole-network rehydrate has taken 20 minutes and more on a hot root (`tests/am1/results/lm1-memory.md`, round 21).
+- **Clone cache.** `CloneKey` names the network and the wants. An entry a fork's fetch filled would answer a root reader's want of an object only the fork's refs reach.
+
+**What it beat.**
+- A bare repository per fork, which copies refs and objects or needs alternates the LRU then has to evict together.
+- Hiding all of `refs/namespaces/` from the root: it changes the bytes of a root that already holds such a ref, which the edge's ls-refs from the group still lists.
+- Reading the network chain's members on every catch-up: one more member round trip on every network, forks or not.
+- Keying the clone cache by repository, which changes every root's key and empties the cache on deploy.
+
+**Evidence.**
+- `crates/git/tests/catchup.rs`: `a_fork_chains_refs_and_head_land_in_its_namespace_beside_the_roots`, `a_fork_that_does_not_answer_holds_nothing_back_and_a_new_fork_joins_without_a_rehydrate`, and `a_root_only_networks_cursor_and_refs_are_as_before_forks`.
+- `containers/git/server/namespace_test.go`.
+- plant277 mutants 41 to 53.
+
+**Flip.**
+- A root ref inside a known fork's namespace (`refs/namespaces/<fork id>/...`, which a push to the root may name) is in the root's fold and API but never on the disk (`fork_ref` answers `None`), so git does not serve it. A client that needs it served flips this to per-repository disks.
+- Composed answers wanted for forked networks: then the chain checks a want against the view's refs.
+- The clone cache wanted for forks: then the key takes the repository for forks only.
+- A re-join after an archive never clears the fork's namespace, so a fork branch deleted inside the archived span stays on the disk until the next rehydrate [inference: rare]. If it turns out not to be rare, the container lists a namespace's refs so `join` can delete the ones the pages miss.
 
 ### `fork-network-read`: on the `o/r` path the edge learns a fork's network from the access rows it already reads; `RepoOwner` carries it for id-only routes, 2026-11-26
 

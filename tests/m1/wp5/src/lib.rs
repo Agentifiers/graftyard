@@ -363,7 +363,19 @@ impl DurableObject for GitShard {
                 let tipsn = head.len();
                 head.extend_from_slice(&req.bytes().await?);
                 let body = Some(js_sys::Uint8Array::from(head.as_slice()).into());
-                match host.validate(NET, tipsn, 0, false, false, graftyard_git::host::OnDisk::CaughtUp, body, &[]).await
+                match host
+                    .validate(
+                        NET,
+                        tipsn,
+                        0,
+                        false,
+                        false,
+                        graftyard_git::host::OnDisk::CaughtUp,
+                        body,
+                        &[],
+                        &graftyard_git::RefView::Root,
+                    )
+                    .await
                 {
                     Ok(graftyard_git::host::Validated::Done(Some(ix), _, _)) => Response::from_json(&ix),
                     Ok(_) => Response::error("validate gave no index", 422),
@@ -430,7 +442,9 @@ impl DurableObject for GitShard {
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
-                host.upload_pack(NET, path == "/info-refs", body, &proto, &enc).await.map_err(se)
+                host.upload_pack(NET, path == "/info-refs", body, &proto, &enc, &graftyard_git::RefView::Root)
+                    .await
+                    .map_err(se)
             }
             _ => Response::error("not found", 404),
         }

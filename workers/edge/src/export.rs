@@ -6,8 +6,9 @@
 //!   trust anchor's before any `Keys` entry) and refused once its `jti`'s `JtiRevoked` row is read, through the same
 //!   READ_CACHE as `ghs_` (`ident::jti_revoked`); or a registered lifeboat's signed tail, snapshot, or pack pull
 //!   (`lifeboat_claims`), which is install-scoped. Anything else is 401.
-//! - **Scope.** `in_scope` runs before any read: an org token's repository chain or pack is checked against the
-//!   repository's owner from `RepoOwner`, and the feed needs an install token.
+//! - **Scope.** `in_scope` runs before any read: an org token's repository chain is checked against the repository's
+//!   owner from `RepoOwner`, a pack against every member of its network (`export_token::covers_network`,
+//!   "`fork-pack-scope`"), and the feed needs an install token.
 //! - **Reads.** Batches list the `EXPORT` bucket after the cursor. Entries come from a learner or follower
 //!   (`graftyard_lookup::log_rows`, never the leader), or, below the member's stored log, from the archive object the
 //!   member names, read as it streams (`export::ArchiveRows`). Snapshots and packs stream from the site buckets, so
@@ -21,7 +22,8 @@ use graftyard_git::host::R2;
 use graftyard_git::{Bucket, R2Key};
 use graftyard_identity::export_token::{self, ExportClaims};
 use graftyard_identity::lifeboat;
-use graftyard_types::{AccountId, ChainId, Index, PlacementRecord, RepoId};
+use graftyard_release::Scope;
+use graftyard_types::{AccountId, ChainId, Index, NetworkId, PlacementRecord, RepoId};
 use graftyard_wire::Reply;
 use sha2::{Digest as _, Sha256};
 use worker::*;
@@ -145,15 +147,52 @@ fn owned_repo(chain: Option<ChainId>) -> Option<RepoId> {
     }
 }
 
+/// Whether a narrower scope than the install's covers `network`'s packs (`decisions/DECISIONS.md`,
+/// "`fork-pack-scope`"): the root first, whose owner its `RepoOwner` row names, then the other members from one
+/// network chain read, reading a fork's owner only for an `Owner` scope and stopping at the first that covers. A root
+/// with no `RepoOwner` row is not found, as before forks.
+async fn pack_covered(c: &Ctx<'_>, scope: Scope, network: NetworkId) -> std::result::Result<bool, Fail> {
+    let root_id = network.root();
+    let root = Box::pin(crate::repo_by_id(c, root_id)).await.map_err(|_| ExportError::NotFound)?;
+    if export_token::covers_network(scope, [(root_id, Some(root.owner))]) {
+        return Ok(true);
+    }
+    let members = Box::pin(crate::forks::network_members(c, network, &root.record)).await.map_err(unavailable)?;
+    let forks = members.into_iter().filter(|m| *m != root_id);
+    if !matches!(scope, Scope::Owner(_)) {
+        return Ok(export_token::covers_network(scope, forks.map(|m| (m, None))));
+    }
+    for m in forks {
+        // A fork not yet finished has no `RepoOwner` row and covers nothing; a `Names` read that failed is an outage.
+        let owner = match Box::pin(crate::repo_by_id(c, m)).await {
+            Ok(r) => r.owner,
+            Err(e) if e.ends_with("has no RepoOwner row") => continue,
+            Err(e) => return Err(unavailable(e)),
+        };
+        if export_token::covers_network(scope, [(m, Some(owner))]) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 async fn read(c: &Ctx<'_>, route: &Route, claims: &ExportClaims, root: &str) -> std::result::Result<Response, Fail> {
-    // An org token's repository chain or pack needs its owner: a repository with no `RepoOwner` row is not found.
+    // A pack names a network, which any member's repository or owner scope covers.
+    let pack_scope = match route {
+        Route::Pack { network, .. } if claims.scope != Scope::Install => {
+            Some(Box::pin(pack_covered(c, claims.scope, *network)).await?)
+        }
+        _ => None,
+    };
+    // An org token's repository chain needs its owner: a repository with no `RepoOwner` row is not found.
     let mut owner: Option<AccountId> = None;
-    if claims.scope != graftyard_release::Scope::Install
+    if pack_scope.is_none()
+        && claims.scope != Scope::Install
         && let Some(r) = owned_repo(route.chain())
     {
         owner = Some(Box::pin(crate::repo_by_id(c, r)).await.map_err(|_| ExportError::NotFound)?.owner);
     }
-    let covers = |chain: ChainId| export_token::covers(claims.scope, chain, owner);
+    let covers = |chain: ChainId| pack_scope.unwrap_or_else(|| export_token::covers(claims.scope, chain, owner));
     export::in_scope(route, &covers)?;
     let now = crate::now().0;
     let src = match route {

@@ -498,6 +498,36 @@ pub fn shard_query(repo: RepoId, network: NetworkId) -> String {
     if network.root() == repo { format!("repo={}", repo.0.0) } else { format!("repo={}&net={}", repo.0.0, network.0.0) }
 }
 
+/// The fork whose own refs a shard call on `network` serves (`refns`, `fork_ref`): `repo` when it is not the root.
+pub fn refns(repo: RepoId, network: NetworkId) -> Option<RepoId> {
+    (network.root() != repo).then_some(repo)
+}
+
+/// Whose refs a container call serves on a network's disk (`decisions/DECISIONS.md`, "`fork-refns`").
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RefView {
+    /// The root's, with the forks this shard object knows of, whose namespaces it hides; none on a network with no
+    /// fork, whose calls keep their bytes.
+    #[default]
+    Root,
+    RootBeside(Vec<RepoId>),
+    /// A fork's own namespace.
+    Fork(RepoId),
+}
+
+/// `&refns=<fork id>` for a fork's call, so it validates against and serves that fork's namespace; `&forks=<ids>` for a
+/// root's beside forks, so it neither lists their refs nor counts them as its own; nothing for a root alone.
+pub fn refns_param(view: &RefView) -> String {
+    match view {
+        RefView::Root => String::new(),
+        RefView::RootBeside(forks) => {
+            let ids: Vec<String> = forks.iter().map(|r| r.0.0.to_string()).collect();
+            format!("&forks={}", ids.join(","))
+        }
+        RefView::Fork(r) => format!("&refns={}", r.0.0),
+    }
+}
+
 /// The network a shard call's `repo` and `net` name (`shard_query`): `net` for a fork, else the repository's own id.
 pub fn shard_network(repo: RepoId, net: Option<NetworkId>) -> NetworkId {
     net.unwrap_or(NetworkId::of_root(repo))
@@ -680,11 +710,56 @@ pub struct IngestCursor {
     /// `None` on a cursor saved before G26, and the next catch-up names it once.
     #[serde(default)]
     pub head: Option<String>,
+    /// Each fork chain's default branch its namespace HEAD was last pointed at (`fork_ref`), as `head` is the root's.
+    /// Absent, not empty, for a network with no fork, so a root's cursor is the bytes it was before forks.
+    #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
+    pub fork_heads: SmallVec<[(ChainId, String); 2]>,
+}
+
+/// Where a member chain's ref `name` lives on the network's disk: a fork's under its own namespace,
+/// `refs/namespaces/<fork id>/` (git's `GIT_NAMESPACE` layout, `decisions/DECISIONS.md`, "`fork-refns`"), and the
+/// root's where it was before forks. `None` only for a root ref inside the namespace of one of `chains`' forks, which
+/// on the disk would be that fork's: a network with no fork writes every root ref, `refs/namespaces/` included.
+pub fn fork_ref(network: NetworkId, chains: &[ChainId], chain: ChainId, name: &str) -> Option<String> {
+    let fork = |c: &ChainId| match c {
+        ChainId::Repo(r) if *r != network.root() => Some(*r),
+        _ => None,
+    };
+    if let Some(r) = fork(&chain) {
+        return Some(format!("refs/namespaces/{}/{name}", r.0.0));
+    }
+    let inside = |r: RepoId| {
+        name.strip_prefix("refs/namespaces/")
+            .and_then(|rest| rest.strip_prefix(&r.0.0.to_string()))
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    (!chains.iter().filter_map(fork).any(inside)).then(|| name.to_owned())
 }
 
 impl IngestCursor {
     pub fn new(network: NetworkId) -> IngestCursor {
-        IngestCursor { network, chains: SmallVec::new(), head: None }
+        IngestCursor { network, chains: SmallVec::new(), head: None, fork_heads: SmallVec::new() }
+    }
+
+    /// The default branch `chain`'s HEAD was last pointed at: `head` for the root, else its `fork_heads` entry.
+    pub fn head_of(&self, chain: ChainId) -> Option<&str> {
+        if chain == ChainId::Repo(self.network.root()) {
+            return self.head.as_deref();
+        }
+        self.fork_heads.iter().find(|(c, _)| *c == chain).map(|(_, h)| h.as_str())
+    }
+
+    /// Records `chain`'s default branch, as `head_of` reads it; `None` keeps a fork's entry and clears the root's.
+    pub fn set_head(&mut self, chain: ChainId, head: Option<String>) {
+        if chain == ChainId::Repo(self.network.root()) {
+            self.head = head;
+            return;
+        }
+        let Some(h) = head else { return };
+        match self.fork_heads.iter_mut().find(|(c, _)| *c == chain) {
+            Some((_, old)) => *old = h,
+            None => self.fork_heads.push((chain, h)),
+        }
     }
 
     pub fn at(&self, chain: ChainId) -> Index {

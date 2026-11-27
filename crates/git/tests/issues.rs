@@ -1953,3 +1953,127 @@ fn milestones_number_count_and_clear_in_one_entry() {
     wire["format"] = serde_json::json!([0x20, 37]);
     assert!(serde_json::from_value::<IssueCall>(wire).is_err(), "32.37 is only a milestone command's");
 }
+
+// ---- AM3-WP2a: a pull request's head in another repository of the base's network ----
+
+/// Adds `rows` to every `Names` dep, and a `Names` dep for each of `repos`' `RepoOwner` shards the deps lack, so the
+/// leader finds each head repository's row on the shard `IssueCmd::deps` names.
+fn with_repo_rows(c: &mut Chain, repos: &[RepoId], rows: &[NamesEvent]) {
+    use graftyard_identity::{NameKey, name_shard};
+    for r in repos {
+        let chain = ChainId::Names(name_shard(&NameKey::Repo(*r)));
+        if !c.deps.iter().any(|(k, _)| *k == chain) {
+            c.deps.push((chain, IdentityDep::Names(NamesFold::new(name_shard(&NameKey::Repo(*r))))));
+        }
+    }
+    for (_, d) in &mut c.deps {
+        if let IdentityDep::Names(f) = d {
+            for row in rows {
+                f.apply(row);
+            }
+        }
+    }
+}
+
+fn fork_pr(head: RepoId, base_sha: ObjectId) -> IssueOp {
+    IssueOp::OpenPr {
+        head: HeadSpec { repo: head, branch: name("refs/heads/f") },
+        base: name("refs/heads/main"),
+        title: "t".into(),
+        body: "".into(),
+        draft: false,
+        head_sha: oid(5),
+        base_sha,
+    }
+}
+
+#[test]
+fn a_pull_request_head_in_another_repository_must_be_in_the_base_repositorys_network() {
+    use graftyard_identity::{NameKey, name_shard};
+    use graftyard_types::NetworkId;
+    let owner = AccountId(DbId(OWNER));
+    // REPO (7) roots network 7; FORK (8) is its fork. OTHER (9) roots network 9 and STRAY (10) is its fork. GHOST
+    // (11) has no row. ROOT2 (20) roots network 20 and SIBLING (21) is its fork.
+    let (fork, other, stray, ghost) = (RepoId(DbId(8)), RepoId(DbId(9)), RepoId(DbId(10)), RepoId(DbId(11)));
+    let (root2, sibling) = (RepoId(DbId(20)), RepoId(DbId(21)));
+    let rows = [
+        NamesEvent::RepoOwner { repo: REPO, owner },
+        NamesEvent::ForkOwner { repo: fork, owner, network: NetworkId::of_root(REPO) },
+        NamesEvent::RepoOwner { repo: other, owner },
+        NamesEvent::ForkOwner { repo: stray, owner, network: NetworkId::of_root(other) },
+        NamesEvent::RepoOwner { repo: root2, owner },
+        NamesEvent::ForkOwner { repo: sibling, owner, network: NetworkId::of_root(root2) },
+    ];
+    let heads = [fork, other, stray, ghost, root2, sibling];
+
+    // The base is a root: its network is its own id.
+    let mut c = setup(1, 90);
+    with_repo_rows(&mut c, &heads, &rows);
+    let base_sha = c.ref_of(&name("refs/heads/main")).unwrap();
+
+    // A same-repository pull request reads the deps it read before: no `Names` shard for its head.
+    c.push("refs/heads/f", oid(2));
+    let same = IssueCmd {
+        op: IssueOp::OpenPr {
+            head: HeadSpec { repo: REPO, branch: name("refs/heads/f") },
+            base: name("refs/heads/main"),
+            title: "t".into(),
+            body: "".into(),
+            draft: false,
+            head_sha: oid(2),
+            base_sha,
+        },
+        actor: who(WRITER),
+        request: RequestId(Ulid(1)),
+    };
+    let issue = IssueCmd {
+        op: IssueOp::OpenIssue {
+            title: "t".into(),
+            body: "".into(),
+            labels: SmallVec::new(),
+            assignees: SmallVec::new(),
+        },
+        actor: who(WRITER),
+        request: RequestId(Ulid(1)),
+    };
+    let from_fork = IssueCmd { op: fork_pr(fork, base_sha), actor: who(WRITER), request: RequestId(Ulid(1)) };
+    {
+        let m = &c.members[0];
+        let view = RepoView::new(tiers(), &m.core, &m.meta, c.now);
+        assert_eq!(same.deps(&view), issue.deps(&view), "a same-repository pull request's deps are unchanged");
+        assert!(!same.deps(&view).contains(&ChainId::Names(name_shard(&NameKey::Repo(REPO)))));
+        let names = ChainId::Names(name_shard(&NameKey::Repo(fork)));
+        let mut want = issue.deps(&view);
+        if !want.contains(&names) {
+            want.push(names);
+        }
+        assert_eq!(from_fork.deps(&view), want, "a fork head also reads its repository's `Names` shard");
+        // A leader that did not read that shard fails closed.
+        let without: Vec<_> = c.deps.iter().filter(|(k, _)| *k != names).cloned().collect();
+        assert!(matches!(from_fork.decide(&view, &without), Err(IssueErr::Unauthorized(_))));
+    }
+    assert!(matches!(c.commit(WRITER, same.op.clone()), Ok(IssueOut::Number(_))), "same repository still opens");
+
+    let refused = Err(IssueErr::Invalid("the head repository is not in the base repository's network"));
+    assert!(matches!(c.commit(WRITER, fork_pr(fork, base_sha)), Ok(IssueOut::Number(_))), "a fork in the network");
+    assert_eq!(c.commit(WRITER, fork_pr(other, base_sha)), refused, "another network's root");
+    assert_eq!(c.commit(WRITER, fork_pr(stray, base_sha)), refused, "another network's fork");
+    assert_eq!(c.commit(WRITER, fork_pr(ghost, base_sha)), Err(IssueErr::HeadMissing), "no such repository");
+
+    // The base is itself a fork of ROOT2: its network is 20, not its own id 7. Its root and a sibling fork may be
+    // heads; a fork of network 7 may not.
+    let mut c = setup(1, 90);
+    with_repo_rows(&mut c, &heads, &rows);
+    let genesis = RepoEvent::Genesis {
+        owner,
+        network: NetworkId::of_root(root2),
+        name: RepoName::parse("tool").unwrap(),
+        fork_of: Some((root2, Index(3))),
+    };
+    c.entry(EntryBody::Events(vec![genesis]), TierSet::CORE);
+    let base_sha = c.ref_of(&name("refs/heads/main")).unwrap();
+    assert!(matches!(c.commit(WRITER, fork_pr(root2, base_sha)), Ok(IssueOut::Number(_))), "the base's root");
+    assert!(matches!(c.commit(WRITER, fork_pr(sibling, base_sha)), Ok(IssueOut::Number(_))), "a sibling fork");
+    assert_eq!(c.commit(WRITER, fork_pr(fork, base_sha)), refused, "a fork of the base's own id");
+    assert_eq!(c.commit(WRITER, fork_pr(ghost, base_sha)), Err(IssueErr::HeadMissing), "no such repository");
+}

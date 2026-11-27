@@ -234,6 +234,11 @@ pub async fn repo_route(
     let method = req.method();
     let view = rd.view(host);
     Ok(Some(match method {
+        // Until forks are enabled no repository has one: main's reply, with no extra read.
+        Method::Get if crate::forks::on(c) => {
+            let r = graftyard_api::repos::get(&view, graftyard_types::Index(index));
+            crate::forks::with_fork_fields(c, rd, r, index).await
+        }
         Method::Get => graftyard_api::repos::get(&view, graftyard_types::Index(index)),
         Method::Patch => {
             if let Err(r) = enabled(c) {

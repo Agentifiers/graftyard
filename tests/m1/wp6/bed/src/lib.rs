@@ -378,7 +378,20 @@ impl DurableObject for GitShard {
                     .map_err(se)?;
                 let n: usize = q(&url, "tipsn").and_then(|v| v.parse().ok()).unwrap_or(0);
                 let body = req.inner().body().map(Into::into);
-                match host.validate(net, n, 0, false, false, graftyard_git::host::OnDisk::CaughtUp, body, &[]).await {
+                match host
+                    .validate(
+                        net,
+                        n,
+                        0,
+                        false,
+                        false,
+                        graftyard_git::host::OnDisk::CaughtUp,
+                        body,
+                        &[],
+                        &graftyard_git::RefView::Root,
+                    )
+                    .await
+                {
                     Ok(graftyard_git::host::Validated::Done(Some(ix), _, _)) => Response::from_json(&ix),
                     Ok(_) => Response::error("validate gave no index", 422),
                     Err((status, e)) => Response::error(e.0, graftyard_git::validate_status(status)),
@@ -392,7 +405,10 @@ impl DurableObject for GitShard {
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
-                let r = host.upload_pack(net, path == "/info-refs", body, &proto, &enc).await.map_err(se)?;
+                let r = host
+                    .upload_pack(net, path == "/info-refs", body, &proto, &enc, &graftyard_git::RefView::Root)
+                    .await
+                    .map_err(se)?;
                 let h = Headers::new();
                 for (k, v) in r.headers().entries() {
                     h.set(&k, &v)?;

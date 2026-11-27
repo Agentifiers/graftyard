@@ -3668,8 +3668,14 @@ async fn clone_hit(c: &Ctx<'_>, repo: &Repo, k: &CloneKey) -> Result<Option<Hit>
 }
 
 /// The front's clone key on `network`, and whether the front's lookup under it still stands: `false` when the front
-/// built it on another network, and the caller looks it up again.
-fn front_key(key: Option<CloneKey>, network: NetworkId) -> (Option<CloneKey>, bool) {
+/// built it on another network, and the caller looks it up again. A fork (`repo` not its network's root) has no key
+/// and drops what the front found: the key names the network's objects, not the refs they are reached from, so a
+/// fork's entry would answer a root reader's want of an object only the fork's refs reach, which the shard's
+/// namespaced upload-pack refuses (`decisions/DECISIONS.md`, "`fork-refns`").
+fn front_key(key: Option<CloneKey>, repo: RepoId, network: NetworkId) -> (Option<CloneKey>, bool) {
+    if network.root() != repo {
+        return (None, false);
+    }
     match key {
         Some(k) if k.network != network => (Some(CloneKey { network, ..k }), false),
         k => (k, true),
@@ -3681,9 +3687,10 @@ async fn upload_pack(c: &Ctx<'_>, repo: &Repo, front: UploadFront) -> Result<Res
     // The front ran beside the gate on the isolate's guess at the network; the gate's own read fixed it since. A key
     // built on another network is built again, and what the front found under it is not served: it is another
     // network's entry, stale for this repository (`fork-network-read`).
-    let (key, kept) = front_key(key, repo.network());
+    let (key, kept) = front_key(key, repo.id, repo.network());
     let answer = match &key {
         Some(k) if !kept => clone_hit(c, repo, k).await?,
+        _ if !kept => None,
         _ => answer,
     };
     // On the lifeboat, `ls-refs` too comes from `graft-git`, so the refs it names are always ones it can send
@@ -5812,14 +5819,20 @@ mod tests {
         graftyard_git::pkt::flush(&mut b);
         let v = graftyard_git::smart::parse_v2(&b).unwrap();
         let (own, base) = (NetworkId(DbId(131_902)), NetworkId(DbId(131_900)));
+        let (fork, root) = (graftyard_types::RepoId(DbId(131_902)), base.root());
         let guessed = CloneKey::of(own, &v, graftyard_types::Digest([0; 32])).unwrap();
-        let (rebuilt, kept) = super::front_key(Some(guessed.clone()), base);
+        let (rebuilt, kept) = super::front_key(Some(guessed.clone()), root, base);
         let rebuilt = rebuilt.unwrap();
-        assert!(!kept, "what the front found under the fork's own id is looked up again");
+        assert!(!kept, "what the front found under another network is looked up again");
         assert_eq!(rebuilt, CloneKey::of(base, &v, graftyard_types::Digest([0; 32])).unwrap());
-        assert_ne!(rebuilt.digest(), guessed.digest(), "the fork's entry is under its network's key");
-        assert_eq!(super::front_key(Some(rebuilt.clone()), base), (Some(rebuilt), true), "a key on the network stays");
-        assert_eq!(super::front_key(None, base), (None, true));
+        assert_ne!(rebuilt.digest(), guessed.digest(), "the entry is under its network's key");
+        let stays = super::front_key(Some(rebuilt.clone()), root, base);
+        assert_eq!(stays, (Some(rebuilt.clone()), true), "a key on the network stays");
+        assert_eq!(super::front_key(None, root, base), (None, true));
+        // Head 4: a fork's fetch has no key, and what the front found under any key is dropped, so the shard
+        // answers it from the fork's own refs (`refns`).
+        assert_eq!(super::front_key(Some(guessed), fork, base), (None, false));
+        assert_eq!(super::front_key(Some(rebuilt), fork, base), (None, false));
     }
 
     /// AM3-WP2a head 2: a fork's shard calls name its network, so the shard keys the network's disk; a root's keep

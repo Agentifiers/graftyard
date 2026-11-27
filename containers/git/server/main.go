@@ -402,6 +402,45 @@ func netParam(w http.ResponseWriter, r *http.Request, mustExist bool) (string, s
 	return net, repo(net), true
 }
 
+// refnsParam returns the fork whose view a request serves (`refns=<fork id>`), "" for the root's, or answers 400.
+// A fork's refs live in the network's repository under git's namespace layout, refs/namespaces/<fork id>/refs/...,
+// with its HEAD at refs/namespaces/<fork id>/HEAD. Not `ns`, which /merge uses for issue numbers.
+func refnsParam(w http.ResponseWriter, r *http.Request) (string, bool) {
+	q := r.URL.Query()
+	if q.Has("refns") && !netRe.MatchString(q.Get("refns")) {
+		fail(w, 400, "bad refns")
+		return "", false
+	}
+	return q.Get("refns"), true
+}
+
+// forksParam returns the forks of the network (`forks=<id>,<id>`), whose namespaces a root request hides, or answers
+// 400. A network with no fork sends none, and a root ref under refs/namespaces/ is then the root's like any other.
+func forksParam(w http.ResponseWriter, r *http.Request) ([]string, bool) {
+	q := r.URL.Query()
+	if !q.Has("forks") {
+		return nil, true
+	}
+	ids := strings.Split(q.Get("forks"), ",")
+	for _, id := range ids {
+		if !netRe.MatchString(id) {
+			fail(w, 400, "bad forks")
+			return nil, false
+		}
+	}
+	return ids, true
+}
+
+// inForks reports whether ref sits in one of the forks' namespaces, refs/namespaces/<fork id>/.
+func inForks(ref string, forks []string) bool {
+	for _, f := range forks {
+		if strings.HasPrefix(ref, "refs/namespaces/"+f+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // touch records a request on the repository for the LRU, as the mtime of <repo>/graft-used.
 func touch(rp string) { mark(rp, "used") }
 
@@ -681,10 +720,20 @@ type refSnap struct {
 	tail string // rev-list's stdin after the tips: "--not" and every ref's oid once
 }
 
-func snapshot(net, rp string, env []string) (refSnap, error) {
+// snapshot reads the refs of net's repository under refsLock. With refns (a fork's id) it reads only that fork's
+// namespace, refs/namespaces/<refns>/, its HEAD included, and keeps each ref under its name stripped of the prefix,
+// so a fork's validate compares the edge's un-namespaced update lines with the fork's own refs and HEAD, as
+// GIT_NAMESPACE shows them to its upload-pack.
+func snapshot(net, rp, refns string, forks []string, env []string) (refSnap, error) {
+	args := []string{"for-each-ref", "--include-root-refs", "--format=%(objectname) %(refname)"}
+	prefix := ""
+	if refns != "" {
+		prefix = "refs/namespaces/" + refns + "/"
+		args = []string{"for-each-ref", "--format=%(objectname) %(refname)", prefix}
+	}
 	rl := refsLock(net)
 	rl.RLock()
-	out, err := git(rp, env, nil, "for-each-ref", "--include-root-refs", "--format=%(objectname) %(refname)")
+	out, err := git(rp, env, nil, args...)
 	rl.RUnlock()
 	if err != nil {
 		return refSnap{}, err
@@ -694,7 +743,18 @@ func snapshot(net, rp string, env []string) (refSnap, error) {
 	b.WriteString("--not\n")
 	seen := map[string]bool{}
 	for _, l := range strings.Split(string(out), "\n") {
-		if f := strings.Fields(l); len(f) == 2 && (f[1] == "HEAD" || strings.HasPrefix(f[1], "refs/")) {
+		f := strings.Fields(l)
+		if len(f) == 2 && prefix != "" {
+			if !strings.HasPrefix(f[1], prefix) {
+				continue
+			}
+			f[1] = strings.TrimPrefix(f[1], prefix)
+		}
+		// A root push's tips and commits are its own: a fork's refs neither count as its refs nor cut what it brings.
+		if len(f) == 2 && prefix == "" && inForks(f[1], forks) {
+			continue
+		}
+		if len(f) == 2 && (f[1] == "HEAD" || strings.HasPrefix(f[1], "refs/")) {
 			s.refs[f[1]] = f[0]
 			if !seen[f[0]] {
 				seen[f[0]] = true
@@ -967,6 +1027,16 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// refns=<fork id>: validated against that fork's refs (`snapshot`); the update lines keep un-namespaced names.
+	// forks=: a root push's snapshot leaves those forks' refs out.
+	refns, ok := refnsParam(w, r)
+	if !ok {
+		return
+	}
+	forks, ok := forksParam(w, r)
+	if !ok {
+		return
+	}
 	agent := query.Get("class") == "agent"
 	derivedValidate := query.Get("derived") == "1"
 	var validateEnv []string
@@ -1116,7 +1186,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	snap, err := snapshot(net, rp, validateEnv)
+	snap, err := snapshot(net, rp, refns, forks, validateEnv)
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -2609,13 +2679,18 @@ func midxAfterIngest(net, rp string) {
 // an ingest's `midx_ms`, so a catch-up still reports what the writes cost, now beside its lock time, not in it.
 func midxMs(rp string) int64 { return midxOf(rp).ms.Swap(0) }
 
+// listRefs is every ref under refs/ that is not a symbolic ref. A fork's HEAD, refs/namespaces/<fork id>/HEAD, is a
+// symbolic ref under refs/ that head= writes, as HEAD is: a PUT's start=1 must not delete it for not being in the
+// page, since update-ref deletes through it (the fork's default branch with it) or refuses the page's update of that
+// branch beside it, and GET lists it no more than it lists HEAD.
 func listRefs(rp string, env []string) (map[string]string, error) {
-	out, err := git(rp, env, nil, "for-each-ref", "--format=%(objectname) %(refname)")
+	out, err := git(rp, env, nil, "for-each-ref", "--format=%(objectname) %(refname) %(symref)")
 	if err != nil {
 		return nil, err
 	}
 	refs := map[string]string{}
 	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		// A symbolic ref's line has a third field, its target.
 		if f := strings.Fields(l); len(f) == 2 {
 			refs[f[1]] = f[0]
 		}
@@ -2701,13 +2776,22 @@ func dirFile(dels, ups []string) bool {
 	return false
 }
 
-// setHead points HEAD at head (handleRefs picks it) and writes it only when it changes.
+// headRe is a head= value: the root's default branch, or a fork's, refs/namespaces/<fork id>/refs/heads/<branch>,
+// whose HEAD is refs/namespaces/<fork id>/HEAD (`refnsParam`).
+var headRe = regexp.MustCompile(`^(refs/namespaces/[0-9]{1,19}/)?refs/heads/`)
+
+// setHead points HEAD at head (handleRefs picks it), or a fork's namespace HEAD at a fork's head, and writes it only
+// when it changes.
 func setHead(rp, head string) {
 	if head == "" {
 		return
 	}
-	if cur, _ := git(rp, []string{derivedEnv}, nil, "symbolic-ref", "HEAD"); strings.TrimSpace(string(cur)) != head {
-		git(rp, []string{derivedEnv}, nil, "symbolic-ref", "HEAD", head)
+	name := "HEAD"
+	if m := headRe.FindStringSubmatch(head); m != nil && m[1] != "" {
+		name = m[1] + "HEAD"
+	}
+	if cur, _ := git(rp, []string{derivedEnv}, nil, "symbolic-ref", name); strings.TrimSpace(string(cur)) != head {
+		git(rp, []string{derivedEnv}, nil, "symbolic-ref", name, head)
 	}
 }
 
@@ -2746,7 +2830,7 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "%v", err)
 		return
 	}
-	if h := q.Get("head"); h != "" && (!strings.HasPrefix(h, "refs/heads/") || strings.Contains(h, "..") || strings.ContainsAny(h, " \t\n")) {
+	if h := q.Get("head"); h != "" && (!headRe.MatchString(h) || strings.Contains(h, "..") || strings.ContainsAny(h, " \t\n")) {
 		fail(w, 400, "bad head %q", h)
 		return
 	}
@@ -3216,6 +3300,16 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	if !ok {
 		return
 	}
+	// refns=<fork id>: the fork's view, served by stock upload-pack under GIT_NAMESPACE. forks=: the root's view hides
+	// those forks' namespaces.
+	refns, ok := refnsParam(w, r)
+	if !ok {
+		return
+	}
+	forks, ok := forksParam(w, r)
+	if !ok {
+		return
+	}
 	mark(rp, markFetch)
 	// The client's Git-Protocol header, which the object forwards; git 2.26 and later ask for version 2.
 	proto := r.Header.Get("git-protocol")
@@ -3242,6 +3336,15 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	// edge streams the chain's packs from the warm bucket and only the tail leaves this container. A container on the
 	// previous image ignores tail=1 and answers compose=only as before. A tail past tailMax goes on below, composed
 	// whole and spooled, as compose=only.
+	// A fork's request is never composed: the chain and its manifest are built from the root's refs, so it serves
+	// stock, and compose=only answers 409 as a request that is not composable does.
+	// A root call beside forks is not composed either: the chain checks a want against every ref tip on the disk, a
+	// fork's among them, and the root's view must not serve a want only a fork's refs reach.
+	if q := r.URL.Query(); !advertise && q.Get("compose") == "only" && (refns != "" || len(forks) > 0) {
+		w.Header().Set("x-graft-compose", "stock: fork")
+		w.WriteHeader(409)
+		return
+	}
 	if q := r.URL.Query(); !advertise && q.Get("compose") == "only" && q.Get("tail") == "1" {
 		want, tag, ok := composable(body)
 		if !ok || !strings.Contains(proto, "version=2") {
@@ -3296,7 +3399,7 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	// only add to or move, and it opens the chain's packs before it sends, so an evict or a fold that lands meanwhile
 	// sends it to stock in setup or leaves it reading files already open.
 	only := r.URL.Query().Get("compose") == "only"
-	if want, tag, ok := composable(body); !advertise && ok && strings.Contains(proto, "version=2") {
+	if want, tag, ok := composable(body); !advertise && refns == "" && len(forks) == 0 && ok && strings.Contains(proto, "version=2") {
 		w.Header().Set("content-type", "application/x-git-upload-pack-result")
 		answered, why := composeMiss(w, out, net, rp, want, tag)
 		if answered {
@@ -3334,13 +3437,27 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	if strings.Contains(proto, "version=2") {
 		sessions = sessionPrefixes(body)
 	}
-	args := append(hideRefs(sessions), "upload-pack", "--stateless-rpc")
+	args := hideRefs(sessions)
+	env := append(os.Environ(), "GIT_PROTOCOL="+proto)
+	if refns != "" {
+		// A fork: git advertises and serves only refs/namespaces/<refns>/, names stripped, and that namespace's HEAD.
+		// hideRefs matches the stripped names, so a fork's host-owned refs stay hidden as the root's do.
+		env = append(env, "GIT_NAMESPACE="+refns)
+	} else {
+		// The root never lists a fork's refs: each fork's namespace is hidden, and only those, so a root ref of its
+		// own under refs/namespaces/ is listed as before. A network with no fork names none and runs exactly the
+		// command it ran before forks: the GHES compatibility invariant for existing repositories.
+		for _, f := range forks {
+			args = append(args, "-c", "uploadpack.hideRefs="+namespaceRefs+f+"/")
+		}
+	}
+	args = append(args, "upload-pack", "--stateless-rpc")
 	if advertise {
 		args = append(args, "--http-backend-info-refs")
 	}
 	args = append(args, rp)
 	cmd := exec.Command("git", args...)
-	cmd.Env = append(os.Environ(), "GIT_PROTOCOL="+proto)
+	cmd.Env = env
 	// Its own process group, so a kill reaches pack-objects too: upload-pack's child holds the stderr pipe Wait reads,
 	// and killed alone it went on spending CPU on a pack nobody would read.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -3421,6 +3538,9 @@ func lsRefs(body []byte) bool {
 // namespace and the ref begins with that `ref-prefix` (`design/DESIGN.md`, Shape, `SESSION_REFS`). Objects stay
 // fetchable by id; hiding a ref changes only what is listed.
 const hostRefs, sessionRefs = "refs/graftyard/", "refs/graftyard/sessions/"
+
+// namespaceRefs holds each fork's refs, refs/namespaces/<fork id>/..., in the network's repository (`refnsParam`).
+const namespaceRefs = "refs/namespaces/"
 
 // hideRefs is the `-c` arguments upload-pack runs with: every host-owned ref hidden, and the session namespace
 // unhidden when the request names a session prefix. git matches `hideRefs` at a path boundary while a v2 `ref-prefix`

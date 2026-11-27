@@ -2166,9 +2166,19 @@ impl Family for Network {
             _ => refusal(e, 422),
         }
     }
+    /// `{"forks": parent}`: the direct forks of `parent`, ascending, and `total`, every fork of the network (an edge
+    /// reads a missing `total` as the direct count). `{"members": true}`: the root and every fork, ascending, which an
+    /// export token's network scope checks (`decisions/DECISIONS.md`, "`fork-pack-scope`").
     fn read_json(f: &git::network::NetworkFold, q: &Value) -> Value {
         if let Some(p) = q.get("forks").and_then(Value::as_i64) {
-            return json!({ "forks": f.forks_of(RepoId(DbId(p))).map(|r| r.0.0).collect::<Vec<_>>() });
+            let forks = f.forks_of(RepoId(DbId(p))).map(|r| r.0.0).collect::<Vec<_>>();
+            return json!({ "forks": forks, "total": f.forks.len() });
+        }
+        if q.get("members").and_then(Value::as_bool) == Some(true) {
+            let mut members: Vec<i64> = f.network.map(|n| n.root().0.0).into_iter().collect();
+            members.extend(f.forks.keys().map(|r| r.0.0));
+            members.sort_unstable();
+            return json!({ "members": members });
         }
         json!({ "network": f.network.map(|n| n.0.0), "forks": f.forks.len() })
     }

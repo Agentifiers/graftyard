@@ -684,6 +684,8 @@ enum Mode<'a> {
         cursor: &'a mut IngestCursor,
         seen: &'a mut BTreeSet<PackId>,
         repack: bool,
+        /// The run's member chains, which say where each ref lives (`crate::shard::fork_ref`).
+        chains: &'a [ChainId],
     },
     Tail {
         state: &'a mut Rehydrating,
@@ -839,8 +841,13 @@ async fn apply_page<I: ShardIo, S: Saved>(
     t.room -= bytes;
     lap(&mut t.ms.room);
     match mode {
-        Mode::CatchUp { cursor, seen, repack } => {
-            let changes = ref_changes(&page, cursor.at(chain), last).ok_or(Stop::NoRefs)?;
+        Mode::CatchUp { cursor, seen, repack, chains } => {
+            let net = cursor.network;
+            let changes: Vec<_> = ref_changes(&page, cursor.at(chain), last)
+                .ok_or(Stop::NoRefs)?
+                .into_iter()
+                .filter_map(|(n, o)| Some((crate::shard::fork_ref(net, chains, chain, &n)?, o)))
+                .collect();
             // A `Promoted` entry follows its range, and a catch-up applies entries in order, so the disk already holds
             // every object of a promoted pack it reaches: fetching it again cost each shard the whole range's bytes.
             let promoted: BTreeSet<PackId> =
@@ -923,41 +930,79 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     lap(&mut ms, "cursor");
     // A run's later pieces read no heads: `until` names where the run ends and HEAD's branch. One heads read is a
     // member round trip, 85 to 122 ms on m3fst1, about a tenth of a piece.
+    // A fork chain is another owner's group: one that does not answer, or is gone, is left out of this run, its
+    // cursor where it was, and never holds back the root's (`decisions/DECISIONS.md`, "`fork-refns`"). The root's
+    // own failure fails the run, as before forks.
+    let root = ChainId::Repo(network.root());
     let mut ends: Vec<(Index, Option<String>)> = Vec::with_capacity(chains.len());
+    let mut live: Vec<ChainId> = Vec::with_capacity(chains.len());
+    let mut joining: Vec<ChainId> = Vec::new();
     match carried.until.as_ref().filter(|_| cursor.is_some()) {
-        Some(u) => ends.extend(chains.iter().enumerate().map(|(i, c)| (u.at(*c), u.head.clone().filter(|_| i == 0)))),
+        Some(u) => {
+            for c in chains.iter().filter(|c| **c == root || u.chains.iter().any(|(x, _)| x == *c)) {
+                live.push(*c);
+                ends.push((u.at(*c), u.head_of(*c).map(str::to_owned)));
+            }
+        }
         None => {
             for (chain, head) in chains.iter().zip(heads(log, chains).await) {
-                let head = head?;
-                if cursor.as_ref().is_some_and(|c| c.at(*chain).0 + 1 < head.first.0) {
-                    cursor = None;
+                let head = match head {
+                    Ok(h) => h,
+                    Err(e) if *chain == root => return Err(e),
+                    Err(_) => continue,
+                };
+                let held = cursor.as_ref().is_some_and(|c| c.chains.iter().any(|(x, _)| x == chain));
+                if *chain != root && cursor.is_some() && !held {
+                    // A fork new to this disk joins alone (`join`), with no rehydrate of the network.
+                    joining.push(*chain);
+                } else if cursor.as_ref().is_some_and(|c| c.at(*chain).0 + 1 < head.first.0) {
+                    if *chain == root {
+                        cursor = None;
+                    } else {
+                        joining.push(*chain);
+                    }
                 }
+                live.push(*chain);
                 ends.push((head.applied, head.default_branch));
             }
             lap(&mut ms, "heads");
         }
     }
     let Some(mut cursor) = cursor else {
-        return rehydrate(io, saved, log, network, chains, disk, ms, t0, now).await;
+        return rehydrate(io, saved, log, network, &live, disk, ms, t0, now).await;
     };
+    let chains = &live[..];
+    for chain in &joining {
+        if let Err(e) = join(io, saved, log, &disk, &mut cursor, chains, *chain).await {
+            // Left out of this run with no cursor, so the next run joins it again; the root goes on.
+            if *chain == root {
+                return Err(e);
+            }
+        }
+    }
+    lap(&mut ms, "join");
     // A rehydrate cut off in its last catch-up left its place: this catch-up finishes that one. A place for another
     // disk is a container that is gone, and goes too.
     let finishing = saved.rehydrating().await?.is_some();
     let mut t = Tally { room: carried.room, ..Tally::default() };
     let mut carry = carried.tail;
     let mut seen = BTreeSet::new();
-    // The network's own chain, first, names its default branch (G26).
-    let head_ref = ends.first().and_then(|(_, b)| b.clone());
+    // Each chain names its own default branch (G26): the root's is HEAD, a fork's its namespace's HEAD.
+    let heads: Vec<(ChainId, Option<String>)> = chains.iter().zip(&ends).map(|(c, (_, b))| (*c, b.clone())).collect();
     let mut behind = false;
     let mut to = IngestCursor::new(network);
-    to.head = head_ref.clone();
-    for (chain, (end, _)) in chains.iter().zip(ends) {
+    for (chain, (end, head)) in chains.iter().zip(ends) {
+        // A fork whose join failed has no cursor entry: it waits for the next run's join.
+        if *chain != root && !cursor.chains.iter().any(|(c, _)| c == chain) {
+            continue;
+        }
+        to.set_head(*chain, head);
         to.advance(*chain, end);
         let Some(range) = cursor.behind(*chain, end) else { continue };
         if behind {
             continue;
         }
-        let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen, repack: true };
+        let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen, repack: true, chains };
         let mut tail = carry.take().filter(|(c, _)| c == chain).map(|(_, es)| es);
         match follow(
             io,
@@ -994,13 +1039,17 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
         }
         lap(&mut ms, "ingest");
     }
-    // HEAD follows a `Settings` entry that changed the default branch, which carries no ref change; one call, only
-    // when it changed since the disk's HEAD was last set, and only once the run's last piece applied its refs.
-    if !behind && head_ref.is_some() && cursor.head != head_ref {
+    // HEAD follows a `Settings` entry that changed the default branch, which carries no ref change; one call per
+    // chain, only when it changed since that HEAD was last set, and only once the run's last piece applied its refs.
+    for (chain, head) in heads.into_iter().filter(|_| !behind) {
+        let Some(h) = head.filter(|h| cursor.head_of(chain) != Some(h.as_str())) else { continue };
+        if !cursor.chains.iter().any(|(c, _)| *c == chain) {
+            continue;
+        }
         let at = now();
-        io.apply_refs(&[], head_ref.as_deref(), true).await?;
+        io.apply_refs(&[], crate::shard::fork_ref(network, chains, chain, &h).as_deref(), true).await?;
         t.ms.refs += now().saturating_sub(at);
-        cursor.head = head_ref;
+        cursor.set_head(chain, Some(h));
         saved.put_cursor(&disk, &cursor).await?;
     }
     // A rehydrate's place goes only once the disk reached the head (`rehydrate`, its last catch-up).
@@ -1026,6 +1075,71 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
         stored: StoredMs::default(),
         pages_ms: t.ms,
     })
+}
+
+/// A fork chain joins a disk that already serves its network: the packs its markers and its log name, which the
+/// network's other chains mostly brought already (`have` skips those), then its refs, a page at a time, under its
+/// namespace, then its HEAD, and its cursor at its first page's index, so the catch-up after reads from there, as a
+/// rehydrate's does. A fork's first call, or one whose log was archived past its cursor, costs this one chain, never
+/// a rehydrate of the network: through the network's rehydrate, a hot root waited 20 minutes and more
+/// (`tests/am1/results/lm1-memory.md`, round 21). Its pages never clear the disk (`apply_refs`, not `put_refs_page`):
+/// the fork's stale refs go with a delete of each name its namespace holds that no page lists, which the disk cannot
+/// list here, so a re-join after an archive keeps a deleted fork branch until the next rehydrate [inference: a rare
+/// case, a fork whose log was archived while this disk lagged it].
+async fn join<I: ShardIo, S: Saved, L: ChainLog>(
+    io: &I,
+    saved: &S,
+    log: &L,
+    disk: &str,
+    cursor: &mut IngestCursor,
+    chains: &[ChainId],
+    chain: ChainId,
+) -> Result<(), StoreError> {
+    let network = cursor.network;
+    let head = log.head(chain).await?;
+    let last = vec![(chain, log.last_promoted(chain).await?.map(|(_, p)| p))];
+    let marks: Vec<(PackId, Marker)> = io.markers().await?.into_iter().filter(|(_, m)| m.chain == chain).collect();
+    let consumed: BTreeSet<PackId> = log.compactions(chain).await?.into_iter().flat_map(|c| c.consumed).collect();
+    let mut calls = 0;
+    if let Err(n) = ingest_all(io, &rehydrate_plan(&marks, &consumed, &last, &[]), &BTreeSet::new(), &mut calls).await?
+    {
+        return Err(StoreError(format!("{chain}: {n} marked packs have bases no pack provides")));
+    }
+    let from = tail_start(last[0].1.as_ref());
+    if from <= head.applied {
+        let mut at = from;
+        while at <= head.applied {
+            let page = log.entries(chain, at, head.applied).await?;
+            let end = page_end(chain, at, head.applied, &page)?;
+            let plan = rehydrate_plan(&[], &consumed, &[], &page);
+            if let Err(n) = ingest_all(io, &plan, &BTreeSet::new(), &mut calls).await? {
+                return Err(StoreError(format!("{chain}: {n} tail packs have bases no pack provides")));
+            }
+            at = Index(end.0 + 1);
+        }
+    }
+    let (mut after, mut first) = (None, None);
+    loop {
+        let (page, index) = log.refs_page(chain, after.take()).await?;
+        let refs: Vec<(String, Option<String>)> = page
+            .refs
+            .iter()
+            .filter_map(|(n, o)| Some((crate::shard::fork_ref(network, chains, chain, n)?, Some(o.clone()))))
+            .collect();
+        io.apply_refs(&refs, None, page.next.is_none()).await?;
+        first.get_or_insert(index);
+        match page.next {
+            Some(n) => after = Some(n),
+            None => break,
+        }
+    }
+    if let Some(h) = &head.default_branch {
+        io.apply_refs(&[], crate::shard::fork_ref(network, chains, chain, h).as_deref(), false).await?;
+    }
+    cursor.chains.retain(|(c, _)| *c != chain);
+    cursor.advance(chain, head.applied.min(first.unwrap_or(head.applied)));
+    cursor.set_head(chain, head.default_branch);
+    saved.put_cursor(disk, cursor).await
 }
 
 /// `rehydrate`: every stored pack with a marker, minus consumed packs, then the packs each member chain names after its
@@ -1221,13 +1335,11 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     lap(&mut ms, "marked");
     let mut t = Tally::default();
     let mut applied = Vec::with_capacity(chains.len());
-    let mut head_ref = None;
+    let mut heads = Vec::with_capacity(chains.len());
     for (chain, last) in &last {
         let head = log.head(*chain).await?;
         applied.push(head.applied);
-        if *chain == chains[0] {
-            head_ref = head.default_branch;
-        }
+        heads.push((*chain, head.default_branch));
         let from = Index(tail_start(last.as_ref()).0.max(state.tail.at(*chain).0 + 1));
         let mut mode = Mode::Tail { state: &mut state, seen: &mut seen, consumed: &consumed };
         match follow(io, saved, log, &disk, *chain, from, head.applied, WHOLE, &mut mode, &mut t, &mut None, now).await
@@ -1247,7 +1359,11 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     // at the first page's index, and the entries from there on are caught up after: their changes apply again, the
     // same values in the same order, and their packs arrive before the refs that need them.
     let mut cursor = IngestCursor::new(network);
-    cursor.head = head_ref.clone();
+    for (chain, head) in &heads {
+        cursor.set_head(*chain, head.clone());
+    }
+    // The last page names the root's HEAD; each fork's namespace HEAD is one call after the pages (below).
+    let head_ref = heads.first().and_then(|(c, h)| h.clone().filter(|_| *c == ChainId::Repo(network.root())));
     let mut ends = Vec::with_capacity(chains.len());
     for (i, chain) in chains.iter().enumerate() {
         let (mut after, mut first) = (None, None);
@@ -1259,7 +1375,14 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             // starts after it instead (`ShardIo::connected`). Started here, the backstop waited out a whole repack of
             // the network, 20 minutes and more for 2.6 GB, answering `warming` (`tests/am1/results/lm1-memory.md`,
             // round 21).
-            io.put_refs_page(&page.refs, r.pages == 0, done, state.skipped.is_empty(), head_ref.as_deref()).await?;
+            // A fork's refs go under its namespace (`fork_ref`), in the one sequence of pages whose first clears
+            // the disk's refs, so the root's first page never deletes them.
+            let refs: Vec<(String, String)> = page
+                .refs
+                .iter()
+                .filter_map(|(n, o)| Some((crate::shard::fork_ref(network, chains, *chain, n)?, o.clone())))
+                .collect();
+            io.put_refs_page(&refs, r.pages == 0, done, state.skipped.is_empty(), head_ref.as_deref()).await?;
             r.pages += 1;
             first.get_or_insert(index);
             match page.next {
@@ -1269,6 +1392,11 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         };
         cursor.advance(*chain, applied[i].min(first.unwrap_or(end)));
         ends.push(end);
+    }
+    for (chain, head) in heads.iter().filter(|(c, _)| *c != ChainId::Repo(network.root())) {
+        if let Some(h) = head {
+            io.apply_refs(&[], crate::shard::fork_ref(network, chains, *chain, h).as_deref(), false).await?;
+        }
     }
     saved.put_cursor(&disk, &cursor).await?;
     lap(&mut ms, "refs");
@@ -1283,7 +1411,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             continue;
         }
         let from = Index(cursor.at(*chain).0 + 1);
-        let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen, repack };
+        let mut mode = Mode::CatchUp { cursor: &mut cursor, seen: &mut seen, repack, chains };
         match follow(io, saved, log, &disk, *chain, from, end, WHOLE, &mut mode, &mut c, &mut None, now).await {
             Ok(_) => {}
             Err(Stop::Err(e) | Stop::Unresolved(e)) => return Err(e),

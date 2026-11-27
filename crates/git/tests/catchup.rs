@@ -55,6 +55,8 @@ struct Disk {
     /// HEAD as the container keeps it, and the `/refs` calls that named it (G26).
     head: RefCell<Option<String>>,
     head_calls: Cell<usize>,
+    /// Each fork's namespace HEAD, `refs/namespaces/<id>/HEAD`, as a namespaced `head=` sets it.
+    ns_heads: RefCell<BTreeMap<String, String>>,
     bucket: RefCell<BTreeMap<PackId, Vec<u8>>>,
     markers: RefCell<Vec<(PackId, Marker)>>,
     inits: Cell<usize>,
@@ -155,6 +157,18 @@ impl Disk {
         self.refs.borrow_mut().clear();
         self.spooled.borrow_mut().clear();
         *self.head.borrow_mut() = None;
+        self.ns_heads.borrow_mut().clear();
+    }
+
+    /// As the container's `setHead`: a namespaced head points that namespace's HEAD, any other HEAD itself.
+    fn set_head(&self, h: &str) {
+        self.head_calls.set(self.head_calls.get() + 1);
+        match h.strip_prefix("refs/namespaces/").and_then(|r| r.split_once('/')) {
+            Some((ns, _)) => {
+                self.ns_heads.borrow_mut().insert(format!("refs/namespaces/{ns}/HEAD"), h.to_owned());
+            }
+            None => *self.head.borrow_mut() = Some(h.to_owned()),
+        }
     }
 
     fn tick(&self) -> Result<(), StoreError> {
@@ -305,8 +319,7 @@ impl ShardIo for Disk {
             self.events.borrow_mut().push("repack");
         }
         if done && let Some(h) = head {
-            self.head_calls.set(self.head_calls.get() + 1);
-            *self.head.borrow_mut() = Some(h.to_owned());
+            self.set_head(h);
         }
         let mut r = self.refs.borrow_mut();
         if start {
@@ -334,8 +347,7 @@ impl ShardIo for Disk {
             self.events.borrow_mut().push("repack");
         }
         if let Some(h) = head {
-            self.head_calls.set(self.head_calls.get() + 1);
-            *self.head.borrow_mut() = Some(h.to_owned());
+            self.set_head(h);
         }
         let mut r = self.refs.borrow_mut();
         for (n, o) in changes {
@@ -1662,5 +1674,213 @@ fn ready_stored_packs_go_in_one_call_and_a_slow_fetch_is_not_waited_for() {
     // The slow fetch plus a few batches; one index-pack a pack after it (16..=30) would be 5,000 + 15 * 40.
     let took = b.disk.clock.now.get() - t0;
     assert!(took < 5_000 + 10 * 40, "{took} ms");
+    b.assert_serves_head();
+}
+
+// ---- AM3-WP2a head 4: a fork chain's refs in its own namespace on the network's disk ----
+
+const FORK: ChainId = ChainId::Repo(RepoId(DbId(77)));
+
+/// The network's two member chains, the root's (`CHAIN`) and a fork's (`FORK`), each its own group's log. `down`:
+/// the fork's group answers nothing, as another owner's placement that is down or a deleted fork's.
+struct Net<'a> {
+    root: &'a Log,
+    fork: &'a Log,
+    down: Cell<bool>,
+}
+
+impl Net<'_> {
+    fn of(&self, c: ChainId) -> &Log {
+        if c == FORK { self.fork } else { self.root }
+    }
+}
+
+impl ChainLog for Net<'_> {
+    async fn head(&self, c: ChainId) -> Result<Head, StoreError> {
+        if c == FORK && self.down.get() {
+            return Err(StoreError("repo:77: no group".into()));
+        }
+        ChainLog::head(self.of(c), c).await
+    }
+    async fn refs_page(&self, c: ChainId, after: Option<String>) -> Result<(RefsPage, Index), StoreError> {
+        self.of(c).refs_page(c, after).await
+    }
+    async fn entries(&self, c: ChainId, from: Index, to: Index) -> Result<Vec<LogPacks>, StoreError> {
+        self.of(c).entries(c, from, to).await
+    }
+    async fn last_promoted(&self, c: ChainId) -> Result<Option<(Index, Promoted)>, StoreError> {
+        self.of(c).last_promoted(c).await
+    }
+    async fn compactions(&self, c: ChainId) -> Result<Vec<Compacted>, StoreError> {
+        self.of(c).compactions(c).await
+    }
+}
+
+/// A fork's log, entries 1..=n: each a push of object 500 + i onto the root's object 3, to the root's own branch
+/// names (`refs/heads/b<i % 7>`) at other values, so a fork ref written outside its namespace overwrites a root's.
+fn fork_log(n: u64) -> Log {
+    let l = bed(0, 0, 0).log;
+    for i in 1..=n {
+        let p = Pack { brings: vec![500 + i], needs: vec![if i == 1 { 3 } else { 500 + i - 1 }], pad: 0 };
+        let mut refs = vec![(format!("refs/heads/b{}", i % 7), Some(oid(500 + i)))];
+        if i == 9 {
+            refs.push(("refs/heads/b4".to_owned(), None));
+        }
+        l.entries.borrow_mut().push(LogPacks {
+            index: Index(i),
+            packs: vec![PackRef::Inline(bytes_of(&p))],
+            promoted: None,
+            compacted: None,
+            consumed: vec![],
+            refs: Some(refs),
+        });
+    }
+    *l.default_branch.borrow_mut() = Some("refs/heads/b2".into());
+    l
+}
+
+/// The disk's refs a network serves: the root's where they always were, each fork's under `refs/namespaces/77/`.
+fn network_refs(root: &Log, fork: &Log) -> BTreeMap<String, String> {
+    let mut want = root.refs();
+    want.extend(fork.refs().into_iter().map(|(n, o)| (format!("refs/namespaces/77/{n}"), o)));
+    want
+}
+
+/// A rehydrate and the catch-ups after it put a fork chain's refs and its HEAD in the fork's namespace, beside the
+/// root's unchanged.
+#[test]
+fn a_fork_chains_refs_and_head_land_in_its_namespace_beside_the_roots() {
+    let b = bed(30, 10, 0);
+    *b.log.default_branch.borrow_mut() = Some("refs/heads/b3".into());
+    let fork = fork_log(5);
+    let net = Net { root: &b.log, fork: &fork, down: Cell::new(false) };
+    let run = |chains: &[ChainId]| {
+        block_on(catch_up(&b.disk, &b.store, &net, NET, chains, WHOLE, &mut Run::default(), &|| 0)).unwrap()
+    };
+    assert!(run(&[CHAIN, FORK]).rehydrated.is_some());
+    assert_eq!(*b.disk.refs.borrow(), network_refs(&b.log, &fork), "after the rehydrate");
+    assert_eq!(b.disk.head.borrow().as_deref(), Some("refs/heads/b3"));
+    let ns_head = Some(("refs/namespaces/77/HEAD".to_owned(), "refs/namespaces/77/refs/heads/b2".to_owned()));
+    assert_eq!(b.disk.ns_heads.borrow().clone().into_iter().next(), ns_head);
+
+    // Both chains move, a fork ref is deleted, and the fork's default branch changes with no ref change.
+    b.log.entries.replace(bed(45, 10, 0).log.entries.into_inner());
+    fork.entries.replace(fork_log(9).entries.into_inner());
+    *fork.default_branch.borrow_mut() = Some("refs/heads/b5".into());
+    let calls = b.disk.head_calls.get();
+    let r = run(&[CHAIN, FORK]);
+    assert!(r.rehydrated.is_none());
+    assert_eq!((r.cursor.at(CHAIN), r.cursor.at(FORK)), (Index(45), Index(9)));
+    assert_eq!(*b.disk.refs.borrow(), network_refs(&b.log, &fork), "after the catch-up");
+    assert!(!b.disk.refs.borrow().contains_key("refs/namespaces/77/refs/heads/b4"), "the fork's delete");
+    assert!(b.disk.refs.borrow().contains_key("refs/heads/b4"), "the root's ref of the same name stays");
+    assert_eq!(b.disk.head.borrow().as_deref(), Some("refs/heads/b3"), "the root's HEAD is not the fork's");
+    assert_eq!(b.disk.ns_heads.borrow()["refs/namespaces/77/HEAD"], "refs/namespaces/77/refs/heads/b5");
+    assert_eq!(b.disk.head_calls.get(), calls + 1, "only the fork's changed HEAD is named");
+    run(&[CHAIN, FORK]);
+    assert_eq!(b.disk.head_calls.get(), calls + 1, "an unchanged fork HEAD costs no call");
+
+    // A root push names the fork's namespace, to set and then delete a ref there: neither reaches the fork's refs.
+    let at = b.log.head();
+    let fork_main = "refs/namespaces/77/refs/heads/b2".to_owned();
+    for (i, o) in [(at + 1, Some(oid(45))), (at + 2, None)] {
+        b.log.entries.borrow_mut().push(LogPacks {
+            index: Index(i),
+            packs: vec![],
+            promoted: None,
+            compacted: None,
+            consumed: vec![],
+            refs: Some(vec![(fork_main.clone(), o)]),
+        });
+    }
+    let want = b.disk.refs.borrow()[&fork_main].clone();
+    b.log.entries.borrow_mut().pop();
+    run(&[CHAIN, FORK]);
+    assert_eq!(b.disk.refs.borrow()[&fork_main], want, "a root's set is not the fork's ref");
+    b.log.entries.borrow_mut().push(LogPacks {
+        index: Index(at + 2),
+        packs: vec![],
+        promoted: None,
+        compacted: None,
+        consumed: vec![],
+        refs: Some(vec![(fork_main.clone(), None)]),
+    });
+    run(&[CHAIN, FORK]);
+    assert_eq!(b.disk.refs.borrow()[&fork_main], want, "a root's delete is not the fork's ref");
+    // A new disk rehydrates without the root's ref of that name.
+    b.disk.reset("disk-2");
+    assert!(run(&[CHAIN, FORK]).rehydrated.is_some());
+    assert_eq!(b.disk.refs.borrow()[&fork_main], want, "a rehydrate keeps the fork's own ref");
+}
+
+/// A fork chain that does not answer is left out of the run with its cursor where it was: the root's catch-up goes on.
+/// And a fork new to a disk that already serves the network, or one whose log was archived past its cursor, joins
+/// alone, with no rehydrate of the network.
+#[test]
+fn a_fork_that_does_not_answer_holds_nothing_back_and_a_new_fork_joins_without_a_rehydrate() {
+    let b = bed(30, 10, 0);
+    let fork = fork_log(5);
+    let net = Net { root: &b.log, fork: &fork, down: Cell::new(false) };
+    let run = |chains: &[ChainId]| {
+        block_on(catch_up(&b.disk, &b.store, &net, NET, chains, WHOLE, &mut Run::default(), &|| 0))
+    };
+    // The root alone first: the disk serves it.
+    assert!(run(&[CHAIN]).unwrap().rehydrated.is_some());
+    let inits = b.disk.inits.get();
+    // The fork's first call: it joins, its refs land in its namespace, and the root's disk is not rebuilt.
+    let r = run(&[CHAIN, FORK]).unwrap();
+    assert!(r.rehydrated.is_none(), "a fork's first call is no rehydrate of the network");
+    assert_eq!(b.disk.inits.get(), inits);
+    assert_eq!(r.cursor.at(FORK), Index(5));
+    assert_eq!(*b.disk.refs.borrow(), network_refs(&b.log, &fork));
+    assert_eq!(b.disk.ns_heads.borrow()["refs/namespaces/77/HEAD"], "refs/namespaces/77/refs/heads/b2");
+
+    // The fork's group stops answering while both chains move: the root catches up, the fork's cursor stays.
+    b.log.entries.replace(bed(40, 10, 0).log.entries.into_inner());
+    fork.entries.replace(fork_log(8).entries.into_inner());
+    net.down.set(true);
+    let r = run(&[CHAIN, FORK]).unwrap();
+    assert_eq!((r.cursor.at(CHAIN), r.cursor.at(FORK)), (Index(40), Index(5)));
+    assert_eq!(*b.disk.refs.borrow(), network_refs(&b.log, &fork_log(5)), "the root moved, the fork did not");
+    // Back: the fork catches up from its cursor.
+    net.down.set(false);
+    let r = run(&[CHAIN, FORK]).unwrap();
+    assert_eq!(r.cursor.at(FORK), Index(8));
+    assert_eq!(*b.disk.refs.borrow(), network_refs(&b.log, &fork));
+
+    // The fork's log is archived past its cursor: it joins again, alone, and the root's disk is not rebuilt.
+    // As the archive does only after a promotion: 1..=11 promoted into one stored pack with its marker, complete as
+    // a promoted pack is (it carries the root's object 3 its first push built on).
+    fork.entries.replace(fork_log(14).entries.into_inner());
+    let p = Pack { brings: std::iter::once(3).chain(501..=511).collect(), needs: vec![], pad: 0 };
+    let pb = bytes_of(&p);
+    let id = PackId(Ulid(3_000_011));
+    b.disk.bucket.borrow_mut().insert(id, pb.clone());
+    let marker = Marker { chain: FORK, index: Index(12), checksum: sum(&pb), bytes: pb.len() as u64 };
+    b.disk.markers.borrow_mut().push((id, marker));
+    let pack = PackRef::Stored { id, checksum: sum(&pb), bytes: pb.len() as u64, sites: SiteSet(3) };
+    *fork.promoted.borrow_mut() = Some(Promoted { from: Index(1), to: Index(11), pack });
+    fork.first.set(12);
+    let r = run(&[CHAIN, FORK]).unwrap();
+    assert!(r.rehydrated.is_none());
+    assert_eq!(b.disk.inits.get(), inits);
+    assert_eq!(r.cursor.at(FORK), Index(14));
+    assert_eq!(*b.disk.refs.borrow(), network_refs(&b.log, &fork));
+    b.disk.reset("disk-2");
+    assert!(run(&[CHAIN, FORK]).unwrap().rehydrated.is_some());
+    assert_eq!(*b.disk.refs.borrow(), network_refs(&b.log, &fork), "a rehydrate holds the fork's refs exactly");
+}
+
+/// A network no fork's call named keeps the cursor it saved before forks: no `fork_heads`, and the root's refs only.
+#[test]
+fn a_root_only_networks_cursor_and_refs_are_as_before_forks() {
+    let b = bed(30, 10, 0);
+    *b.log.default_branch.borrow_mut() = Some("refs/heads/b3".into());
+    b.run().unwrap();
+    let c = b.store.cursor.borrow().clone().unwrap().1;
+    let v = serde_json::to_value(&c).unwrap();
+    assert_eq!(v.as_object().unwrap().keys().collect::<Vec<_>>(), ["chains", "head", "network"]);
+    assert!(b.disk.ns_heads.borrow().is_empty());
+    assert!(b.disk.refs.borrow().keys().all(|n| !n.starts_with("refs/namespaces/")));
     b.assert_serves_head();
 }

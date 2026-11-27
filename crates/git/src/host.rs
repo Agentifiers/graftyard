@@ -13,7 +13,7 @@ use crate::catchup::{Fetched, IdxRange, Ingested, Rehydrating, Report, Saved, Sh
 use crate::ingest::ChainLog;
 use crate::key::R2Key;
 use crate::pack::{Marker, PackId, PackIndex};
-use crate::shard::{DiskRepo, IngestCursor, RegionCheck, Renewal, evict_plan, region_check, renewal};
+use crate::shard::{DiskRepo, IngestCursor, RegionCheck, Renewal, evict_plan, refns_param, region_check, renewal};
 use crate::store::marker_from_meta;
 
 fn err(e: impl std::fmt::Display) -> StoreError {
@@ -1065,9 +1065,10 @@ impl ShardHost<'_> {
         disk: OnDisk<'_>,
         body: Option<wasm_bindgen::JsValue>,
         sums: &[(&str, String)],
+        refns: &crate::shard::RefView,
     ) -> Result<Validated, (Option<u16>, StoreError)> {
         let none = |e: StoreError| (None, e);
-        let mut path = format!("/validate?net={}&tipsn={tipsn}", network.0.0);
+        let mut path = format!("/validate?net={}&tipsn={tipsn}{}", network.0.0, refns_param(refns));
         for (k, v) in sums {
             path.push_str(&format!("&{k}={v}"));
         }
@@ -1279,11 +1280,12 @@ impl ShardHost<'_> {
         body: Option<Vec<u8>>,
         git_protocol: &str,
         content_encoding: &str,
+        refns: &crate::shard::RefView,
     ) -> Result<Response, StoreError> {
         let path = if info_refs {
-            format!("/info-refs?net={}", network.0.0)
+            format!("/info-refs?net={}{}", network.0.0, refns_param(refns))
         } else {
-            format!("/upload-pack?net={}", network.0.0)
+            format!("/upload-pack?net={}{}", network.0.0, refns_param(refns))
         };
         let mut h = vec![("git-protocol", git_protocol)];
         if !content_encoding.is_empty() {
@@ -1296,6 +1298,7 @@ impl ShardHost<'_> {
     /// A depth-1 fill of the clone cache (`spool=<key>`): the container answers the client as `upload_pack` does and
     /// writes the whole answer to its disk, to its end whoever reads it; `spooled` then reads it.
     /// With `compose_only`, the container answers only from the composed-miss chain, and 409 when it would serve stock.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upload_pack_spooled(
         &self,
         network: NetworkId,
@@ -1304,12 +1307,13 @@ impl ShardHost<'_> {
         content_encoding: &str,
         spool: Option<Digest>,
         compose_only: bool,
+        refns: &crate::shard::RefView,
     ) -> Result<Response, StoreError> {
         let mut h = vec![("git-protocol", git_protocol)];
         if !content_encoding.is_empty() {
             h.push(("content-encoding", content_encoding));
         }
-        let mut path = format!("/upload-pack?net={}", network.0.0);
+        let mut path = format!("/upload-pack?net={}{}", network.0.0, refns_param(refns));
         if let Some(s) = spool {
             path.push_str(&format!("&spool={}", s.hex()));
         }

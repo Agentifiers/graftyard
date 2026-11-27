@@ -149,6 +149,18 @@ pub fn covers(scope: Scope, chain: ChainId, owner: Option<AccountId>) -> bool {
     scope == Scope::Install || graftyard_release::view::covers(scope, chain, owner)
 }
 
+/// Whether an export under `scope` covers a network chain's packs (`decisions/DECISIONS.md`, "`fork-pack-scope`"):
+/// `Scope::Install`, `Scope::Repo(r)` for any member `r`, or `Scope::Owner(a)` for the owner of any member. `members`
+/// are the network's repositories, each with its owner where the caller read it; it is walked only until one covers,
+/// so a caller may read the owners lazily, root first.
+pub fn covers_network(scope: Scope, members: impl IntoIterator<Item = (RepoId, Option<AccountId>)>) -> bool {
+    match scope {
+        Scope::Install => true,
+        Scope::Repo(r) => members.into_iter().any(|(m, _)| m == r),
+        Scope::Owner(a) => members.into_iter().any(|(_, o)| o == Some(a)),
+    }
+}
+
 impl ExportClaims {
     pub fn jti(&self) -> Jti {
         Jti(self.jti)
@@ -250,6 +262,35 @@ mod tests {
         assert!(!covers(Scope::Owner(org), repo, Some(AccountId(DbId(43)))));
         assert!(covers(Scope::Repo(RepoId(DbId(9))), repo, None));
         assert!(!covers(Scope::Repo(RepoId(DbId(10))), repo, None));
+    }
+
+    #[test]
+    fn a_networks_packs_are_covered_by_any_members_repo_or_owner_scope() {
+        let (root, fork, deep) = (RepoId(DbId(40)), RepoId(DbId(41)), RepoId(DbId(42)));
+        let (base_org, fork_owner, deep_owner) = (AccountId(DbId(7)), AccountId(DbId(8)), AccountId(DbId(9)));
+        let members = [(root, Some(base_org)), (fork, Some(fork_owner)), (deep, Some(deep_owner))];
+        // A fork's repository scope covers its network's packs; another network's repository does not.
+        assert!(covers_network(Scope::Repo(fork), members));
+        assert!(covers_network(Scope::Repo(deep), members));
+        assert!(!covers_network(Scope::Repo(RepoId(DbId(50))), members));
+        // The owner of only a fork covers; an owner of nothing in the network does not.
+        assert!(covers_network(Scope::Owner(fork_owner), members));
+        assert!(!covers_network(Scope::Owner(AccountId(DbId(10))), members));
+        // An owner whose member's owner was not read is not covered by that member.
+        assert!(!covers_network(Scope::Owner(fork_owner), [(root, Some(base_org)), (fork, None)]));
+        assert!(covers_network(Scope::Install, members));
+        assert!(covers_network(Scope::Install, []));
+        // A network with one repository: its root's repository scope and owner cover it (the Decision line).
+        assert!(covers_network(Scope::Repo(root), [(root, None)]));
+        assert!(covers_network(Scope::Owner(base_org), [(root, Some(base_org))]));
+        // The walk stops at the first member that covers, so a caller reading owners lazily reads no more.
+        let mut read = 0;
+        let lazy = members.iter().map(|m| {
+            read += 1;
+            *m
+        });
+        assert!(covers_network(Scope::Owner(base_org), lazy));
+        assert_eq!(read, 1);
     }
 
     #[test]

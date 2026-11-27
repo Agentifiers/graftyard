@@ -392,11 +392,11 @@ MUTANTS = [
     # connected-after: a rehydrate that skipped covered packs starts its repack after the backstop, not before.
     # put_refs_page also names the HEAD ref (G26).
     ("connected-after: the last ref page starts the repack though the check follows (main's order)", CU,
-     'io.put_refs_page(&page.refs, r.pages == 0, done, state.skipped.is_empty(), head_ref.as_deref()).await?;',
-     'io.put_refs_page(&page.refs, r.pages == 0, done, true, head_ref.as_deref()).await?;', ['cargo', '-p', 'graftyard-git', '--test', 'catchup', 'a_rehydrate_of_promoted_packs_loads']),
+     'io.put_refs_page(&refs, r.pages == 0, done, state.skipped.is_empty(), head_ref.as_deref()).await?;',
+     'io.put_refs_page(&refs, r.pages == 0, done, true, head_ref.as_deref()).await?;', ['cargo', '-p', 'graftyard-git', '--test', 'catchup', 'a_rehydrate_of_promoted_packs_loads']),
     ("connected-after: no rehydrate's last ref page starts the repack", CU,
-     'io.put_refs_page(&page.refs, r.pages == 0, done, state.skipped.is_empty(), head_ref.as_deref()).await?;',
-     'io.put_refs_page(&page.refs, r.pages == 0, done, false, head_ref.as_deref()).await?;', ['cargo', '-p', 'graftyard-git', '--test', 'catchup', 'a_rehydrate_reads_the_log_only']),
+     'io.put_refs_page(&refs, r.pages == 0, done, state.skipped.is_empty(), head_ref.as_deref()).await?;',
+     'io.put_refs_page(&refs, r.pages == 0, done, false, head_ref.as_deref()).await?;', ['cargo', '-p', 'graftyard-git', '--test', 'catchup', 'a_rehydrate_reads_the_log_only']),
     ('connected-after: the backstop never starts the repack', 'crates/git/src/catchup.rs',
      '        && let Err(why) = io.connected(true).await?', '        && let Err(why) = io.connected(false).await?',
      ['cargo', '-p', 'graftyard-git', '--test', 'catchup', 'a_rehydrate_of_promoted_packs_loads']),

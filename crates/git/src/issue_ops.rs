@@ -12,11 +12,11 @@ pub mod call;
 use graftyard_fold::{Overlay, Read, Tiered, Val, has};
 use graftyard_identity::{
     Access as AppAccess, Actor, AuthzRead, Credential, CredentialRefusal, Decision, INVITATION_TTL, IdentityDep,
-    InvitationEvent, InvitationGrant, InvitationId, InvitationRow, Invitee, Own, Principal, RepoAccess, RepoPermission,
-    UserId, check_credential, credential_chains,
+    InvitationEvent, InvitationGrant, InvitationId, InvitationRow, Invitee, NamesRead, Own, Principal, RepoAccess,
+    RepoPermission, UserId, check_credential, credential_chains,
 };
 use graftyard_raft::TierSet;
-use graftyard_types::{AccountId, ChainId, DbId, RequestId, Tier, Timestamp};
+use graftyard_types::{AccountId, ChainId, DbId, NetworkId, RequestId, Tier, Timestamp};
 use smallvec::{SmallVec, smallvec};
 
 use crate::blob::DurableBlob;
@@ -642,6 +642,17 @@ impl IssueCmd {
         {
             d.push(install);
         }
+        // A pull request whose head is another repository's branch also reads the `Names` shard of that repository's
+        // `RepoOwner` row, whose network `decide` compares with the base's. A same-repository command's deps are
+        // unchanged.
+        if let IssueOp::OpenPr { head, .. } = &self.op
+            && head.repo != view.repo()
+        {
+            let names = ChainId::Names(graftyard_identity::name_shard(&graftyard_identity::NameKey::Repo(head.repo)));
+            if !d.contains(&names) {
+                d.push(names);
+            }
+        }
         d
     }
 
@@ -774,6 +785,35 @@ impl IssueCmd {
                     }
                     if head.branch == *base {
                         return Err(IssueErr::Invalid("head and base are the same branch"));
+                    }
+                } else {
+                    // A head in another repository must be in the base's network (`design/SHARED.md`, "Fork
+                    // networks"): the head's `RepoOwner` row names a fork's network, a root's row its own id, and no
+                    // row means no such repository. The base's network is its core `fork` row, else its own id. No
+                    // new format gates this: the edge sends a fork-head `OpenPr` only once `FormatsEnable` enabled
+                    // repository 32.34 (`REPO_FORMAT_FORKS`), which first ships in the same release as this check, so
+                    // every leader that can receive one runs it. Same-repository pull requests keep their behavior
+                    // and bytes.
+                    //
+                    // The fork head's SHA is another repository chain's, not an identity dep, so `decide` cannot read
+                    // it: the edge reads the fork head's ref fresh, and the merge plan proves it fresh
+                    // (`design/SHARED.md`, "Fork merge").
+                    let chain =
+                        ChainId::Names(graftyard_identity::name_shard(&graftyard_identity::NameKey::Repo(head.repo)));
+                    let names = deps
+                        .iter()
+                        .find_map(|(c, d)| match d {
+                            IdentityDep::Names(f) if *c == chain => Some(f),
+                            _ => None,
+                        })
+                        .ok_or(IssueErr::Unauthorized(CredentialRefusal::NotRead(chain)))?;
+                    let head_network = match names.repo_network(head.repo) {
+                        Some(n) => n,
+                        None if names.repo_owner(head.repo).is_some() => NetworkId::of_root(head.repo),
+                        None => return Err(IssueErr::HeadMissing),
+                    };
+                    if head_network != crate::tiers::network(v.core(), v.tiers.repo) {
+                        return Err(IssueErr::Invalid("the head repository is not in the base repository's network"));
                     }
                 }
                 let open = pulls_from(v.core(), head.repo, &head.branch);
