@@ -114,18 +114,21 @@ if (step === "install") {
     if (r.status !== 201) process.exit(1);
     tasks.push({ i, id: r.body.id, plan: plan[i], kill: null, late: null, end: null });
   }
-  // Each box must start: the delivery reaches the controller through the install's App webhook.
-  for (const t of tasks) {
+  // Each box must start (the delivery reaches the controller through the install's App webhook), and each task's kill
+  // watch starts as soon as its own box runs, all in parallel. real1's first 10-task row waited for all ten to start
+  // first, and five Claude Code tasks were Done before their watch began, so they were never killed.
+  await Promise.all(tasks.map(async (t) => {
     for (let k = 0; k < 60; k++) {
       const s = await metered(t.id, "status");
       if (s.body?.box?.task?.state?.Running) { t.first = s.body.box.task.state.Running.sandbox; break; }
-      await sleep(5000);
+      await sleep(2000);
     }
     ev({ started: t.i, sandbox: t.first ?? null });
-    if (!t.first) { ev({ stop: `task ${t.i} never started` }); }
-  }
-  // Kill each task once at its planned point, all in parallel.
-  await Promise.all(tasks.filter((t) => t.first).map(async (t) => {
+    if (!t.first) { ev({ stop: `task ${t.i} never started` }); return; }
+    // A random point inside the kind (`tests/am3/results/lm3-kill-real.md`, Lines): the first matching poll after a
+    // delay drawn from 0 to 20 s. A `before` kill has one window, the first turn before any push, so it takes none.
+    t.delay_ms = t.plan === "before" ? 0 : Math.floor(Math.random() * 20_000);
+    await sleep(t.delay_ms);
     const deadline = Date.now() + 15 * 60_000;
     while (Date.now() < deadline && !t.kill) {
       const s = await metered(t.id, "status");
@@ -139,7 +142,7 @@ if (step === "install") {
         const k = await box(t.id, "_kill", {});
         const hit = !k.body?.killed ? "not running" : k.body.pushing > 0 ? "during" : k.body.box?.task?.state?.Running?.last_push ? "between" : "before";
         t.kill = { at: k.body?.at, sandbox: run.sandbox, last_push: k.body?.box?.task?.state?.Running?.last_push ?? null, hit };
-        ev({ kill: t.i, plan: t.plan, ...t.kill });
+        ev({ kill: t.i, plan: t.plan, delay_ms: t.delay_ms, ...t.kill });
         // The killed Sandbox's late traffic, replayed through the box's own refusal: a report and a request. Only
         // once the box's alarm restarted the task under a new SandboxId: before it, the killed Sandbox is still the
         // task's, and its replayed `Finished` would be taken (r1's driver fault, `tests/am3/results/lm3-kill.md`).
