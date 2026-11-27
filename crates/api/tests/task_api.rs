@@ -732,3 +732,91 @@ fn the_graftyard_task_payload_is_what_the_controller_starts_from() {
     cancel["action"] = json!("cancelled");
     assert_eq!(Task::of_delivery(&cancel, InRepo, budget).map(|x| x.0), Some(Delivery::Cancelled));
 }
+
+/// F155: an App's command names its bot account in a row its reply renders exactly when `IssueCall::names_bot` says
+/// so, each committed as the edge marks it, on a repository whose tiers named no bot before. The login the edge
+/// records with `name_bot` is the one the committed reply renders; without it the reply names `ghost[bot]`, as
+/// F137's octokit milestone create did.
+#[test]
+fn an_apps_reply_names_its_bot_by_the_login_the_edge_read() {
+    use graftyard_api::hosted::{HostedDir, Render, What, accounts, render_ok};
+    use graftyard_git::issues::CommentTarget;
+    type Op = IssueOp<graftyard_git::blob::BlobRef>;
+    let bot = PLAIN.bot();
+    let define =
+        |n, title: &str| Op::DefineMilestone { n, title: title.into(), description: None, open: true, due_on: None };
+    let open = || Op::OpenIssue { title: "t".into(), body: "b".into(), labels: smallvec![], assignees: smallvec![] };
+    let comment = || Op::Comment { on: CommentTarget::Issue(IssueNumber(1)), body: "c".into(), reply_to: None };
+    let status = Op::RecordStatus(StatusUpdate {
+        id: StatusId(DbId(20)),
+        sha: oid(2),
+        context: "ci".into(),
+        state: StatusState::Success,
+        target_url: None,
+        description: None,
+        creator: bot,
+    });
+    let with_milestone = Op::OpenIssueWithMilestone {
+        title: "t".into(),
+        body: "b".into(),
+        labels: smallvec![],
+        assignees: smallvec![],
+        milestone: 1,
+    };
+    let label = Op::DefineLabel { id: None, name: LabelName("bug".into()), color: [1, 2, 3], description: None };
+    let assign = Op::Assign { n: IssueNumber(1), add: smallvec![AccountId(DbId(WRITER))], remove: smallvec![] };
+    // (the command, whether the edge marks it REST, the reply and where it names the bot, whether it names it)
+    type Case = (Op, bool, Option<(What, &'static str)>, bool);
+    let cases: Vec<Case> = vec![
+        (define(None, "app"), false, Some((What::MilestoneSaved { created: true }, "/creator/login")), true),
+        (define(Some(1), "renamed"), false, None, false),
+        (open(), true, Some((What::IssueCreated, "/user/login")), true),
+        (open(), false, None, false),
+        (with_milestone, false, None, true),
+        (comment(), true, Some((What::IssueCommentCreated { n: 1 }, "/user/login")), true),
+        (comment(), false, None, false),
+        (status, false, Some((What::StatusCreated { sha: oid(2), id: 20 }, "/creator/login")), true),
+        (label, false, None, false),
+        (assign, false, None, false),
+    ];
+    for (op, rest, reply, names) in cases {
+        let mut w = World::new();
+        let seed = vec![issue(user(WRITER), open()), issue(user(WRITER), define(None, "seed"))];
+        assert!(w.commit_all(seed).iter().all(Result::is_ok));
+        let what = reply.as_ref().map_or(What::Deleted, |(w, _)| w.clone());
+        let logins = [(OWNER, "o".to_owned()), (WRITER, "alice".to_owned())].into();
+        let render = Render {
+            host: "graftyard.example".into(),
+            isolation: false,
+            dir: HostedDir { home: Some(at(REPO)), logins, ..HostedDir::default() },
+            what,
+            doc: None,
+        };
+        let mut call = IssueCall::new(op, app(PLAIN), RequestId(Ulid(9)), serde_json::to_value(&render).unwrap());
+        call.rest_issue = rest && matches!(call.op, Op::OpenIssue { .. });
+        call.rest_comment = rest && IssueCall::issue_comment(&call.op);
+        let label = format!("{:?} rest={rest}", call.op);
+        assert_eq!(call.names_bot(), names.then_some(PLAIN), "{label}");
+        let before = call.render.clone();
+        call.name_bot("plain-app[bot]".into());
+        assert_eq!(call.render != before, names, "{label}: only a command that names the bot records its login");
+        let named: Render = serde_json::from_value(call.render.clone()).unwrap();
+        let acked = match w.commit_all_acked(vec![RepoCmd::Issue(Box::new(call))]).pop().unwrap() {
+            Ok(a) => match &a.out {
+                RepoOut::Issue(c) => a.map(|_| c.out.clone()),
+                x => panic!("{label}: {x:?}"),
+            },
+            Err(e) => panic!("{label}: {e:?}"),
+        };
+        let f = w.fold();
+        assert_eq!(accounts(&f.core, &f.meta).contains(&bot), names, "{label}: names_bot is what decide wrote");
+        if let Some((_, at)) = reply {
+            let ok = render_ok(&named, &acked, &f.core, &f.meta).reply();
+            assert_eq!(ok.value().pointer(at), Some(&json!("plain-app[bot]")), "{label}: {}", ok.value());
+            assert_eq!(ok.value().pointer(&at.replace("login", "type")), Some(&json!("Bot")), "{label}");
+            let bare: Render = serde_json::from_value(before).unwrap();
+            let ghost = render_ok(&bare, &acked, &f.core, &f.meta).reply();
+            assert_eq!(ghost.value().pointer(at), Some(&json!("ghost[bot]")), "{label}: without the edge's login");
+        }
+    }
+}
