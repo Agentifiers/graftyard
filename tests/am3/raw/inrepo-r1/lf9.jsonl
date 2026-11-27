@@ -1,0 +1,12 @@
+{"t":1795734868654,"other_repo":201}
+{"t":1795734870023,"create":"lf9","status":201,"id":"01a21a23-cea8-81b8-94cb-83db3eea13bd","state":"queued"}
+{"t":1795734874494,"hold":"01a21a23-cea8-81b8-94cb-83db3eea13bd","on":true,"ok":true}
+{"t":1795734883318,"live":"lf9","id":"01a21a23-cea8-81b8-94cb-83db3eea13bd","in_progress":true}
+{"t":1795734883318,"check":"a live task","ok":true}
+{"t":1795735346083,"third_app":{"422":100},"other_repo":{"422":100},"outside_prefix":{"refused: app 3866624 may push only refs/heads/graftyard/<task>/*/**":100}}
+{"t":1795735346084,"check":"100 of 100 third-App task mints refused","ok":true}
+{"t":1795735346084,"check":"100 of 100 other-repository mints refused","ok":true}
+{"t":1795735346084,"check":"100 of 100 pushes outside the prefix refused","ok":true}
+{"t":1795735349053,"hold":"01a21a23-cea8-81b8-94cb-83db3eea13bd","on":false,"ok":true}
+{"t":1795735350256,"cancel":"01a21a23-cea8-81b8-94cb-83db3eea13bd","status":200}
+{"t":1795735354524,"delete_other":204}

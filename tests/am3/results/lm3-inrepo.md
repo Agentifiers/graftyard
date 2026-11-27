@@ -71,4 +71,100 @@ thousand API calls). Estimate $0.5 to $1.2. **Stop: $3.00** across graft-m4a and
 
 ## Result
 
-Not run yet.
+r1 on graft-m4a, 2026-11-26. Site day from `dccb7975` (sites a eb75a6b7, b a4e60331, c 109a2d06), edge day 1 from
+`dccb7975` (0bb4c7e1, FORMATS_ENABLED 40 with 32.32 and 32.33), edge day 2 from main `b6a44183` (f96935c0, binding diff
+empty, no format added; edgever exit 0, so no second site day). Agents half: controller 8cd13216, front ce15d844, probe
+c946ed63, harness image c16fa2e7, installations 7190003 (agent) and 7190004 (workspace). Every run counts.
+
+| Line | Runs | Result |
+| --- | --- | --- |
+| repo | 1 | PASS: `m3org/inrepo-r1` created, main 736c16bb |
+| reader | 1 | PASS: m3-reader reads with `read` only |
+| L0-12, Graftyard-run kind | 1: FAIL (driver) | 100 of 100 pushes refused naming the lease, none `NoLiveTask`; REST ref writes 99 naming the lease and 1 `422 Object does not exist`: the driver's scratch push `l012s-…-14`, which the write named, never reached the base (99 of 100 scratch branches exist) and the driver did not check it. The scratch push now retries and is logged. |
+| B0-36, Graftyard-run kind | 1: FAIL (driver) | Shipped: 100 of 100 for each of the three cases (ref write into the lease, refused naming it; push after cancel; REST ref write after cancel, both `push needs a live task`). Widened: the driver's `Install` beyond graftyard-workspace's record was `BadRecord`, so no widened case ran. The driver now widens the App record first, as `tests/am1/runs/widen.mjs` does. |
+| Pause and resume | 4: FAIL (driver), FAIL (product, F143), FAIL (driver), PASS | See below |
+| B0-36, Graftyard-run kind | 2: no verdict | The orb's CLI restarted at 21:52Z and killed the driver mid-run (last row 21:45:55Z, the shipped task cancelled, then the push-after-cancel loop). The lead ruled it no verdict; run 3 ran under a supervised service. |
+| B0-36, Graftyard-run kind | 3: INCOMPLETE | Shipped: 100 of 100 for each of the three cases. Widened (the App record widened, then restored): 100 of 100 for each. The fork push after cancel waits for AM3-WP2a (lead's ruling), so the line stays incomplete, not failed. |
+| LF-9 | 1: PASS | A live task; 100 of 100 third-App task mints, other-repository mints and pushes outside the prefix refused. |
+| B0-37 | 1: PASS | `graftyard-workspace` pushes the session ref under its live task; the ref is hidden from protocol v0, v1 and v2 without a matching `ref-prefix`, and from `--mirror`; a v2 fetch whose `ref-prefix` starts with it gets it. |
+| A3 end to end, in-repo | 1: INCOMPLETE | The issue task read `queued`, `in_progress`, `completed` in order with the harness's pushes under the task's prefix, and the prompt-only task did the same. `pr_number` on a draft whose `AgentMeta` names the task has no product path yet (F140, built on branch `a3-controller`, not yet hosted), so the line waits for the A3 row. Step 8's verdict half is carried to AM4-WP2 (F146). |
+| L0-14 | 1: FAIL, stopped at the spend line | See below. |
+| L0-12, Graftyard-run kind | 2: not run | Dropped for cost (lead, 00:05Z): the row stood at $2.64 of $3.00 with L0-14 still running. Scheduled on a later graft-m4a row; not counted as a fail. |
+| L0-04 | not run | Dropped for cost, as L0-12 run 2. |
+
+### Pause and resume
+
+On edge f96935c0. Run 4 passed: the controller created the task 14.9 s after m3-admin's assignment; the writer's edit
+paused nothing; the reader's edit read `waiting_for_user` in its own reply; the box stopped its Sandbox 4.1 s later
+(`Paused { reason: "the issue was edited by someone who cannot push" }`); the App's `PATCH in_progress` got 409 ("The
+task is waiting_for_user") and a `graftyard_task` mint 422; the reader's reassignment resumed nothing; after the writer's
+reassignment the same task read `queued`, then `in_progress` on Sandbox generation 2, and no second task exists. The
+task JSON carries no snapshot, so the snapshot is read from the repository log: `TaskCreated` at index 2932,
+`Assigned` with `TaskResumed` at 2982, and `TaskResumed` moves the issue snapshot to its own entry (`task.rs`).
+
+- Run 1, driver: the controller's create came about 8 min after the assignment (right after a manual unassign and
+  reassign); the writer control and the reader edit passed; then the driver read the controller token from the front URL
+  argument and stopped. Fixed.
+- Run 2, product: no task within 480 s. Both `issues` deliveries reached the controller and got 202 with no log line, so
+  its `assigned` branch did not run (F143).
+- Run 3, driver: create at once; the reader's edit stopped the box (controller log, `base waiting_for_user: Stop`, about
+  19 s after the edit) and the writer's reassignment started generation 2 from the base; the driver polled the box status
+  at the controller's own workers.dev URL, which is not served (1042), so it read neither. It now polls through the front.
+
+### Findings
+
+- **F143** (to the edge thread): the controller's create on `issues.assigned` is intermittent. Of 6 real assignments, 3
+  created at once, 2 never did, and 1 came 8 min late. A signed synthetic payload, and a repository hook's capture of the
+  same delivery (`assignee.login` `graftyard-agent[bot]`, type Bot, id 3801088) replayed to the front, created at once.
+  Hypothesis [unverified]: the App delivery renders the assignee from a cold directory as `ghost[bot]`
+  (`crates/api/src/wire.rs`, `bot_user`'s fallback). The fix matches the bot by App id and renders an installed App's
+  bot login without a warm directory.
+- **F144** (A3 controller head): every `graftyard_task` delivery, `created` and `cancelled`, answers 500 "TypeError:
+  Can't modify immutable headers." at the controller though the box starts and stops, so the edge counts it failed.
+- **F145** (A3 controller head): a cancelled task's box keeps its 30 s alarm, minting each time and failing with "422
+  graftyard_task names a task that is not a live graftyard_run task". Teardown deletes the `TaskBox` namespace and shows
+  none remains.
+
+### L0-14
+
+Run 1, from 23:25Z, stopped at 00:23Z when the row's spend read $2.86, past the $2.85 teardown line. 100 tries per
+cell. Every cell's statuses are in `tests/am3/raw/inrepo-r1/l014.jsonl`.
+
+- **`agents_enabled` off: 7 of 9 cells FAIL the gate's wording.** The gate wants 422 for every create while off. The
+  valid creators (m3-admin, and the controller from an issue assigned to its bot) got 422 "Graftyard-run tasks are not
+  enabled for this organization", 100 of 100. The five bad creators (installation token, the `AgentApp`'s user token,
+  the read-only user, a user with `X-Graftyard-Agent-Session`, and both bad controller creates) got 403 "Only a person
+  who can push to the repository creates a Graftyard-run task", 100 of 100: refused, but by the creator rule before
+  the `agents_enabled` check. The demoted user got 52 of 422 and 48 of 403 (the agent class). Nothing was accepted while
+  off. Whether a bad creator's 403 meets "422 for every create while off" is the lead's call; the code checks who may
+  create before it checks the org's switch.
+- **`agents_enabled` on: 1 cell FAIL.** The demoted user's cell accepted 52 of 100 creates (201) and refused 48 as the
+  agent class. The driver demotes m3-member with 64 issue comments from 16 workers before the cell and again every 25
+  creates; the 52 accepted creates came when the user's last 60 s held fewer than `DEMOTE_PER_MIN` (60) counted writes,
+  so this measures the driver's pacing, not demotion (task creates do not count toward it, `admit.rs`). A rerun keeps the
+  user above 60 writes in the window for the whole cell. Every other on cell refused 100 of 100: installation token,
+  `AgentApp` user token, read-only user, session header, both bad controller creates, a body setting `session` (422),
+  the 101st open task for one requester in both kinds (422), a `PATCH` of a cancelled task to `in_progress` in both
+  kinds (409), a host-only `cancelled` state (422), and another App's `PATCH` (403). A body that sets `prefix`: 20 of 20
+  accepted with the prefix derived from the id. The first 100 open tasks (control) were accepted.
+- **Not reached:** the MCP token's create, a token request naming another App's task or a repository outside the token's
+  list, and the 5 s create and cancel timing at the controller.
+
+### Spend and teardown
+
+The stop line came at 00:23Z: $2.86 of $3.00 (graft-m4a $2.74, `graft-agents-m4a-` $0.12, graft-runners $0), counted
+from 17:48Z. Teardown, 00:23 to 00:28Z:
+- `m3org/inrepo-r1` deleted (204), m3-reader's PAT revoked (401 after) and the user suspended, the org policy reset.
+- The `TaskBox` namespace held 88 objects, and the 60 s tail before teardown held 2 alarm lines (F145). After teardown
+  no namespace remains for `graft-agents-m4a-`, so no box alarm can run.
+- `kill-row.sh teardown` failed loudly, as it must: one `graft-agents-m4a-controller-taskbox` Sandbox was still running
+  at its 60 s check. It then deleted the container application, and a direct read afterwards shows no
+  `graft-agents-m4a-` application, no script, no namespace, and 0 graft-runners Sandboxes.
+- graft-m4a's shard sweep tore down 2 shard containers through `graft-m4a-shardkill`, then read none running; the
+  scratch Worker was deleted.
+- The runner store keeps one `graft-agents-m4a-` secret, `MODEL_KEY_A`, which the lead stored for LM-3's real-harness
+  row; the teardown excluded it (`KEEP_SECRETS`), and that row's own teardown deletes it.
+
+After teardown graft-m4a reads $2.79 since 17:48Z; the agents prefix reads $0 once its scripts are gone, so the row's
+total is about $2.91, under the $3.00 stop.
+

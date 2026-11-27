@@ -1,0 +1,4 @@
+{"t":1795722657662,"invite":204}
+{"t":1795722660582,"accept":204}
+{"t":1795722660957,"reader_permission":"read","role":"read","status":200}
+{"t":1795722660957,"check":"m3-reader reads the repository with read only","ok":true}

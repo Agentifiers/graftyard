@@ -1,0 +1,12 @@
+2026-11-26T23:23:24Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $1.94, graft-agents-m4a- $0.07, graft-runners $0.0, total $2.01 (stop $3.00)
+2026-11-26T23:24:42.187Z {"issue_task":"01a21a2c-3278-86c8-8fe8-934a18748539","states":["queued","in_progress","completed"],"end":"completed","work_ref":true,"pr_number":null}
+2026-11-26T23:24:42.195Z {"check":"the issue task reads queued, in_progress, completed in order (queued,in_progress,completed)","ok":true}
+2026-11-26T23:24:42.195Z {"check":"the harness's pushes are under the task's prefix","ok":true}
+2026-11-26T23:24:42.195Z {"incomplete":"pr_number on a draft whose AgentMeta names the task: no product path opens it (F140, pending (b))"}
+2026-11-26T23:24:43.288Z {"prompt_create":201,"id":"01a21a2d-2b56-8771-8eb1-7a882a78b1d6"}
+2026-11-26T23:25:40.689Z {"prompt_task":"01a21a2d-2b56-8771-8eb1-7a882a78b1d6","states":["queued","in_progress","completed"],"end":"completed"}
+2026-11-26T23:25:40.690Z {"check":"the prompt-only task completes the same way (queued,in_progress,completed)","ok":true}
+VERDICT a3 INCOMPLETE incomplete: pr_number on a draft whose AgentMeta names the task: no product path opens it (F140, pending (b))
+a3 exit 0

@@ -1,0 +1,15 @@
+2026-11-26T17:51:53Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $0.0, graft-agents-m4a- $0, graft-runners $0.0, total $0.0 (stop $3.00)
+2026-11-26T17:51:58Z
+dccb79754
+before {"script":"graft-m4a-edge","created_on":"2026-11-26T11:47:55.500863Z","versions":["b5c99d99 100"]}
+deploy exit 0
+Current Version ID: 0bb4c7e1-4293-4c3b-bef1-5f504ddcdd31
+binding diff (plain text; only HOST and FORMATS_ENABLED by ADDFMT may change):
+<   "FORMATS_ENABLED": "32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2
+>   "FORMATS_ENABLED": "32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2
+after {"script":"graft-m4a-edge","created_on":"2026-11-26T17:52:51.860754Z","versions":["0bb4c7e1 100"]}
+edge: graft-m4a-edge serves 0bb4c7e1 at 100% (rev [INFO]: 🌀  Compiling to Wasm...), as ~/lmr/tests/m4/raw/wp3/lm3inrepo/r1/edge-deploy.raw deployed
+edgever exit 0
+FORMATS_ENABLED now 40 formats; has 32.32: 1, 32.33: 1

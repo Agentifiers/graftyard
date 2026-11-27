@@ -80,5 +80,14 @@ while done < pushes:
         time.sleep(3)
     else:
         raise SystemExit(f"push {done} failed")
+# LM-3's in-repo row holds a task live while `refs/heads/hold/<task>` exists on the base (the row pushes and deletes
+# it), at most 50 minutes. Each read goes through the router, so it counts as the Sandbox's activity (SILENT_MAX).
+hold, t0 = f"refs/heads/hold/{task}", time.time()
+while time.time() - t0 < 50 * 60:
+    r = subprocess.run(["git", "ls-remote", url, hold], env=env, capture_output=True, text=True)
+    if r.returncode == 0 and not r.stdout.strip():
+        break
+    print(f"held by {hold} ({r.returncode})", flush=True)
+    time.sleep(20)
 report("Finished")
 time.sleep(3600)

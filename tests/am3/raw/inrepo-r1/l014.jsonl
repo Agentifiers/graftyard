@@ -1,0 +1,61 @@
+{"t":1795735574722,"agentapp_user_token":true}
+{"t":1795735574731,"incomplete":"an MCP token: graft-m4a runs no graft-mcp App and its edge has neither 17.4 nor 20.4, so none can be minted"}
+{"t":1795735574731,"incomplete":"graftyard-insights' installation token: skipped (lead's ruling)"}
+{"t":1795735581939,"agents_off":200,"enabled":false}
+{"t":1795735585424,"ia":6,"ib":7,"assign_ours":201,"assign_other":201,"other_bot":"undefined[bot]","ib_assignees":[]}
+{"t":1795735585424,"incomplete":"another bot's assignment: the edge did not assign undefined[bot] (201); #ib has no bot assignment"}
+{"t":1795735737305,"cell":"off/installation token (m3-ci, an AgentApp)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+{"t":1795735737307,"check":"off: installation token (m3-ci, an AgentApp), 100 of 100 refused","ok":false}
+{"t":1795735881592,"cell":"off/AgentApp's user token (m3-ci for m3-member)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+{"t":1795735881593,"check":"off: AgentApp's user token (m3-ci for m3-member), 100 of 100 refused","ok":false}
+{"t":1795736049608,"cell":"off/demoted user (m3-member past DEMOTE_PER_MIN)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":52,"403 A user with 60 writes in the last minute is classed as an agent and cannot create a Grafty":48},"off":48}
+{"t":1795736049608,"check":"off: demoted user (m3-member past DEMOTE_PER_MIN), 100 of 100 refused","ok":false}
+{"t":1795736160708,"cell":"off/read-only user (m3-reader)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+{"t":1795736160709,"check":"off: read-only user (m3-reader), 100 of 100 refused","ok":false}
+{"t":1795736238620,"cell":"off/user with X-Graftyard-Agent-Session (m3-admin)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+{"t":1795736238621,"check":"off: user with X-Graftyard-Agent-Session (m3-admin), 100 of 100 refused","ok":false}
+{"t":1795736385400,"cell":"off/controller from an issue assigned to another bot","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+{"t":1795736385401,"check":"off: controller from an issue assigned to another bot, 100 of 100 refused","ok":false}
+{"t":1795736527631,"cell":"off/controller with a prompt and no issue","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+{"t":1795736527631,"check":"off: controller with a prompt and no issue, 100 of 100 refused","ok":false}
+{"t":1795736633030,"cell":"off/human writer (m3-admin), the valid creator","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795736633031,"check":"off: human writer (m3-admin), the valid creator, 100 of 100 refused","ok":true}
+{"t":1795736775650,"cell":"off/controller from an issue assigned to its bot","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795736775651,"check":"off: controller from an issue assigned to its bot, 100 of 100 refused","ok":true}
+{"t":1795736777524,"agents_on":200,"enabled":true}
+{"t":1795736923054,"cell":"on/installation token (m3-ci, an AgentApp)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795736923055,"check":"on: installation token (m3-ci, an AgentApp), 100 of 100 refused","ok":true}
+{"t":1795737071177,"cell":"on/AgentApp's user token (m3-ci for m3-member)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795737071178,"check":"on: AgentApp's user token (m3-ci for m3-member), 100 of 100 refused","ok":true}
+{"t":1795737244885,"cell":"on/demoted user (m3-member past DEMOTE_PER_MIN)","statuses":{"201 ":52,"403 A user with 60 writes in the last minute is classed as an agent and cannot create a Grafty":48},"off":52}
+{"t":1795737244886,"check":"on: demoted user (m3-member past DEMOTE_PER_MIN), 100 of 100 refused","ok":false}
+{"t":1795737352173,"cell":"on/read-only user (m3-reader)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795737352174,"check":"on: read-only user (m3-reader), 100 of 100 refused","ok":true}
+{"t":1795737431053,"cell":"on/user with X-Graftyard-Agent-Session (m3-admin)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795737431053,"check":"on: user with X-Graftyard-Agent-Session (m3-admin), 100 of 100 refused","ok":true}
+{"t":1795737572708,"cell":"on/controller from an issue assigned to another bot","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795737572708,"check":"on: controller from an issue assigned to another bot, 100 of 100 refused","ok":true}
+{"t":1795737715435,"cell":"on/controller with a prompt and no issue","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795737715436,"check":"on: controller with a prompt and no issue, 100 of 100 refused","ok":true}
+{"t":1795737764318,"prefix_sample":20,"derived":20}
+{"t":1795737764318,"check":"a body that sets prefix: 20 of 20 accepted with the prefix derived from the id","ok":true}
+{"t":1795737842515,"cell":"on/body sets session for a Graftyard-run task","statuses":{"422 Validation Failed":100},"off":0}
+{"t":1795737842516,"check":"on: body sets session for a Graftyard-run task, 100 of 100 refused","ok":true}
+{"t":1795738076003,"cap_fill":{"201":100}}
+{"t":1795738076003,"check":"m3-member's first 100 open tasks (control)","ok":true}
+{"t":1795738243134,"cell":"on/101st open task for one requester (External, m3-ci for m3-member)","statuses":{"422 The requester has too many open tasks":100},"off":0}
+{"t":1795738243134,"check":"on: 101st open task for one requester (External, m3-ci for m3-member), 100 of 100 refused","ok":true}
+{"t":1795738354378,"cell":"on/101st open task for one requester (Graftyard-run, m3-member)","statuses":{"422 The requester has too many open tasks":100},"off":0}
+{"t":1795738354378,"check":"on: 101st open task for one requester (Graftyard-run, m3-member), 100 of 100 refused","ok":true}
+{"t":1795738361200,"create":"l014 live","status":201,"id":"01a21a59-1524-8dda-bcc5-f1b914ec4e79","state":"queued"}
+{"t":1795738366787,"hold":"01a21a59-1524-8dda-bcc5-f1b914ec4e79","on":true,"ok":true}
+{"t":1795738375805,"live":"l014 live","id":"01a21a59-1524-8dda-bcc5-f1b914ec4e79","in_progress":true}
+{"t":1795738378972,"cancelled_run":200,"cancelled_external":200,"live":"01a21a59-1524-8dda-bcc5-f1b914ec4e79"}
+{"t":1795738530111,"cell":"on/PATCH of a cancelled Graftyard-run task to in_progress (graftyard-agent)","statuses":{"409 The task is cancelled":100},"off":0}
+{"t":1795738530111,"check":"on: PATCH of a cancelled Graftyard-run task to in_progress (graftyard-agent), 100 of 100 refused","ok":true}
+{"t":1795738684823,"cell":"on/PATCH of a cancelled External task to in_progress (m3-ci)","statuses":{"409 The task is cancelled":100},"off":0}
+{"t":1795738684823,"check":"on: PATCH of a cancelled External task to in_progress (m3-ci), 100 of 100 refused","ok":true}
+{"t":1795738770892,"cell":"on/PATCH state cancelled (host-only) on a live task","statuses":{"422 Validation Failed":100},"off":0}
+{"t":1795738770893,"check":"on: PATCH state cancelled (host-only) on a live task, 100 of 100 refused","ok":true}
+{"t":1795738923366,"cell":"on/PATCH of graftyard-agent's task by another App (m3-ci)","statuses":{"403 Must be the task's App, its requester, or a repository admin":100},"off":0}
+{"t":1795738923366,"check":"on: PATCH of graftyard-agent's task by another App (m3-ci), 100 of 100 refused","ok":true}

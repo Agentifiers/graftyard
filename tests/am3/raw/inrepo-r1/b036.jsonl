@@ -1,0 +1,37 @@
+{"t":1795724011314,"holder":201}
+{"t":1795724012682,"create":"b036 shipped","status":201,"id":"01a2197e-219a-8b84-b822-731895af4218","state":"queued"}
+{"t":1795724016695,"hold":"01a2197e-219a-8b84-b822-731895af4218","on":true,"ok":true}
+{"t":1795724023783,"live":"b036 shipped","id":"01a2197e-219a-8b84-b822-731895af4218","in_progress":true}
+{"t":1795724474139,"hold":"01a2197e-219a-8b84-b822-731895af4218","on":false,"ok":true}
+{"t":1795724475316,"cancel":"01a2197e-219a-8b84-b822-731895af4218","status":200}
+{"t":1795725154707,"mode":"shipped","lease_ref_write":{"422 refused: b036/mwxzp91v/** is leased Exclusive by user 7100002 (task 131072.b036h-mwxzp91v)":100},"push_after_cancel":{"refused: push needs a live task; the token names no task":100},"rest_after_cancel":{"422 refused: push needs a live task; the token names no task":100}}
+{"t":1795725154708,"check":"shipped: 100 of 100 ref writes into the scope refused naming the lease","ok":true}
+{"t":1795725154708,"check":"shipped: 100 of 100 pushes after cancel refused","ok":true}
+{"t":1795725154708,"check":"shipped: 100 of 100 REST ref writes after cancel refused","ok":true}
+{"t":1795729024240,"holder":201}
+{"t":1795729025463,"create":"b036 shipped","status":201,"id":"01a219ca-a022-8273-8a52-fa9d2df27039","state":"queued"}
+{"t":1795729031035,"hold":"01a219ca-a022-8273-8a52-fa9d2df27039","on":true,"ok":true}
+{"t":1795729039126,"live":"b036 shipped","id":"01a219ca-a022-8273-8a52-fa9d2df27039","in_progress":true}
+{"t":1795729553918,"hold":"01a219ca-a022-8273-8a52-fa9d2df27039","on":false,"ok":true}
+{"t":1795729555186,"cancel":"01a219ca-a022-8273-8a52-fa9d2df27039","status":200}
+{"t":1795731944062,"holder":201}
+{"t":1795731945296,"create":"b036 shipped","status":201,"id":"01a219f7-2e1f-821f-a4a4-db6c12d20cda","state":"queued"}
+{"t":1795731949011,"hold":"01a219f7-2e1f-821f-a4a4-db6c12d20cda","on":true,"ok":true}
+{"t":1795731958178,"live":"b036 shipped","id":"01a219f7-2e1f-821f-a4a4-db6c12d20cda","in_progress":true}
+{"t":1795732498401,"hold":"01a219f7-2e1f-821f-a4a4-db6c12d20cda","on":false,"ok":true}
+{"t":1795732499452,"cancel":"01a219f7-2e1f-821f-a4a4-db6c12d20cda","status":200}
+{"t":1795733241255,"mode":"shipped","lease_ref_write":{"422 refused: b036/mwy4fb0x/** is leased Exclusive by user 7100002 (task 131072.b036h-mwy4fb0x)":100},"push_after_cancel":{"refused: push needs a live task; the token names no task":100},"rest_after_cancel":{"422 refused: push needs a live task; the token names no task":100}}
+{"t":1795733241256,"check":"shipped: 100 of 100 ref writes into the scope refused naming the lease","ok":true}
+{"t":1795733241257,"check":"shipped: 100 of 100 pushes after cancel refused","ok":true}
+{"t":1795733241257,"check":"shipped: 100 of 100 REST ref writes after cancel refused","ok":true}
+{"t":1795733245074,"create":"b036 widened","status":201,"id":"01a21a0b-0377-8cba-b81a-c834e2978de3","state":"queued"}
+{"t":1795733249413,"hold":"01a21a0b-0377-8cba-b81a-c834e2978de3","on":true,"ok":true}
+{"t":1795733257643,"live":"b036 widened","id":"01a21a0b-0377-8cba-b81a-c834e2978de3","in_progress":true}
+{"t":1795733773848,"hold":"01a21a0b-0377-8cba-b81a-c834e2978de3","on":false,"ok":true}
+{"t":1795733774681,"cancel":"01a21a0b-0377-8cba-b81a-c834e2978de3","status":200}
+{"t":1795734831335,"mode":"widened","lease_ref_write":{"422 refused: b036/mwy4fb0x/** is leased Exclusive by user 7100002 (task 131072.b036h-mwy4fb0x)":100},"push_after_cancel":{"refused: push needs a live task; the token names no task":99,"rejected":1},"rest_after_cancel":{"422 refused: push needs a live task; the token names no task":100}}
+{"t":1795734831335,"check":"widened: 100 of 100 ref writes into the scope refused naming the lease","ok":true}
+{"t":1795734831336,"check":"widened: 100 of 100 pushes after cancel refused","ok":true}
+{"t":1795734831336,"check":"widened: 100 of 100 REST ref writes after cancel refused","ok":true}
+{"t":1795734833808,"installation_back":"shipped"}
+{"t":1795734839062,"incomplete":"the fork push after cancel waits for AM3-WP2a (lead's ruling)"}

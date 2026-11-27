@@ -1,0 +1,10 @@
+2026-11-26T21:02:08Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $0.69, graft-agents-m4a- $0.03, graft-runners $0.0, total $0.72 (stop $3.00)
+2026-11-26T21:02:19.458Z {"issue":201,"n":2,"author":"m3-reader"}
+2026-11-26T21:02:21.171Z {"assign":201}
+2026-11-26T21:10:23.361Z {"timeout":"the controller's task","ms":480000}
+2026-11-26T21:10:23.361Z {"controller_create_ms":null}
+2026-11-26T21:10:23.362Z {"check":"the controller creates the task","ok":false}
+VERDICT pause FAIL the controller creates the task
+pause exit 1
