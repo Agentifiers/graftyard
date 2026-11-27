@@ -152,6 +152,20 @@ impl Reply {
         self
     }
 
+    /// The same reply with its error body's `documentation_url` naming `doc`, for a refusal a shared renderer built
+    /// for another route. A reply whose page is the API's root (`rest`: 401, 404, 503) keeps it, as does a body with
+    /// no `documentation_url`.
+    pub fn with_doc(mut self, doc: &str) -> Reply {
+        let root = format!("{DOCS}/rest");
+        if let Body::Json(Value::Object(o)) = &mut self.body
+            && let Some(Value::String(u)) = o.get_mut("documentation_url")
+            && *u != root
+        {
+            *u = format!("{DOCS}/{doc}");
+        }
+        self
+    }
+
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }

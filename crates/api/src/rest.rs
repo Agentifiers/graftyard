@@ -2158,6 +2158,99 @@ pub fn label_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
     }
 }
 
+/// The label `name` names: case-insensitive, as GHES matches it, after percent-decoding the path segment.
+fn label_by_name(r: &Repo<'_>, name: &str) -> Option<(graftyard_types::DbId, graftyard_git::tiers::LabelRow)> {
+    let name = unpercent(name);
+    r.labels().into_iter().find(|(_, l)| l.name.0.eq_ignore_ascii_case(&name))
+}
+
+/// `GET /repos/{owner}/{repo}/labels/{name}` (F137): the pinned `label`, or 404.
+pub fn get_label(r: &Repo<'_>, name: &str) -> Reply {
+    match label_by_name(r, name) {
+        Some((id, l)) => Reply::json(200, label_json(r, id, &l)),
+        None => Reply::not_found(),
+    }
+}
+
+/// `DELETE /repos/{owner}/{repo}/labels/{name}` (F137, `gh label delete`): the existing `DeleteLabel`, whose 204 is
+/// `What::Deleted`'s, refused with this route's documentation (`Render::doc`). An unknown name is 404.
+pub fn plan_delete_label(r: &Repo<'_>, name: &str) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    let (id, _) = label_by_name(r, name).ok_or_else(Reply::not_found)?;
+    Ok(graftyard_git::issue_ops::IssueOp::DeleteLabel { id: graftyard_git::issues::LabelId(id) })
+}
+
+/// `DELETE labels/{name}`'s documentation, for `Render::doc`.
+pub const LABEL_DELETE_DOC: &str = "rest/issues/labels#delete-a-label";
+/// `DELETE issues/comments/{comment_id}`'s documentation, for `Render::doc`.
+pub const ISSUE_COMMENT_DELETE_DOC: &str = "rest/issues/comments#delete-an-issue-comment";
+
+/// `PATCH /repos/{owner}/{repo}/labels/{name}` (F137, format 32.36; `gh label edit`, and `gh label create --force`
+/// and `gh label clone --force` when the name is taken): a `DefineLabel` of the label's id with the body's
+/// `new_name`, `color` and `description`, each kept from the row when the body leaves it out. An empty `description`
+/// clears it, as GHES does. An unknown name is 404; a color that is not six hex digits, or an empty `new_name`, 422.
+pub fn plan_update_label(r: &Repo<'_>, name: &str, body: &Value) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    use graftyard_git::issues::{LabelId, LabelName};
+    let (id, row) = label_by_name(r, name).ok_or_else(Reply::not_found)?;
+    let invalid = |field: &'static str| {
+        Reply::json(
+            422,
+            crate::wire::validation_error(
+                "Validation Failed",
+                LABEL_UPDATE_DOC,
+                &[crate::wire::FieldError { resource: "Label", field, code: "invalid" }],
+            ),
+        )
+    };
+    let text = |k: &str| body.get(k).filter(|v| !v.is_null());
+    let name = match text("new_name") {
+        None => row.name.clone(),
+        Some(Value::String(n)) if !n.is_empty() => LabelName(n.as_str().into()),
+        Some(_) => return Err(invalid("name")),
+    };
+    let color = match text("color") {
+        None => row.color,
+        Some(Value::String(c)) => {
+            let hex = c.trim_start_matches('#');
+            let byte = |i: usize| hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok());
+            match (byte(0), byte(2), byte(4), hex.len()) {
+                (Some(a), Some(b), Some(c), 6) => [a, b, c],
+                _ => return Err(invalid("color")),
+            }
+        }
+        Some(_) => return Err(invalid("color")),
+    };
+    let description = match text("description") {
+        None => row.description.clone(),
+        Some(Value::String(d)) => (!d.is_empty()).then(|| d.as_str().into()),
+        Some(_) => return Err(invalid("description")),
+    };
+    Ok(graftyard_git::issue_ops::IssueOp::DefineLabel { id: Some(LabelId(id)), name, color, description })
+}
+
+const LABEL_UPDATE_DOC: &str = "rest/issues/labels#update-a-label";
+
+/// The 200 of a committed label update: the label as the leader's tiers hold it after the entry, found by its id,
+/// since a rename moved its name.
+pub fn label_updated(after: &Repo<'_>, id: i64) -> Reply {
+    match after.labels().into_iter().find(|(i, _)| i.0 == id) {
+        Some((id, l)) => Reply::json(200, label_json(after, id, &l)),
+        None => Reply::not_found(),
+    }
+}
+
+/// A refused label update: a taken `new_name` is GitHub's 422 `already_exists`, which `gh label edit` reads, and the
+/// rest as a label create's, with this route's documentation.
+pub fn label_update_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
+    label_refused(e).with_doc(LABEL_UPDATE_DOC)
+}
+
+/// `GET /repos/{owner}/{repo}/assignees/{assignee}` (F137): 204 when the assignee's permission on the repository,
+/// which the edge read (`None` for a login no account claims), is write or more, the accounts `decide`'s `Assign`
+/// keeps; else 404, as `check_assignee` answers for one issue.
+pub fn check_repo_assignee(perm: Option<graftyard_identity::RepoPermission>) -> Reply {
+    if perm >= Some(graftyard_identity::RepoPermission::Write) { Reply::empty(204) } else { Reply::not_found() }
+}
+
 // ---- issue labels (B0-36's labels write) ----
 
 const ISSUE_LABELS_DOC: &str = "rest/issues/labels#add-labels-to-an-issue";

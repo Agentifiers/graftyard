@@ -1862,6 +1862,8 @@ Built (`design/AGENT-LAYER.md`, "Milestones"): the insights consumer fed only by
 
 **Build.** `Consumer::Insights`, the only producer of `InsightJob`. Its cursor sends one job per entry that writes or deletes a `PathSet` row or opens a PR on its ref, and `apply` enqueues nothing. `InsightVerdict`, one core row per ref, which `graftyard-insights` commits through `POST .../insights` (`design/AGENT-LAYER.md`, "API reference"). `decide` refuses a `head` that is no longer the ref's tip and writes nothing for an unchanged result. Otherwise one entry holds the row plus, as metadata, the changed `InsightCheck` runs (`neutral`, on the head SHA) and the label changes. The feed's `Verdict` event, the PR and agents pages, and `graftyard_overlaps` read only that row. Clusters are connected components of overlapping `PathSet` rows, named by the lowest PR number, and a label is removed when its cluster dissolves. `graftyard-insights` uses the key that `graftyard apps init` stored in the install account (AM2-WP1), so a self-hoster without a controller gets insights. The labels `agent:<app>` and `overlap:<cluster>`. The agents page (`design/AGENT-LAYER.md`, Shape, "Overlaps and prediction" and "First-party Apps"; journeys A5 and A6).
 
+A3 step 8's verdict pass-through lands here with the check runs it passes (`decisions/OPEN-QUESTIONS.md`, F146): `graft-controller` maps a `check_run` delivery's `head_sha` to its task's draft (the payload's `pull_requests` renders `[]`), and the Sandbox gets an inbound route on `controller.graftyard.internal` that the harness reads, so the verdict reaches the running harness as a message and its session log records it.
+
 **Depends on.** AM4-WP1, M4-WP1, AM2-WP1.
 
 **Acceptance.**

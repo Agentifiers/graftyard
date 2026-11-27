@@ -1,0 +1,24 @@
+2026-11-27T00:35:59Z
+70aa964b
+spend: row $0.0, day $0.0, total $49.22 (stops $10, $20, $70)
+{"script":"graft-m6a-ops","created_on":"2026-11-26T06:06:40.335071Z","versions":["82bc3adb 100"]}
+{"mint":"graft-m6a-bm6-deploy","ok":true,"id":"685949e1","errors":[]}
+{"patch":"graft-m6a-ops-deploy-token","ok":true,"errors":[]}
+}
+{"scripts":{"site/0":"graft-m6a-site-a","site/1":"graft-m6a-site-b","site/2":"graft-m6a-site-c","site/3":"graft-m6a-spare-wnam","edge":"graft-m6a-edge","workflows":"graft-m6a-workflows","ops":"graft-m6a-ops"},"releases":"graft-m6a-releases","gate":"pass","cron":"* * * * *","step_dwell_ms":60000,"first_day_ms":60000,"test_faults":true,"recover_ms":1800000}
+Current Version ID: a2483acb-5b70-4d6e-8660-f14146a4511e
+{"script":"graft-m6a-ops","created_on":"2026-11-27T00:36:36.037401Z","versions":["a2483acb 100"]}
+graft-ops cron ["* * * * *"]
+put bm6-r1/edge/index.js
+put bm6-r1/edge/index_bg.wasm
+put bm6-r1/formats.txt
+put bm6-r1/ops/index.js
+put bm6-r1/ops/index_bg.wasm
+put bm6-r1/release.json
+put bm6-r1/release.sig
+put bm6-r1/site/index.js
+put bm6-r1/site/index_bg.wasm
+put bm6-r1/workflows/entry.js
+put bm6-r1/workflows/move.mjs
+R1 b4a1f526f173aa70854714629c8e0f866f16911c9a255fa66530104ba75aa21c
+2026-11-27T00:36:39Z

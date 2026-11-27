@@ -325,6 +325,6 @@ async fn delete(c: &Ctx<'_>, rd: &Read, who: &Principal) -> Result<Reply> {
     if killed(c, "delete_name") {
         return Ok(killed_reply("delete_name"));
     }
-    let r = commit_issue(c, rd, who, IssueOp::DeleteRepo { retain_until }, What::Deleted).await?;
+    let r = crate::api::commit_deleted(c, rd, who, IssueOp::DeleteRepo { retain_until }, DOC_DELETE).await?;
     Ok(if r.status == 403 { Reply::error(403, "Must have admin rights to Repository.", DOC_DELETE) } else { r })
 }

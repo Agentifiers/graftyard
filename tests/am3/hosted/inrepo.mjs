@@ -484,9 +484,24 @@ if (line === "repo") {
   const other = (ab.body?.assignees ?? []).map((x) => x.login);
   ev({ ia, ib, assign_ours: aa.status, assign_other: ab.status, other_bot: `${slug}[bot]`, ib_assignees: other });
   if (!other.includes(`${slug}[bot]`)) gap(`another bot's assignment: the edge did not assign ${slug}[bot] (${ab.status}); #ib has no bot assignment`);
+  // Demotion counts m3-member's committed writes in the last DEMOTE_WINDOW (60 s) at the create's own entry, and task
+  // creates do not count (graftyard_raft::admit). So each burst of DEMOTE_BURST creates follows 72 committed comments
+  // (2xx, counted, not just sent) made within DEMOTE_FRESH_MS, and the burst runs while all of them are inside the
+  // window. A demote that commits fewer, or takes longer, is retried; three failures stop the cell as a driver gap.
+  // Run 1 sent 64 comments per 25 creates without checking either, and 52 creates came after the window drained.
+  const DEMOTE_BURST = 5, DEMOTE_FRESH_MS = 20_000;
   const demote = async () => {
-    let n = 0;
-    await Promise.all(Array.from({ length: 16 }, async () => { while (n < 64) { n++; await api("POST", `${V3}/issues/${ia}/comments`, member, { body: `ping ${n}` }); } }));
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const t0 = Date.now();
+      let sent = 0, ok = 0;
+      await Promise.all(Array.from({ length: 16 }, async () => {
+        while (sent < 72) { sent++; const r = await api("POST", `${V3}/issues/${ia}/comments`, member, { body: `ping ${sent}` }); if (r.status === 201) ok++; }
+      }));
+      const ms = Date.now() - t0;
+      ev({ demote: { attempt, ok, ms } });
+      if (ok >= 72 && ms <= DEMOTE_FRESH_MS) return t0;
+    }
+    throw new Error("driver: could not commit 72 writes within 20 s to demote m3-member");
   };
   const SESS = "graftyard_run.00000000-0000-4000-8000-000000000001";
   const creators = [
@@ -501,9 +516,11 @@ if (line === "repo") {
   const cells = {};
   const cell = (k, st, ok) => { cells[k] ??= { statuses: {}, off: 0 }; cells[k].statuses[st] = (cells[k].statuses[st] ?? 0) + 1; if (!ok) cells[k].off++; };
   const runCase = async (phase, [k, t, body, headers], want) => {
-    if (k.startsWith("demoted")) await demote();
+    let since = 0;
     for (let i = 0; i < N; i++) {
-      if (k.startsWith("demoted") && i % 25 === 24) await demote();
+      // A burst ends DEMOTE_BURST creates in, or 30 s after its demote began, so every create's window still holds
+      // the 72 writes.
+      if (k.startsWith("demoted") && (i % DEMOTE_BURST === 0 || Date.now() - since > 30_000)) since = await demote();
       const r = await api("POST", `${V1}/tasks`, t(), body(i), headers ?? {});
       cell(`${phase}/${k}`, `${r.status} ${short(r.body?.message)}`, want(r.status));
     }

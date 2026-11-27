@@ -12263,3 +12263,60 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/plaindiff/run.sh`: the five new request pairs stay main's 404 on the seed, which holds no issue and does not enable 32.35.
 
 **Flip.** A GHES release that applies an issue `PATCH` field by field, or a client that needs a partial edit. Or fold rows for milestones, issue types or field values, which would let the `Edit` carry them.
+
+### `a3-open`: the controller opens a task's Shared lease and draft pull request at its first alarm, under the token each needs, with `**` as the lease's paths until a planner names them, 2026-11-27
+
+**Status.** Built at $0 on branch `a3-controller` (F140), with F144 and F145 in the same head. Native-tested; the controller's wasm builds and clippy passes under test-faults; `tests/ctlboot/run.sh` passes. Not yet hosted: the A3 row on graft-m4a is its proof. No repository format and no `decide` change, so no format number and no plant (284 stays reserved for this head if a later change needs one).
+
+**Decision.**
+- A3 step 6 runs at the task's first alarm, `OPEN_AFTER` (1 s) after its box starts, not inside the `graftyard_task` delivery, whose attempt deadline is 10 s (`hooks::ATTEMPT_DEADLINE_MS`). A failed step is logged and tried again at the next alarm, up to `OPEN_TRIES` (3) tries in all (`TaskBox::open_due`, `TaskBox::opened`); after that the task goes on without it. Neither failure fails the task.
+- The Shared lease goes under `graftyard-workspace`'s token: `POST /api/graftyard/v1/repos/{o}/{r}/leases` needs push access, and `graftyard-agent` has `contents: read`. `X-Graftyard-Agent-Session` and the token's `graftyard_task` claim make the task its holder, so the task's final state releases it in the same command (`task::release`).
+- **Interim paths: `**`, for an hour.** A3 step 6 says "the paths it plans to touch", and no planner names them yet, so the lease covers the whole tree for `TASK_WALL`, the task's 60-minute cap. Shared leases never block, so `**` refuses nothing; it shows the task in `PathSet.planned`, the feed and the overlap check as touching everything. A planner that names the task's paths replaces it.
+- The draft opens from an empty commit (`taskbox::draft_push`: the base's default-branch tree on its head, with a `Graftyard-Session` trailer) pushed as `refs/heads/graftyard/<task>/work` under `graftyard-workspace`'s token, the branch the harness then pushes its work to. A retry whose earlier push landed is refused as existing and goes on to the pull request.
+- The draft goes over GraphQL `createPullRequest` under `graftyard-agent`'s token, with the `graftyard_task` claim and `X-Graftyard-Agent-Session`. `graftyard-workspace` cannot open it: its manifest grants `contents: write` alone and `OpenPr` needs `pull_requests: write` (`IssueCall::app_needs`). And `decide` names the task in `AgentMeta` only when the task's App is the creating App, which is `graftyard-agent`.
+- The draft's number is the box's (`TaskBox.draft`). A new draft makes the base owe the task's state again, so the next `PATCH .../tasks/{id}` carries `pr_number`.
+- Step 8's verdict pass-through is not here: nothing produces the `graftyard/overlap` check runs yet (OPEN-QUESTIONS F146, carried to AM4-WP2).
+
+**Why.** F140: no product path opened a Graftyard-run task's draft, so A3 step 6 could not run hosted. The lead ruled the controller opens it over GraphQL (2026-11-26) and approved this token split and the `**` interim (2026-11-27).
+
+**What it beat.**
+- The lease and the draft both under `graftyard-workspace`: the draft is refused 403, and `AgentMeta` would not name the task.
+- Both under `graftyard-agent`: the lease needs push access, which `contents: read` does not give.
+- Opening them inside the `graftyard_task` delivery: three round trips plus a push risk the delivery's 10 s deadline, and a redelivery would race the first try.
+- A REST `POST .../pulls` on the edge: the design has the controller open the draft (A3 step 6), and the edge serves no such route.
+
+**Evidence.**
+- `crates/git/tests/taskbox.rs`, `a_running_task_opens_its_lease_and_draft_once`: a queued, cancelled, or exhausted task opens nothing; a partial try keeps what it got and counts; a task has one draft; a new draft makes the base owe the task's state again.
+- `crates/git/tests/taskbox.rs`, `the_draft_push_is_an_empty_commit_on_the_base_head`: git indexes the push's pack strictly against the base, `fsck` passes, the commit's tree is the base's tree and its parent the base's head, and its command creates `refs/heads/graftyard/<task>/work`.
+- `cargo clippy --target wasm32-unknown-unknown --features test-faults -- -D warnings` in `workers/controller`: clean.
+
+**Flip.** A planner names a task's paths: the lease takes them instead of `**`. Or the hosted A3 row shows `createPullRequest` refused under `graftyard-agent`'s claim: then the edge's `OpenPr` authorization is the fix, not the token split.
+
+### `label-routes`: one label by name is served, its update rides repository format 32.36, and a refused delete names its own route's documentation, 2026-11-26
+
+**Status.** Built at $0 on branch `label-routes` (F137's sweep, the lead's 2026-11-26 ruling). It is native-tested and plant288 catches every mutant; edgeboot passed with test-faults and with PRODUCT, and plaindiff shows only the intended changes. Its hosted proof rides the next graft-m4a row that does a site day and an edge day enabling 32.36.
+
+**Decision.**
+- `GET /repos/{o}/{r}/labels/{name}` answers the pinned `label`, matched case-insensitively after percent-decoding, as GHES matches it; an unknown name is 404. `DELETE` is the existing `DeleteLabel` and answers 204 through `What::Deleted`. Neither needs a format.
+- `PATCH labels/{name}` (`gh label edit`, and `gh label create --force` and `gh label clone --force` when the name is taken) is the existing `DefineLabel` with the label's id. The body's `new_name`, `color` and `description` replace the row's, and a field the body leaves out keeps its value; an empty `description` clears it. Its 200 is the label after the entry, found by id since a rename moved its name (`What::LabelUpdated`); a taken `new_name` is 422 `already_exists`, which gh reads. `decide`'s `DefineLabel` arm is unchanged.
+- Repository format 32.36 (`REPO_FORMAT_LABEL_UPDATE`) carries a `DefineLabel` of an existing id the edge marks as REST (`IssueCall::rest_label`), whose reply a release without `What::LabelUpdated` cannot render. It carries what 32.35 does. It is main's highest repository format plus one when it merged ("`format-order`"). The edge serves the update only once `FormatsEnable` enabled it; until then it answers 404, as on main.
+- `GET /repos/{o}/{r}/assignees/{assignee}` answers 204 for an account with write access or more (the owner, or the repository's grants), as the issue-level check does; else 404.
+- `Render::doc` names the documentation page of a route whose refusal renders through `What::Deleted`: a label or comment delete, a hook delete, a collaborator add or remove, an invitation withdrawn, accepted or declined, and a repository delete. `Reply::with_doc` replaces the body's `documentation_url` and nothing else, and keeps the API root's page on a 401, 404 or 503. A release's delete sends no `doc` and keeps the releases page. The field is optional on the wire and absent when `None`, so a render without it is the same bytes, and a member of an earlier release ignores it and renders the releases page, as before: it needs no format.
+
+**Why.** gh's `label delete`, `label edit` and `label create --force` call these routes, and Octokit's `getLabel`, `updateLabel`, `deleteLabel` and `checkUserCanBeAssigned`. A refused delete named the releases page because `What::Deleted`'s refusal was the releases renderer; a label and a comment delete made that reachable from issue routes.
+
+**What it beat.**
+- A new `RepoEvent` or `IssueOp` for the update: `DefineLabel` with an id already renames, recolors and checks a taken name.
+- A `What` per deleting route: one optional field fixes every caller, needs no format, and leaves status and message as they were.
+- Empty lists for `issue-field-values` and the dependency `GET`s (lead, 2026-11-26): a client that probes before it writes would read a route whose `POST` is 404 as writable.
+- Milestones in this head: they need rows, a `RepoEvent` kind and a format, and are their own package next.
+
+**Evidence.**
+- `crates/api/tests/surfaces.rs`, `rest_label_routes_and_route_docs_render_as_ghes_does`: a case-insensitive, percent-encoded read; a partial update that keeps color and description, a rename that clears the description and moves the name, the 200 after it, 422 for a bad color, an empty name or a non-string description, 404 for an unknown name, and `already_exists` with the update's page; a delete's 204 and the 404 after it; a refused delete's page for each route with its status and message unchanged, the releases page with no `doc`, and the API root's page kept on 404 and 503; a render from an older edge reads `doc` as `None`, and a render with none has no `doc` key; the assignee check for each permission.
+- `crates/git/tests/issues.rs`, `a_rest_label_update_is_32_36_and_keeps_its_issues`: the rename keeps the issue's label row, another label's name in any case is `Exists`, a reader is refused, and the update is 32.36 only when marked, while 32.36 on a create is malformed.
+- `crates/git/tests/fold_corpus.golden` gains version 36's rows only, every earlier row unchanged; `a_new_events_format_is_above_every_format_on_main` holds.
+- `tests/m0carried/plant288.py`: 11 of 11 mutants caught.
+- `bash tests/edgeboot/run.sh` and `PRODUCT=1 bash tests/edgeboot/run.sh` pass with 0 wasm traps, with the label read, update and delete and the assignee check among their requests.
+- `tests/plaindiff/run.sh`, with a second seed (`tests/plaindiff/seed2.mjs`: a read-only collaborator, an issue with the owner's comment, a label): the reader's comment delete differs from main only by `documentation_url`, from the releases page to `issues/comments#delete-an-issue-comment`; the label read and the write-access assignee check change from main's 404 as intended, the reader's label delete from 404 to 403 with its page; the update, an unknown label and a reader's assignee check stay main's 404. 34 request pairs, 0 unexpected differences. On two of three beds main's own `GET assignees/{login}` was first shed by the members (503, `retry-after: 1`, "every member asked shed the read: overloaded"), so `diff.mjs` now asks a `GET` shed that way again, up to three times a second apart, as a client honoring Retry-After does.
+
+**Flip.** A GHES client that reads a refused delete's `documentation_url` as the releases page; or a label field the fold does not keep, which would need its own row and format.

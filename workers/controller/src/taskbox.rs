@@ -43,7 +43,9 @@ use std::time::Duration;
 use base64::Engine as _;
 use futures_util::future::{Either, select};
 use graftyard_git::controller::{Delivery, Resume, SandboxId, TASK_WALL, Task, TaskBudget, TaskEvent};
-use graftyard_git::outbound::{Allowed, Cred, OutReq, Route, Scheme, outbound};
+use graftyard_git::issues::IssueNumber;
+use graftyard_git::outbound::{Allowed, Arm, Cred, OutReq, Route, Scheme, outbound};
+use graftyard_git::refs::ObjectId;
 use graftyard_git::session_log::{self as sl, LogReport, Pushed};
 use graftyard_git::task::TaskApiState;
 use graftyard_git::taskbox::{self as tb, Act, HEARTBEAT, Input, Pointer, Report, acked_pushes};
@@ -65,6 +67,8 @@ const REPORT_HOST: &str = "controller.graftyard.internal";
 const INACTIVITY_MS: f64 = 6.0 * 3_600_000.0;
 /// How long the alarm waits for `graft-agents-front`'s pointer [guess]; past it the pointer is `Unread`.
 const POINTER_READ_MS: u64 = 2_000;
+/// When a new box's first alarm comes, which opens its lease and draft (A3 step 6, "at once").
+const OPEN_AFTER: Duration = Duration::from_secs(1);
 /// A cached token is reminted this long before it expires.
 const TOKEN_SLACK_MS: u64 = 300_000;
 /// A task's model budget until the controller's settings hold the org's [guess]; the wall is the design's 60 minutes.
@@ -419,6 +423,7 @@ impl TaskBox {
         self.save(&s).await?;
         self.act(&act, &s).await?;
         self.push_log().await?;
+        self.open_task().await?;
         self.report_base().await?;
         // A final box keeps its alarm until the base answered its last state and its session log's push.
         let unreported = self.load().await?.is_some_and(|s| s.b.unreported().is_some() || s.b.log_due());
@@ -461,7 +466,14 @@ impl TaskBox {
         for (k, v) in &fwd.headers {
             h.set(k, v)?;
         }
-        if let Some(auth) = self.credential(fwd.cred, &s).await? {
+        if fwd.cred == Cred::ModelKey {
+            let key = self.env.secret_store("MODEL_KEY")?.get().await?.ok_or_else(|| err("MODEL_KEY is empty"))?;
+            for (k, v) in Cred::model_headers(&key) {
+                h.set(k, &v)?;
+            }
+        } else if let Some(auth) =
+            self.credential(fwd.cred, &s).await?.map_err(|c| err(format!("access_tokens: {c}")))?
+        {
             h.set("authorization", &auth)?;
         }
         let sent = fwd.body.unwrap_or(body);
@@ -475,6 +487,17 @@ impl TaskBox {
         let answered = Fetch::Request(Request::new_with_init(&fwd.url, &init)?).send().await;
         self.pushing.set(self.pushing.get() - u32::from(push));
         let mut resp = answered?;
+        if fwd.arm == Arm::ModelInference {
+            // The model's reply passes to the Sandbox as it came; its usage is counted on the box, so a row's model
+            // spend is read from what the router forwarded (`/status`, `model`).
+            let (status, out_headers) = (resp.status_code(), resp.headers().clone());
+            let bytes = resp.bytes().await?;
+            let used = graftyard_git::outbound::ModelUsage::of(&bytes);
+            let mut s = self.load().await?.ok_or_else(|| err("the box went away"))?;
+            s.b.model.add(used);
+            self.save(&s).await?;
+            return Ok(Response::from_bytes(bytes)?.with_status(status).with_headers(out_headers));
+        }
         if !push {
             return Ok(resp);
         }
@@ -564,8 +587,17 @@ impl TaskBox {
         let host = host(&s.start.route).ok_or_else(|| err("the route names no host"))?.to_owned();
         let target = push_target(&s.start.route).ok_or_else(|| err("the route names no push target"))?;
         let url = format!("https://{host}/{target}.git/git-receive-pack");
-        let auth =
-            self.credential(Cred::Workspace(Scheme::Basic), &s).await?.ok_or_else(|| err("no workspace token"))?;
+        let auth = match self.credential(Cred::Workspace(Scheme::Basic), &s).await? {
+            Ok(a) => a.ok_or_else(|| err("no workspace token"))?,
+            Err(code) => {
+                let Some(mut s) = self.load().await? else { return Ok(()) };
+                s.b.unminted(None, code);
+                if !s.b.log_due() {
+                    self.state.storage().delete("log").await?;
+                }
+                return self.save(&s).await;
+            }
+        };
         let h = Headers::new();
         h.set("authorization", &auth)?;
         h.set("content-type", "application/x-git-receive-pack-request")?;
@@ -593,14 +625,12 @@ impl TaskBox {
         self.save(&s).await
     }
 
-    /// The `Authorization` value for `cred`, minting the task's installation token when none is cached.
-    async fn credential(&self, cred: Cred, s: &Stored) -> Result<Option<String>> {
+    /// The `Authorization` value for an installation token's `cred`, minting the task's token when none is cached. The
+    /// model key is no `Authorization` value (`Cred::model_headers`), and neither it nor `None` gets one. `Err(status)`
+    /// is the base's answer to a mint it refused, as for a task it no longer reads live (F145).
+    async fn credential(&self, cred: Cred, s: &Stored) -> Result<std::result::Result<Option<String>, u16>> {
         let (scheme, app, inst) = match cred {
-            Cred::None => return Ok(None),
-            Cred::ModelKey => {
-                let key = self.env.secret_store("MODEL_KEY")?.get().await?.ok_or_else(|| err("MODEL_KEY is empty"))?;
-                return Ok(Some(format!("Bearer {key}")));
-            }
+            Cred::None | Cred::ModelKey => return Ok(Ok(None)),
             Cred::Agent(sc) => (sc, "AGENT", &s.start.agent),
             Cred::Workspace(sc) => (sc, "WORKSPACE", &s.start.workspace),
         };
@@ -610,19 +640,165 @@ impl TaskBox {
         let token = match cached {
             Some(t) => t,
             None => {
-                let (t, exp) = self.mint(app, inst, &s.b.task.id, &s.start.route).await?;
+                let (t, exp) = match self.mint(app, inst, &s.b.task.id, &s.start.route).await? {
+                    Ok(t) => t,
+                    Err(code) => return Ok(Err(code)),
+                };
                 let mut tokens = self.tokens.borrow_mut();
                 tokens.retain(|t| t.0 != cred);
                 tokens.push((cred, t.clone(), exp));
                 t
             }
         };
-        Ok(Some(match scheme {
+        Ok(Ok(Some(match scheme {
             Scheme::Bearer => format!("Bearer {token}"),
             Scheme::Basic => {
                 format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}")))
             }
-        }))
+        })))
+    }
+
+    /// A JSON request to the install under `auth`, with `extra` headers: its status and body (`Null` when not JSON).
+    async fn call(
+        &self,
+        method: Method,
+        url: &str,
+        auth: &str,
+        body: Option<&Value>,
+        extra: &[(&str, &str)],
+    ) -> Result<(u16, Value)> {
+        let h = Headers::new();
+        h.set("authorization", auth)?;
+        h.set("accept", "application/vnd.github+json")?;
+        h.set("user-agent", "graft-controller")?;
+        for (k, v) in extra {
+            h.set(k, v)?;
+        }
+        if body.is_some() {
+            h.set("content-type", "application/json")?;
+        }
+        let mut init = RequestInit::new();
+        init.with_method(method).with_headers(h);
+        if let Some(b) = body {
+            init.with_body(Some(b.to_string().into()));
+        }
+        let mut r = Fetch::Request(Request::new_with_init(url, &init)?).send().await?;
+        Ok((r.status_code(), r.json().await.unwrap_or(Value::Null)))
+    }
+
+    /// A3 step 6, at task start and at each alarm until done (`tb::TaskBox::open_due`): the task's Shared lease on
+    /// `**` for an hour, the task's 60-minute cap, since no planner names its paths yet (DECISIONS \"`a3-open`\"), and
+    /// its draft pull request, opened at once from an empty commit on the base's default branch. The lease and the
+    /// push go under `graftyard-workspace`'s token, which can push; the draft goes over GraphQL `createPullRequest`
+    /// under `graftyard-agent`'s token, the task's App, with the `graftyard_task` claim and `X-Graftyard-Agent-Session`,
+    /// so `PrOpened` records `AgentMeta` naming the task. The task's final state releases the lease. A failed step is
+    /// logged and tried at the next alarm, up to `OPEN_TRIES`; it never fails the task.
+    async fn open_task(&self) -> Result<()> {
+        let Some(s) = self.load().await? else { return Ok(()) };
+        if !s.b.open_due() {
+            return Ok(());
+        }
+        let id = s.b.task.id.clone();
+        let host = host(&s.start.route).ok_or_else(|| err("the route names no host"))?.to_owned();
+        let (o, n) = (s.b.task.base.owner.as_str().to_owned(), s.b.task.base.name.as_str().to_owned());
+        let api = format!("https://{host}/api/v3/repos/{o}/{n}");
+        let session = id.text();
+        let ws = match self.credential(Cred::Workspace(Scheme::Bearer), &s).await? {
+            Ok(Some(a)) => a,
+            _ => return self.opened_fail(&id, "no workspace token").await,
+        };
+        let mut leased = s.b.leased;
+        if !leased {
+            let url = format!("https://{host}/api/graftyard/v1/repos/{o}/{n}/leases");
+            let body = json!({ "paths": ["**"], "mode": "shared", "ttl_seconds": TASK_WALL.as_secs(),
+                               "intent": format!("graftyard task {session}") });
+            let (code, v) =
+                self.call(Method::Post, &url, &ws, Some(&body), &[("x-graftyard-agent-session", &session)]).await?;
+            console_log!("graft-controller: task {session} lease: {code} {}", v["id"]);
+            leased = (200..300).contains(&code);
+        }
+        let draft = if s.b.draft.is_some() { None } else { self.draft(&s, &host, &api, &ws).await? };
+        let Some(mut s) = self.load().await? else { return Ok(()) };
+        s.b.opened(leased, draft);
+        self.save(&s).await
+    }
+
+    async fn opened_fail(&self, id: &SessionId, why: &str) -> Result<()> {
+        console_log!("graft-controller: task {} open: {why}", id.text());
+        let Some(mut s) = self.load().await? else { return Ok(()) };
+        s.b.opened(false, None);
+        self.save(&s).await
+    }
+
+    /// The draft: the base's default branch and its tree over REST, the empty commit pushed as the task's work branch
+    /// (`tb::draft_push`), then `createPullRequest`. `None` when a step failed, logged.
+    async fn draft(&self, s: &Stored, host: &str, api: &str, ws: &str) -> Result<Option<IssueNumber>> {
+        let session = s.b.task.id.text();
+        let (code, repo) = self.call(Method::Get, api, ws, None, &[]).await?;
+        let (Some(branch), Some(node)) = (repo["default_branch"].as_str(), repo["node_id"].as_str()) else {
+            console_log!("graft-controller: task {session} draft: repository {code}");
+            return Ok(None);
+        };
+        let (code, c) = self.call(Method::Get, &format!("{api}/commits/{branch}"), ws, None, &[]).await?;
+        let parent = c["sha"].as_str().and_then(|x| ObjectId::parse_hex(x.as_bytes()));
+        let tree = c["commit"]["tree"]["sha"].as_str().and_then(|x| ObjectId::parse_hex(x.as_bytes()));
+        let (Some(parent), Some(tree)) = (parent, tree) else {
+            console_log!("graft-controller: task {session} draft: base commit {code}");
+            return Ok(None);
+        };
+        // The push creates the work branch; a retry after an earlier try's push landed is refused as existing, and the
+        // pull request then opens from the branch as it stands, so a refused push still goes on to `createPullRequest`,
+        // which fails on its own if the branch is missing.
+        let work = tb::work_branch(&s.b.task.id);
+        let short = work.trim_start_matches("refs/heads/").to_owned();
+        let target = push_target(&s.start.route).ok_or_else(|| err("the route names no push target"))?;
+        let email = format!("graftyard-workspace[bot]@users.noreply.{host}");
+        let who =
+            graftyard_git::init::Signature { name: "graftyard-workspace[bot]", email: &email, at: Timestamp(now_ms()) };
+        let base = format!("https://{host}/{}/{}", s.b.task.base.owner.as_str(), s.b.task.base.name.as_str());
+        let (commit, body) = tb::draft_push(&s.b.task.id, parent, tree, &base, &who);
+        let basic = match self.credential(Cred::Workspace(Scheme::Basic), s).await? {
+            Ok(Some(a)) => a,
+            _ => return Ok(None),
+        };
+        let h = Headers::new();
+        h.set("authorization", &basic)?;
+        h.set("content-type", "application/x-git-receive-pack-request")?;
+        h.set("accept", "application/x-git-receive-pack-result")?;
+        h.set("user-agent", "git/2.56.0 graft-controller")?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post)
+            .with_headers(h)
+            .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
+        let url = format!("https://{host}/{target}.git/git-receive-pack");
+        let mut r = Fetch::Request(Request::new_with_init(&url, &init)?).send().await?;
+        let answer = r.bytes().await.unwrap_or_default();
+        let refs = graftyard_git::agent::RefPattern::parse(&work).map_err(err)?;
+        let ok = acked_pushes(&body, &answer, &refs).iter().any(|(_, h)| *h == commit);
+        console_log!("graft-controller: task {session} draft push {}: {} ok {ok}", commit.hex(), r.status_code());
+        let agent = match self.credential(Cred::Agent(Scheme::Bearer), s).await? {
+            Ok(Some(a)) => a,
+            _ => return Ok(None),
+        };
+        let title = match s.b.task.issue.as_ref() {
+            Some(i) => format!("Graftyard task for #{}", i.number.0),
+            None => format!("Graftyard task {session}"),
+        };
+        let origin = format!("https://{host}/{}/{}", s.b.task.base.owner.as_str(), s.b.task.base.name.as_str());
+        let body = format!(
+            "Draft opened by graftyard-agent for task {session}. Session: {origin}/_graftyard/sessions/{session}"
+        );
+        let q = json!({
+            "query": "mutation($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { number } } }",
+            "variables": { "input": { "repositoryId": node, "baseRefName": branch, "headRefName": short,
+                                      "title": title, "body": body, "draft": true } },
+        });
+        let url = format!("https://{host}/api/graphql");
+        let (code, v) =
+            self.call(Method::Post, &url, &agent, Some(&q), &[("x-graftyard-agent-session", &session)]).await?;
+        let n = v["data"]["createPullRequest"]["pullRequest"]["number"].as_u64().and_then(|n| u32::try_from(n).ok());
+        console_log!("graft-controller: task {session} draft: {code} {n:?} {}", v["errors"][0]["message"]);
+        Ok(n.map(IssueNumber))
     }
 
     /// Sends the base's task the state the box reached, if the base has not answered it (`tb::TaskBox::unreported`,
@@ -635,16 +811,23 @@ impl TaskBox {
         let host = host(&s.start.route).ok_or_else(|| err("the route names no host"))?.to_owned();
         let (o, n) = (s.b.task.base.owner.as_str(), s.b.task.base.name.as_str());
         let url = format!("https://{host}/api/graftyard/v1/repos/{o}/{n}/tasks/{}", s.b.task.id.text());
-        let auth = self.credential(Cred::Agent(Scheme::Bearer), &s).await?.ok_or_else(|| err("no agent token"))?;
+        let auth = match self.credential(Cred::Agent(Scheme::Bearer), &s).await? {
+            Ok(a) => a.ok_or_else(|| err("no agent token"))?,
+            Err(code) => {
+                let Some(mut s) = self.load().await? else { return Ok(()) };
+                s.b.unminted(Some(state), code);
+                return self.save(&s).await;
+            }
+        };
         let h = Headers::new();
         h.set("authorization", &auth)?;
         h.set("accept", "application/vnd.github+json")?;
         h.set("content-type", "application/json")?;
         h.set("user-agent", "graft-controller")?;
         let mut init = RequestInit::new();
-        init.with_method(Method::Patch)
-            .with_headers(h)
-            .with_body(Some(json!({ "state": state.as_str() }).to_string().into()));
+        init.with_method(Method::Patch).with_headers(h).with_body(Some(
+            json!({ "state": state.as_str(), "pr_number": s.b.draft.map(|n| n.0) }).to_string().into(),
+        ));
         let status = match Fetch::Request(Request::new_with_init(&url, &init)?).send().await {
             Ok(r) => r.status_code(),
             Err(e) => {
@@ -658,8 +841,15 @@ impl TaskBox {
         self.save(&s).await
     }
 
-    /// One installation token of `app` (`AGENT` or `WORKSPACE`) for `inst.repo`, claimed for the task.
-    async fn mint(&self, app: &str, inst: &Inst, task: &SessionId, route: &Route) -> Result<(String, u64)> {
+    /// One installation token of `app` (`AGENT` or `WORKSPACE`) for `inst.repo`, claimed for the task, or the base's
+    /// 4xx refusing it.
+    async fn mint(
+        &self,
+        app: &str,
+        inst: &Inst,
+        task: &SessionId,
+        route: &Route,
+    ) -> Result<std::result::Result<(String, u64), u16>> {
         let jwt = app_jwt(&self.env, app).await?;
         let host = host(route).ok_or_else(|| err("the route names no host"))?;
         let h = Headers::new();
@@ -674,7 +864,11 @@ impl TaskBox {
         let mut r = Fetch::Request(Request::new_with_init(&url, &init)?).send().await?;
         let v: Value = r.json().await.unwrap_or(Value::Null);
         match (r.status_code(), v["token"].as_str()) {
-            (201, Some(t)) => Ok((t.to_string(), now_ms() + 3_600_000)),
+            (201, Some(t)) => Ok(Ok((t.to_string(), now_ms() + 3_600_000))),
+            (code @ 400..500, _) => {
+                console_log!("graft-controller: task {} {app} access_tokens: {code} {}", task.text(), v["message"]);
+                Ok(Err(code))
+            }
             (code, _) => Err(err(format!("{app} access_tokens: {code} {}", v["message"]))),
         }
     }
@@ -701,7 +895,9 @@ impl DurableObject for TaskBox {
                 let s = Stored { b, start };
                 self.save(&s).await?;
                 self.act(&act, &s).await?;
-                self.state.storage().set_alarm(HEARTBEAT).await?;
+                // The first alarm comes at once and opens the lease and the draft (`open_task`), outside this
+                // delivery's attempt deadline.
+                self.state.storage().set_alarm(OPEN_AFTER).await?;
                 self.report_base().await?;
                 reply(201, json!({ "state": s.b.task.state }))
             }

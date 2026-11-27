@@ -51,7 +51,7 @@ A=${CLOUDFLARE_ACCOUNT_ID:?}
 BOAT=lifeboat.bm6.test; LP=8446; BP=8794; AP=8795; GP=8796
 EDGE=${EDGE:-https://graft-m6a-edge.${CF_WORKERS_SUBDOMAIN:?}.workers.dev}; EDGE_HOST=${EDGE#https://}
 R2_HOST=$A.r2.cloudflarestorage.com
-WD=$PWD/tests/m0/node_modules/.bin/workerd
+WD=${WORKERD_BIN:-$PWD/tests/m0/node_modules/.bin/workerd}
 api() { curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4$1" "${@:2}"; }
 scrub() { sed -e "s/$A/<cf-account-id>/g" -e "s/${CF_WORKERS_SUBDOMAIN:?}/<sub>/g" -e "s#$HOME/#~/#g" -e "s#$PWD/#<checkout>/#g"; }
 N=$(ls "$O" | grep -c "^$STEP\(-[0-9]*\)\?\.log$" || true)
@@ -71,9 +71,15 @@ gitc() { local tok=$1; shift
 hosts() {
   if [ "$2" = on ]; then grep -q " $1 # bm6lb\$" /etc/hosts || printf '127.0.0.1 %s # bm6lb\n::1 %s # bm6lb\n' "$1" "$1" | sudo -n tee -a /etc/hosts >/dev/null
   else sudo -n sed -i "/ $1 # bm6lb\$/d" /etc/hosts; fi
+  # systemd-resolved reloads /etc/hosts a moment after it changes: wait until the name resolves as asked.
+  for _ in $(seq 30); do
+    local lo; lo=$(getent ahosts "$1" | awk '$1 == "127.0.0.1" || $1 == "::1"' | wc -l)
+    { [ "$2" = on ] && [ "$lo" -gt 0 ]; } || { [ "$2" = off ] && [ "$lo" = 0 ]; } && break; sleep 1
+  done
   echo "$1 now resolves to $(getent ahosts "$1" | awk '{print $1}' | sort -u | tr '\n' ' ')"
 }
-boat_host() { grep -q " $BOAT # bm6lb" /etc/hosts || echo "127.0.0.1 $BOAT # bm6lb" | sudo -n tee -a /etc/hosts >/dev/null; }
+boat_host() { grep -q " $BOAT # bm6lb" /etc/hosts || echo "127.0.0.1 $BOAT # bm6lb" | sudo -n tee -a /etc/hosts >/dev/null
+  for _ in $(seq 30); do getent ahosts "$BOAT" | grep -q . && break; sleep 1; done; }
 net_id() { jq -r .id "$K/repo.json"; }
 # refs_of <dir>: a clone's branch refs as "<oid> refs/heads/<b>", sorted by name.
 refs_of() { git -C "$1" for-each-ref --format='%(objectname) %(refname)' refs/remotes/origin |

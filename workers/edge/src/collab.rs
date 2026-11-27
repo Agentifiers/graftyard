@@ -20,7 +20,6 @@
 //! `Inbox` is not built), so `/user/repository_invitations` takes `?repo=o/r` and lists that repository's
 //! invitations for the caller [inference]; without it the list is empty.
 
-use graftyard_api::hosted::What;
 use graftyard_git::issue_ops::IssueOp;
 use graftyard_git::tiers::get_rec;
 use graftyard_identity::{
@@ -33,7 +32,7 @@ use serde_json::{Value, json};
 use worker::*;
 
 use crate::Ctx;
-use crate::api::{Read, commit_issue};
+use crate::api::{Read, commit_deleted};
 use crate::ident::{account_of, commit_owner, refused, user_json};
 
 fn perm_name(p: RepoPermission) -> &'static str {
@@ -245,6 +244,12 @@ pub async fn repo_route(
         let perm = who.and_then(|a| if a == rd.repo.owner { Some(RepoPermission::Admin) } else { permission(rd, a) });
         return Ok(Some(graftyard_api::rest::check_assignee(&rd.view(&host), n, perm)));
     }
+    // F137: whether a login could be assigned to the repository's issues, by the same rule.
+    if let (Method::Get, ["assignees", login]) = (&method, tail) {
+        let who = crate::account_of(c, &graftyard_api::rest::unpercent(login)).await.ok().flatten();
+        let perm = who.and_then(|a| if a == rd.repo.owner { Some(RepoPermission::Admin) } else { permission(rd, a) });
+        return Ok(Some(graftyard_api::rest::check_repo_assignee(perm)));
+    }
     if !matches!(tail.first(), Some(&"collaborators" | &"invitations")) {
         return Ok(None);
     }
@@ -311,8 +316,8 @@ pub async fn repo_route(
                 // GHES 3.22: "an existing collaborator is added as a collaborator" answers 204.
                 return Ok(Some(Reply::empty(204)));
             }
-            let r = commit_issue(c, rd, &who, IssueOp::InviteCollaborator { user: a, permission: p }, What::Deleted)
-                .await?;
+            let op = IssueOp::InviteCollaborator { user: a, permission: p };
+            let r = commit_deleted(c, rd, &who, op, &format!("{doc}#add-a-repository-collaborator")).await?;
             // An org member's write is refused by its leader (`OrgMember`), rendered as 422 here.
             if r.status == 422 {
                 Reply::json(
@@ -332,7 +337,8 @@ pub async fn repo_route(
                 // Not an outside collaborator: nothing on this chain to remove (an org member's grant is the org's).
                 return Ok(Some(Reply::empty(204)));
             }
-            commit_issue(c, rd, &who, IssueOp::RemoveCollaborator { user: a }, What::Deleted).await?
+            let op = IssueOp::RemoveCollaborator { user: a };
+            commit_deleted(c, rd, &who, op, &format!("{doc}#remove-a-repository-collaborator")).await?
         }
         (Method::Get, ["invitations"]) => {
             if permission(rd, me) < Some(RepoPermission::Admin) {
@@ -349,7 +355,8 @@ pub async fn repo_route(
                     "withdrawing an invitation needs record format 32.11, which FormatsEnable has not enabled",
                 )));
             }
-            commit_issue(c, rd, &who, IssueOp::CancelInvitation { id: InvitationId(DbId(id)) }, What::Deleted).await?
+            let op = IssueOp::CancelInvitation { id: InvitationId(DbId(id)) };
+            commit_deleted(c, rd, &who, op, "rest/collaborators/invitations#delete-a-repository-invitation").await?
         }
         _ => return Ok(None),
     };
@@ -400,8 +407,10 @@ pub async fn user_invitation(c: &Ctx<'_>, req: &mut Request, id: Option<&str>) -
             Reply::json(200, Value::Array(mine.iter().map(|(i, r)| invitation_json(c, &rd, *i, r, &logins)).collect()))
         }
         (m @ (Method::Patch | Method::Delete), Some(i)) => {
-            let op = IssueOp::AnswerInvitation { id: InvitationId(DbId(i)), accept: m == Method::Patch };
-            commit_issue(c, &rd, &who, op, What::Deleted).await?
+            let accept = m == Method::Patch;
+            let op = IssueOp::AnswerInvitation { id: InvitationId(DbId(i)), accept };
+            let doc = if accept { "accept-a-repository-invitation" } else { "decline-a-repository-invitation" };
+            commit_deleted(c, &rd, &who, op, &format!("rest/collaborators/invitations#{doc}")).await?
         }
         _ => Reply::not_found(),
     })

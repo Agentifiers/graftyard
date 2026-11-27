@@ -73,6 +73,25 @@ if (step === "install") {
     });
     return { status: r.status, body: await r.json().catch(() => null) };
   };
+  // The real-harness case's model stop (REAL=1, `tests/am3/results/lm3-kill-real.md`): every task box's `model`, the
+  // usage of each model reply the router forwarded, priced at Sonnet's list price per million tokens ($3 input, $15
+  // output, $3.75 cache write, $0.30 cache read). Read after every poll that reads a box; past MODEL_STOP_USD every
+  // task is cancelled and the row stops with a `stop` row, which teardown follows.
+  const MODEL_STOP_USD = Number(process.env.MODEL_STOP_USD ?? 25);
+  const spent = new Map();
+  const usd = (m) => m ? (m.input * 3 + m.output * 15 + m.cache_write * 3.75 + m.cache_read * 0.3) / 1e6 : 0;
+  const spend = () => [...spent.values()].reduce((a, b) => a + b, 0);
+  const metered = async (task, what, body) => {
+    const r = await box(task, what, body);
+    if (r.body?.box?.model) spent.set(task, usd(r.body.box.model));
+    if (process.env.REAL && spend() >= MODEL_STOP_USD) {
+      ev({ stop: `model spend $${spend().toFixed(2)} reached the $${MODEL_STOP_USD} stop`, model_usd: spend() });
+      for (const t of tasks) await api("POST", `/api/graftyard/v1/repos/m3org/${name}/tasks/${t.id}/cancel`, admin, {});
+      writeFileSync(`${out}/${step === "smoke" ? "smoke" : "tasks"}.json`, JSON.stringify({ tasks, model_usd: spend() }, null, 2));
+      process.exit(3);
+    }
+    return r;
+  };
   // Ten tasks; kill points spread so each kind lands at least once and the rest at random.
   const kinds = ["before", "between", "during"];
   const plan = Array.from({ length: COUNT }, (_, i) => kinds[i] ?? kinds[Math.floor(Math.random() * 3)]);
@@ -86,7 +105,7 @@ if (step === "install") {
   // Each box must start: the delivery reaches the controller through the install's App webhook.
   for (const t of tasks) {
     for (let k = 0; k < 60; k++) {
-      const s = await box(t.id, "status");
+      const s = await metered(t.id, "status");
       if (s.body?.box?.task?.state?.Running) { t.first = s.body.box.task.state.Running.sandbox; break; }
       await sleep(5000);
     }
@@ -97,7 +116,7 @@ if (step === "install") {
   await Promise.all(tasks.filter((t) => t.first).map(async (t) => {
     const deadline = Date.now() + 15 * 60_000;
     while (Date.now() < deadline && !t.kill) {
-      const s = await box(t.id, "status");
+      const s = await metered(t.id, "status");
       const run = s.body?.box?.task?.state?.Running;
       const pushed = !!run?.last_push;
       const pushing = s.body?.pushing > 0;
@@ -113,7 +132,7 @@ if (step === "install") {
         // once the box's alarm restarted the task under a new SandboxId: before it, the killed Sandbox is still the
         // task's, and its replayed `Finished` would be taken (r1's driver fault, `tests/am3/results/lm3-kill.md`).
         for (let k = 0; k < 40; k++) {
-          const s = await box(t.id, "status");
+          const s = await metered(t.id, "status");
           const now = s.body?.box?.task?.state?.Running?.sandbox;
           if (now && now !== run.sandbox) { t.restarted = { sandbox: now, from_ms: Date.now() }; break; }
           await sleep(3000);
@@ -133,7 +152,7 @@ if (step === "install") {
   const until = Date.now() + 25 * 60_000;
   for (const t of tasks) {
     while (Date.now() < until) {
-      const s = await box(t.id, "status");
+      const s = await metered(t.id, "status");
       const b = s.body?.box;
       if (b?.task?.state === "Done" || b?.task?.state?.Failed || b?.task?.state === "Cancelled") {
         t.end = { state: b.task.state, generation: b.generation, late: b.late, running: s.body.running };
@@ -142,8 +161,9 @@ if (step === "install") {
       t.last = { state: b?.task?.state, generation: b?.generation, late: b?.late, running: s.body?.running };
       await sleep(10_000);
     }
-    ev({ end: t.i, ...(t.end ?? { stalled: t.last }) });
+    ev({ end: t.i, ...(t.end ?? { stalled: t.last }), model_usd: spent.get(t.id) ?? 0 });
   }
+  ev({ model_usd: spend(), model_stop_usd: MODEL_STOP_USD });
   writeFileSync(`${out}/${step === "smoke" ? "smoke" : "tasks"}.json`, JSON.stringify(tasks, null, 2));
 } else {
   console.error("step: install repo row delete");

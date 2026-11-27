@@ -1,0 +1,23 @@
+2026-11-27T01:25:49Z
+d8720692a
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            BuildKit is currently disabled; enable it by removing the DOCKER_BUILDKIT=0
+            environment-variable.
+
+hold-r1: digest: sha256:4261ded5bfe2c8550f3015865bfe99c4c58b551c4c3d8e33a1dd5ad76038dbd5 size: 1184
+Pushed image: registry.cloudflare.com/<runner-account>/graft-agents-m4a-sandbox:hold-r1
+{"image":"registry.cloudflare.com/<runner-account>/graft-agents-m4a-sandbox@sha256:4261ded5bfe2c8550f3015865bfe99c4c58b551c4c3d8e33a1dd5ad76038dbd5","harness":["python3","/harness.py","graft-m4a-edge.<sub>.workers.dev","m3org/gate-r1","1","15"],"route_others":[],"agents_front":"graft-agents-m4a-front"}
+✨ Success! Uploaded secret STATUS_TOKEN
+{"script":"graft-agents-m4a-controller","created_on":"2026-11-27T01:26:38.161903Z","versions":["b667943e 100"]}
+{"label":"A","id":"01a21a9c-9460-8aab-9fc4-bd3c9fb95ddf","prefix":"refs/heads/graftyard/01a21a9c-9460-8aab-9fc4-bd3c9fb95ddf/"}
+2026-11-27T01:26:37.389Z hold hold/01a21a9c-9460-8aab-9fc4-bd3c9fb95ddf: ok
+{"label":"B","id":"01a21a9c-bf7d-8d87-8a9a-381abb8a2bd1","prefix":"refs/heads/graftyard/01a21a9c-bf7d-8d87-8a9a-381abb8a2bd1/"}
+2026-11-27T01:26:43.469Z hold hold/01a21a9c-bf7d-8d87-8a9a-381abb8a2bd1: ok
+{"label":"C","id":"01a21a9c-d731-8687-98ff-065be380f85f","prefix":"refs/heads/graftyard/01a21a9c-d731-8687-98ff-065be380f85f/"}
+2026-11-27T01:26:49.290Z hold hold/01a21a9c-d731-8687-98ff-065be380f85f: ok
+task 01a21a9c-9460-8aab-9fc4-bd3c9fb95ddf: in_progress
+task 01a21a9c-bf7d-8d87-8a9a-381abb8a2bd1: in_progress
+task 01a21a9c-d731-8687-98ff-065be380f85f: in_progress
+C's token held
+2026-11-27T01:27:20.997Z release hold/01a21a9c-d731-8687-98ff-065be380f85f: ok
+2026-11-27T01:27:54.985Z complete 01a21a9c-d731-8687-98ff-065be380f85f: completed

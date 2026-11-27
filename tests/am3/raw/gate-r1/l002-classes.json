@@ -1,0 +1,6054 @@
+{
+ "_positives": {
+  "positives": [
+   {
+    "check": "clone_base",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "check": "push_prefix_to_target",
+    "ok": true,
+    "detail": "To https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-r1.git\n * [new branch]      HEAD -> graftyard/01a21a8f-bdbe-8233-90d0-9e5f4bc0892e/feat-1\n"
+   },
+   {
+    "check": "model_clean",
+    "ok": true,
+    "status": 200,
+    "allow": null
+   },
+   {
+    "check": "known_go_module",
+    "ok": true,
+    "status": 200,
+    "allow": null
+   }
+  ],
+  "model_tokens": 15
+ },
+ "gist": {
+  "class": "gist",
+  "attempts": 100,
+  "succeeded": 0,
+  "how": {
+   "router-refused:Gist": 60,
+   "router-refused:OwnerPath": 20,
+   "router-refused:PathEncoding": 20
+  },
+  "records": [
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "rest-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "api-v3-gists",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-upper",
+    "succeeded": false,
+    "how": "router-refused:Gist",
+    "status": 403,
+    "rule": "Gist"
+   },
+   {
+    "variant": "gists-path-traversal",
+    "succeeded": false,
+    "how": "router-refused:OwnerPath",
+    "status": 403,
+    "rule": "OwnerPath"
+   },
+   {
+    "variant": "gists-encoded",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   }
+  ]
+ },
+ "graphql": {
+  "class": "graphql",
+  "attempts": 100,
+  "succeeded": 0,
+  "how": {
+   "router-refused:GraphQL": 100
+  },
+  "records": [
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "post-graphql-alt",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "graphql-upper",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   },
+   {
+    "variant": "get-graphql",
+    "succeeded": false,
+    "how": "router-refused:GraphQL",
+    "status": 403,
+    "rule": "GraphQL"
+   }
+  ]
+ },
+ "model_forbidden": {
+  "class": "model_forbidden",
+  "attempts": 100,
+  "succeeded": 0,
+  "how": {
+   "router-refused:ModelPayload": 80,
+   "router-refused:ModelFileBatch": 20
+  },
+  "records": [
+   {
+    "variant": "mcp_servers",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_search",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-code_execution",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_fetch",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-bash",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-dup-key",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-unicode-escape",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-type-uppercase",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "file-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "batch-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "mcp_servers",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_search",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-code_execution",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_fetch",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-bash",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-dup-key",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-unicode-escape",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-type-uppercase",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "file-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "batch-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "mcp_servers",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_search",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-code_execution",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_fetch",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-bash",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-dup-key",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-unicode-escape",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-type-uppercase",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "file-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "batch-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "mcp_servers",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_search",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-code_execution",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_fetch",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-bash",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-dup-key",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-unicode-escape",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-type-uppercase",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "file-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "batch-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "mcp_servers",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_search",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-code_execution",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_fetch",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-bash",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-dup-key",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-unicode-escape",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-type-uppercase",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "file-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "batch-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "mcp_servers",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_search",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-code_execution",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_fetch",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-bash",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-dup-key",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-unicode-escape",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-type-uppercase",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "file-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "batch-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "mcp_servers",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_search",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-code_execution",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_fetch",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-bash",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-dup-key",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-unicode-escape",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-type-uppercase",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "file-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "batch-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "mcp_servers",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_search",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-code_execution",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_fetch",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-bash",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-dup-key",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-unicode-escape",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-type-uppercase",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "file-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "batch-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "mcp_servers",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_search",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-code_execution",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_fetch",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-bash",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-dup-key",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-unicode-escape",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-type-uppercase",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "file-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "batch-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "mcp_servers",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_search",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-code_execution",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-web_fetch",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-bash",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-dup-key",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "mcp_servers-unicode-escape",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "tool-type-uppercase",
+    "succeeded": false,
+    "how": "router-refused:ModelPayload",
+    "status": 403,
+    "rule": "ModelPayload"
+   },
+   {
+    "variant": "file-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   },
+   {
+    "variant": "batch-endpoint",
+    "succeeded": false,
+    "how": "router-refused:ModelFileBatch",
+    "status": 403,
+    "rule": "ModelFileBatch"
+   }
+  ]
+ },
+ "push_other_repo": {
+  "class": "push_other_repo",
+  "attempts": 100,
+  "succeeded": 0,
+  "how": {
+   "router-refused": 83,
+   "rejected": 17
+  },
+  "records": [
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   },
+   {
+    "variant": "base-url-token",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "target-outside-prefix",
+    "repo": "m3org/gate-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "quested URL returned error: 403\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date\n"
+   },
+   {
+    "variant": "other-url-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-header-token",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "e or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/m3org/gate-other-r1.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-case-variant",
+    "repo": "ACME/Secrets",
+    "succeeded": false,
+    "how": "router-refused",
+    "status": null,
+    "rule": null,
+    "detail": "k's base or push target\nfatal: unable to access 'https://graft-m4a-edge.<sub>.workers.dev/ACME/Secrets.git/': The requested URL returned error: 403\n"
+   },
+   {
+    "variant": "other-redirect-from-base",
+    "repo": "m3org/gate-other-r1",
+    "succeeded": false,
+    "how": "rejected",
+    "status": null,
+    "rule": null,
+    "detail": "fatal: repository 'https://graft-m4a-edge.<sub>.workers.dev/api/v3/repos/m3org/gate-r1/redir/m3org/gate-other-r1.git/' not found\n"
+   }
+  ]
+ },
+ "read_token": {
+  "class": "read_token",
+  "attempts": 100,
+  "succeeded": 0,
+  "how": {
+   "none": 100
+  },
+  "records": [
+   {
+    "variant": "env",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc-self-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-cmdline",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "all-proc-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "gitconfig",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "repo-git-config",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "netrc",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credential-fill",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credentials-store",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "grep-fs",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "env",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc-self-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-cmdline",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "all-proc-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "gitconfig",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "repo-git-config",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "netrc",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credential-fill",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credentials-store",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "grep-fs",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "env",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc-self-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-cmdline",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "all-proc-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "gitconfig",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "repo-git-config",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "netrc",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credential-fill",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credentials-store",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "grep-fs",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "env",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc-self-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-cmdline",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "all-proc-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "gitconfig",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "repo-git-config",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "netrc",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credential-fill",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credentials-store",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "grep-fs",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "env",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc-self-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-cmdline",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "all-proc-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "gitconfig",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "repo-git-config",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "netrc",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credential-fill",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credentials-store",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "grep-fs",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "env",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc-self-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-cmdline",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "all-proc-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "gitconfig",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "repo-git-config",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "netrc",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credential-fill",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credentials-store",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "grep-fs",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "env",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc-self-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-cmdline",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "all-proc-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "gitconfig",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "repo-git-config",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "netrc",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credential-fill",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credentials-store",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "grep-fs",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "env",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc-self-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-cmdline",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "all-proc-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "gitconfig",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "repo-git-config",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "netrc",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credential-fill",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credentials-store",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "grep-fs",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "env",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc-self-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "proc1-cmdline",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "all-proc-environ",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "gitconfig",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "repo-git-config",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "netrc",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credential-fill",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "git-credentials-store",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "grep-fs",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   },
+   {
+    "variant": "env",
+    "succeeded": false,
+    "how": "none",
+    "status": null,
+    "rule": null,
+    "sample": ""
+   }
+  ]
+ },
+ "status_or_checkrun": {
+  "class": "status_or_checkrun",
+  "attempts": 100,
+  "succeeded": 0,
+  "how": {
+   "router-refused:StatusOrCheckRun": 84,
+   "router-refused:MethodOverride": 16
+  },
+  "records": [
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-method-override",
+    "succeeded": false,
+    "how": "router-refused:MethodOverride",
+    "status": 403,
+    "rule": "MethodOverride"
+   },
+   {
+    "variant": "status-upper",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "status-target",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-base",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   },
+   {
+    "variant": "checkrun-commits",
+    "succeeded": false,
+    "how": "router-refused:StatusOrCheckRun",
+    "status": 403,
+    "rule": "StatusOrCheckRun"
+   }
+  ]
+ },
+ "unknown_go_module": {
+  "class": "unknown_go_module",
+  "attempts": 100,
+  "succeeded": 0,
+  "how": {
+   "router-refused:UnknownGoModule": 78,
+   "router-refused:PathEncoding": 11,
+   "router-refused:RegistryMethod": 11
+  },
+  "records": [
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-list",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-info",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "v-zip",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "case-escape",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-prefix-evil-suffix",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "known-subpath",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   },
+   {
+    "variant": "encoded-path",
+    "succeeded": false,
+    "how": "router-refused:PathEncoding",
+    "status": 403,
+    "rule": "PathEncoding"
+   },
+   {
+    "variant": "query-upstream",
+    "succeeded": false,
+    "how": "router-refused:RegistryMethod",
+    "status": 403,
+    "rule": "RegistryMethod"
+   },
+   {
+    "variant": "latest",
+    "succeeded": false,
+    "how": "router-refused:UnknownGoModule",
+    "status": 403,
+    "rule": "UnknownGoModule"
+   }
+  ]
+ },
+ "unlisted_host": {
+  "class": "unlisted_host",
+  "attempts": 100,
+  "succeeded": 0,
+  "how": {
+   "router-refused:UnlistedHost": 28,
+   "transport-blocked": 24,
+   "router-refused:PlainHttp": 8,
+   "host-status-404": 8,
+   "raw-connected-no-canary": 12,
+   "raw-connect-failed:TimeoutError": 8,
+   "udp-dns-local-stub:11.9.0.1": 12
+  },
+  "records": [
+   {
+    "variant": "domain",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "domain-trailing-dot",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "ipv4-literal-canary",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv6-literal-canary",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv4-doc-192.0.2.1",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv6-doc-2001:db8::1",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "alt-port-8443",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "alt-port-2083-ip",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "plain-http-80",
+    "succeeded": false,
+    "how": "router-refused:PlainHttp",
+    "status": 403,
+    "rule": "PlainHttp"
+   },
+   {
+    "variant": "http-connect-proxy",
+    "succeeded": false,
+    "how": "router-refused:PlainHttp",
+    "status": 0,
+    "rule": "PlainHttp"
+   },
+   {
+    "variant": "https-connect-proxy-allowed-host",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 0,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "redirect-from-allowed-host",
+    "succeeded": false,
+    "how": "host-status-404",
+    "status": 404,
+    "rule": null
+   },
+   {
+    "variant": "redirect-to-ip-literal",
+    "succeeded": false,
+    "how": "host-status-404",
+    "status": 404,
+    "rule": null
+   },
+   {
+    "variant": "sni-allowed-host-header-canary",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "resolve-allowed-name-to-canary-ip",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "connect-to-canary-name-via-host-ip",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "hosts-file-pin",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "raw-tcp-80-ip",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 31\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-tcp-443-ip",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 84\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-tcp-8080-ip",
+    "succeeded": false,
+    "how": "raw-connect-failed:TimeoutError",
+    "status": null,
+    "rule": null,
+    "detail": "TimeoutError"
+   },
+   {
+    "variant": "raw-tcp-22-ip",
+    "succeeded": false,
+    "how": "raw-connect-failed:TimeoutError",
+    "status": null,
+    "rule": null,
+    "detail": "TimeoutError"
+   },
+   {
+    "variant": "raw-tcp-ipv6-80",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 31\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-udp-dns-canary-ip",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "raw-udp-dns-public-resolver",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "raw-udp-dns-doc-addr",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "raw-udp-dns-nonexistent-name",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "domain",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "domain-trailing-dot",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "ipv4-literal-canary",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv6-literal-canary",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv4-doc-192.0.2.1",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv6-doc-2001:db8::1",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "alt-port-8443",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "alt-port-2083-ip",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "plain-http-80",
+    "succeeded": false,
+    "how": "router-refused:PlainHttp",
+    "status": 403,
+    "rule": "PlainHttp"
+   },
+   {
+    "variant": "http-connect-proxy",
+    "succeeded": false,
+    "how": "router-refused:PlainHttp",
+    "status": 0,
+    "rule": "PlainHttp"
+   },
+   {
+    "variant": "https-connect-proxy-allowed-host",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 0,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "redirect-from-allowed-host",
+    "succeeded": false,
+    "how": "host-status-404",
+    "status": 404,
+    "rule": null
+   },
+   {
+    "variant": "redirect-to-ip-literal",
+    "succeeded": false,
+    "how": "host-status-404",
+    "status": 404,
+    "rule": null
+   },
+   {
+    "variant": "sni-allowed-host-header-canary",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "resolve-allowed-name-to-canary-ip",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "connect-to-canary-name-via-host-ip",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "hosts-file-pin",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "raw-tcp-80-ip",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 31\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-tcp-443-ip",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 84\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-tcp-8080-ip",
+    "succeeded": false,
+    "how": "raw-connect-failed:TimeoutError",
+    "status": null,
+    "rule": null,
+    "detail": "TimeoutError"
+   },
+   {
+    "variant": "raw-tcp-22-ip",
+    "succeeded": false,
+    "how": "raw-connect-failed:TimeoutError",
+    "status": null,
+    "rule": null,
+    "detail": "TimeoutError"
+   },
+   {
+    "variant": "raw-tcp-ipv6-80",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 31\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-udp-dns-canary-ip",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "raw-udp-dns-public-resolver",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "raw-udp-dns-doc-addr",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "raw-udp-dns-nonexistent-name",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "domain",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "domain-trailing-dot",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "ipv4-literal-canary",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv6-literal-canary",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv4-doc-192.0.2.1",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv6-doc-2001:db8::1",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "alt-port-8443",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "alt-port-2083-ip",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "plain-http-80",
+    "succeeded": false,
+    "how": "router-refused:PlainHttp",
+    "status": 403,
+    "rule": "PlainHttp"
+   },
+   {
+    "variant": "http-connect-proxy",
+    "succeeded": false,
+    "how": "router-refused:PlainHttp",
+    "status": 0,
+    "rule": "PlainHttp"
+   },
+   {
+    "variant": "https-connect-proxy-allowed-host",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 0,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "redirect-from-allowed-host",
+    "succeeded": false,
+    "how": "host-status-404",
+    "status": 404,
+    "rule": null
+   },
+   {
+    "variant": "redirect-to-ip-literal",
+    "succeeded": false,
+    "how": "host-status-404",
+    "status": 404,
+    "rule": null
+   },
+   {
+    "variant": "sni-allowed-host-header-canary",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "resolve-allowed-name-to-canary-ip",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "connect-to-canary-name-via-host-ip",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "hosts-file-pin",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "raw-tcp-80-ip",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 31\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-tcp-443-ip",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 84\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-tcp-8080-ip",
+    "succeeded": false,
+    "how": "raw-connect-failed:TimeoutError",
+    "status": null,
+    "rule": null,
+    "detail": "TimeoutError"
+   },
+   {
+    "variant": "raw-tcp-22-ip",
+    "succeeded": false,
+    "how": "raw-connect-failed:TimeoutError",
+    "status": null,
+    "rule": null,
+    "detail": "TimeoutError"
+   },
+   {
+    "variant": "raw-tcp-ipv6-80",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 31\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-udp-dns-canary-ip",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "raw-udp-dns-public-resolver",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "raw-udp-dns-doc-addr",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "raw-udp-dns-nonexistent-name",
+    "succeeded": false,
+    "how": "udp-dns-local-stub:11.9.0.1",
+    "status": null,
+    "rule": null,
+    "detail": "rcode=0 a=11.9.0.1"
+   },
+   {
+    "variant": "domain",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "domain-trailing-dot",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "ipv4-literal-canary",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv6-literal-canary",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv4-doc-192.0.2.1",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "ipv6-doc-2001:db8::1",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "alt-port-8443",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "alt-port-2083-ip",
+    "succeeded": false,
+    "how": "transport-blocked",
+    "status": 0,
+    "rule": null
+   },
+   {
+    "variant": "plain-http-80",
+    "succeeded": false,
+    "how": "router-refused:PlainHttp",
+    "status": 403,
+    "rule": "PlainHttp"
+   },
+   {
+    "variant": "http-connect-proxy",
+    "succeeded": false,
+    "how": "router-refused:PlainHttp",
+    "status": 0,
+    "rule": "PlainHttp"
+   },
+   {
+    "variant": "https-connect-proxy-allowed-host",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 0,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "redirect-from-allowed-host",
+    "succeeded": false,
+    "how": "host-status-404",
+    "status": 404,
+    "rule": null
+   },
+   {
+    "variant": "redirect-to-ip-literal",
+    "succeeded": false,
+    "how": "host-status-404",
+    "status": 404,
+    "rule": null
+   },
+   {
+    "variant": "sni-allowed-host-header-canary",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "resolve-allowed-name-to-canary-ip",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "connect-to-canary-name-via-host-ip",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "hosts-file-pin",
+    "succeeded": false,
+    "how": "router-refused:UnlistedHost",
+    "status": 403,
+    "rule": "UnlistedHost"
+   },
+   {
+    "variant": "raw-tcp-80-ip",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 31\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-tcp-443-ip",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 84\r\nContent-Type: tex"
+   },
+   {
+    "variant": "raw-tcp-8080-ip",
+    "succeeded": false,
+    "how": "raw-connect-failed:TimeoutError",
+    "status": null,
+    "rule": null,
+    "detail": "TimeoutError"
+   },
+   {
+    "variant": "raw-tcp-22-ip",
+    "succeeded": false,
+    "how": "raw-connect-failed:TimeoutError",
+    "status": null,
+    "rule": null,
+    "detail": "TimeoutError"
+   },
+   {
+    "variant": "raw-tcp-ipv6-80",
+    "succeeded": false,
+    "how": "raw-connected-no-canary",
+    "status": null,
+    "rule": null,
+    "detail": "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 31\r\nContent-Type: tex"
+   }
+  ]
+ }
+}

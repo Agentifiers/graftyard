@@ -1,0 +1,41 @@
+2026-11-27T00:19:03Z
+70aa964b
+spend: row $0.0, day $0.0, total $49.22 (stops $10, $20, $70)
+{"script":"graft-m6a-site-a","n":44}
+{"script":"graft-m6a-site-b","n":44}
+{"script":"graft-m6a-site-c","n":44}
+{"script":"graft-m6a-spare-wnam","n":44}
+{"script":"graft-m6a-edge","n":46}
+live FORMATS_ENABLED: 32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.26
+image graft-m6a-gitshard@sha256:452434174ce28a0ea9d2e23c74e01a964628708450ad59f32ddc67d736e8c117
+Deployed graft-m6a-site-c triggers (1.27 sec)
+Current Version ID: 9c79d65c-88ee-4531-aa2d-a19def4c1f81
+Deployed graft-m6a-spare-wnam triggers (1.89 sec)
+Current Version ID: ac34b52c-0fad-46c8-92d6-3769ffc98c99
+Deployed graft-m6a-site-a triggers (1.24 sec)
+Current Version ID: f0a0e87b-3b19-46e2-a59e-32797fd71784
+Deployed graft-m6a-site-b triggers (1.13 sec)
+Current Version ID: 75c874be-5b02-4b9c-a57c-150d5f2faa31
+Deployed graft-m6a-site-c triggers (0.96 sec)
+Current Version ID: cb8da1a2-fb2a-421c-8324-ed6bcb4d9b7c
+Deployed graft-m6a-spare-wnam triggers (1.04 sec)
+Current Version ID: 42b1d9ca-9903-4494-bc1a-1eb5e503a853
+site exit 0
+2026-11-27T00:33:32Z
+Deployed graft-m6a-edge triggers (0.35 sec)
+Current Version ID: 9e6ecf27-d574-4ba4-b534-4b77c1426494
+edge exit 0
+2026-11-27T00:34:06Z
+now FORMATS_ENABLED: 32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.26,17.5
+{"script":"graft-m6a-site-a","created_on":"2026-11-27T00:33:22.692538Z","versions":["f0a0e87b 100"]} crons ["*/15 * * * *"]
+{"script":"graft-m6a-site-a","n":46,"export":["EXPORT:r2_bucket","GRAFTYARD_EXPORT:plain_text"]}
+{"script":"graft-m6a-site-b","created_on":"2026-11-27T00:33:30.290258Z","versions":["75c874be 100"]} crons ["*/15 * * * *"]
+{"script":"graft-m6a-site-b","n":45,"export":["GRAFTYARD_EXPORT:plain_text"]}
+{"script":"graft-m6a-site-c","created_on":"2026-11-27T00:33:37.71247Z","versions":["cb8da1a2 100"]} crons ["*/15 * * * *"]
+{"script":"graft-m6a-site-c","n":45,"export":["GRAFTYARD_EXPORT:plain_text"]}
+{"script":"graft-m6a-spare-wnam","created_on":"2026-11-27T00:33:45.144446Z","versions":["42b1d9ca 100"]} crons ["*/15 * * * *"]
+{"script":"graft-m6a-spare-wnam","n":45,"export":["GRAFTYARD_EXPORT:plain_text"]}
+{"script":"graft-m6a-edge","created_on":"2026-11-27T00:34:21.049608Z","versions":["9e6ecf27 100"]} crons []
+{"script":"graft-m6a-edge","n":47,"export":["EXPORT:r2_bucket"]}
+{"export_bucket":true}
+2026-11-27T00:34:10Z
