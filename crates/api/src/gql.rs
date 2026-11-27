@@ -2,7 +2,7 @@
 //! the fields those documents select (`gh/*.json`); any other field is `undefinedField`.
 //!
 //! Where GitHub's data has no row in the fold, the field answers what an install that never had the feature answers:
-//! projects, milestones, issue types, sub-issues, reactions, and merge queues are later tiers or not served
+//! projects, issue types, sub-issues, reactions, and merge queues are later tiers or not served
 //! (`design/SHARED.md`, "Surfaces, tiers, and oracles": `rest:projects` T2, `rest:reactions` T1), so they are empty or
 //! null, never invented.
 
@@ -12,7 +12,7 @@ use graftyard_git::issues::{
     MergeMethod, PrState, ReviewState, StateReason, StatusState, StatusUpdate,
 };
 use graftyard_git::refs::{ObjectId, RefName};
-use graftyard_git::tiers::{CommentRow, LabelRow, ReleaseRow, ReviewRow, Timed};
+use graftyard_git::tiers::{CommentRow, LabelRow, MilestoneRow, ReleaseRow, ReviewRow, Timed};
 use graftyard_identity::RepoPermission;
 use graftyard_types::{AccountId, DbId, RepoId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -156,6 +156,69 @@ fn labels<'r>(r: &'r Repo<'r>, rows: Vec<(DbId, LabelRow)>) -> Vec<Box<dyn Obj +
     rows.into_iter().map(|(id, row)| Box::new(Label { id, repo: r.at.id, row }) as Box<dyn Obj>).collect()
 }
 
+/// A milestone (format 32.37's `milestone` row): the fields `gh issue create --milestone`, `gh issue edit
+/// --milestone`, `gh pr edit --milestone` and `gh issue view` select, and its state.
+struct Milestone<'r> {
+    r: &'r Repo<'r>,
+    n: u32,
+    row: MilestoneRow,
+}
+
+impl Obj for Milestone<'_> {
+    fn type_name(&self) -> &'static str {
+        "Milestone"
+    }
+    fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+        let m = &self.row;
+        Some(match f {
+            "id" => leaf(scoped(NodeType::Milestone, self.r, m.id.0)),
+            "number" => leaf(self.n),
+            "title" => leaf(&*m.title),
+            "description" => leaf(m.description.as_deref()),
+            "dueOn" => leaf(m.due_on.map(iso)),
+            "state" => leaf(if m.open { "OPEN" } else { "CLOSED" }),
+            "closed" => leaf(!m.open),
+            _ => return None,
+        })
+    }
+}
+
+fn milestone<'r>(r: &'r Repo<'r>, n: Option<u32>) -> Out<'r> {
+    match n.and_then(|n| Some((n, graftyard_git::tiers::milestone(r.meta, n)?))) {
+        Some((n, row)) => obj(Milestone { r, n, row }),
+        None => Out::Null,
+    }
+}
+
+/// `Repository.milestones(states:, first:, after:)`, by number, every state when `states` is omitted: what gh's
+/// `RepositoryMilestoneList` sends. `orderBy`, `query`, `last` and `before` are not served, so a document naming one is
+/// refused rather than answered in another order, unfiltered, or from the front.
+fn milestones<'r>(r: &'r Repo<'r>, a: &Args) -> Out<'r> {
+    if let Some(k) =
+        ["orderBy", "query", "last", "before"].into_iter().find(|k| a.get(*k).is_some_and(|v| !v.is_null()))
+    {
+        return Out::Err("INVALID_QUERY", format!("milestones({k}:) is not served"));
+    }
+    let states: Vec<&str> = a
+        .get("states")
+        .and_then(Value::as_array)
+        .map(|v| v.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let all: Vec<(u32, MilestoneRow)> = graftyard_git::tiers::milestones(r.meta)
+        .into_iter()
+        .filter(|(_, m)| states.is_empty() || states.contains(&if m.open { "OPEN" } else { "CLOSED" }))
+        .collect();
+    let total = all.len();
+    let start = a.get("after").and_then(Value::as_str).and_then(parse_cursor).map_or(0, |c| c as usize);
+    let n = first_or_last(a);
+    let page: Vec<(u32, MilestoneRow)> = all.into_iter().skip(start).take(n + 1).collect();
+    let more = page.len() > n;
+    let nodes: Vec<Box<dyn Obj + 'r>> =
+        page.into_iter().take(n).map(|(n, row)| Box::new(Milestone { r, n, row }) as Box<dyn Obj + 'r>).collect();
+    let end = (!nodes.is_empty()).then(|| cursor((start + nodes.len()) as i64));
+    obj(Conn { ty: "MilestoneConnection", nodes, total, more, end, extra: Vec::new() })
+}
+
 struct Branch(String);
 
 impl Obj for Branch {
@@ -239,6 +302,11 @@ impl Obj for Repository<'_> {
             "issues" => obj(list(r, IssueKind::Issue, a)),
             "pullRequests" => obj(list(r, IssueKind::PullRequest, a)),
             "labels" => obj(Conn::window("LabelConnection", labels(r, r.labels()), a)),
+            "milestones" | "milestone" if !r.dir.milestones() => return None,
+            "milestones" => milestones(r, a),
+            // A number no milestone has is `null` [inference: the schema's `milestone` is nullable, and gh's
+            // `RepositoryMilestoneByNumber` reads a nil one as no such milestone].
+            "milestone" => milestone(r, a.get("number").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok())),
             // `release(tagName:)` finds drafts too, as gh's `RepositoryReleaseByTag` relies on for a draft's id.
             "release" => {
                 let tag = a.get("tagName").and_then(Value::as_str).unwrap_or("");
@@ -421,7 +489,7 @@ impl Obj for Node<'_> {
             "createdAt" => Some(leaf(iso(it.row.created))),
             "updatedAt" => Some(leaf(iso(it.row.updated))),
             "author" => Some(account(r, it.row.author)),
-            "milestone" => Some(Out::Null),
+            "milestone" => Some(milestone(r, graftyard_git::tiers::issue_milestone(r.meta, n))),
             // A `UserConnection`: an App's bot account, which is no `User`, is left out, as GitHub lists bots only in
             // `assignedActors` [inference: the schema's `Issue.assignees` is `UserConnection!`].
             "assignees" => {

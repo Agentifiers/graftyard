@@ -543,6 +543,7 @@ pub(crate) async fn read_repo(
     }
     let picks = graftyard_api::narrow::Picks::of(rows.picks.clone());
     let mut dir = HostedDir { home: Some(at.clone()), authz, viewer: None, picks, ..HostedDir::default() };
+    dir.milestones = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_MILESTONES);
     dir.viewer = viewer.and_then(|p| match p.actor {
         Actor::User(u) => Some(u.0),
         Actor::App { .. } | Actor::Anonymous => None,

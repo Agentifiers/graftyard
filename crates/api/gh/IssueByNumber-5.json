@@ -1,0 +1,14 @@
+{
+ "commands": [
+  "issue edit 1 -R o/r -m v1.0",
+  "issue edit 1 -R o/r --remove-milestone"
+ ],
+ "operation": "IssueByNumber",
+ "query": "\n\tquery IssueByNumber($owner: String!, $repo: String!, $number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\thasIssuesEnabled\n\t\t\tissue: issueOrPullRequest(number: $number) {\n\t\t\t\t__typename\n\t\t\t\t...on Issue{id,number,title,body,url,milestone{number,title,description,dueOn}}\n\t\t\t\t...on PullRequest{id,number,title,body,url,milestone{number,title,description,dueOn}}\n\t\t\t}\n\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "number": 1,
+  "owner": "o",
+  "repo": "r"
+ }
+}

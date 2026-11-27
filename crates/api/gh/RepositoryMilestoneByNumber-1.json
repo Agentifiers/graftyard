@@ -1,0 +1,13 @@
+{
+ "commands": [
+  "issue list -R o/r -m 1"
+ ],
+ "operation": "RepositoryMilestoneByNumber",
+ "query": "query RepositoryMilestoneByNumber($name:String!$number:Int!$owner:String!){repository(owner: $owner, name: $name){milestone(number: $number){id,title}}}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "name": "r",
+  "number": 1,
+  "owner": "o"
+ }
+}

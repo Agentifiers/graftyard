@@ -299,8 +299,8 @@ fn every_captured_query_answers_without_errors() {
         ran += 1;
     }
     assert_eq!(
-        ran, 28,
-        "28 of the 32 captured documents are queries (the 3 `gh release` ones too; tests/blobs.rs runs them on releases)"
+        ran, 32,
+        "32 of the 36 captured documents are queries (the 3 `gh release` ones too; tests/blobs.rs runs them on releases)"
     );
 }
 
@@ -1762,6 +1762,136 @@ fn rest_milestones_render_as_ghes_does() {
     assert_eq!(get_milestone(&c.repo(0, &h, &dir), "1").status, 404);
     assert_eq!(get_issue(&c.repo(0, &h, &dir), "1").value()["milestone"], json!(null));
     assert_eq!(plan_delete_milestone(&c.repo(0, &h, &dir), "1").unwrap_err().status, 404);
+}
+
+/// Milestones head 2 (32.37): gh's own milestone documents (`gh/RepositoryMilestoneList-1.json`,
+/// `RepositoryMilestoneByNumber-1.json`, `IssueByNumber-5.json`, `PullRequestByNumber-5.json`) read the rows REST
+/// writes; `Repository.milestones` and `milestone` are `undefinedField` until 32.37 is enabled; and an App with only
+/// `pull_requests: write` creates and deletes a milestone, as GHES 3.22's App permissions page lists those routes
+/// under "Pull requests" as well as "Issues".
+#[test]
+fn graphql_milestones_read_what_rest_wrote_and_a_pull_requests_app_writes_them() {
+    use graftyard_api::hosted::HostedDir;
+    use graftyard_api::rest::{plan_create_milestone, plan_delete_milestone};
+    use graftyard_identity::Access::{Read, Write};
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    for t in ["v1.0", "v2.0", "v3.0"] {
+        c.commit(WRITER, plan_create_milestone(&json!({ "title": t, "due_on": "2026-12-01T00:00:00Z" })).unwrap())
+            .unwrap();
+    }
+    c.commit(WRITER, plan_create_milestone(&json!({ "title": "old", "state": "closed" })).unwrap()).unwrap();
+    // Issue 1 in milestone 2 and the pull request in milestone 3, so a reply that reads another row differs.
+    c.commit(WRITER, IssueOp::SetMilestone { n: IssueNumber(1), milestone: Some(2) }).unwrap();
+    c.commit(WRITER, IssueOp::SetMilestone { n: IssueNumber(2), milestone: Some(3) }).unwrap();
+    let r = c.repo(0, &h, &dir);
+
+    let d = doc("RepositoryMilestoneList-1");
+    let v = ask(&r, &d, d.variables.clone());
+    assert!(v.get("errors").is_none(), "{v}");
+    let open = &v["data"]["repository"]["milestones"];
+    let titles: Vec<&Value> = open["nodes"].as_array().unwrap().iter().map(|m| &m["title"]).collect();
+    assert_eq!(titles, vec!["v1.0", "v2.0", "v3.0"], "OPEN only, by number");
+    assert_eq!(open["pageInfo"]["hasNextPage"], json!(false));
+    keep("milestones-open", &d, &d.variables, &v);
+    let id = open["nodes"][1]["id"].as_str().unwrap();
+    assert!(id.starts_with("MI_"), "{id}");
+    // `states` both ways, a page of one, and the page after it.
+    let list = |args: &str| {
+        let q = format!(
+            "{{ repository(owner: \"o\", name: \"r\") {{ milestones({args}) {{ totalCount nodes {{ number state closed }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
+        );
+        query(&Request::parse(&q, None, None).unwrap(), Some(&r))["data"]["repository"]["milestones"].clone()
+    };
+    let numbers = |m: &Value| -> Vec<u64> {
+        m["nodes"].as_array().unwrap().iter().map(|n| n["number"].as_u64().unwrap()).collect()
+    };
+    assert_eq!(numbers(&list("states: [CLOSED]")), vec![4]);
+    assert_eq!(list("states: [CLOSED]")["nodes"][0]["state"], json!("CLOSED"));
+    assert_eq!(numbers(&list("first: 10")), vec![1, 2, 3, 4], "no states: every state");
+    let page = list("states: [OPEN], first: 2");
+    assert_eq!(
+        (numbers(&page), page["totalCount"].clone(), page["pageInfo"]["hasNextPage"].clone()),
+        (vec![1, 2], json!(3), json!(true))
+    );
+    let after = page["pageInfo"]["endCursor"].as_str().unwrap();
+    assert_eq!(numbers(&list(&format!("states: [OPEN], first: 2, after: \"{after}\""))), vec![3]);
+    // An order or a title query gh does not send is refused, never answered in another order.
+    let refused = query(
+        &Request::parse("{ repository(owner: \"o\", name: \"r\") { milestones(orderBy: {field: DUE_DATE, direction: ASC}) { totalCount } } }", None, None)
+            .unwrap(),
+        Some(&r),
+    );
+    assert!(refused["errors"][0]["message"].as_str().unwrap().contains("orderBy"), "{refused}");
+
+    // `milestone(number:)`: gh's `issue list -m 1` resolves the number to a title; an unknown number is `null`.
+    let d = doc("RepositoryMilestoneByNumber-1");
+    let mut vars = d.variables.clone().unwrap();
+    vars.insert("number".into(), json!(3));
+    let v = ask(&r, &d, Some(vars.clone()));
+    assert_eq!(v["data"]["repository"]["milestone"]["title"], json!("v3.0"), "{v}");
+    keep("milestone-by-number", &d, &Some(vars.clone()), &v);
+    vars.insert("number".into(), json!(9));
+    let v = ask(&r, &d, Some(vars));
+    assert!(v.get("errors").is_none() && v["data"]["repository"]["milestone"].is_null(), "{v}");
+
+    // An issue's and a pull request's milestone, as `gh issue edit` and `gh pr edit` read it; issue 3 has none.
+    let d = doc("IssueByNumber-5");
+    let v = ask(&r, &d, d.variables.clone());
+    let m = &v["data"]["repository"]["issue"]["milestone"];
+    assert_eq!(
+        (m["number"].clone(), m["title"].clone(), m["dueOn"].clone()),
+        (json!(2), json!("v2.0"), json!("2026-12-01T00:00:00Z"))
+    );
+    assert_eq!(m["description"], json!(null));
+    keep("issue-milestone", &d, &d.variables, &v);
+    let d = doc("PullRequestByNumber-5");
+    let vars = with_ids(&d, &r);
+    let v = ask(&r, &d, vars.clone());
+    assert_eq!(v["data"]["repository"]["pullRequest"]["milestone"]["title"], json!("v3.0"), "{v}");
+    keep("pull-milestone", &d, &vars, &v);
+    let none = query(
+        &Request::parse(
+            "{ repository(owner: \"o\", name: \"r\") { issue(number: 3) { milestone { title } } } }",
+            None,
+            None,
+        )
+        .unwrap(),
+        Some(&r),
+    );
+    assert_eq!(none["data"]["repository"]["issue"]["milestone"], json!(null));
+
+    // Before 32.37 the edge's directory says so: the repository's milestone fields are not served at all.
+    let off = HostedDir { home: Some(dir.home()), ..Default::default() };
+    let r_off = graftyard_api::view::Repo { dir: &off, ..c.repo(0, &h, &dir) };
+    let d = doc("RepositoryMilestoneList-1");
+    let v = ask(&r_off, &d, d.variables.clone());
+    assert_eq!(v["errors"][0]["type"], json!("undefinedField"), "{v}");
+    let on = HostedDir { milestones: true, ..off.clone() };
+    let v = ask(&graftyard_api::view::Repo { dir: &on, ..c.repo(0, &h, &dir) }, &d, d.variables.clone());
+    assert!(v.get("errors").is_none(), "{v}");
+    drop(r);
+
+    // An App with only `pull_requests: write` creates and deletes a milestone, created by its bot; one with only
+    // `contents: write` is refused 403, and one with `issues: read` too.
+    let prs = c.install_app(500, &[("pull_requests", Write), ("metadata", Read)]);
+    let Ok(IssueOut::Id(_)) = c.commit_as(&prs, plan_create_milestone(&json!({ "title": "app" })).unwrap()) else {
+        panic!("a pull_requests App creates a milestone")
+    };
+    let made = graftyard_git::tiers::milestone(&c.members[0].meta, 5).unwrap();
+    assert_eq!(made.creator, Some(graftyard_identity::AppId(DbId(500)).bot()), "the App's bot created it");
+    let op = plan_delete_milestone(&c.repo(0, &h, &dir), "5").unwrap();
+    assert_eq!(c.commit_as(&prs, op), Ok(IssueOut::Done));
+    for (app, perms) in
+        [(600, [("contents", Write), ("metadata", Read)]), (700, [("issues", Read), ("pull_requests", Read)])]
+    {
+        let p = c.install_app(app, &perms);
+        assert_eq!(
+            c.commit_as(&p, plan_create_milestone(&json!({ "title": "no" })).unwrap()),
+            Err(IssueErr::Forbidden),
+            "{perms:?}"
+        );
+    }
 }
 
 /// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the

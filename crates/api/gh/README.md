@@ -35,6 +35,13 @@ M2-WP4 added `RepositoryReleaseByTag-1.json`, `RepositoryReleaseList-1.json`, an
 documents gh sent for the `gh release` commands in `../lfs/README.md`, which also lists that run's REST and LFS
 requests.
 
+The milestones package (format 32.37, 2026-11-27) added the query documents gh 2.102.1 sent for `issue create -m
+v1.0`, `issue edit 1 -m v1.0`, `issue edit 1 --remove-milestone`, `issue list -m 1`, `pr create ... -m v1.0` and `pr
+edit 2 -m v1.0`, captured the same way: `RepositoryMilestoneList-1.json`, `RepositoryMilestoneByNumber-1.json`,
+`IssueByNumber-5.json` and `PullRequestByNumber-5.json`. The same run's mutations (`IssueUpdate`, `PullRequestUpdate`,
+`PullRequestCreateMetadata` and `createIssue` with `milestoneId`) are not committed: GraphQL's milestone writes are not
+served (`decisions/DECISIONS.md`, "`milestones`").
+
 ## The oracle
 
 `decisions/DECISIONS.md`, "L0-11's oracle is the pinned GHES 3.22 descriptions and github.com", sets the oracle. These

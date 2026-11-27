@@ -1,0 +1,20 @@
+{
+ "commands": [
+  "issue create -R o/r -t T -b B -m v1.0",
+  "issue edit 1 -R o/r -m v1.0",
+  "issue edit 1 -R o/r --remove-milestone",
+  "pr create -R o/r -H f -B main -t T -b B -m v1.0",
+  "pr edit 2 -R o/r -m v1.0"
+ ],
+ "operation": "RepositoryMilestoneList",
+ "query": "query RepositoryMilestoneList($endCursor:String$name:String!$owner:String!$states:[MilestoneState!]!){repository(owner: $owner, name: $name){milestones(states: $states, first: 100, after: $endCursor){nodes{id,title},pageInfo{hasNextPage,endCursor}}}}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "endCursor": null,
+  "name": "r",
+  "owner": "o",
+  "states": [
+   "OPEN"
+  ]
+ }
+}

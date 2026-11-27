@@ -453,6 +453,10 @@ pub struct HostedDir {
     pub compares: std::cell::RefCell<Vec<((ObjectId, ObjectId), Compare)>>,
     #[serde(skip)]
     pub asked: std::cell::RefCell<Vec<(ObjectId, ObjectId)>>,
+    /// Whether the edge's install enabled 32.37 (`Directory::milestones`). Absent, and so off, until it is, so a
+    /// render's bytes are unchanged before then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub milestones: bool,
 }
 
 mod authz_hex {
@@ -525,6 +529,9 @@ impl Directory for HostedDir {
     }
     fn agent_app(&self, app: graftyard_identity::AppId) -> bool {
         self.install.as_ref().is_some_and(|a| a.agent_app(app).is_some())
+    }
+    fn milestones(&self) -> bool {
+        self.milestones
     }
     fn pick(&self, key: &str, select: &mut dyn FnMut() -> crate::view::Pick) -> crate::view::Pick {
         self.picks.get(key, select)
