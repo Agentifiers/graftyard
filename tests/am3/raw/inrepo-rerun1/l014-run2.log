@@ -1,0 +1,28 @@
+2026-11-27T08:00:45Z
+897e58164
+row since 2026-11-27T07:30:21Z: graft-m4a $0.27, graft-agents-m4a- $0.01, graft-runners $0.0, total $0.28 (stop $3.00)
+2026-11-27T08:01:24.087Z {"agentapp_user_token":true}
+2026-11-27T08:01:24.099Z {"incomplete":"an MCP token: graft-m4a runs no graft-mcp App and its edge has neither 17.4 nor 20.4, so none can be minted"}
+2026-11-27T08:01:24.099Z {"incomplete":"graftyard-insights' installation token: skipped (lead's ruling)"}
+2026-11-27T08:01:29.680Z {"agents_off":200,"enabled":false}
+2026-11-27T08:01:32.805Z {"ia":2,"ib":3,"assign_ours":201,"assign_other":201,"other_bot":"m3-ci[bot]","ib_assignees":[]}
+2026-11-27T08:01:32.805Z {"incomplete":"another bot's assignment: the edge did not assign m3-ci[bot] (201); #ib has no bot assignment"}
+2026-11-27T08:03:47.720Z {"cell":"off/installation token (m3-ci, an AgentApp)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-27T08:03:47.721Z {"check":"off: installation token (m3-ci, an AgentApp), 100 of 100 refused","ok":true}
+2026-11-27T08:06:02.448Z {"cell":"off/AgentApp's user token (m3-ci for m3-member)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-27T08:06:02.449Z {"check":"off: AgentApp's user token (m3-ci for m3-member), 100 of 100 refused","ok":true}
+2026-11-27T08:06:15.051Z {"demote":{"attempt":0,"ok":49,"ms":12601}}
+2026-11-27T08:06:26.625Z {"demote":{"attempt":1,"ok":39,"ms":11573}}
+2026-11-27T08:06:37.639Z {"demote":{"attempt":2,"ok":48,"ms":11012}}
+file://~/lmk/tests/am3/hosted/inrepo.mjs:506
+    throw new Error("driver: could not commit 72 writes within 20 s to demote m3-member");
+          ^
+
+Error: driver: could not commit 72 writes within 20 s to demote m3-member
+    at demote (file://~/lmk/tests/am3/hosted/inrepo.mjs:506:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async runCase (file://~/lmk/tests/am3/hosted/inrepo.mjs:525:103)
+    at async file://~/lmk/tests/am3/hosted/inrepo.mjs:534:102
+
+Node.js v26.12.0
+l014 exit 1

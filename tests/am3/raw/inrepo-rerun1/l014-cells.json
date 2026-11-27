@@ -1,0 +1,182 @@
+{
+ "off/installation token (m3-ci, an AgentApp)": {
+  "statuses": {
+   "422 Graftyard-run tasks are not enabled for this organization": 100
+  },
+  "off": 0
+ },
+ "off/AgentApp's user token (m3-ci for m3-member)": {
+  "statuses": {
+   "422 Graftyard-run tasks are not enabled for this organization": 100
+  },
+  "off": 0
+ },
+ "off/demoted user (m3-member past DEMOTE_PER_MIN)": {
+  "statuses": {
+   "422 Graftyard-run tasks are not enabled for this organization": 100
+  },
+  "off": 0
+ },
+ "off/read-only user (m3-reader)": {
+  "statuses": {
+   "422 Graftyard-run tasks are not enabled for this organization": 100
+  },
+  "off": 0
+ },
+ "off/user with X-Graftyard-Agent-Session (m3-admin)": {
+  "statuses": {
+   "403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ": 100
+  },
+  "off": 100
+ },
+ "off/controller from an issue assigned to another bot": {
+  "statuses": {
+   "422 Graftyard-run tasks are not enabled for this organization": 100
+  },
+  "off": 0
+ },
+ "off/controller with a prompt and no issue": {
+  "statuses": {
+   "422 Graftyard-run tasks are not enabled for this organization": 100
+  },
+  "off": 0
+ },
+ "off/human writer (m3-admin), the valid creator": {
+  "statuses": {
+   "422 Graftyard-run tasks are not enabled for this organization": 100
+  },
+  "off": 0
+ },
+ "off/controller from an issue assigned to its bot": {
+  "statuses": {
+   "422 Graftyard-run tasks are not enabled for this organization": 100
+  },
+  "off": 0
+ },
+ "on/installation token (m3-ci, an AgentApp)": {
+  "statuses": {
+   "403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ": 100
+  },
+  "off": 0
+ },
+ "on/AgentApp's user token (m3-ci for m3-member)": {
+  "statuses": {
+   "403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ": 100
+  },
+  "off": 0
+ },
+ "on/demoted user (m3-member past DEMOTE_PER_MIN)": {
+  "statuses": {
+   "403 A user with 60 writes in the last minute is classed as an agent and cannot create a Grafty": 100
+  },
+  "off": 0
+ },
+ "on/read-only user (m3-reader)": {
+  "statuses": {
+   "403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ": 100
+  },
+  "off": 0
+ },
+ "on/user with X-Graftyard-Agent-Session (m3-admin)": {
+  "statuses": {
+   "403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ": 100
+  },
+  "off": 0
+ },
+ "on/controller from an issue assigned to another bot": {
+  "statuses": {
+   "403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ": 100
+  },
+  "off": 0
+ },
+ "on/controller with a prompt and no issue": {
+  "statuses": {
+   "403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ": 100
+  },
+  "off": 0
+ },
+ "on/body sets session for a Graftyard-run task": {
+  "statuses": {
+   "422 Validation Failed": 100
+  },
+  "off": 0
+ },
+ "on/101st open task for one requester (External, m3-ci for m3-member)": {
+  "statuses": {
+   "422 The requester has too many open tasks": 100
+  },
+  "off": 0
+ },
+ "on/101st open task for one requester (Graftyard-run, m3-member)": {
+  "statuses": {
+   "422 The requester has too many open tasks": 100
+  },
+  "off": 0
+ },
+ "on/PATCH of a cancelled Graftyard-run task to in_progress (graftyard-agent)": {
+  "statuses": {
+   "409 The task is cancelled": 100
+  },
+  "off": 0
+ },
+ "on/PATCH of a cancelled External task to in_progress (m3-ci)": {
+  "statuses": {
+   "409 The task is cancelled": 100
+  },
+  "off": 0
+ },
+ "on/PATCH state cancelled (host-only) on a live task": {
+  "statuses": {
+   "422 Validation Failed": 100
+  },
+  "off": 0
+ },
+ "on/PATCH of graftyard-agent's task by another App (m3-ci)": {
+  "statuses": {
+   "403 Must be the task's App, its requester, or a repository admin": 100
+  },
+  "off": 0
+ },
+ "on/mint naming another App's task (m3-ci's JWT)": {
+  "statuses": {
+   "422 graftyard_task names a task of another App": 100
+  },
+  "off": 0
+ },
+ "on/mint with a repository outside the task's": {
+  "statuses": {
+   "422 repository \"b035-r1\" is not accessible to this installation": 100
+  },
+  "off": 0
+ },
+ "on/mint with every repository of the installation": {
+  "statuses": {
+   "422 graftyard_task needs repositories that name the task's repository": 100
+  },
+  "off": 0
+ },
+ "on/mint naming an External task": {
+  "statuses": {
+   "422 graftyard_task names a task that is not a live graftyard_run task": 100
+  },
+  "off": 0
+ },
+ "on/mint naming a cancelled task": {
+  "statuses": {
+   "422 graftyard_task names a task that is not a live graftyard_run task": 100
+  },
+  "off": 0
+ },
+ "on/mint: graftyard-workspace on the live task (control)": {
+  "statuses": {
+   "201 ": 100
+  },
+  "off": 0
+ },
+ "on/mint: graftyard-agent on the live task (control)": {
+  "statuses": {
+   "201 ": 100
+  },
+  "off": 0
+ }
+}

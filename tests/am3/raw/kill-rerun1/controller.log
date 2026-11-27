@@ -1,0 +1,8 @@
+2026-11-27T07:31:39Z
+897e58164
+Error: Command failed: npx --prefix <checkout>/tests/m0 wrangler deploy -c graft-agents-m4a-controller.jsonc
+    at genericNodeError (node:internal/errors:999:15)
+    at wrappedFn (node:internal/errors:544:14)
+    at checkExecSyncError (node:child_process:990:11)
+✨ Success! Uploaded secret STATUS_TOKEN
+{"script":"graft-agents-m4a-controller","created_on":"2026-11-27T07:33:15.857436Z","versions":["7f953deb 100"]}

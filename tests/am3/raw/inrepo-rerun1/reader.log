@@ -1,0 +1,9 @@
+2026-11-27T07:35:12Z
+897e58164
+row since 2026-11-27T07:30:21Z: graft-m4a $0.01, graft-agents-m4a- $0, graft-runners $0.0, total $0.01 (stop $3.00)
+2026-11-27T07:35:29.984Z {"invite":204}
+2026-11-27T07:35:32.313Z {"accept":204}
+2026-11-27T07:35:32.728Z {"reader_permission":"read","role":"read","status":200}
+2026-11-27T07:35:32.728Z {"check":"m3-reader reads the repository with read only","ok":true}
+VERDICT reader PASS 
+reader exit 0

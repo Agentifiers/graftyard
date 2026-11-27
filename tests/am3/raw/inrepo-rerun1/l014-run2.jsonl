@@ -1,0 +1,13 @@
+{"t":1795766484086,"agentapp_user_token":true}
+{"t":1795766484099,"incomplete":"an MCP token: graft-m4a runs no graft-mcp App and its edge has neither 17.4 nor 20.4, so none can be minted"}
+{"t":1795766484099,"incomplete":"graftyard-insights' installation token: skipped (lead's ruling)"}
+{"t":1795766489680,"agents_off":200,"enabled":false}
+{"t":1795766492805,"ia":2,"ib":3,"assign_ours":201,"assign_other":201,"other_bot":"m3-ci[bot]","ib_assignees":[]}
+{"t":1795766492805,"incomplete":"another bot's assignment: the edge did not assign m3-ci[bot] (201); #ib has no bot assignment"}
+{"t":1795766627720,"cell":"off/installation token (m3-ci, an AgentApp)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795766627721,"check":"off: installation token (m3-ci, an AgentApp), 100 of 100 refused","ok":true}
+{"t":1795766762447,"cell":"off/AgentApp's user token (m3-ci for m3-member)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795766762448,"check":"off: AgentApp's user token (m3-ci for m3-member), 100 of 100 refused","ok":true}
+{"t":1795766775051,"demote":{"attempt":0,"ok":49,"ms":12601}}
+{"t":1795766786625,"demote":{"attempt":1,"ok":39,"ms":11573}}
+{"t":1795766797639,"demote":{"attempt":2,"ok":48,"ms":11012}}
