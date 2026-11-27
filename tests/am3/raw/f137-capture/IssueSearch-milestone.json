@@ -1,0 +1,15 @@
+{
+  "operation": "IssueSearch",
+  "commands": [
+    "issue list -m 1"
+  ],
+  "query": "fragment issue on Issue {number,title,url,state,updatedAt,labels(first:100){nodes{id,name,description,color},totalCount},stateReason}query IssueSearch($repo: String!, $owner: String!, $type: SearchType!, $limit: Int, $after: String, $query: String!) {\n\t\t\trepository(name: $repo, owner: $owner) {\n\t\t\t\thasIssuesEnabled\n\t\t\t}\n\t\t\tsearch(type: $type, last: $limit, after: $after, query: $query) {\n\t\t\t\tissueCount\n\t\t\t\tnodes { ...issue }\n\t\t\t\tpageInfo {\n\t\t\t\t\thasNextPage\n\t\t\t\t\tendCursor\n\t\t\t\t}\n\t\t\t}\n\t\t}",
+  "variables": {
+    "limit": 30,
+    "owner": "o",
+    "query": "milestone:v1.0 repo:o/r state:open type:issue",
+    "repo": "r",
+    "type": "ISSUE_ADVANCED"
+  },
+  "user_agent": "GitHub CLI v2.102.1 Agent/amp"
+}

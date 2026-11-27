@@ -1,0 +1,13 @@
+{
+ "commands": [
+  "issue unlock 1"
+ ],
+ "operation": "UnlockLockable",
+ "query": "mutation UnlockLockable($input:UnlockLockableInput!){unlockLockable(input: $input){unlockedRecord{locked}}}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "input": {
+   "lockableId": "I_1"
+  }
+ }
+}
