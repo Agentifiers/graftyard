@@ -1,0 +1,22 @@
+2026-11-27T03:41:57Z
+c532f70e7
+node:child_process:590
+  validateString(file, 'file');
+  ^
+
+TypeError [ERR_INVALID_ARG_TYPE]: The "file" argument must be of type string. Received undefined
+    at normalizeSpawnArguments (node:child_process:590:3)
+    at spawnSync (node:child_process:935:8)
+    at execFileSync (node:child_process:1019:15)
+    at file://<checkout>/tests/m5/bf46/view.mjs:32:24
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  code: 'ERR_INVALID_ARG_TYPE'
+}
+
+Node.js v26.12.0
+{"script":"graft-m4a-edge","created_on":"2026-11-26T20:43:18.711225Z","versions":["f96935c0 100"]}
+{"script":"graft-m4a-ops","created_on":"2026-11-25T14:56:05.928151Z","versions":["ac4cd9a5 100"]}
+{"ops_schedules":[]}
+runner scripts: ["graft-runners"]
+runner store secrets named graft-agents-m4a-: ["graft-agents-m4a-MODEL_KEY_A"]
+runner buckets: []

@@ -1,0 +1,9 @@
+2026-11-27T03:55:27Z
+c532f70e7
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            BuildKit is currently disabled; enable it by removing the DOCKER_BUILDKIT=0
+            environment-variable.
+
+kill-real1: digest: sha256:903e752a79b563f2971b648f75b08a1e988a33774e99d463ebbf9581262c6d85 size: 2056
+Pushed image: registry.cloudflare.com/<runner-account>/graft-agents-m4a-sandbox:kill-real1
+{"agent_app_id":3801088,"workspace_app_id":3866624,"store":"<runner-store>","image":"registry.cloudflare.com/<runner-account>/graft-agents-m4a-sandbox@sha256:903e752a79b563f2971b648f75b08a1e988a33774e99d463ebbf9581262c6d85","host":"graft-m4a-edge.<sub>.workers.dev","harness":["python3","/run.py","graft-m4a-edge.<sub>.workers.dev","m3org/kill-real1","6","claude-sonnet-5-5"],"secrets":{"AGENT_APP_KEY":"graft-agents-m4a-AGENTS_APP_KEY_A","WORKSPACE_APP_KEY":"graft-agents-m4a-WORKSPACE_APP_KEY_A","MODEL_KEY":"graft-agents-m4a-MODEL_KEY_A"},"route_others":[{"ModelInference":{"host":"token-proxy.workinprogress.dev","path":"/v1/messages"}}],"agents_front":"graft-agents-m4a-front"}

@@ -1,0 +1,244 @@
+[
+  {
+    "i": 0,
+    "plan": "before",
+    "hit": "before",
+    "delay_ms": 0,
+    "last_acked_at_kill": null,
+    "commits": 6,
+    "first_sandbox_pushes": 0,
+    "second_sandbox_pushes": 6,
+    "ordered": true,
+    "last_first_before_kill_s": null,
+    "kill_after_start_s": null,
+    "second_first_after_kill_s": 39.7,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b5f-6a35-88ed-870d-bf6d4815d60f-2 at 1795755625.124 claude exit 0 tokens 34968",
+      "push 2 by 01a21b5f-6a35-88ed-870d-bf6d4815d60f-2 at 1795755631.646 claude exit 0 tokens 35122",
+      "push 3 by 01a21b5f-6a35-88ed-870d-bf6d4815d60f-2 at 1795755636.974 claude exit 0 tokens 35230",
+      "push 4 by 01a21b5f-6a35-88ed-870d-bf6d4815d60f-2 at 1795755643.479 claude exit 0 tokens 35361",
+      "push 5 by 01a21b5f-6a35-88ed-870d-bf6d4815d60f-2 at 1795755649.104 claude exit 0 tokens 35490",
+      "push 6 by 01a21b5f-6a35-88ed-870d-bf6d4815d60f-2 at 1795755655.154 claude exit 0 tokens 35590"
+    ]
+  },
+  {
+    "i": 1,
+    "plan": "between",
+    "hit": "between",
+    "delay_ms": 5929,
+    "last_acked_at_kill": "set",
+    "commits": 6,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 5,
+    "ordered": true,
+    "last_first_before_kill_s": 2.4,
+    "second_first_after_kill_s": 36,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b5f-7657-8145-9cc8-770ca10122f6-1 at 1795755593.421 claude exit 0 tokens 34975",
+      "push 2 by 01a21b5f-7657-8145-9cc8-770ca10122f6-2 at 1795755631.889 claude exit 0 tokens 35113",
+      "push 3 by 01a21b5f-7657-8145-9cc8-770ca10122f6-2 at 1795755639.716 claude exit 0 tokens 35227",
+      "push 4 by 01a21b5f-7657-8145-9cc8-770ca10122f6-2 at 1795755647.199 claude exit 0 tokens 35358",
+      "push 5 by 01a21b5f-7657-8145-9cc8-770ca10122f6-2 at 1795755654.000 claude exit 0 tokens 35479",
+      "push 6 by 01a21b5f-7657-8145-9cc8-770ca10122f6-2 at 1795755660.291 claude exit 0 tokens 35579"
+    ]
+  },
+  {
+    "i": 2,
+    "plan": "during",
+    "hit": "during",
+    "delay_ms": 13552,
+    "last_acked_at_kill": null,
+    "commits": 6,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 5,
+    "ordered": true,
+    "last_first_before_kill_s": 1.2,
+    "second_first_after_kill_s": 37.4,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b5f-7be4-8380-86ed-a421b9500ef5-1 at 1795755605.264 claude exit 0 tokens 34982",
+      "push 2 by 01a21b5f-7be4-8380-86ed-a421b9500ef5-2 at 1795755643.804 claude exit 0 tokens 35111",
+      "push 3 by 01a21b5f-7be4-8380-86ed-a421b9500ef5-2 at 1795755650.927 claude exit 0 tokens 35231",
+      "push 4 by 01a21b5f-7be4-8380-86ed-a421b9500ef5-2 at 1795755657.614 claude exit 0 tokens 35371",
+      "push 5 by 01a21b5f-7be4-8380-86ed-a421b9500ef5-2 at 1795755664.487 claude exit 0 tokens 35476",
+      "push 6 by 01a21b5f-7be4-8380-86ed-a421b9500ef5-2 at 1795755670.171 claude exit 0 tokens 35581"
+    ]
+  },
+  {
+    "i": 3,
+    "plan": "during",
+    "hit": "between",
+    "delay_ms": 9808,
+    "last_acked_at_kill": "set",
+    "commits": 6,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 5,
+    "ordered": true,
+    "last_first_before_kill_s": 2.1,
+    "second_first_after_kill_s": 37.2,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b5f-814b-8ffe-9a2c-16a1064f532f-1 at 1795755615.844 claude exit 0 tokens 34981",
+      "push 2 by 01a21b5f-814b-8ffe-9a2c-16a1064f532f-2 at 1795755655.188 claude exit 0 tokens 35117",
+      "push 3 by 01a21b5f-814b-8ffe-9a2c-16a1064f532f-2 at 1795755664.191 claude exit 0 tokens 35247",
+      "push 4 by 01a21b5f-814b-8ffe-9a2c-16a1064f532f-2 at 1795755673.085 claude exit 0 tokens 35377",
+      "push 5 by 01a21b5f-814b-8ffe-9a2c-16a1064f532f-2 at 1795755681.322 claude exit 0 tokens 35505",
+      "push 6 by 01a21b5f-814b-8ffe-9a2c-16a1064f532f-2 at 1795755689.399 claude exit 0 tokens 35613"
+    ]
+  },
+  {
+    "i": 4,
+    "plan": "during",
+    "hit": "during",
+    "delay_ms": 6967,
+    "last_acked_at_kill": null,
+    "commits": 6,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 5,
+    "ordered": true,
+    "last_first_before_kill_s": 0.9,
+    "second_first_after_kill_s": 36.5,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b5f-8648-8a4d-8c23-de09027d2dde-1 at 1795755624.913 claude exit 0 tokens 34975",
+      "push 2 by 01a21b5f-8648-8a4d-8c23-de09027d2dde-2 at 1795755662.279 claude exit 0 tokens 35112",
+      "push 3 by 01a21b5f-8648-8a4d-8c23-de09027d2dde-2 at 1795755669.190 claude exit 0 tokens 35229",
+      "push 4 by 01a21b5f-8648-8a4d-8c23-de09027d2dde-2 at 1795755675.906 claude exit 0 tokens 35368",
+      "push 5 by 01a21b5f-8648-8a4d-8c23-de09027d2dde-2 at 1795755682.289 claude exit 0 tokens 35477",
+      "push 6 by 01a21b5f-8648-8a4d-8c23-de09027d2dde-2 at 1795755688.152 claude exit 0 tokens 35586"
+    ]
+  },
+  {
+    "i": 5,
+    "plan": "between",
+    "hit": "between",
+    "delay_ms": 19557,
+    "last_acked_at_kill": "set",
+    "commits": 6,
+    "first_sandbox_pushes": 2,
+    "second_sandbox_pushes": 4,
+    "ordered": true,
+    "last_first_before_kill_s": 4.4,
+    "second_first_after_kill_s": 30.4,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b5f-8c2e-8a7b-b353-b5cf4a1ffbaf-1 at 1795755628.995 claude exit 0 tokens 34970",
+      "push 2 by 01a21b5f-8c2e-8a7b-b353-b5cf4a1ffbaf-1 at 1795755635.427 claude exit 0 tokens 35127",
+      "push 3 by 01a21b5f-8c2e-8a7b-b353-b5cf4a1ffbaf-2 at 1795755670.250 claude exit 0 tokens 35273",
+      "push 4 by 01a21b5f-8c2e-8a7b-b353-b5cf4a1ffbaf-2 at 1795755676.767 claude exit 0 tokens 35400",
+      "push 5 by 01a21b5f-8c2e-8a7b-b353-b5cf4a1ffbaf-2 at 1795755683.129 claude exit 0 tokens 35540",
+      "push 6 by 01a21b5f-8c2e-8a7b-b353-b5cf4a1ffbaf-2 at 1795755689.673 claude exit 0 tokens 35650"
+    ]
+  },
+  {
+    "i": 6,
+    "plan": "during",
+    "hit": "during",
+    "delay_ms": 9302,
+    "last_acked_at_kill": null,
+    "commits": 6,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 5,
+    "ordered": true,
+    "last_first_before_kill_s": 1.9,
+    "second_first_after_kill_s": 29.4,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b5f-91fb-8dc8-ba27-2a8436fe44bc-1 at 1795755649.867 claude exit 0 tokens 34971",
+      "push 2 by 01a21b5f-91fb-8dc8-ba27-2a8436fe44bc-2 at 1795755681.212 claude exit 0 tokens 35120",
+      "push 3 by 01a21b5f-91fb-8dc8-ba27-2a8436fe44bc-2 at 1795755689.106 claude exit 0 tokens 35243",
+      "push 4 by 01a21b5f-91fb-8dc8-ba27-2a8436fe44bc-2 at 1795755696.709 claude exit 0 tokens 35370",
+      "push 5 by 01a21b5f-91fb-8dc8-ba27-2a8436fe44bc-2 at 1795755705.573 claude exit 0 tokens 35513",
+      "push 6 by 01a21b5f-91fb-8dc8-ba27-2a8436fe44bc-2 at 1795755713.660 claude exit 0 tokens 35614"
+    ]
+  },
+  {
+    "i": 7,
+    "plan": "before",
+    "hit": "before",
+    "delay_ms": 0,
+    "last_acked_at_kill": null,
+    "commits": 6,
+    "first_sandbox_pushes": 0,
+    "second_sandbox_pushes": 6,
+    "ordered": true,
+    "last_first_before_kill_s": null,
+    "kill_after_start_s": null,
+    "second_first_after_kill_s": 15.5,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b5f-98e4-804d-9054-12b43ab0dacd-2 at 1795755650.605 claude exit 0 tokens 34979",
+      "push 2 by 01a21b5f-98e4-804d-9054-12b43ab0dacd-2 at 1795755658.869 claude exit 0 tokens 35094",
+      "push 3 by 01a21b5f-98e4-804d-9054-12b43ab0dacd-2 at 1795755667.163 claude exit 0 tokens 35239",
+      "push 4 by 01a21b5f-98e4-804d-9054-12b43ab0dacd-2 at 1795755676.059 claude exit 0 tokens 35372",
+      "push 5 by 01a21b5f-98e4-804d-9054-12b43ab0dacd-2 at 1795755684.737 claude exit 0 tokens 35490",
+      "push 6 by 01a21b5f-98e4-804d-9054-12b43ab0dacd-2 at 1795755693.626 claude exit 0 tokens 35583"
+    ]
+  },
+  {
+    "i": 8,
+    "plan": "between",
+    "hit": "between",
+    "delay_ms": 8940,
+    "last_acked_at_kill": "set",
+    "commits": 6,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 5,
+    "ordered": true,
+    "last_first_before_kill_s": 2.8,
+    "second_first_after_kill_s": 38.8,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b5f-9e43-86d7-80a4-c5d7528810f0-1 at 1795755657.320 claude exit 0 tokens 34967",
+      "push 2 by 01a21b5f-9e43-86d7-80a4-c5d7528810f0-2 at 1795755698.909 claude exit 0 tokens 35113",
+      "push 3 by 01a21b5f-9e43-86d7-80a4-c5d7528810f0-2 at 1795755708.592 claude exit 0 tokens 35232",
+      "push 4 by 01a21b5f-9e43-86d7-80a4-c5d7528810f0-2 at 1795755716.500 claude exit 0 tokens 35364",
+      "push 5 by 01a21b5f-9e43-86d7-80a4-c5d7528810f0-2 at 1795755724.501 claude exit 0 tokens 35498",
+      "push 6 by 01a21b5f-9e43-86d7-80a4-c5d7528810f0-2 at 1795755733.761 claude exit 0 tokens 35590"
+    ]
+  },
+  {
+    "i": 9,
+    "plan": "during",
+    "hit": "between",
+    "delay_ms": 6569,
+    "last_acked_at_kill": "set",
+    "commits": 6,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 5,
+    "ordered": true,
+    "last_first_before_kill_s": 1.5,
+    "second_first_after_kill_s": 37.4,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b5f-a3d7-85b1-af43-43aa4643a4c2-1 at 1795755665.434 claude exit 0 tokens 34964",
+      "push 2 by 01a21b5f-a3d7-85b1-af43-43aa4643a4c2-2 at 1795755704.278 claude exit 0 tokens 35109",
+      "push 3 by 01a21b5f-a3d7-85b1-af43-43aa4643a4c2-2 at 1795755710.877 claude exit 0 tokens 35235",
+      "push 4 by 01a21b5f-a3d7-85b1-af43-43aa4643a4c2-2 at 1795755718.028 claude exit 0 tokens 35388",
+      "push 5 by 01a21b5f-a3d7-85b1-af43-43aa4643a4c2-2 at 1795755725.011 claude exit 0 tokens 35496",
+      "push 6 by 01a21b5f-a3d7-85b1-af43-43aa4643a4c2-2 at 1795755731.745 claude exit 0 tokens 35620"
+    ]
+  }
+]

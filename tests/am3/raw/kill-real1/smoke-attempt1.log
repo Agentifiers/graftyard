@@ -1,0 +1,10 @@
+2026-11-27T04:06:04Z
+c532f70e7
+2026-11-27T04:06:14.153Z {"create":0,"status":201,"id":"01a21b2e-e74f-86b3-b1d5-4c0a9adb8632","state":"queued","plan":"before"}
+2026-11-27T04:11:57.360Z {"started":0,"sandbox":null}
+2026-11-27T04:11:57.361Z {"stop":"task 0 never started"}
+Terminated                 node tests/am3/hosted/kill.mjs "$STEP" "$O" "kill-$TAG" "$K/ctrl.token" "$FRONT_URL"
+row exit 143
+controller refusals: none
+2026-11-27T04:27:05.655Z claude turns by exit code: {}
+GATE FAIL: exits check 4 (0 = all turns exited 0), 0 refusals off the model arm

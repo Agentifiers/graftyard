@@ -1,0 +1,17 @@
+2026-11-27T05:05:52Z
+42d33f80f
+2026-11-27T05:05:55.378Z delete m3org/kill-real1: 204
+2026-11-27T05:05:57.071Z PATCH /orgs/m3org/agents: 200 {"agents_enabled":false,"code_mode":false,"workspace":"in_repo","workspace_org":"m3org-agents"}
+2026-11-27T05:05:57.469Z installation 7190003 uninstalled from m3org
+2026-11-27T05:05:57.758Z installation 7190004 uninstalled from m3org
+objects deleted: 0
+{"delete":"graft-agents-m4a-releases","ok":true,"errors":[]}
+row token and secret files shredded
+runner scripts: ["graft-runners"]
+runner store secrets named graft-agents-m4a-: []
+runner buckets: []
+agents container applications: [{"app":"graft-agents-m4a-controller-taskbox","running":0}]
+{"delete_app":true,"errors":[]}
+{"torn_down": 2, "codes": {"200": 2}}
+sweep: no shard container running
+agents apps after: []

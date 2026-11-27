@@ -5,8 +5,8 @@ AM3-WP3's"), approved by the operator with an Anthropic API key (`FRAME.md`, "Op
 for LM-3's real-harness kill case"). It is the scripted row (`tests/am3/results/lm3-kill.md`, r2 PASS) with the stock
 Claude Code CLI as the harness. The runner account stands in as the agents account, as for LF-7 and the scripted row.
 
-**Status: plan, not run.** It runs only after LM-3's in-repo row (`tests/am3/results/lm3-inrepo.md`) tears down, after
-the A3 controller head (below) is merged and on the install, and after the lead says the key is in the runner store.
+**Status: PASS on row run 2 (tag real1, 2026-11-27).** See "Result" at the end. The plan above it is as written
+before the run.
 
 ## What it needs that the scripted row did not
 
@@ -92,4 +92,58 @@ key is the operator's to revoke when the results are in (`FRAME.md`).
 
 ## Result
 
-Not run.
+**Verdict: PASS on row run 2.** This was the lead's GO on 2026-11-27, after LM-1's row A stopped (03:27Z). It ran on
+graft-m4a and the runner account, from main `28aadfc7` plus this branch's drivers. There was no site or edge day.
+Every `claude` turn ran `claude-sonnet-5-5` through the router to the operator's token proxy, and no fallback model
+was needed. Logs are in `tests/am3/raw/kill-real1/`:
+- `row.jsonl` and `tasks.json`;
+- `branches.json`: each work branch, with the Sandbox, wall time and `claude` exit code of every commit;
+- `late-logs.jsonl`: the controller's refusal lines, read from Workers observability. `wrangler tail` sampled away 8
+  of the 20.
+
+Run 1 is kept as `r1-*`, and the smoke attempts as `smoke*`.
+
+| Line | Row run 2 |
+| --- | --- |
+| Restart | 10 of 10 back to `Running` under `<task>-2`, 3 to 35 s after each kill. Every task ended `Done` at generation 2, with `running` false, so no task had two live Sandboxes |
+| From the last acked push | The 8 tasks killed after a push restarted on the killed Sandbox's last commit. Each work branch's numbering runs on from the first Sandbox's last commit, with no gap and no repeat. The 2 tasks killed before any push restarted from the base. As in the scripted row, the 3 during kills found `last_push` empty at the kill, but the new Sandbox built on the commit being pushed, so that push was acked [inference from `branches.json`] |
+| Work lost | At most 4.4 s: each kill came 0.9 to 4.4 s after the killed Sandbox's last commit |
+| Every task finishes | 10 of 10 `Done`, 6 commits on each work branch, and 60 `claude` turns, all exit 0 |
+| Late traffic | 20 of 20 replays answered 403: a `Finished` report and a clone request per killed Sandbox. `late` reads 2 on all 10 boxes. There are 20 controller lines `refused late traffic from <task>-1`, two per task |
+| The model arm | No `ModelPath`, `ModelPayload`, `UnlistedHost` or other refusal. 196 `/v1/messages` calls went through the router and answered 200. 4 more were `canceled`, which were the in-flight calls of killed Sandboxes. Every box's counted `model` usage grew, from $0.15 to $0.33 per task |
+
+Kill points, each after its plan's delay of 0 to 20 s:
+- 2 before the first push;
+- 5 between pushes;
+- 3 during a push.
+
+Two kills planned for during a push landed between pushes, because the push finished between the poll and the kill.
+The table counts the point the box reported at the kill.
+
+**Row run 1 (04:37Z): no verdict, a driver fault.** All 10 tasks ran to `Done`, all 66 turns exited 0, and the model
+spend was $2.06. But only 5 Sandboxes were killed. `kill.mjs` waited for all ten boxes to run before it started any kill
+watch, and five Claude Code tasks were already `Done` by then. They had 6 commits in about 33 s, where the scripted
+harness had 8 commits 15 s apart. The 5 that were killed (2 between pushes, 3 during a push) met every line: restart
+under `-2`, restart from the last acked commit, at most 6.7 s lost, and late 2 with 403s. The driver now starts each
+task's kill watch as soon as its own box runs, after the 0 to 20 s delay that "Lines" names.
+
+**Smoke.** Attempt 1 (04:06Z) never started a Sandbox. The task's `graftyard_task` delivery and a signed ping both got
+401 "bad signature" from the controller. A second PATCH of the same webhook secret value cleared it
+(`decisions/OPEN-QUESTIONS.md`, F148). I cancelled the task. Attempt 2 (04:28Z) passed the gate: one task killed before
+its first push, restarted under `-2`, both replays refused, `Done` at generation 2, 6 turns all exit 0, no refusal,
+$0.34. The `hook` step now proves a signed ping answers 202 before any task, and fails loudly otherwise.
+
+**Spend.**
+- Router-counted model spend: $4.41 of the $25 stop (smoke $0.34, run 1 $2.06, run 2 $2.01).
+- Cloudflare since 11-27 00:00Z: graft-m4a went from $1.84 at the 03:49Z baseline to $2.27, and the runner account from
+  $0.41 to $0.47. That's $0.49 of the $3 stop.
+
+**Teardown.** Done line 05:06Z.
+- m3org/kill-real1 is deleted, agents_enabled is false, and installations 7190003 and 7190004 are uninstalled.
+- Every `graft-agents-m4a-` script, the bucket and every secret are deleted, **including
+  `graft-agents-m4a-MODEL_KEY_A`**. The runner store lists no `graft-agents-m4a-` secret.
+- The `-controller-taskbox` container application had 0 running and is deleted. There are no `graft-agents-m4a-`
+  Durable Object namespaces.
+- `graft-runners-runnerbox` has 0 running.
+- The install's shard sweep tore down 2 shard containers, and a second sweep found none.
+- graft-m4a has one new `Keys` entry (count 587), an `agents_executor` whose seed is deleted.
