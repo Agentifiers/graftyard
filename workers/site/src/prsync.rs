@@ -26,7 +26,7 @@ use graftyard_git as git;
 use graftyard_git::prsync::{ALARM_MS, Delivery, Dispatcher, SyncBatch, WAIT_MS};
 use graftyard_lookup::Bindings;
 use graftyard_raft::{Index, Role};
-use graftyard_types::{ChainId, DbId, RepoId, Timestamp};
+use graftyard_types::{ChainId, DbId, NetworkId, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use worker::MessageExt;
@@ -94,6 +94,9 @@ pub fn drop_first(h: &Rc<Host<Repo>>, n: u32) -> Value {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub repo: i64,
+    /// The repository's network for a fork (AM3-WP2a); absent for a root and from a script before forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net: Option<i64>,
     pub batch: SyncBatch,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<graftyard_types::PlacementRecord>,
@@ -113,10 +116,12 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
             ChainId::Repo(repo) => {
                 let fold = &c.m.group_fold().fold;
                 let cursor = git::tiers::consumer_cursor(&*fold.core, git::issues::Consumer::PrSync);
+                let network = git::tiers::network(&*fold.core, repo);
                 Some((
                     c.join.me.do_name.to_string(),
                     (c.m.term().0, c.m.boot()),
                     repo,
+                    network,
                     cursor,
                     c.m.state().applied,
                     c.join.record.clone(),
@@ -125,7 +130,8 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
             _ => None,
         })
     };
-    let Some((key, term, repo, cursor, applied, record)) = leading else { return };
+    let Some((key, term, repo, network, cursor, applied, record)) = leading else { return };
+    let net = (network.root() != repo).then_some(network.0.0);
     let (mut d, new) = DISPATCHERS.with(|m| match m.borrow().get(&key) {
         Some((t, d)) if *t == term => (d.clone(), false),
         _ => (Dispatcher::default(), true),
@@ -140,7 +146,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     let last = WARMED.with(|m| m.borrow().get(&key).filter(|(t, _, _)| *t == term).map(|(_, at, i)| (*at, *i)));
     if git::keep_warm_due(last, now_ms(), applied) {
         WARMED.with(|m| m.borrow_mut().insert(key.clone(), (term, now_ms(), applied)));
-        warm(h, repo, &record);
+        warm(h, repo, network, &record);
     }
     let was_parked = d.parked(cursor);
     // A scan cut at `SCAN_BYTES` comes back at once for the rest.
@@ -157,10 +163,10 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     let mut first = None;
     match batch {
         Some((b, Delivery::First)) => {
-            first = Some(Message { repo: repo.0.0, batch: b, record: Some(record), deadline: None })
+            first = Some(Message { repo: repo.0.0, net, batch: b, record: Some(record), deadline: None })
         }
         Some((b, Delivery::Again)) => {
-            let m = Message { repo: repo.0.0, batch: b, record: Some(record), deadline: None };
+            let m = Message { repo: repo.0.0, net, batch: b, record: Some(record), deadline: None };
             if let Err(e) = enqueue(h, &m).await {
                 d.unsent();
                 note(h, format!("prsync send {}..{}: {e}", m.batch.from.0, m.batch.through.0));
@@ -305,7 +311,7 @@ pub async fn replay(h: &Rc<Host<Repo>>) -> Result<Value> {
 /// (`tests/am1/results/idle-shards.md`). Each call is one background task, not a loop: the home shard's catch-up
 /// reads this member back, but a repeat comes only after entries applied, so writes, each a new shallow request here,
 /// came in between and reset the depth its next call is charged to (`tests/m3/results/m3-wp5.md`, point 6).
-fn warm(h: &Rc<Host<Repo>>, repo: RepoId, record: &graftyard_types::PlacementRecord) {
+fn warm(h: &Rc<Host<Repo>>, repo: RepoId, net: NetworkId, record: &graftyard_types::PlacementRecord) {
     let Ok(rec) = serde_json::to_string(record) else { return };
     for at in git::promote_sites(record, record.home) {
         let env = h.env.clone();
@@ -317,16 +323,11 @@ fn warm(h: &Rc<Host<Repo>>, repo: RepoId, record: &graftyard_types::PlacementRec
                 let region = site.sites.get(at).ok_or("a site is not in GRAFTYARD_SITES")?.region;
                 let stub = env
                     .durable_object(&format!("SHARD_{}", at.0))
-                    .and_then(|ns| {
-                        ns.get_by_name_with_location_hint(
-                            &git::first_shard_name(graftyard_types::NetworkId::of_root(repo), at),
-                            region.hint(),
-                        )
-                    })
+                    .and_then(|ns| ns.get_by_name_with_location_hint(&git::first_shard_name(net, at), region.hint()))
                     .map_err(|e| e.to_string())?;
                 let url = format!(
-                    "https://shard/catchup?warm=1&repo={}&record={}",
-                    repo.0.0,
+                    "https://shard/catchup?warm=1&{}&record={}",
+                    git::shard_query(repo, net),
                     js_sys::encode_uri_component(&rec)
                 );
                 let mut init = RequestInit::new();
@@ -498,6 +499,7 @@ async fn attempt(env: &Env, m: &Message) -> std::result::Result<Value, String> {
 
 async fn one(env: &Env, m: &Message, start: u64, end: u64) -> std::result::Result<Value, String> {
     let repo = RepoId(DbId(m.repo));
+    let net = git::shard_network(repo, m.net.map(|n| NetworkId(DbId(n))));
     let chain = ChainId::Repo(repo);
     let mut t = vec![now_ms()];
     let record = match m.record.clone() {
@@ -527,7 +529,7 @@ async fn one(env: &Env, m: &Message, start: u64, end: u64) -> std::result::Resul
         let budget = &budget;
         async move {
             let wait = std::time::Duration::from_millis(left);
-            match crate::host::within(wait, merge(env, site, repo, n, base, head)).await {
+            match crate::host::within(wait, merge(env, site, repo, net, n, base, head)).await {
                 Some(r) => {
                     let (a, b) = r?;
                     *budget.borrow_mut() = b;
@@ -573,19 +575,20 @@ async fn merge(
     env: &Env,
     site: &SiteEnv,
     repo: RepoId,
+    net: NetworkId,
     n: git::issues::IssueNumber,
     base: git::refs::ObjectId,
     head: git::refs::ObjectId,
 ) -> std::result::Result<(git::prsync::MergeAnswer, Value), String> {
     let url = format!(
-        "https://shard/merge?repo={}&base={}&head={}&n={}&cause={}",
-        repo.0.0,
+        "https://shard/merge?{}&base={}&head={}&n={}&cause={}",
+        git::shard_query(repo, net),
         base.hex(),
         head.hex(),
         n.0,
         git::prsync::MergeCause::HeadPush.as_str()
     );
-    let (v, budget) = shard_post(env, site, repo, &url).await?;
+    let (v, budget) = shard_post(env, site, repo, net, &url).await?;
     let a = serde_json::from_value(v.clone()).map_err(|e| format!("shard merge answered {v}: {e}"))?;
     Ok((a, budget))
 }
@@ -598,6 +601,7 @@ async fn merge(
 pub async fn demand(
     env: &Env,
     repo: RepoId,
+    net: NetworkId,
     n: git::issues::IssueNumber,
     cause: git::prsync::MergeCause,
 ) -> std::result::Result<bool, String> {
@@ -611,29 +615,30 @@ pub async fn demand(
     let Some((base, head)) = read.views.first().and_then(git::prsync::PrView::needs_merge) else { return Ok(false) };
     let rec = js_sys::encode_uri_component(&serde_json::to_string(&record).map_err(|e| e.to_string())?);
     let url = format!(
-        "https://shard/demand?repo={}&n={}&base={}&head={}&cause={}&record={rec}",
-        repo.0.0,
+        "https://shard/demand?{}&n={}&base={}&head={}&cause={}&record={rec}",
+        git::shard_query(repo, net),
         n.0,
         base.hex(),
         head.hex(),
         cause.as_str()
     );
-    let v = shard_post(env, &site, repo, &url).await?.0;
+    let v = shard_post(env, &site, repo, net, &url).await?.0;
     Ok(v["committed"].as_bool() == Some(true))
 }
 
 /// A POST to this site's shard of the network, with the budget counts it sent (`x-graft-budget`).
-async fn shard_post(env: &Env, site: &SiteEnv, repo: RepoId, url: &str) -> std::result::Result<(Value, Value), String> {
+async fn shard_post(
+    env: &Env,
+    site: &SiteEnv,
+    _repo: RepoId,
+    net: NetworkId,
+    url: &str,
+) -> std::result::Result<(Value, Value), String> {
     let me = site.id;
     let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", me.0))
-        .and_then(|ns| {
-            ns.get_by_name_with_location_hint(
-                &git::first_shard_name(graftyard_types::NetworkId::of_root(repo), me),
-                region.hint(),
-            )
-        })
+        .and_then(|ns| ns.get_by_name_with_location_hint(&git::first_shard_name(net, me), region.hint()))
         .map_err(|e| e.to_string())?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post);

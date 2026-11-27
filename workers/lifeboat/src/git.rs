@@ -17,7 +17,7 @@ use graftyard_git::group::RefsPage;
 use graftyard_git::pack::{Compacted, Marker, PackId};
 use graftyard_git::{IngestCursor, LogPacks, StoreError};
 use graftyard_lifeboat::git::{self as lgit, Facts, GIT_PIECES_PER_PASS, Learner, LearnerLog, Ready};
-use graftyard_lifeboat::pass::State;
+use graftyard_lifeboat::pass::{self, State};
 use graftyard_types::{ChainId, Digest, Index, NetworkId};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -304,25 +304,29 @@ impl Learner for Copy<'_> {
     }
 }
 
-/// The networks the copy holds, each at its repository chain's index.
+/// The networks the copy holds, each at a repository chain's index: a fork's chain counts under its network
+/// (`pass::network_of`). Where the network's root chain is held too, its index is the network's: the git copy is per
+/// network and catches up the root chain alone (`lgit::chain_of`), and the multi-chain catch-up is a later head.
 fn held(st: &State) -> BTreeMap<NetworkId, Index> {
-    st.puller
-        .held
-        .0
-        .iter()
-        .filter_map(|(c, i)| match c {
-            ChainId::Repo(r) => Some((NetworkId::of_root(*r), *i)),
-            _ => None,
-        })
-        .collect()
+    let mut out = BTreeMap::new();
+    for (c, i) in &st.puller.held.0 {
+        let ChainId::Repo(r) = c else { continue };
+        let net = pass::network_of(&st.networks, *c).expect("a repository chain");
+        if net.root() == *r {
+            out.insert(net, *i);
+        } else {
+            out.entry(net).or_insert(*i);
+        }
+    }
+    out
 }
 
-/// Networks that wait: a pack still owed, a halted or gone copy.
+/// Networks that wait: a pack still owed, a halted or gone copy, a fork's under its network.
 fn waiting(st: &State) -> BTreeSet<NetworkId> {
     let mut w: BTreeSet<NetworkId> = st.owed.iter().map(|o| o.network).collect();
     for c in st.puller.halted.iter().chain(&st.puller.gone) {
-        if let ChainId::Repo(r) = c {
-            w.insert(NetworkId::of_root(*r));
+        if let ChainId::Repo(_) = c {
+            w.extend(pass::network_of(&st.networks, *c));
         }
     }
     w
@@ -399,4 +403,38 @@ pub async fn ready(storage: &worker::Storage, git: &str, st: &State, net: Networ
         halted: st.puller.halted.contains(&chain),
     };
     lgit::ready(st.git.nets.get(&net), &f, st.puller.held.get(chain), now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use graftyard_lifeboat::pass::Owed;
+    use graftyard_types::{DbId, RepoId};
+
+    /// A fork's chain counts under its network (AM3-WP2a): alone it gives the network its index, beside its root the
+    /// root chain's index stands, and a halted fork holds its network back.
+    #[test]
+    fn a_fork_s_chain_is_held_and_waits_under_its_network() {
+        let (root, fork, other) = (RepoId(DbId(3)), RepoId(DbId(9)), RepoId(DbId(5)));
+        let net = NetworkId::of_root(root);
+        let mut st = State::default();
+        st.networks.insert(fork, net);
+        st.puller.held.0.insert(ChainId::Repo(fork), Index(4));
+        st.puller.held.0.insert(ChainId::Repo(other), Index(2));
+        assert_eq!(held(&st), BTreeMap::from([(net, Index(4)), (NetworkId::of_root(other), Index(2))]));
+        st.puller.held.0.insert(ChainId::Repo(root), Index(8));
+        assert_eq!(held(&st)[&net], Index(8), "the root chain's index is the network's");
+        assert!(!held(&st).contains_key(&NetworkId::of_root(fork)));
+
+        assert!(waiting(&st).is_empty());
+        st.puller.halted.insert(ChainId::Repo(fork));
+        assert_eq!(waiting(&st), BTreeSet::from([net]));
+        st.owed.insert(Owed {
+            network: NetworkId::of_root(other),
+            id: PackId(graftyard_types::Ulid(1)),
+            checksum: Digest([0; 32]),
+            bytes: 1,
+        });
+        assert_eq!(waiting(&st), BTreeSet::from([net, NetworkId::of_root(other)]));
+    }
 }

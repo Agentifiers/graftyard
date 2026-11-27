@@ -1478,7 +1478,7 @@ async fn merge_plan(
 ) -> std::result::Result<std::result::Result<MergePlan, CacheError>, String> {
     let q = graftyard_git::merge_cache::chain_query(req.base_old, &[(req.n, req.head)], req.method);
     let record = js_sys::encode_uri_component(&serde_json::to_string(&repo.record).map_err(|e| e.to_string())?);
-    let url = format!("https://shard/merge?repo={}&{q}&record={record}", repo.id.0.0);
+    let url = format!("{}&{q}&record={record}", crate::shard_at_url("/merge", repo));
     // The shard on the leader's site, which the read just before named, as `PrSync` and the `MergeQueue` consumer
     // merge "where the leader is" (`workers/site/src/prsync.rs`): it is the shard `PrSync`'s test merge caught up, and
     // its catch-up reads are local to the leader. The home site's shard, when the leader is elsewhere, caught up
@@ -1520,14 +1520,14 @@ fn ask_merges(c: &Ctx<'_>, repo: &Repo, asks: graftyard_api::gql::MergeAsks, com
     let Ok(stub) = crate::shard_at(c, repo, leader) else { return };
     let Ok(record) = serde_json::to_string(&repo.record) else { return };
     let record = String::from(js_sys::encode_uri_component(&record));
-    let id = repo.id.0.0;
     let mut urls: Vec<String> = Vec::new();
     let mut listed = asks.listed.len();
     for (n, (base, head)) in &asks.single {
         if computes {
             let (b, h, cause) = (base.hex(), head.hex(), MergeCause::Get.as_str());
             urls.push(format!(
-                "https://shard/demand?repo={id}&n={}&base={b}&head={h}&cause={cause}&record={record}",
+                "{}&n={}&base={b}&head={h}&cause={cause}&record={record}",
+                crate::shard_at_url("/demand", repo),
                 n.0
             ));
         } else {
@@ -1535,7 +1535,7 @@ fn ask_merges(c: &Ctx<'_>, repo: &Repo, asks: graftyard_api::gql::MergeAsks, com
         }
     }
     if listed > 0 {
-        urls.push(format!("https://shard/ask?repo={id}&cause={}&count={listed}", MergeCause::List.as_str()));
+        urls.push(format!("{}&cause={}&count={listed}", crate::shard_at_url("/ask", repo), MergeCause::List.as_str()));
     }
     c.ctx.wait_until(async move {
         for url in urls {
@@ -2912,8 +2912,8 @@ impl Archiver for ShardArchiver<'_> {
         format: ArchiveFormat,
     ) -> std::result::Result<Vec<u8>, String> {
         let url = format!(
-            "https://shard/archive?repo={}&commit={commit}&prefix={}&format={}",
-            self.repo.id.0.0,
+            "{}&commit={commit}&prefix={}&format={}",
+            crate::shard_at_url("/archive", self.repo),
             js_sys::encode_uri_component(prefix),
             format.ext()
         );
@@ -2936,7 +2936,7 @@ async fn commit_object(
     use graftyard_git::commit_fetch;
     let err = |e: worker::Error| e.to_string();
     let body = commit_fetch::request(sha);
-    let url = format!("https://shard/upload-pack?repo={}", repo.id.0.0);
+    let url = crate::shard_at_url("/upload-pack", repo);
     let mut r = crate::shard_read(c, repo, &url, Method::Post, "version=2", Some(&body)).await.map_err(err)?;
     if r.status_code() != 200 {
         return Err(format!("{} {}", r.status_code(), r.text().await.unwrap_or_default()));
@@ -2962,7 +2962,7 @@ async fn peeled_tags(
         return Ok(Default::default());
     }
     let err = |e: worker::Error| e.to_string();
-    let url = format!("https://shard/upload-pack?repo={}", rd.repo.id.0.0);
+    let url = crate::shard_at_url("/upload-pack", &rd.repo);
     let body = ls_refs::peel_request("refs/tags/");
     let mut r = crate::shard_read(c, &rd.repo, &url, Method::Post, "version=2", Some(&body)).await.map_err(err)?;
     if r.status_code() != 200 {

@@ -50,7 +50,7 @@ use graftyard_git::issues::Consumer;
 use graftyard_git::watch::ConsumerCursorCmd;
 use graftyard_lookup::Bindings;
 use graftyard_raft::{Index, Role};
-use graftyard_types::{AccountId, ChainId, PlacementRecord, RepoId, RequestId, Ulid};
+use graftyard_types::{AccountId, ChainId, NetworkId, PlacementRecord, RepoId, RequestId, Ulid};
 use serde_json::{Value, json};
 use worker::wasm_bindgen_futures::spawn_local;
 use worker::*;
@@ -117,6 +117,7 @@ struct Found {
     key: String,
     leadership: (u64, u64),
     repo: RepoId,
+    net: NetworkId,
     owner: AccountId,
     cursor: Index,
     applied: Index,
@@ -150,6 +151,7 @@ fn found(h: &Rc<Host<Repo>>) -> Option<Found> {
         key: c.join.me.do_name.to_string(),
         leadership: (c.m.term().0, c.m.boot()),
         repo,
+        net: git::tiers::network(core, repo),
         owner: info.owner,
         cursor: git::tiers::consumer_cursor(core, Consumer::ActionsTrigger),
         applied: c.m.state().applied,
@@ -359,7 +361,9 @@ async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
             let call = Call::Run { base: None, head: None, actor: None };
             // A queue ref is the queue's, never an agent's (`agent_ci_of`).
             let agent = (AgentRun::No, q.tip);
-            match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, call, agent, &mut times).await {
+            match runs_on(&h.env, &site, &b, f.repo, f.net, f.owner, &f.record, q.tip, make, call, agent, &mut times)
+                .await
+            {
                 Ok(n) => {
                     let ms = crate::now_ms() - t0;
                     console_log!(
@@ -376,7 +380,7 @@ async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
                 }
             }
         }
-        Item::Pr(p) => pull_request_runs(h, &site, &b, f.repo, f.owner, &f.record, c.index, c.at, p).await,
+        Item::Pr(p) => pull_request_runs(h, &site, &b, f.repo, f.net, f.owner, &f.record, c.index, c.at, p).await,
         Item::Gate(g) => match gate_released(h, &b, f, g).await {
             Ok(released) => {
                 let head = g.head.hex();
@@ -429,13 +433,14 @@ async fn pull_request_runs(
     site: &SiteEnv,
     b: &Bindings<'_>,
     repo: RepoId,
+    net: NetworkId,
     owner: AccountId,
     record: &PlacementRecord,
     index: Index,
     at: u64,
     p: &PrEvent,
 ) -> Tried {
-    match pull_request_try(h, site, b, repo, owner, record, index, at, p).await {
+    match pull_request_try(h, site, b, repo, net, owner, record, index, at, p).await {
         Ok(t) => t,
         Err(e) => {
             console_error!("actions dispatch {} #{} at {}: {e}", repo.0.0, p.n.0, index.0);
@@ -450,6 +455,7 @@ async fn pull_request_try(
     site: &SiteEnv,
     b: &Bindings<'_>,
     repo: RepoId,
+    net: NetworkId,
     owner: AccountId,
     record: &PlacementRecord,
     index: Index,
@@ -477,7 +483,7 @@ async fn pull_request_try(
             worker::Delay::from(std::time::Duration::from_millis(DEMAND_WAIT_MS)).await;
         }
         tries += 1;
-        if let Err(e) = crate::prsync::demand(&h.env, repo, p.n, git::prsync::MergeCause::Dispatch).await {
+        if let Err(e) = crate::prsync::demand(&h.env, repo, net, p.n, git::prsync::MergeCause::Dispatch).await {
             console_error!("actions dispatch {} #{} demand {tries}: {e}", repo.0.0, p.n.0);
         }
         (v, head) = view()?;
@@ -494,7 +500,7 @@ async fn pull_request_try(
             let call = Call::Run { base: Some(&base), head: head.as_deref(), actor };
             // The jobs of a waiting run wait on the head this merge was computed from, the agent's commit it tests.
             let agent = (agent_ci_of(h, repo, p.n).await?.0, v.head);
-            let n = runs_on(&h.env, site, b, repo, owner, record, merge, make, call, agent, &mut times).await?;
+            let n = runs_on(&h.env, site, b, repo, net, owner, record, merge, make, call, agent, &mut times).await?;
             if waits(&h.env, agent.0) {
                 release_if_gated(h, b, repo, owner, record, agent.1).await?;
             }
@@ -538,6 +544,7 @@ async fn push_paths(
     env: &Env,
     site: &SiteEnv,
     repo: RepoId,
+    net: NetworkId,
     record: &PlacementRecord,
     p: &PushEvent,
     base: Option<git::refs::ObjectId>,
@@ -548,14 +555,14 @@ async fn push_paths(
         return Ok(None);
     };
     let (base, after) = (base.hex(), p.after.hex());
-    let d = ui(env, site, repo, record, "diff", &[("base", &base), ("head", &after)]).await?;
+    let d = ui(env, site, repo, net, record, "diff", &[("base", &base), ("head", &after)]).await?;
     let Some(to_after) = d.as_ref().and_then(diff_paths) else {
         return Ok(None);
     };
     if !forced {
         return Ok(Some(to_after.into_keys().collect()));
     }
-    let d = ui(env, site, repo, record, "diff", &[("base", &after), ("head", &base)]).await?;
+    let d = ui(env, site, repo, net, record, "diff", &[("base", &after), ("head", &base)]).await?;
     Ok(d.as_ref().and_then(diff_paths).map(|to_before| two_dot(&to_after, &to_before)))
 }
 
@@ -570,7 +577,7 @@ async fn push_runs(
     c: &Carried,
     p: &PushEvent,
 ) -> std::result::Result<usize, String> {
-    let (env, repo, record) = (&h.env, f.repo, &f.record);
+    let (env, repo, net, record) = (&h.env, f.repo, f.net, &f.record);
     let after = p.after.hex();
     let base = {
         let core = h.core.borrow();
@@ -583,7 +590,7 @@ async fn push_runs(
     let (forced, ahead, shared) = match base {
         None => (false, 0, false),
         Some(b) => {
-            let cmp = ui(env, site, repo, record, "compare", &[("base", &b.hex()), ("head", &after)]).await?;
+            let cmp = ui(env, site, repo, net, record, "compare", &[("base", &b.hex()), ("head", &after)]).await?;
             let cmp = cmp.ok_or("compare: no such commit")?;
             let behind = cmp["behind_by"].as_u64().unwrap_or(0);
             (!p.created() && behind > 0, cmp["ahead_by"].as_u64().unwrap_or(0), !cmp["merge_base"].is_null())
@@ -593,7 +600,7 @@ async fn push_runs(
     // new ones and for a new branch those the default branch does not hold. Without a base, the head commit alone.
     let mut raws: Vec<(git::refs::ObjectId, String)> = Vec::new();
     if let Some(b) = base {
-        let v = ui(env, site, repo, record, "commits", &[("base", &b.hex()), ("head", &after)]).await?;
+        let v = ui(env, site, repo, net, record, "commits", &[("base", &b.hex()), ("head", &after)]).await?;
         for x in v.ok_or("commits: no such commit")?["commits"].as_array().into_iter().flatten() {
             let id = x["sha"].as_str().and_then(|s| git::refs::ObjectId::parse_hex(s.as_bytes()));
             if let (Some(id), Some(raw)) = (id, x["raw"].as_str()) {
@@ -603,7 +610,7 @@ async fn push_runs(
     }
     let head_raw = match raws.iter().find(|(id, _)| *id == p.after) {
         Some((_, r)) => r.as_bytes().to_vec(),
-        None => head_commit(env, site, repo, record, p.after).await?,
+        None => head_commit(env, site, repo, net, record, p.after).await?,
     };
     let mut dir = crate::hookseq::directory(h, repo, f.owner, record).await?;
     // The pusher's login: the directory holds only the logins the repository's rows name, so without it `pusher` and
@@ -637,14 +644,14 @@ async fn push_runs(
         console_log!("actions push {} {} at {}: skipped by its head commit", repo.0.0, p.r#ref.display(), c.index.0);
         return Ok(0);
     }
-    let paths = push_paths(env, site, repo, record, p, base.filter(|_| shared), forced, ahead).await?;
+    let paths = push_paths(env, site, repo, net, record, p, base.filter(|_| shared), forced, ahead).await?;
     let paths: Option<Vec<&str>> = paths.as_ref().map(|v| v.iter().map(String::as_str).collect());
     let make = |path: &str, src: &str| push_run(repo, c.index, path, src, p, paths.as_deref());
     let actor = actor.as_ref().map(|(a, l)| (*a, l.as_str()));
     let mut times = Times::default();
     let agent = agent_ci_on(h, repo, &p.r#ref, p.after).await?;
     let call = Call::Push { actor, event: &event };
-    let n = runs_on(env, site, b, repo, f.owner, record, p.after, make, call, agent, &mut times).await?;
+    let n = runs_on(env, site, b, repo, net, f.owner, record, p.after, make, call, agent, &mut times).await?;
     if waits(env, agent.0) {
         release_if_gated(h, b, repo, f.owner, record, p.after).await?;
     }
@@ -657,6 +664,7 @@ async fn head_commit(
     env: &Env,
     site: &SiteEnv,
     repo: RepoId,
+    net: NetworkId,
     record: &PlacementRecord,
     id: git::refs::ObjectId,
 ) -> std::result::Result<Vec<u8>, String> {
@@ -664,16 +672,14 @@ async fn head_commit(
     let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", me.0))
-        .and_then(|ns| {
-            ns.get_by_name_with_location_hint(
-                &git::first_shard_name(graftyard_types::NetworkId::of_root(repo), me),
-                region.hint(),
-            )
-        })
+        .and_then(|ns| ns.get_by_name_with_location_hint(&git::first_shard_name(net, me), region.hint()))
         .map_err(|e| e.to_string())?;
     let rec = serde_json::to_string(record).map_err(|e| e.to_string())?;
-    let url =
-        format!("https://shard/upload-pack?repo={}&wait=30&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
+    let url = format!(
+        "https://shard/upload-pack?{}&wait=30&record={}",
+        git::shard_query(repo, net),
+        js_sys::encode_uri_component(&rec)
+    );
     let hd = Headers::new();
     hd.set("git-protocol", "version=2").map_err(|e| e.to_string())?;
     let mut init = RequestInit::new();
@@ -830,6 +836,7 @@ async fn runs_on(
     site: &SiteEnv,
     b: &Bindings<'_>,
     repo: RepoId,
+    net: NetworkId,
     owner: AccountId,
     record: &PlacementRecord,
     tip: git::refs::ObjectId,
@@ -840,7 +847,7 @@ async fn runs_on(
 ) -> std::result::Result<usize, String> {
     let commit = tip.hex();
     let t = crate::now_ms();
-    let tree = ui(env, site, repo, record, "tree", &[("commit", &commit), ("path", WORKFLOWS)]).await;
+    let tree = ui(env, site, repo, net, record, "tree", &[("commit", &commit), ("path", WORKFLOWS)]).await;
     times.reads += crate::now_ms().saturating_sub(t);
     let tree = match tree? {
         Some(t) => t,
@@ -858,7 +865,7 @@ async fn runs_on(
     let mut n = 0;
     for path in files {
         let t = crate::now_ms();
-        let blob = ui(env, site, repo, record, "blob", &[("commit", &commit), ("path", &path)]).await;
+        let blob = ui(env, site, repo, net, record, "blob", &[("commit", &commit), ("path", &path)]).await;
         times.reads += crate::now_ms().saturating_sub(t);
         let Some(blob) = blob? else {
             continue;
@@ -884,7 +891,7 @@ async fn runs_on(
             sha: tip.0,
         };
         let t = crate::now_ms();
-        let reads = CallReads { env, site, b, repo, record, failed: RefCell::new(None) };
+        let reads = CallReads { env, site, b, repo, net, record, failed: RefCell::new(None) };
         let planned = graftyard_actions::reusable::plan_run(&parsed.workflow, &origin, reusable(env), |w| {
             graftyard_actions::reusable::called_file(&reads, w)
         })
@@ -958,6 +965,7 @@ struct CallReads<'a> {
     site: &'a SiteEnv,
     b: &'a Bindings<'a>,
     repo: RepoId,
+    net: NetworkId,
     record: &'a PlacementRecord,
     /// The first read that failed, which `runs_on` retries rather than skipping the workflow.
     failed: RefCell<Option<String>>,
@@ -979,9 +987,11 @@ impl graftyard_actions::reusable::CallReads for CallReads<'_> {
         sha: [u8; 20],
         path: &str,
     ) -> std::result::Result<Option<String>, String> {
-        let (r, rec) = repo.map_or((self.repo, self.record), |o| (o.id, &o.at));
+        let (r, net, rec) =
+            repo.map_or((self.repo, self.net, self.record), |o| (o.id, git::tiers::network(&o.core, o.id), &o.at));
         let commit = git::refs::ObjectId(sha).hex();
-        let v = self.note(ui(self.env, self.site, r, rec, "blob", &[("commit", &commit), ("path", path)]).await)?;
+        let v =
+            self.note(ui(self.env, self.site, r, net, rec, "blob", &[("commit", &commit), ("path", path)]).await)?;
         Ok(v.map(|v| v["text"].as_str().unwrap_or_default().to_owned()))
     }
 }
@@ -1058,6 +1068,7 @@ async fn ui(
     env: &Env,
     site: &SiteEnv,
     repo: RepoId,
+    net: NetworkId,
     record: &PlacementRecord,
     route: &str,
     q: &[(&str, &str)],
@@ -1066,15 +1077,11 @@ async fn ui(
     let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", me.0))
-        .and_then(|ns| {
-            ns.get_by_name_with_location_hint(
-                &git::first_shard_name(graftyard_types::NetworkId::of_root(repo), me),
-                region.hint(),
-            )
-        })
+        .and_then(|ns| ns.get_by_name_with_location_hint(&git::first_shard_name(net, me), region.hint()))
         .map_err(|e| e.to_string())?;
     let rec = serde_json::to_string(record).map_err(|e| e.to_string())?;
-    let mut url = format!("https://shard/ui/{route}?repo={}&wait=30", repo.0.0);
+    let q0 = git::shard_query(repo, net);
+    let mut url = format!("https://shard/ui/{route}?{q0}&wait=30");
     for (k, v) in q.iter().chain([("record", rec.as_str())].iter()) {
         url.push_str(&format!("&{k}={}", js_sys::encode_uri_component(v)));
     }

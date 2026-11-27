@@ -10,7 +10,9 @@ use graftyard_git::repo::{REPO_FORMAT_V1, RepoEvent};
 use graftyard_lifeboat::pass::{self, Copied, Host, Imported, Owed, Page, State};
 use graftyard_lifeboat::puller::FEED_STALE_MS;
 use graftyard_raft::{EntryBody, LogEntry, Term, TierSet, codec};
-use graftyard_types::{ChainId, DbId, Digest, Index, RepoId, RequestId, SiteSet, Timestamp, Ulid};
+use graftyard_types::{
+    AccountId, ChainId, DbId, Digest, Index, NetworkId, RepoId, RequestId, SiteSet, Timestamp, Ulid,
+};
 use sha2::{Digest as _, Sha256};
 
 const REPO: ChainId = ChainId::Repo(RepoId(DbId(7)));
@@ -462,4 +464,54 @@ fn a_held_rolls_consumed_packs_are_owed_no_more() {
     assert!(h.kept.borrow().contains_key(&PackId(Ulid(9))));
     assert!(st.rolls.is_empty());
     assert_eq!(State::decode(&st.encode()).unwrap(), st);
+}
+
+/// A fork's packs are owed under its network, which its chain's `Genesis` names (AM3-WP2a), never under its own id;
+/// a pack owed under the fork's own id before its `Genesis` arrived (a later row first) moves to the network.
+#[test]
+fn a_fork_s_packs_are_owed_under_its_network_from_its_genesis() {
+    let fork = ChainId::Repo(RepoId(DbId(9)));
+    let net = NetworkId::of_root(RepoId(DbId(7)));
+    let genesis = codec::to_bytes(&LogEntry {
+        term: Term(1),
+        index: Index(1),
+        prev: Digest([0; 32]),
+        format: graftyard_raft::Format { family: 0x20, version: 31 },
+        tiers: TierSet::CORE,
+        at: Timestamp(1),
+        requests: Default::default(),
+        extend: None,
+        body: EntryBody::Events(vec![RepoEvent::Genesis {
+            owner: AccountId(DbId(1)),
+            network: net,
+            name: serde_json::from_str("\"fork\"").unwrap(),
+            fork_of: Some((RepoId(DbId(7)), Index(2))),
+        }]),
+    });
+    let owed = |i: u64, network| {
+        let b = pack_of(i);
+        Owed {
+            network,
+            id: PackId(Ulid(u128::from(i))),
+            checksum: Digest(Sha256::digest(&b).into()),
+            bytes: b.len() as u64,
+        }
+    };
+    let mut st = State::default();
+    assert_eq!(pass::owed_by(&mut st, fork, &[genesis.clone(), repo_row(2)]), vec![owed(2, net)]);
+    assert_eq!(st.networks, BTreeMap::from([(RepoId(DbId(9)), net)]));
+    assert_eq!(pass::owed_by(&mut st, fork, &[repo_row(3)]), vec![owed(3, net)]);
+
+    let own = NetworkId::of_root(RepoId(DbId(9)));
+    let mut st = State::default();
+    let early = pass::owed_by(&mut st, fork, &[repo_row(3)]);
+    assert_eq!(early, vec![owed(3, own)], "a root, as far as the copy knows");
+    st.owed.extend(early);
+    assert_eq!(pass::owed_by(&mut st, fork, &[genesis, repo_row(2)]), vec![owed(2, net)]);
+    assert_eq!(st.owed, BTreeSet::from([owed(3, net)]));
+
+    // A root's rows are owed under its own id, and its state is written without `networks`.
+    let mut st = State::default();
+    assert_eq!(pass::owed_by(&mut st, REPO, &[repo_row(4)]), vec![owed(4, NetworkId::of_root(RepoId(DbId(7))))]);
+    assert!(!String::from_utf8(st.encode()).unwrap().contains("networks"));
 }
