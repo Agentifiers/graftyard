@@ -667,9 +667,9 @@ fn l004_a1_replay_leaks_no_secret_before_the_gate_holds_for_its_head() {
     print_stats("real", &stats);
     assert_eq!(stats.pushes, 3134);
     assert_eq!(stats.prs, 805);
-    // Every leak on the real code is OPEN-QUESTIONS F149: `ReleaseSecrets` keys on (repository, head), so a head commit
+    // Every leak on the real code is OPEN-QUESTIONS F150: `ReleaseSecrets` keys on (repository, head), so a head commit
     // a writer approved on another agent branch's pull request releases this branch's waiting jobs at the same SHA.
-    // Any other leak fails here; when F149 is ruled and fixed, the 16 must go to 0.
+    // Any other leak fails here; when F150 is ruled and fixed, the 16 must go to 0.
     assert_eq!(stats.leaks, stats.leaks_shared_head, "{:?}", stats.leak_samples);
     assert_eq!(stats.leaks_shared_head, 16, "{:?}", stats.leak_samples);
     assert_eq!(stats.released_jobs, 1196);
