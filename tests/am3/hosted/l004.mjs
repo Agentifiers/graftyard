@@ -1,5 +1,5 @@
 // LM-3's L0-04 row on graft-m4a (`build/BUILD-PLAN.md`, L0-04; `decisions/DECISIONS.md`, "`secrets-wait`"; the lead's
-// GO, 2026-11-27): agent CI under `ci: AutoReadOnly` with format 0x15.14. The agents half (both Apps, the controller
+// GO, 2026-11-27): agent CI under `ci: AutoReadOnly` with format 0x15.14, and per branch with 0x15.15 (F150). The agents half (both Apps, the controller
 // with its `TaskBox` and the kill row's scripted harness, `graft-agents-front`, the probe) is up first
 // (`tests/am3/hosted/l004-row.sh`). graft-m4a's sites set GRAFTYARD_PR_TRIGGER, so an agent push's run is the
 // `pull_request` run of the task's draft (`refs/heads/graftyard/<task>/work`), which the controller opens at the task's
@@ -15,8 +15,14 @@
 //                 (`missed` names the secret in a form the scanner does not see, so it runs, with an empty value)
 //             (b) `secret` waits (`SecretsWait` on its own head, GHES `waiting`)
 //             (c) an approval by the requester, and one by m3-member naming an older head, release nothing for 60 s
+//             (s) same SHA (F150): before any approval, m3-admin pushes the agent's current head to a second agent-prefix
+//                 branch (`refs/heads/graftyard/l004-same-<t>/work`) and opens a pull request from it; its run is an
+//                 agent run (the prefix), so its `secret` waits on the same commit
 //             (d) m3-member approves the current head over GraphQL `addPullRequestReview`; `secret` then runs with the
-//                 real secret's hash, and its token write is still refused; every other run's `secret` stays waiting
+//                 real secret's hash, and its token write is still refused; every other run's `secret` stays waiting,
+//                 and the second pull request's `secret`, at the same commit, stays waiting 60 s after the release:
+//                 the gate held for the agent's pull request, not for that one. 0x15.14's `ReleaseSecrets` releases it
+//                 (the gap F150 closes), so this check passes only where a site day set `GRAFTYARD_SECRETS_BRANCH`
 //             control: the same workflow on a branch m3-admin pushes, with a pull request m3-admin opens: not fork,
 //             `secret` queues at once and reads the secret
 //             Fail: any job of an agent run that read the secret before AgentGate held for its head.
@@ -192,6 +198,24 @@ if (line === "repo") {
   const s0 = await waiting();
   ev({ secret_job: s0 });
   check(s0?.state === "SecretsWait" && s0.waits_on === pushed && s0.status === "waiting" && s0.steps === 0, "`secret` waits on its own head (SecretsWait, GHES waiting, no step run)");
+  // ---- (s): a second agent-prefix pull request at the same commit, created before any approval ----
+  const repoId = (await gql(admin, `query { repository(owner: "m3org", name: "${name}") { id } }`)).body?.data?.repository?.id;
+  const same = `graftyard/l004-same-${Date.now().toString(36)}/work`;
+  ev({ same_push: g.run(["push", "-q", "origin", `${pushed}:refs/heads/${same}`]).ok, same_branch: same });
+  const sp = await gql(admin, "mutation($i: CreatePullRequestInput!) { createPullRequest(input: $i) { pullRequest { number } } }",
+    { i: { repositoryId: repoId, baseRefName: "main", headRefName: same, title: "l004 same sha", body: "l004 same sha" } });
+  const sn = sp.body?.data?.createPullRequest?.pullRequest?.number;
+  ev({ same_pr: sn, errors: sp.body?.errors?.[0]?.message });
+  const srun = sn ? await until("the same-SHA run waiting on the current head", async () => {
+    for (const r of await runsOf(sn)) {
+      const v = await runView(r.id);
+      if (v.jobs.some((j) => j.name === "secret" && j.waits_on === pushed)) return v;
+    }
+    return null;
+  }, 4 * 60_000, 4000) : null;
+  ev({ same_run: srun });
+  const sameSecret = async () => (srun ? (await runView(srun.id)).jobs.find((j) => j.name === "secret") : null);
+  check(srun?.fork === true, "the same-SHA pull request's run is an agent run (fork) whose `secret` waits on the agent's head");
   // ---- (c): approvals that must release nothing ----
   const neg = async (what, tok, commit) => {
     const r = await approve(tok, node.id, commit);
@@ -222,9 +246,16 @@ if (line === "repo") {
   check(sl?.real && sl.len === value().length && !sl.raw_value_in_log, "the released `secret` reads the real secret (its hash and length; the value never printed)");
   check(!!sl && sl.token_write !== null && sl.token_write !== 201, `the released job's token write is still refused (${sl?.token_write})`);
   check(sj?.started_at && Date.parse(sj.started_at) >= tApprove - 2000, "the released job started after the approval");
+  // ---- (s): the gate held for the agent's pull request only ----
+  await sleep(60_000);
+  const ss = await sameSecret();
+  ev({ same_after_release: ss });
+  check(ss?.state === "SecretsWait" && ss.waits_on === pushed && ss.steps === 0,
+    "the same-SHA pull request's `secret` stays waiting 60 s after the agent's pull request's release (F150)");
   // ---- the fail line over every run of the pull request ----
   const all = [];
   for (const r of await runsOf(pr.number)) all.push(await runView(r.id));
+  if (srun) all.push(await runView(srun.id));
   let leaks = 0, read = 0;
   for (const v of all) {
     for (const j of v.jobs) {
@@ -236,7 +267,7 @@ if (line === "repo") {
   }
   const others = all.filter((v) => v.id !== run.id).flatMap((v) => v.jobs.filter((j) => j.name === "secret"));
   ev({ runs: all.length, other_secret_jobs: others.map((j) => ({ state: j.state, waits_on: j.waits_on, steps: j.steps })), secret_lines_read: read, leaks });
-  check(all.every((v) => v.fork === true), "every agent run of the pull request is fork");
+  check(all.every((v) => v.fork === true), "every agent run of both pull requests is fork");
   check(others.every((j) => j.state === "SecretsWait" && j.steps === 0), "every other head's `secret` stays waiting");
   check(leaks === 0, `no job of an agent run read the secret before AgentGate held for its head (${leaks} leaks)`);
   for (const v of all) ev({ cancel_run: v.id, status: (await api("POST", `${V3}/actions/runs/${v.id}/cancel`, admin)).status });
@@ -246,7 +277,6 @@ if (line === "repo") {
   writeFileSync(join(g.wt, "human.txt"), `${br}\n`);
   g.run(["add", "-A"]); g.run(["commit", "-q", "-m", "l004 control"]);
   ev({ control_push: g.run(["push", "-q", "origin", `HEAD:refs/heads/${br}`]).ok });
-  const repoId = (await gql(admin, `query { repository(owner: "m3org", name: "${name}") { id } }`)).body?.data?.repository?.id;
   const cp = await gql(admin, "mutation($i: CreatePullRequestInput!) { createPullRequest(input: $i) { pullRequest { number } } }",
     { i: { repositoryId: repoId, baseRefName: "main", headRefName: br, title: "l004 control", body: "l004 control" } });
   const cn = cp.body?.data?.createPullRequest?.pullRequest?.number;

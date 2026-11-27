@@ -17,6 +17,8 @@
 #   site1        a site day from TREE (test-faults build done, BUILD_LOG ending "build exit 0"), every live GRAFTYARD_*
 #                flag of site a kept, nothing added: 0x15.14's reader on every member
 #   site2        the same with GRAFTYARD_SECRETS_WAIT=1 added (GRAFTYARD_AGENT_CI=1 is live and kept)
+#   site3        the same with GRAFTYARD_SECRETS_BRANCH=1 added (F150), after a site day that shipped 0x15.15's reader:
+#                only then does `l004`'s same-SHA check pass
 #   edge         an edge day from TREE: the live FORMATS_ENABLED plus 21.14, nothing else changed (WEB copied to
 #                /tmp/bf71web, the old copy kept as .prev)
 #   init | register | keys | infra | front | probe-deploy     lf7-day.sh's, as ROW=l004 TB=1
@@ -103,7 +105,7 @@ site_day() {
 }
 sw_state() {
   for n in graft-m4a-site-a graft-m4a-site-b graft-m4a-site-c graft-m4a-edge; do
-    echo "$(deployment $n) $(api "$B/workers/scripts/$n/settings" | jq -c '[.result.bindings[] | select(.type == "plain_text" and (.name | test("AGENT_CI|SECRETS_WAIT|FORMATS_ENABLED"))) | if .name == "FORMATS_ENABLED" then "FORMATS_ENABLED \(.text | split(",") | length) has 21.14: \(.text | split(",") | index("21.14") != null)" else "\(.name)=\(.text)" end]')"
+    echo "$(deployment $n) $(api "$B/workers/scripts/$n/settings" | jq -c '[.result.bindings[] | select(.type == "plain_text" and (.name | test("AGENT_CI|SECRETS_WAIT|SECRETS_BRANCH|FORMATS_ENABLED"))) | if .name == "FORMATS_ENABLED" then "FORMATS_ENABLED \(.text | split(",") | length) has 21.14: \(.text | split(",") | index("21.14") != null)" else "\(.name)=\(.text)" end]')"
   done
 }
 
@@ -125,6 +127,9 @@ site1)
 site2)
   spend >/dev/null || exit 3
   { spend; site_day "--var GRAFTYARD_SECRETS_WAIT=1"; } 2>&1 | log ;;
+site3)
+  spend >/dev/null || exit 3
+  { spend; site_day "--var GRAFTYARD_SECRETS_BRANCH=1"; } 2>&1 | log ;;
 edge)
   spend >/dev/null || exit 3
   { spend
