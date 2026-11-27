@@ -5,7 +5,7 @@ AM3-WP3's"), approved by the operator with an Anthropic API key (`FRAME.md`, "Op
 for LM-3's real-harness kill case"). It is the scripted row (`tests/am3/results/lm3-kill.md`, r2 PASS) with the stock
 Claude Code CLI as the harness. The runner account stands in as the agents account, as for LF-7 and the scripted row.
 
-**Status: PASS on row run 2 (tag real1, 2026-11-27).** See "Result" at the end. The plan above it is as written
+**Status: met. PASS on row run 2 (tag real1, 2026-11-27), accepted by the lead.** See "Result" at the end. The plan above it is as written
 before the run.
 
 ## What it needs that the scripted row did not
