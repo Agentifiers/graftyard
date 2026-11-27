@@ -1,0 +1,6 @@
+2026-11-27T11:06:25Z
+e0d76645a
+{"count":589,"prev":"e342694cfc31e987064f86799343760a4a1c41e53b9efe68ac88eddcfd9e4f59"}
+wrote unsigned Keys to ~/.graft-m4a/l004/keys.unsigned, prev e342694cfc31e987064f86799343760a4a1c41e53b9efe68ac88eddcfd9e4f59
+{"digest":"d442e847a7c172809741e549b42eeec196fa522d6bb2a58eb62114c782ae431f","index":1435,"status":201}
+{"count":590,"keys":{"agents_executor":"b0b1f4e626546d769b0b3c695c04cd09d5bc480a06ea3e7042b0ef544d8558ab","customer":"031923da25f100f1e0586087cd86b749be1ae6d26a75f4fa8cc6112f2dd882bd","drain":"477de5269050c38534d965f1a4d95c17f2f0fe1a4089bfa51c0b598d8c67c70b","executor":"d387253b7e8b191191dfd4508252587bf37f0dcad90ed180e2b8b42d85aaef1b","generation":17,"release":"dbde3befb57425850c8dc215410af552b1a23eede0ecc7c42dd2299076f3893f","vendor":null}}

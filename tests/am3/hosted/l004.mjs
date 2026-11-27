@@ -116,7 +116,8 @@ const approve = (tok, id, commitOID) => gql(tok, "mutation($i: AddPullRequestRev
 if (line === "repo") {
   const made = await api("POST", "/api/v3/orgs/m3org/repos", admin, { name, private: true, auto_init: true });
   ev({ create: R, status: made.status });
-  if (made.status !== 201) process.exit(1);
+  // A create that committed but answered 503 (r2, right after a site day) leaves the repository there: go on with it.
+  if (made.status !== 201 && (await api("GET", V3, admin)).status !== 200) process.exit(1);
   if (!existsSync(VALUE_FILE)) writeFileSync(VALUE_FILE, `l004-${randomBytes(18).toString("base64url")}\n`, { mode: 0o600 });
   mkdirSync(join(out, "ghcfg"), { recursive: true });
   const gh = spawnSync("gh", ["secret", "set", "L004_SECRET", "-R", `${HOST}/${R}`], { input: value(), encoding: "utf8",
