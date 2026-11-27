@@ -125,3 +125,20 @@ fn seen_is_bounded_and_evicts_the_oldest() {
     assert_eq!(intake(SECRET, &delivery(BODY, "d2"), BODY, &mut seen), Intake::Duplicate);
     assert!(matches!(intake(SECRET, &delivery(BODY, "d0"), BODY, &mut seen), Intake::Accepted { .. }));
 }
+
+/// F143: the create matches `graftyard-agent`'s bot by its App id and type, so a delivery whose host rendered the bot
+/// without its App record (`ghost[bot]`, the App's id) still creates. Another App's bot, or a user whose account id
+/// equals the App's, does not.
+#[test]
+fn the_agent_bot_is_matched_by_app_id_not_login() {
+    use graftyard_controller::assigns_app_bot;
+    use serde_json::json;
+    const APP: i64 = 3_801_088;
+    let assigned = |assignee| json!({ "action": "assigned", "issue": { "number": 1 }, "assignee": assignee });
+    let bot = |login: &str, id: i64| json!({ "login": login, "id": id, "type": "Bot" });
+    assert!(assigns_app_bot(&assigned(bot("graftyard-agent[bot]", APP)), APP));
+    assert!(assigns_app_bot(&assigned(bot("ghost[bot]", APP)), APP));
+    assert!(!assigns_app_bot(&assigned(bot("graftyard-agent[bot]", 3_801_089)), APP), "another App's bot");
+    assert!(!assigns_app_bot(&assigned(json!({ "login": "alice", "id": APP, "type": "User" })), APP));
+    assert!(!assigns_app_bot(&json!({ "action": "assigned", "issue": { "number": 1 } }), APP));
+}

@@ -1,0 +1,26 @@
+2026-11-27T00:23:50Z
+dccb79754
+box namespaces before: [{"id":"d2f3f72f5fbe4d2ca41db5b78872d206","name":"graft-agents-m4a-controller_TaskBox","class":"TaskBox"}]
+  d2f3f72f5fbe4d2ca41db5b78872d206 objects: 88
+box alarm lines in 60 s before: 2
+2026-11-27T00:24:55.678Z {"delete":"m3org/inrepo-r1","status":204}
+2026-11-27T00:24:56.081Z {"policy":404}
+2026-11-27T00:24:57.846Z {"reader_pat":"revoked","after":401}
+2026-11-27T00:24:58.291Z {"reader":"suspended"}
+inrepo teardown exit 0
+    "app": "graft-agents-m4a-controller-taskbox",
+    "running": 1
+  }
+]
+{"torn_down": 2, "codes": {"200": 2}}
+sweep: no shard container running
+agents apps after: []
+FAIL: containers left running
+kill-row teardown exit 2
+box namespaces after: []
+graft-runners Sandboxes running: 0
+shardkill deployed: https://graft-m4a-shardkill.<sub>.workers.dev
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+shardkill deleted: True
+sweep exit 0

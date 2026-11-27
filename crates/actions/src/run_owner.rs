@@ -306,7 +306,9 @@ fn check_run(
     annotations: &[CheckAnnotation],
 ) -> CheckRunUpdate {
     let (status, c, completed) = match s {
-        JobState::Pending { .. } | JobState::Queued { .. } | JobState::Held { .. } => (CheckStatus::Queued, None, None),
+        JobState::Pending { .. } | JobState::Queued { .. } | JobState::Held { .. } | JobState::SecretsWait { .. } => {
+            (CheckStatus::Queued, None, None)
+        }
         JobState::Assigned { .. } | JobState::InProgress { .. } => (CheckStatus::InProgress, None, None),
         JobState::Completed { conclusion: k, at } => (CheckStatus::Completed, Some(conclusion(*k)), Some(*at)),
     };

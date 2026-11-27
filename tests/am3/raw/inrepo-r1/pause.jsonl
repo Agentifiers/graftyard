@@ -1,0 +1,64 @@
+{"t":1795726153942,"issue":201,"n":1,"author":"m3-reader"}
+{"t":1795726155302,"assign":201}
+{"t":1795726635019,"hold":"01a219a6-0ad2-8d62-b501-6399710e6731","on":true,"ok":true}
+{"t":1795726643882,"check":"the task runs","ok":true}
+{"t":1795726658538,"writer_edit":200,"state_after":"in_progress"}
+{"t":1795726660163,"check":"a writer's edit pauses nothing","ok":true}
+{"t":1795726664275,"reader_edit":200,"state_in_reply_window":"waiting_for_user"}
+{"t":1795726664275,"check":"the base reads waiting_for_user right after the reader's edit","ok":true}
+{"t":1795726939458,"issue":201,"n":2,"author":"m3-reader"}
+{"t":1795726941171,"assign":201}
+{"t":1795727423361,"timeout":"the controller's task","ms":480000}
+{"t":1795727423361,"controller_create_ms":null}
+{"t":1795727423362,"check":"the controller creates the task","ok":false}
+{"t":1795728337572,"issue":201,"n":3,"author":"m3-reader"}
+{"t":1795728339301,"assign":201}
+{"t":1795728354693,"controller_create_ms":15392,"task":"01a219c0-4535-88d5-bcd6-eefdbcc6f34f","created_at":"2026-11-26T21:26:03Z"}
+{"t":1795728357399,"hold":"01a219c0-4535-88d5-bcd6-eefdbcc6f34f","on":true,"ok":true}
+{"t":1795728358974,"check":"the task runs","ok":true}
+{"t":1795728374656,"writer_edit":200,"state_after":"in_progress"}
+{"t":1795728376309,"check":"a writer's edit pauses nothing","ok":true}
+{"t":1795728379405,"reader_edit":200,"state_in_reply_window":"waiting_for_user"}
+{"t":1795728379406,"check":"the base reads waiting_for_user right after the reader's edit","ok":true}
+{"t":1795728440134,"timeout":"box stopped","ms":60000}
+{"t":1795728440134,"box_stopped_ms":null}
+{"t":1795728440135,"check":"the box stops its Sandbox within 30 s","ok":false}
+{"t":1795728450306,"app_patch":409,"message":"The task is waiting_for_user"}
+{"t":1795728450306,"check":"the App's PATCH in_progress gets 409","ok":true}
+{"t":1795728452856,"task_mint":422,"message":"graftyard_task names a task that is not a live graftyard_run task"}
+{"t":1795728452856,"check":"a graftyard_task mint gets 422","ok":true}
+{"t":1795728469816,"reader_reassign":201,"state":"waiting_for_user"}
+{"t":1795728471604,"check":"a reader's reassignment resumes nothing","ok":true}
+{"t":1795728474615,"writer_reassign":201,"state":"queued"}
+{"t":1795728490785,"resumed":true,"tasks_for_issue":["01a219c0-4535-88d5-bcd6-eefdbcc6f34f"]}
+{"t":1795728490786,"check":"after the writer's reassignment the same task reads queued (or already in_progress)","ok":true}
+{"t":1795728490786,"check":"the same task runs again on a new Sandbox","ok":false}
+{"t":1795728490786,"check":"no second task exists","ok":true}
+{"t":1795728490786,"snapshot_note":"the base's task JSON carries no snapshot; the row reads it from the box generation and the TaskResumed entry (see results)","before":"2026-11-26T21:26:11Z"}
+{"t":1795728493477,"hold":"01a219c0-4535-88d5-bcd6-eefdbcc6f34f","on":false,"ok":true}
+{"t":1795728494347,"cancel":"01a219c0-4535-88d5-bcd6-eefdbcc6f34f","status":200}
+{"t":1795728692294,"issue":201,"n":4,"author":"m3-reader"}
+{"t":1795728693982,"assign":201}
+{"t":1795728708923,"controller_create_ms":14940,"task":"01a219c5-b124-8037-b5bb-7d46aa9d88c9","created_at":"2026-11-26T21:31:58Z"}
+{"t":1795728711374,"hold":"01a219c5-b124-8037-b5bb-7d46aa9d88c9","on":true,"ok":true}
+{"t":1795728712820,"check":"the task runs","ok":true}
+{"t":1795728728350,"writer_edit":200,"state_after":"in_progress"}
+{"t":1795728730089,"check":"a writer's edit pauses nothing","ok":true}
+{"t":1795728733316,"reader_edit":200,"state_in_reply_window":"waiting_for_user"}
+{"t":1795728733316,"check":"the base reads waiting_for_user right after the reader's edit","ok":true}
+{"t":1795728737440,"box_stopped_ms":4123,"box_state":{"Paused":{"reason":"the issue was edited by someone who cannot push"}}}
+{"t":1795728737441,"check":"the box stops its Sandbox within 30 s","ok":true}
+{"t":1795728744215,"app_patch":409,"message":"The task is waiting_for_user"}
+{"t":1795728744216,"check":"the App's PATCH in_progress gets 409","ok":true}
+{"t":1795728745664,"task_mint":422,"message":"graftyard_task names a task that is not a live graftyard_run task"}
+{"t":1795728745664,"check":"a graftyard_task mint gets 422","ok":true}
+{"t":1795728762628,"reader_reassign":201,"state":"waiting_for_user"}
+{"t":1795728764143,"check":"a reader's reassignment resumes nothing","ok":true}
+{"t":1795728767319,"writer_reassign":201,"state":"queued"}
+{"t":1795728784991,"resumed":true,"sandbox":"01a219c5-b124-8037-b5bb-7d46aa9d88c9-2","generation":2,"tasks_for_issue":["01a219c5-b124-8037-b5bb-7d46aa9d88c9"]}
+{"t":1795728784991,"check":"after the writer's reassignment the same task reads queued (or already in_progress)","ok":true}
+{"t":1795728784991,"check":"the same task runs again on a new Sandbox","ok":true}
+{"t":1795728784991,"check":"no second task exists","ok":true}
+{"t":1795728784991,"snapshot_note":"the base's task JSON carries no snapshot; the row reads it from the box generation and the TaskResumed entry (see results)","before":"2026-11-26T21:32:05Z"}
+{"t":1795728787394,"hold":"01a219c5-b124-8037-b5bb-7d46aa9d88c9","on":false,"ok":true}
+{"t":1795728788471,"cancel":"01a219c5-b124-8037-b5bb-7d46aa9d88c9","status":200}

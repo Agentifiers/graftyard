@@ -51,8 +51,11 @@ const WARM_ASK_WAIT_S: u64 = 5;
 
 /// The move's warm ask of `repo`'s network shard, with the record already URI-encoded: a start (`warm=start`), not a
 /// client's request.
-fn warm_url(repo: graftyard_types::RepoId, record: &str) -> String {
-    format!("https://shard/catchup?warm=start&repo={}&record={record}&wait={WARM_ASK_WAIT_S}&next=1", repo.0.0)
+fn warm_url(repo: graftyard_types::RepoId, net: graftyard_types::NetworkId, record: &str) -> String {
+    format!(
+        "https://shard/catchup?warm=start&{}&record={record}&wait={WARM_ASK_WAIT_S}&next=1",
+        graftyard_git::shard_query(repo, net)
+    )
 }
 
 /// Whether `to`'s first git cache shard of `repo`'s network answered its catch-up 200. Anything else, `warming`, an
@@ -65,14 +68,15 @@ async fn shard_warm(
     env: &Env,
     site: &SiteEnv,
     repo: graftyard_types::RepoId,
+    net: graftyard_types::NetworkId,
     to: SiteId,
     record: &PlacementRecord,
 ) -> bool {
     let call = async {
         let rec = serde_json::to_string(record).ok()?;
-        let name = graftyard_git::first_shard_name(graftyard_types::NetworkId::of_root(repo), to);
+        let name = graftyard_git::first_shard_name(net, to);
         let st = crate::fanout::stub(env, &site.sites, to, &name).ok()?;
-        let url = warm_url(repo, &String::from(worker::js_sys::encode_uri_component(&rec)));
+        let url = warm_url(repo, net, &String::from(worker::js_sys::encode_uri_component(&rec)));
         let mut init = RequestInit::new();
         init.with_method(Method::Post);
         let r = st.fetch_with_request(Request::new_with_init(&url, &init).ok()?).await.ok()?;
@@ -3460,7 +3464,12 @@ impl<F: Family> Routes<F> {
             (chain, graftyard_identity::group_move::warm_site(&cfg, me, &to, step))
         {
             use graftyard_identity::group_move::{TransferGate, transfer_gate};
-            let warm = shard_warm(&self.host.env, &site, repo, next, &record).await;
+            let net = {
+                let core = self.host.core.borrow();
+                let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
+                F::network(&c.m.group_fold().fold, chain).unwrap_or(graftyard_types::NetworkId::of_root(repo))
+            };
+            let warm = shard_warm(&self.host.env, &site, repo, net, next, &record).await;
             let now = Timestamp(now_ms());
             let (gate, wait, waited) =
                 WARM_WAITS.with(|w| transfer_gate(warm, w.borrow().get(&(chain, next)).copied(), now));
@@ -3873,8 +3882,11 @@ mod tests {
     fn a_moves_warm_ask_starts_the_shard_but_keeps_it_no_longer_than_promote_lapse() {
         use graftyard_git::{Caller, PROMOTE_LAPSE, Serve, caller, promote_lapse, serve};
 
+        use graftyard_types::{DbId, NetworkId, RepoId};
+
         use super::warm_url;
-        let u = warm_url(graftyard_types::RepoId(graftyard_types::DbId(7001)), "%7B%7D");
+        let repo = RepoId(DbId(7001));
+        let u = warm_url(repo, NetworkId::of_root(repo), "%7B%7D");
         let (path, query) = u.strip_prefix("https://shard").and_then(|r| r.split_once('?')).expect("a shard URL");
         let q = |k: &str| query.split('&').find_map(|p| p.strip_prefix(k)?.strip_prefix('='));
         let c = caller(path, q("warm"));
@@ -3885,6 +3897,12 @@ mod tests {
         let client_an_hour_ago = graftyard_types::Timestamp(now.0 - 3_600_000);
         assert_eq!(promote_lapse(c, now, Some(client_an_hour_ago)), None, "a shard a client reads keeps its day");
         assert_eq!((path, q("next"), q("repo")), ("/catchup", Some("1"), Some("7001")));
+
+        let u = warm_url(RepoId(DbId(7002)), NetworkId(DbId(7001)), "%7B%7D");
+        let (_, query) = u.strip_prefix("https://shard").and_then(|r| r.split_once('?')).expect("a shard URL");
+        let q = |k: &str| query.split('&').find_map(|p| p.strip_prefix(k)?.strip_prefix('='));
+        assert_eq!(q("repo"), Some("7002"));
+        assert_eq!(q("net"), Some("7001"));
     }
 
     /// The lifeboat front's credential read (`{"lifeboat": hash}`) names an account only for a `LifeboatRead` row: a

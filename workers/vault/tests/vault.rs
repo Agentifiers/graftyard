@@ -840,3 +840,105 @@ fn another_object_at_the_key_is_never_taken_for_the_one_meant() {
     assert_eq!(v.state().missed, 1);
     assert_eq!(v.bucket.borrow()[&pk].0, b"PACK two");
 }
+
+const FORK: i64 = 7;
+const NET3: NetworkId = NetworkId(DbId(3));
+
+/// A fork's first entry (AM3-WP2a): its `Genesis` names network 3, whose prefix holds its packs.
+fn genesis(at: u64) -> Vec<u8> {
+    entry(
+        1,
+        at,
+        vec![RepoEvent::Genesis {
+            owner: AccountId(DbId(1)),
+            network: NET3,
+            name: serde_json::from_str("\"fork\"").unwrap(),
+            fork_of: Some((RepoId(DbId(3)), Index(9))),
+        }],
+    )
+}
+
+/// A fork's packs are its network's (`pack/3/`), never under its own id, which is no network's: the vault copies
+/// them from `packs/{id}?network=3` into `pack_key(3, id)`.
+#[test]
+fn a_fork_s_packs_are_copied_under_its_network_from_its_genesis() {
+    let inst = RefCell::new(Install::default());
+    let v = Vault::new(&inst);
+    let id = PackId(Ulid((u128::from(T0) << 80) | 1));
+    let body = b"PACK a fork's push".to_vec();
+    inst.borrow_mut().packs.insert(id, (NET3, body.clone()));
+    inst.borrow_mut().add(repo(FORK), genesis(T0));
+    inst.borrow_mut().add(repo(FORK), entry(2, T0, vec![push(2, Some(stored(id, &body)))]));
+    inst.borrow_mut().feed(T0);
+    v.now.set(T0 + 30_000);
+    v.drain();
+    assert_eq!(v.keys("pack/"), vec![graftyard_vault::pack_key(NET3, id)]);
+    assert_eq!(v.bucket.borrow()[&graftyard_vault::pack_key(NET3, id)].0, body);
+    assert_eq!(*v.copied.borrow(), vec![NET3], "never tried under the fork's own id");
+    let st = v.state();
+    assert_eq!(st.networks, BTreeMap::from([(RepoId(DbId(FORK)), NET3)]));
+    assert_eq!((st.missed, st.copies.len()), (0, 0));
+    assert_eq!(VaultState::decode(&st.encode()).unwrap(), st);
+}
+
+/// A backfilled fork absorbs a later row before its index-1 `Genesis`: what it owed under its own id moves to its
+/// network once the `Genesis` arrives, and until then the copy loop leaves it owed rather than ask the install for
+/// `pack/7/`.
+#[test]
+fn a_backfilled_fork_s_genesis_moves_what_it_owed_to_its_network() {
+    let a = PackId(Ulid((u128::from(T0) << 80) | 1));
+    let b = PackId(Ulid((u128::from(T0) << 80) | 2));
+    let (ba, bb) = (b"PACK a".to_vec(), b"PACK b".to_vec());
+    let own = NetworkId::of_root(RepoId(DbId(FORK)));
+    let mut st = VaultState::default();
+    graftyard_vault::absorb(&mut st, repo(FORK), &[entry(3, T0, vec![push(3, Some(stored(b, &bb)))])]);
+    let owed = |st: &VaultState| st.copies.iter().cloned().collect::<Vec<_>>();
+    let pack = |network, id, bytes: &[u8]| graftyard_vault::Copy::Pack {
+        network,
+        id,
+        checksum: sum(bytes),
+        bytes: bytes.len() as u64,
+    };
+    assert_eq!(owed(&st), vec![pack(own, b, &bb)], "a root, as far as the vault knows");
+    st.gc.insert(
+        graftyard_vault::pack_key(own, b),
+        graftyard_vault::Gc { after: Timestamp(T0), probed: None, gone: None },
+    );
+    graftyard_vault::absorb(&mut st, repo(FORK), &[genesis(T0), entry(2, T0, vec![push(2, Some(stored(a, &ba)))])]);
+    assert_eq!(owed(&st), vec![pack(NET3, a, &ba), pack(NET3, b, &bb)]);
+    assert_eq!(st.gc.keys().cloned().collect::<Vec<_>>(), vec![graftyard_vault::pack_key(NET3, b)]);
+    assert_eq!(st.networks, BTreeMap::from([(RepoId(DbId(FORK)), NET3)]));
+
+    // In a pass: the fork's index 1 is not read yet (its entries page fails), so its copy under its own id waits.
+    let inst = RefCell::new(Install::default());
+    let v = Vault::new(&inst);
+    let mut st = VaultState::default();
+    graftyard_vault::absorb(&mut st, repo(FORK), &[entry(3, T0, vec![push(3, Some(stored(b, &bb)))])]);
+    st.backfill.insert(repo(FORK), graftyard_vault::Backfill { next: Index(1), until: Index(3) });
+    v.bucket.borrow_mut().insert("state/vault".into(), (st.encode(), T0, None));
+    v.now.set(T0 + 30_000);
+    let r = v.run();
+    assert!(r.more, "{r:?}");
+    assert!(v.copied.borrow().is_empty(), "nothing asked of pack/{FORK}/");
+    assert_eq!(owed(&v.state()), vec![pack(own, b, &bb)], "still owed");
+}
+
+/// A root chain's state is written as before forks: no `networks` key, and its packs under its own id.
+#[test]
+fn a_root_chain_s_state_is_written_as_before_forks() {
+    let id = PackId(Ulid(1));
+    let mut st = VaultState::default();
+    graftyard_vault::absorb(&mut st, repo(1), &[entry(1, T0, vec![push(1, Some(stored(id, b"PACK")))])]);
+    assert!(st.networks.is_empty());
+    let json = String::from_utf8(st.encode()).unwrap();
+    assert_eq!(
+        json,
+        format!(
+            "{{\"feed\":{{\"last\":null,\"cursors\":{{}}}},\"backfill\":{{}},\"copies\":[{{\"pack\":{{\"network\":1,\
+             \"id\":\"{id}\",\"checksum\":{},\"bytes\":4}}}}],\"copy_turn\":null,\"gc\":{{}},\"deleted\":{{}},\
+             \"missed\":0,\"undecoded\":0}}",
+            serde_json::to_string(&sum(b"PACK")).unwrap()
+        )
+    );
+    assert_eq!(VaultState::decode(json.as_bytes()).unwrap(), st);
+}

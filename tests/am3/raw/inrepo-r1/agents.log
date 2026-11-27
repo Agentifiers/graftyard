@@ -1,0 +1,15 @@
+2026-11-26T18:00:11Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $0.01, graft-agents-m4a- $0, graft-runners $0.0, total $0.01 (stop $3.00)
+kill-row init exit 0
+kill-row register exit 0
+kill-row keys exit 0
+kill-row infra exit 0
+kill-row taskbox exit 0
+kill-row controller exit 0
+kill-row front exit 0
+kill-row FRONTB taskbox exit 0
+kill-row controller exit 0
+kill-row probe-deploy exit 0
+kill-row install exit 0
+kill-row hook exit 0

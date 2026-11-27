@@ -1,0 +1,17 @@
+2026-11-26T20:35:15Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $0.57, graft-agents-m4a- $0.03, graft-runners $0.0, total $0.6 (stop $3.00)
+edge from TREE b6a44183c
+2026-11-26T20:35:20Z
+dccb79754
+before {"script":"graft-m4a-edge","created_on":"2026-11-26T17:52:51.860754Z","versions":["0bb4c7e1 100"]}
+deploy exit 1
+Error: Command failed: worker-build --release --out-dir ~/lmb/workers/edge/build --features test-faults
+    at genericNodeError (node:internal/errors:999:15)
+    at wrappedFn (node:internal/errors:544:14)
+    at checkExecSyncError (node:child_process:990:11)
+binding diff (plain text; only HOST and FORMATS_ENABLED by ADDFMT may change):
+after {"script":"graft-m4a-edge","created_on":"2026-11-26T17:52:51.860754Z","versions":["0bb4c7e1 100"]}
+edge: ~/lmr/tests/m4/raw/wp3/lm3inrepo/r1/edge-deploy.raw names no deployed version (rev [INFO]: 🌀  Compiling to Wasm...); the site day's edge deploy did not finish
+edgever exit 3
+FORMATS_ENABLED now 40 formats; has 32.32: 1, 32.33: 1

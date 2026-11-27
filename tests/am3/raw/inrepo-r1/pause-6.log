@@ -1,0 +1,31 @@
+2026-11-26T21:25:28Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $0.84, graft-agents-m4a- $0.03, graft-runners $0.0, total $0.87 (stop $3.00)
+2026-11-26T21:25:37.572Z {"issue":201,"n":3,"author":"m3-reader"}
+2026-11-26T21:25:39.301Z {"assign":201}
+2026-11-26T21:25:54.693Z {"controller_create_ms":15392,"task":"01a219c0-4535-88d5-bcd6-eefdbcc6f34f","created_at":"2026-11-26T21:26:03Z"}
+2026-11-26T21:25:57.399Z {"hold":"01a219c0-4535-88d5-bcd6-eefdbcc6f34f","on":true,"ok":true}
+2026-11-26T21:25:58.974Z {"check":"the task runs","ok":true}
+2026-11-26T21:26:14.656Z {"writer_edit":200,"state_after":"in_progress"}
+2026-11-26T21:26:16.309Z {"check":"a writer's edit pauses nothing","ok":true}
+2026-11-26T21:26:19.406Z {"reader_edit":200,"state_in_reply_window":"waiting_for_user"}
+2026-11-26T21:26:19.406Z {"check":"the base reads waiting_for_user right after the reader's edit","ok":true}
+2026-11-26T21:27:20.134Z {"timeout":"box stopped","ms":60000}
+2026-11-26T21:27:20.135Z {"box_stopped_ms":null}
+2026-11-26T21:27:20.135Z {"check":"the box stops its Sandbox within 30 s","ok":false}
+2026-11-26T21:27:30.306Z {"app_patch":409,"message":"The task is waiting_for_user"}
+2026-11-26T21:27:30.306Z {"check":"the App's PATCH in_progress gets 409","ok":true}
+2026-11-26T21:27:32.856Z {"task_mint":422,"message":"graftyard_task names a task that is not a live graftyard_run task"}
+2026-11-26T21:27:32.856Z {"check":"a graftyard_task mint gets 422","ok":true}
+2026-11-26T21:27:49.817Z {"reader_reassign":201,"state":"waiting_for_user"}
+2026-11-26T21:27:51.604Z {"check":"a reader's reassignment resumes nothing","ok":true}
+2026-11-26T21:27:54.615Z {"writer_reassign":201,"state":"queued"}
+2026-11-26T21:28:10.786Z {"resumed":true,"tasks_for_issue":["01a219c0-4535-88d5-bcd6-eefdbcc6f34f"]}
+2026-11-26T21:28:10.786Z {"check":"after the writer's reassignment the same task reads queued (or already in_progress)","ok":true}
+2026-11-26T21:28:10.786Z {"check":"the same task runs again on a new Sandbox","ok":false}
+2026-11-26T21:28:10.786Z {"check":"no second task exists","ok":true}
+2026-11-26T21:28:10.786Z {"snapshot_note":"the base's task JSON carries no snapshot; the row reads it from the box generation and the TaskResumed entry (see results)","before":"2026-11-26T21:26:11Z"}
+2026-11-26T21:28:13.477Z {"hold":"01a219c0-4535-88d5-bcd6-eefdbcc6f34f","on":false,"ok":true}
+2026-11-26T21:28:14.347Z {"cancel":"01a219c0-4535-88d5-bcd6-eefdbcc6f34f","status":200}
+VERDICT pause FAIL the box stops its Sandbox within 30 s; the same task runs again on a new Sandbox
+pause exit 1

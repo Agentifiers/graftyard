@@ -1685,6 +1685,8 @@ Added by the lead on 2026-11-26 (`decisions/DECISIONS.md`, "`forks-before-worksp
 
 **Depends on.** M2, M3, M5-WP5 (the vault and the export endpoints that read networks).
 
+**Progress (2026-11-26, $0, plant277).** Heads 0 and 1 merged: the network derivations, the fork's network on its chain's access rows and on `Names`' `ForkOwner` (DECISIONS, "`fork-network-read`"). Head 2, network-keyed packs and shard: every call to a git cache shard names the repository as `graftyard_git::shard_query` does, `repo=<id>` and `&net=<network>` only for a fork, so a root's call keeps main's bytes and an older shard still serves every root; the site keys a fork's pack markers, promotions, test merges, warms and fan-out grants by `Family::network`, its fold's `fork` row; the vault and the lifeboat learn a fork's network from the `Genesis` in its rows (`networks`, written only when a fork exists), move what a backfilled fork already owed under its own id, and copy nothing of a backfilled chain until its index 1 is read. Left for head 4: the shard's catch-up of every member chain (it still catches up the root chain alone), the sweep's and the fan-out pool's root; for slice 2: the vault's GC of a deleted fork's packs, which are its network's.
+
 **Acceptance.**
 
 | Row | Measurement | Pass | Fail |

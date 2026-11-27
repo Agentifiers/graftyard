@@ -97,6 +97,10 @@ pub struct State {
     /// The git copy (`crate::git`).
     #[serde(default)]
     pub git: crate::git::GitCopy,
+    /// Each fork's network, from its chain's `Genesis` (AM3-WP2a). Only forks are kept: a root's network is its own
+    /// id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub networks: BTreeMap<RepoId, NetworkId>,
 }
 
 /// What an import answered: the last index the copy holds, and the halt if the copy stopped.
@@ -164,24 +168,46 @@ pub struct Report {
     pub more: bool,
 }
 
-/// The repository network a chain's packs are in.
-fn network_of(chain: ChainId) -> Option<NetworkId> {
+/// The repository network a chain's packs are in: a fork's from its `Genesis` (`State::networks`), else the
+/// repository's own id.
+pub fn network_of(networks: &BTreeMap<RepoId, NetworkId>, chain: ChainId) -> Option<NetworkId> {
     match chain {
-        ChainId::Repo(r) | ChainId::RepoMeta(r) => Some(NetworkId::of_root(r)),
+        ChainId::Repo(r) | ChainId::RepoMeta(r) => Some(networks.get(&r).copied().unwrap_or(NetworkId::of_root(r))),
         _ => None,
     }
 }
 
-/// The packs `rows` of `chain` name. A repository row that does not decode is the copy's to halt on, not the
-/// puller's: it is skipped here.
-pub fn owed_by(chain: ChainId, rows: &[Vec<u8>]) -> Vec<Owed> {
-    let Some(network) = network_of(chain) else { return Vec::new() };
-    let mut out = Vec::new();
-    for row in rows {
-        let Ok(e) = codec::from_bytes::<LogEntry<RepoEvent>>(row) else { continue };
-        if e.format.family != REPO_FORMAT_V1.family {
-            continue;
+/// The packs `rows` of `chain` name, each under its chain's network. A fork's `Genesis` among them is recorded in
+/// `st.networks` first, and packs already owed under the fork's own id move to its network: only its chains name that
+/// id, since a fork's id is never a network's. A repository row that does not decode is the copy's to halt on, not
+/// the puller's: it is skipped here.
+pub fn owed_by(st: &mut State, chain: ChainId, rows: &[Vec<u8>]) -> Vec<Owed> {
+    let (ChainId::Repo(repo) | ChainId::RepoMeta(repo)) = chain else { return Vec::new() };
+    let entries: Vec<LogEntry<RepoEvent>> = rows
+        .iter()
+        .filter_map(|row| codec::from_bytes::<LogEntry<RepoEvent>>(row).ok())
+        .filter(|e| e.format.family == REPO_FORMAT_V1.family)
+        .collect();
+    for e in &entries {
+        let EntryBody::Events(evs) = &e.body else { continue };
+        for ev in evs {
+            if let RepoEvent::Genesis { network, .. } = ev
+                && network.root() != repo
+                && st.networks.get(&repo) != Some(network)
+            {
+                st.networks.insert(repo, *network);
+                let own = NetworkId::of_root(repo);
+                let moved: Vec<Owed> = st.owed.iter().filter(|o| o.network == own).copied().collect();
+                for o in moved {
+                    st.owed.remove(&o);
+                    st.owed.insert(Owed { network: *network, ..o });
+                }
+            }
         }
+    }
+    let network = network_of(&st.networks, chain).expect("a repository chain");
+    let mut out = Vec::new();
+    for e in &entries {
         let EntryBody::Events(evs) = &e.body else { continue };
         out.extend(stored_packs(evs).into_iter().map(|(id, checksum, bytes)| Owed { network, id, checksum, bytes }));
     }
@@ -190,7 +216,7 @@ pub fn owed_by(chain: ChainId, rows: &[Vec<u8>]) -> Vec<Owed> {
 
 /// The rolls `rows` of `chain` commit: each produced pack with the packs it consumed.
 pub fn rolls_in(chain: ChainId, rows: &[Vec<u8>]) -> Vec<(PackId, Vec<PackId>)> {
-    if network_of(chain).is_none() {
+    if !matches!(chain, ChainId::Repo(_) | ChainId::RepoMeta(_)) {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -232,7 +258,8 @@ async fn take<H: Host>(h: &H, st: &mut State, r: &mut Report, rows: Rows) -> Res
     let got = h.import(rows.chain, &rows.rows).await?;
     let applied = (got.held.0 + 1).saturating_sub(rows.first.0) as usize;
     let rows_in = &rows.rows[..applied.min(rows.rows.len())];
-    st.owed.extend(owed_by(rows.chain, rows_in));
+    let owed = owed_by(st, rows.chain, rows_in);
+    st.owed.extend(owed);
     st.rolls.extend(rolls_in(rows.chain, rows_in));
     st.puller.applied(rows.chain, got.held);
     let top = Index(rows.first.0 + rows.rows.len() as u64 - 1);

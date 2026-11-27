@@ -216,6 +216,35 @@ pub enum Item {
     Queue(Built),
     Pr(PrEvent),
     Push(PushEvent),
+    /// `secrets-wait` (0x15.14): an `AgentGate` the entry recorded, whose head's waiting jobs `ReleaseSecrets` may
+    /// release (`gate_events`).
+    Gate(GateEvent),
+}
+
+/// One `AgentGate` approval of pull request `n` at `head`: once the gate holds there, the jobs of agent runs waiting on
+/// `head` for their secrets are released (`ActionsOp::ReleaseSecrets`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GateEvent {
+    pub n: IssueNumber,
+    pub head: ObjectId,
+}
+
+/// The `AgentGate` rows entry `e` wrote, one per (pull request, head), or none when `e` is more than PR_REPLAY_MS
+/// older than `now`, as for pushes. A job still waiting past that waits for the next approval, or fails at QUEUE_LIMIT.
+pub fn gate_events(e: &LogEntry<RepoEvent>, now: u64) -> Vec<GateEvent> {
+    if now.saturating_sub(e.at.0) > PR_REPLAY_MS {
+        return Vec::new();
+    }
+    let EntryBody::Events(evs) = &e.body else { return Vec::new() };
+    let mut out: Vec<GateEvent> = Vec::new();
+    for ev in evs {
+        if let RepoEvent::AgentGate(g) = ev
+            && !out.iter().any(|x| x.n == g.pr && x.head == g.head)
+        {
+            out.push(GateEvent { n: g.pr, head: g.head });
+        }
+    }
+    out
 }
 
 /// One `push` that starts runs: a branch or tag `r#ref` moved from `before` (zero for a new ref) to `after`, by
@@ -390,6 +419,7 @@ pub fn settle(tried: Vec<(Carried, Tried)>, through: Index, now: u64) -> (Vec<Ca
         match (t, &c.item) {
             (Tried::Done, _) => {}
             (Tried::Again, Item::Pr(_) | Item::Push(_)) if now.saturating_sub(c.at) > PR_REPLAY_MS => dropped.push(c),
+            (Tried::Again, Item::Gate(_)) if now.saturating_sub(c.at) > PR_REPLAY_MS => dropped.push(c),
             (Tried::Again, _) => carried.push(c),
         }
     }
@@ -513,7 +543,9 @@ pub enum AgentRun {
     No,
     /// An agent's run under `CiMode::Approve`, the default: created held (`ActionsOp::CreateRunHeld`) and marked fork.
     Held,
-    /// An agent's run under `CiMode::AutoReadOnly`: queued at once, marked fork.
+    /// An agent's run under `CiMode::AutoReadOnly`: queued at once, marked fork. Where a site day set
+    /// `GRAFTYARD_SECRETS_WAIT`, created waiting (`ActionsOp::CreateRunWaiting`), so its jobs that reference a secret
+    /// wait for `AgentGate` (0x15.14).
     ReadOnly,
 }
 

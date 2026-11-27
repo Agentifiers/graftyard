@@ -759,8 +759,16 @@ pub fn held(mut call: Value) -> Value {
     call
 }
 
+/// `secrets-wait` (0x15.14): a `create_run_call` for an agent run under `ci: AutoReadOnly`, whose jobs that reference
+/// a secret the shard parks until `AgentGate` holds for `head`, the agent's commit (`ActionsOp::CreateRunWaiting`).
+/// Only a site whose site day set `GRAFTYARD_SECRETS_WAIT` sends one.
+pub fn waiting(mut call: Value, head: &[u8; 20]) -> Value {
+    call["waiting"] = json!(head.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    call
+}
+
 /// The command a shard leader commits for a `create_run_call`, with the run's key, wrapped in `CreateRunHeld` when
-/// the call is `held`: `CreateRunPush` (0x15.12) for a
+/// the call is `held` and in `CreateRunWaiting` when it is `waiting`: `CreateRunPush` (0x15.12) for a
 /// `push` run's call that carries its event (`push_run_call`), with its plan when it has one, `CreateRunPlanned` for
 /// another call with a plan (`with_plan`), with its actor when the call names one, `CreateRunAs` (0x15.8) for a call
 /// that names its actor,
@@ -770,6 +778,10 @@ pub fn create_run_op(b: &Value) -> Result<(crate::shard::RunKey, crate::shard::A
     let (key, op) = create_run_op_plain(b)?;
     if b["held"].as_bool() == Some(true) {
         return Ok((key, crate::shard::ActionsOp::CreateRunHeld { create: Box::new(op) }));
+    }
+    if let Some(h) = b["waiting"].as_str() {
+        let head = graftyard_git::refs::ObjectId::parse_hex(h.as_bytes()).ok_or("waiting: not a commit id")?;
+        return Ok((key, crate::shard::ActionsOp::CreateRunWaiting { create: Box::new(op), head: head.0 }));
     }
     Ok((key, op))
 }

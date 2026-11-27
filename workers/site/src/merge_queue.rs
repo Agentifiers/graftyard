@@ -27,7 +27,7 @@ use graftyard_git::queue_consumer::{CacheAnswer, CacheAsk, QueueRead, Step};
 use graftyard_git::refs::RefName;
 use graftyard_lookup::Bindings;
 use graftyard_raft::{Index, Role};
-use graftyard_types::{ChainId, DbId, RepoId, Timestamp};
+use graftyard_types::{ChainId, DbId, NetworkId, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use worker::wasm_bindgen_futures::spawn_local;
@@ -100,6 +100,9 @@ pub struct Message {
     /// Marks the kind: the site queue carries `PrSync` messages too.
     pub merge_queue: u8,
     pub repo: i64,
+    /// The repository's network for a fork (AM3-WP2a); absent for a root and from a script before forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net: Option<i64>,
     pub batch: SyncBatch<RefName>,
     pub record: graftyard_types::PlacementRecord,
     /// The member key of the leader that sent it, for the test-faults kill and hold.
@@ -116,12 +119,14 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
                 let fold = &c.m.group_fold().fold;
                 let cursor = git::tiers::consumer_cursor(&*fold.core, git::issues::Consumer::MergeQueue);
                 let bases = git::queue::queue_bases(&*fold.core);
-                Some(((c.m.term().0, c.m.boot()), repo, cursor, c.m.state().applied, c.join.record.clone(), bases))
+                let n = git::tiers::network(&*fold.core, repo);
+                let net = (n.root() != repo).then_some(n.0.0);
+                Some(((c.m.term().0, c.m.boot()), repo, net, cursor, c.m.state().applied, c.join.record.clone(), bases))
             }
             _ => None,
         })
     };
-    let Some((leadership, repo, cursor, applied, record, bases)) = leading else { return };
+    let Some((leadership, repo, net, cursor, applied, record, bases)) = leading else { return };
     let key = key_of(h);
     let now = now_ms();
     let mut lead = LEADS.with(|m| m.borrow_mut().remove(&key)).filter(|l| l.leadership == leadership).unwrap_or_else(
@@ -141,7 +146,8 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     match lead.d.batch(cursor, Timestamp(now)) {
         Some((b, Delivery::First)) => first = Some((b, true)),
         Some((b, Delivery::Again)) => {
-            let m = Message { merge_queue: 1, repo: repo.0.0, batch: b, record: record.clone(), leader: key.clone() };
+            let m =
+                Message { merge_queue: 1, repo: repo.0.0, net, batch: b, record: record.clone(), leader: key.clone() };
             if let Err(e) = enqueue(h, m).await {
                 note(h, format!("mergequeue send: {e}"));
                 lead.d.unsent();
@@ -169,7 +175,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     }
     LEADS.with(|m| m.borrow_mut().insert(key.clone(), lead));
     if let Some((batch, carried)) = first {
-        let m = Message { merge_queue: 1, repo: repo.0.0, batch, record, leader: key.clone() };
+        let m = Message { merge_queue: 1, repo: repo.0.0, net, batch, record, leader: key.clone() };
         let w = Rc::downgrade(h);
         let env = h.env.clone();
         spawn_local(async move {
@@ -322,7 +328,8 @@ async fn run_base(
                     if answers.len() >= 4 {
                         return Err("step kept asking".into());
                     }
-                    answers.push(cache(env, site, m.repo, &ask).await?);
+                    let net = git::shard_network(RepoId(DbId(m.repo)), m.net.map(|n| NetworkId(DbId(n))));
+                    answers.push(cache(env, site, m.repo, net, &ask).await?);
                 }
                 Step::Submit(cmds) => break cmds,
             }
@@ -413,20 +420,25 @@ async fn commit(
 }
 
 /// A `CacheAsk` on this site's shard of the network, as `crate::prsync` asks for a test merge.
-async fn cache(env: &Env, site: &SiteEnv, repo: i64, ask: &CacheAsk) -> std::result::Result<CacheAnswer, String> {
+async fn cache(
+    env: &Env,
+    site: &SiteEnv,
+    repo: i64,
+    net: NetworkId,
+    ask: &CacheAsk,
+) -> std::result::Result<CacheAnswer, String> {
     let me = site.id;
     let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", me.0))
-        .and_then(|ns| {
-            ns.get_by_name_with_location_hint(
-                &git::first_shard_name(graftyard_types::NetworkId::of_root(RepoId(DbId(repo))), me),
-                region.hint(),
-            )
-        })
+        .and_then(|ns| ns.get_by_name_with_location_hint(&git::first_shard_name(net, me), region.hint()))
         .map_err(|e| e.to_string())?;
     let (on, heads, method) = git::merge_cache::chain_of(ask);
-    let url = format!("https://shard/merge?repo={repo}&{}", git::merge_cache::chain_query(on, &heads, method));
+    let url = format!(
+        "https://shard/merge?{}&{}",
+        git::shard_query(RepoId(DbId(repo)), net),
+        git::merge_cache::chain_query(on, &heads, method)
+    );
     let mut init = RequestInit::new();
     init.with_method(Method::Post);
     let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;

@@ -361,6 +361,9 @@ pub(crate) async fn shard_json(
 ) -> std::result::Result<Value, Reply> {
     let mut s = url::form_urlencoded::Serializer::new(String::new());
     s.append_pair("repo", &rd.repo.id.0.0.to_string());
+    if rd.repo.network().root() != rd.repo.id {
+        s.append_pair("net", &rd.repo.network().0.0.to_string());
+    }
     for (k, v) in q {
         s.append_pair(k, v);
     }

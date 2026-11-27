@@ -1066,3 +1066,25 @@ fn a_push_reads_paths_from_its_base_and_a_force_push_two_dot() {
     assert_eq!(two_dot(&a, &diff_paths(&gone).unwrap()), ["a", "b", "e"], "d renamed away after, removed before");
     assert_eq!(diff_paths(&json!({ "truncated": true, "files": [] })), None, "a truncated diff runs every filter");
 }
+
+/// `secrets-wait` (0x15.14): an entry's `AgentGate` rows are the trigger's release items, one per (pull request, head)
+/// however many approvals the entry wrote, and the first-scan guard drops an entry over an hour old.
+#[test]
+fn gate_events_are_one_per_pull_request_and_head_and_none_past_the_replay_window() {
+    use graftyard_actions::trigger::{GateEvent, PR_REPLAY_MS, gate_events};
+    use graftyard_git::agent::AgentGate;
+    let w = World::new(vec![ACTIONS_FORMAT]);
+    let mut e = w.repo.m(w.repo.leader().unwrap()).log().last().unwrap().clone();
+    let gate = |n: u32, head: u32, u: i64| {
+        RepoEvent::AgentGate(AgentGate {
+            pr: IssueNumber(n),
+            head: oid(head),
+            satisfied_by: graftyard_identity::UserId(AccountId(DbId(u))),
+        })
+    };
+    e.body = graftyard_raft::EntryBody::Events(vec![gate(1, 5, 70), gate(1, 5, 71), gate(2, 6, 70)]);
+    e.at = w.now;
+    let want = [GateEvent { n: IssueNumber(1), head: oid(5) }, GateEvent { n: IssueNumber(2), head: oid(6) }];
+    assert_eq!(gate_events(&e, w.now.0), want);
+    assert!(gate_events(&e, w.now.0 + PR_REPLAY_MS + 1).is_empty());
+}

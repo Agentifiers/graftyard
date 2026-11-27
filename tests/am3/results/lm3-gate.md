@@ -84,7 +84,9 @@ script exports `CF_SECRETS_STORE_ID`, and the driver stops at its first line whe
    file stays as it ran. The token scan is the harness's own
    (env, `/proc/*/environ`, git config, the credential store and a grep of the file system). The row cannot repeat
    M0's scan from outside the container, so the result also records the `TaskBox`'s container env from `start` (only
-   `GRAFTYARD_SANDBOX` and `GRAFTYARD_START`) as code read, not measured.
+   `GRAFTYARD_SANDBOX` and `GRAFTYARD_START`) as code read, not measured. A Sandbox's stdout reaches no log the row
+   reads, so the harness pushes its class files to `refs/heads/graftyard/<task>/results` on the base, inside its own
+   prefix through the host arm, and `gate.mjs results` reads them there before the task completes.
 4. **L0-03 phase.** `graft-controller` is redeployed with `harness.py` in hold mode. m3-admin creates two tasks, A and B,
    and the driver creates `hold/A` and `hold/B`, so both stay live with one push each. Through the probe's `/mint`, the
    driver holds A's `graftyard-workspace` token, A's `graftyard-agent` token, a `graftyard-workspace` token minted with

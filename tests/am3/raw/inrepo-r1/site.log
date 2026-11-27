@@ -1,0 +1,26 @@
+2026-11-26T17:48:12Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $0, graft-agents-m4a- $0, graft-runners $0, total $0 (stop $3.00)
+kept as live: --var GRAFTYARD_AGENT_CI=1 --var GRAFTYARD_ARTIFACTS_V4=1 --var GRAFTYARD_REUSABLE=1; added: none
+2026-11-26T17:48:17Z
+dccb79754
+5
+1
+2026-11-26T17:48:17Z
+dccb79754
+before {"script":"graft-m4a-site-a","created_on":"2026-11-26T11:42:26.746979Z","versions":["28d01739 100"]}
+before {"script":"graft-m4a-site-b","created_on":"2026-11-26T11:42:36.259422Z","versions":["3de96500 100"]}
+before {"script":"graft-m4a-site-c","created_on":"2026-11-26T11:42:45.67373Z","versions":["09986bf7 100"]}
+deploy exit 0
+Current Version ID: a2b97c33-ea15-4d0f-a1f8-281e480ed98d
+Current Version ID: c6aa9969-350f-4cea-a860-f7422e5307fd
+Current Version ID: 87b65066-5fd2-4a79-8169-888d4447ccc0
+Current Version ID: eb75a6b7-d832-415d-b0e9-63fa61497adf
+Current Version ID: a4e60331-d714-419f-813c-98a8d07ef444
+Current Version ID: 109a2d06-0008-4f7c-b69e-faee132130d1
+{"graft-m4a-site-a":[]}
+after {"script":"graft-m4a-site-a","created_on":"2026-11-26T17:49:09.884916Z","versions":["eb75a6b7 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_ARTIFACTS_V4=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
+{"graft-m4a-site-b":[]}
+after {"script":"graft-m4a-site-b","created_on":"2026-11-26T17:49:19.062306Z","versions":["a4e60331 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_ARTIFACTS_V4=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]
+{"graft-m4a-site-c":[]}
+after {"script":"graft-m4a-site-c","created_on":"2026-11-26T17:49:27.355991Z","versions":["109a2d06 100"]} ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_ARTIFACTS_V4=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1"]

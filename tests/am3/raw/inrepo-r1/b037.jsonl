@@ -1,0 +1,11 @@
+{"t":1795735369640,"create":"b037","status":201,"id":"01a21a2b-6f73-85e1-99cd-0e454c070c46","state":"queued"}
+{"t":1795735375909,"hold":"01a21a2b-6f73-85e1-99cd-0e454c070c46","on":true,"ok":true}
+{"t":1795735383972,"live":"b037","id":"01a21a2b-6f73-85e1-99cd-0e454c070c46","in_progress":true}
+{"t":1795735383973,"check":"a live task","ok":true}
+{"t":1795735391419,"session_push":true}
+{"t":1795735391421,"check":"graftyard-workspace pushes its session ref under its live task","ok":true}
+{"t":1795735401285,"seen":{"v0":false,"v1":false,"v2":false,"v2_other_prefix":false,"mirror":false,"v2_matching_fetch":true}}
+{"t":1795735401285,"check":"the session ref is hidden from v0, v1, v2 without a matching ref-prefix, and --mirror","ok":true}
+{"t":1795735401285,"check":"a v2 fetch whose ref-prefix starts with the session ref gets it","ok":true}
+{"t":1795735403631,"hold":"01a21a2b-6f73-85e1-99cd-0e454c070c46","on":false,"ok":true}
+{"t":1795735404787,"cancel":"01a21a2b-6f73-85e1-99cd-0e454c070c46","status":200}

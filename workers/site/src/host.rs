@@ -3326,13 +3326,16 @@ impl<F: Family> Host<F> {
             F::install_wanted(self, w);
         }
         if !marks.is_empty()
-            && let Some(chain) = self.core.borrow().as_ref().map(|c| c.join.chain)
+            && let Some((chain, network)) = self.core.borrow().as_ref().map(|c| {
+                let chain = c.join.chain;
+                (chain, F::network(&c.m.group_fold().fold, chain))
+            })
         {
             for (cmd, a) in marks {
                 let env = self.env.clone();
                 let h = self.clone();
                 spawn_local(async move {
-                    let failed = F::after_ok(env, chain, cmd, a).await;
+                    let failed = F::after_ok(env, chain, network, cmd, a).await;
                     h.stats.borrow_mut().marker_failures += failed as u32;
                 });
             }

@@ -192,9 +192,20 @@ pub trait Family: 'static {
     fn marked(_cmd: &Self::C) -> Option<Self::C> {
         None
     }
+    /// A repository chain's network (`graftyard_git::tiers::network`), which keys its packs; `None` for every other
+    /// family.
+    fn network(_fold: &Self::Fold, _chain: ChainId) -> Option<graftyard_types::NetworkId> {
+        None
+    }
     /// After an `ok` outcome, on the leader: the work a command's commit owes outside the log, such as the
     /// repository's `Committed` pack markers. `cmd` is what `marked` kept. Returns how many puts failed.
-    async fn after_ok(_env: worker::Env, _chain: ChainId, _cmd: Self::C, _acked: raft::Acked<Out<Self>>) -> usize {
+    async fn after_ok(
+        _env: worker::Env,
+        _chain: ChainId,
+        _network: Option<graftyard_types::NetworkId>,
+        _cmd: Self::C,
+        _acked: raft::Acked<Out<Self>>,
+    ) -> usize {
         0
     }
     /// The stored packs a `request` row's events name, for the sweeper's `RequestSource` (`{"q": {"request": id}}`).
@@ -1381,10 +1392,22 @@ impl Family for Repo {
     fn marked(cmd: &Self::C) -> Option<Self::C> {
         cmd.marked()
     }
+    fn network(fold: &Self::Fold, chain: ChainId) -> Option<graftyard_types::NetworkId> {
+        match chain {
+            ChainId::Repo(r) => Some(git::tiers::network(&*fold.core, r)),
+            _ => None,
+        }
+    }
     /// The committing leader marks the stored pack an ok push names, in each bucket its `sites` names, as
     /// `graftyard_git::mark_committed`, and the blob an ok asset upload or LFS `verify` names, as
     /// `graftyard_git::blob::mark_blob`. A push whose every ref was refused marks nothing.
-    async fn after_ok(env: worker::Env, chain: ChainId, cmd: Self::C, acked: raft::Acked<Out<Self>>) -> usize {
+    async fn after_ok(
+        env: worker::Env,
+        chain: ChainId,
+        network: Option<graftyard_types::NetworkId>,
+        cmd: Self::C,
+        acked: raft::Acked<Out<Self>>,
+    ) -> usize {
         use git::repo::{RepoCmd, RepoOut};
         let ChainId::Repo(repo) = chain else { return 0 };
         let mark = match (&cmd, &acked.out) {
@@ -1412,7 +1435,14 @@ impl Family for Repo {
         let refs: Vec<(graftyard_types::SiteId, &git::host::R2)> = buckets.iter().map(|(s, b)| (*s, b)).collect();
         match mark {
             Ok(pack) => {
-                git::mark_committed(&refs, graftyard_types::NetworkId::of_root(repo), pack, chain, acked.index).await
+                git::mark_committed(
+                    &refs,
+                    network.unwrap_or(graftyard_types::NetworkId::of_root(repo)),
+                    pack,
+                    chain,
+                    acked.index,
+                )
+                .await
             }
             Err(b) => git::blob::mark_blob(&refs, repo, &b, chain, acked.index).await,
         }

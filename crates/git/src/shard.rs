@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use arrayvec::ArrayVec;
-use graftyard_types::{ChainId, Index, NetworkId, Region, SiteId, Timestamp};
+use graftyard_types::{ChainId, Index, NetworkId, Region, RepoId, SiteId, Timestamp};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use smallvec::SmallVec;
@@ -489,6 +489,18 @@ pub fn object_name(network: NetworkId, s: GitCacheShard, count: u16) -> String {
 /// pick a fan-out shard calls. Every such caller names it through here, with the repository's network, never its id.
 pub fn first_shard_name(network: NetworkId, site: SiteId) -> String {
     format!("git#{}#net:{}", site.0, network.0.0)
+}
+
+/// How a call to a git cache shard names its repository: `repo=<id>`, and `&net=<network>` only for a fork, whose
+/// network is its root's (AM3-WP2a). A root's query keeps main's bytes, and an older shard that reads only `repo`
+/// still serves every root. The shard reads it back with `shard_network`.
+pub fn shard_query(repo: RepoId, network: NetworkId) -> String {
+    if network.root() == repo { format!("repo={}", repo.0.0) } else { format!("repo={}&net={}", repo.0.0, network.0.0) }
+}
+
+/// The network a shard call's `repo` and `net` name (`shard_query`): `net` for a fork, else the repository's own id.
+pub fn shard_network(repo: RepoId, net: Option<NetworkId>) -> NetworkId {
+    net.unwrap_or(NetworkId::of_root(repo))
 }
 
 /// The policy has no `max_instances`, so a shard object starts its container only while its index is under the cap.

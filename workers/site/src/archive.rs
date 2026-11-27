@@ -239,6 +239,13 @@ impl SiteHost<'_> {
         Ok((c.join.chain, c.join.record.clone()))
     }
 
+    fn network(&self) -> Option<NetworkId> {
+        let core = self.h.core.borrow();
+        let c = core.as_ref()?;
+        let ChainId::Repo(repo) = c.join.chain else { return None };
+        Some(git::tiers::network(&*c.m.group_fold().fold.core, repo))
+    }
+
     /// The record's sites' buckets.
     fn buckets(&self) -> std::result::Result<Vec<(SiteId, git::host::R2)>, String> {
         let (_, record) = self.chain()?;
@@ -298,7 +305,17 @@ impl ArchiveHost for SiteHost<'_> {
         warm: bool,
     ) -> std::result::Result<Option<PackRef>, String> {
         let (chain, record) = self.chain()?;
-        let p = Promote { chain, record, sums: sums.to_vec(), request, range: Some((from.0, to.0)), warm, roll: false };
+        let network = self.network();
+        let p = Promote {
+            chain,
+            record,
+            network,
+            sums: sums.to_vec(),
+            request,
+            range: Some((from.0, to.0)),
+            warm,
+            roll: false,
+        };
         in_band(&self.h.env, &p).await
     }
 
@@ -312,9 +329,11 @@ impl ArchiveHost for SiteHost<'_> {
         request: RequestId,
     ) -> std::result::Result<Option<PackRef>, String> {
         let (chain, record) = self.chain()?;
+        let network = self.network();
         let p = Promote {
             chain,
             record,
+            network,
             sums: sums.to_vec(),
             request,
             range: Some((from.0, to.0)),
@@ -335,9 +354,10 @@ impl ArchiveHost for SiteHost<'_> {
 
     async fn mark(&self, pack: &PackRef, index: Index) {
         let (Ok((chain, _)), Ok(raw)) = (self.chain(), self.buckets()) else { return };
-        let ChainId::Repo(repo) = chain else { return };
+        let ChainId::Repo(_) = chain else { return };
+        let Some(network) = self.network() else { return };
         let refs: Vec<(SiteId, &git::host::R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
-        let failed = git::mark_committed(&refs, NetworkId::of_root(repo), pack, chain, index).await;
+        let failed = git::mark_committed(&refs, network, pack, chain, index).await;
         self.h.stats.borrow_mut().marker_failures += failed as u32;
     }
 
@@ -389,6 +409,10 @@ pub const PROMOTE_PATH: &str = "/archive/promote";
 struct Promote {
     chain: ChainId,
     record: graftyard_types::PlacementRecord,
+    /// The repository's network, which keys the promoted pack and names the shard (AM3-WP2a); `None` from a script
+    /// before forks, read as the repository's own id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    network: Option<NetworkId>,
     sums: Vec<Digest>,
     request: RequestId,
     /// The range, which the pack's stored `.idx` names (`git::Place::idx_range`).
@@ -483,7 +507,7 @@ async fn promote(env: &Env, p: &Promote) -> std::result::Result<Option<PackRef>,
         rand.copy_from_slice(&p.request.0.0.to_be_bytes()[6..]);
         rand[0] ^= i as u8;
         let s = git::Streamed {
-            network: NetworkId::of_root(repo),
+            network: p.network.unwrap_or(NetworkId::of_root(repo)),
             id: git::PackId(Ulid::new(Timestamp(now_ms()), rand)),
             meta: git::ObjectMeta { chain: p.chain, request: p.request },
             part: git::PART_SIZE,
@@ -578,17 +602,20 @@ async fn shard_call(
 ) -> std::result::Result<Response, (u16, String)> {
     let fail = |e: String| (0, e);
     let ChainId::Repo(repo) = p.chain else { return Err(fail("not a repository chain".into())) };
+    let net = p.network.unwrap_or(NetworkId::of_root(repo));
     let region = site.sites.get(at).ok_or_else(|| fail(format!("site {} is not in GRAFTYARD_SITES", at.0)))?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", at.0))
-        .and_then(|ns| {
-            ns.get_by_name_with_location_hint(&git::first_shard_name(NetworkId::of_root(repo), at), region.hint())
-        })
+        .and_then(|ns| ns.get_by_name_with_location_hint(&git::first_shard_name(net, at), region.hint()))
         .map_err(|e| fail(e.to_string()))?;
     let rec = serde_json::to_string(&p.record).map_err(|e| fail(e.to_string()))?;
     // A due range's promotion starts a stopped shard but is no client's request (`git::Caller::Start`).
     let warm = if p.warm { "warm=1&" } else { "warm=start&" };
-    let url = format!("https://shard{path}{warm}repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
+    let url = format!(
+        "https://shard{path}{warm}{}&record={}",
+        git::shard_query(repo, net),
+        js_sys::encode_uri_component(&rec)
+    );
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(body);
     let req = Request::new_with_init(&url, &init).map_err(|e| fail(e.to_string()))?;

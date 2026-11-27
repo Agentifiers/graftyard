@@ -312,7 +312,9 @@ teardown)
   { touch "$O/stop"; amp orb service stop $ROW-sampler >/dev/null 2>&1
     cron $AOPS ""
     for n in $AOPS $FRONT $CTRL $PROBE; do runner npx --prefix tests/m0 wrangler delete --name $n --force 2>&1 | tail -1; done
-    for n in $(rapi "$RB/secrets_store/stores/$RSTORE/secrets?per_page=100" | jq -r --arg p "$P-" '.result[] | select(.name | startswith($p)) | .name'); do
+    # KEEP_SECRETS names secrets the next row needs, such as LM-3's real-harness model key ($P-MODEL_KEY_A), which the lead
+    # stores once and the teardown must not take with the row's own secrets.
+    for n in $(rapi "$RB/secrets_store/stores/$RSTORE/secrets?per_page=100" | jq -r --arg p "$P-" --arg keep "${KEEP_SECRETS:-}" '.result[] | select((.name | startswith($p)) and ((.name | IN($keep | split(" ")[])) | not)) | .name'); do
       rapi "$RB/secrets_store/stores/$RSTORE/secrets/$(rsecret_id "$n")" -X DELETE | jq -c --arg n "$n" '{delete: $n, ok: .success}'
     done
     id=$(rapi "$RB/tokens?per_page=50" | jq -r --arg n "$P-deploy" '.result[] | select(.name == $n) | .id')
@@ -328,13 +330,16 @@ teardown)
     echo "runner buckets: $(rapi "$RB/r2/buckets" | jq -c '[.result.buckets[]?.name]')"
   } 2>&1 | log ;;
 probe-deploy)
-  { read -r app _ <"$K/app-ids"
+  { read -r app ws <"$K/app-ids"
     ( umask 077; [ -s "$K/probe.token" ] || python3 -c 'import os; print(os.urandom(24).hex())' >"$K/probe.token" )
     mkdir -p "$K/probe" && cp tests/am3/hosted/lm3-probe.js "$K/probe/index.js"
-    jq -n --arg n $PROBE --arg host "$EDGE_HOST" --arg app "$app" --arg store $RSTORE --arg key "$P-AGENTS_APP_KEY_A" \
+    # graftyard-workspace's key too, for `/mint` (LM-3's in-repo row; the kill row's app-ids hold both Apps).
+    jq -n --arg n $PROBE --arg host "$EDGE_HOST" --arg app "$app" --arg ws "${ws:-0}" --arg store $RSTORE --arg key "$P-AGENTS_APP_KEY_A" \
+      --arg wkey "$P-WORKSPACE_APP_KEY_A" \
       '{name: $n, main: "index.js", compatibility_date: "2026-10-01", workers_dev: true, preview_urls: false,
-        vars: {GRAFTYARD_HOST: $host, AGENT_APP_ID: $app},
-        secrets_store_secrets: [{binding: "AGENT_APP_KEY", store_id: $store, secret_name: $key}]}' >"$K/probe/wrangler.json"
+        vars: {GRAFTYARD_HOST: $host, AGENT_APP_ID: $app, WORKSPACE_APP_ID: $ws},
+        secrets_store_secrets: ([{binding: "AGENT_APP_KEY", store_id: $store, secret_name: $key}]
+          + (if $ws == "0" then [] else [{binding: "WORKSPACE_APP_KEY", store_id: $store, secret_name: $wkey}] end))}' >"$K/probe/wrangler.json"
     (cd "$K/probe" && runner npx --prefix "$OLDPWD/tests/m0" wrangler deploy -c wrangler.json 2>&1 | grep -E "Current Version|rror" | tail -2)
     runner npx --prefix tests/m0 wrangler secret put PROBE_TOKEN --name $PROBE <"$K/probe.token" 2>&1 | tail -1
     deployment $PROBE "$RB" rapi
