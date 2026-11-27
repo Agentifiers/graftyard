@@ -1,0 +1,27 @@
+2026-11-27T11:56:01Z
+e0d76645a
+2026-11-27T11:56:04.997Z {"delete":"m3org/l004-r2","status":204}
+2026-11-27T11:56:05.374Z {"policy":404}
+2026-11-27T11:56:05.633Z {"value_file":"shredded"}
+2026-11-27T11:56:06.472Z PATCH /orgs/m3org/agents: 200 {"agents_enabled":false,"code_mode":false,"workspace":"in_repo","workspace_org":"m3org-agents"}
+2026-11-27T11:56:06.785Z installation 7190003 uninstalled from m3org
+2026-11-27T11:56:07.087Z installation 7190004 uninstalled from m3org
+objects deleted: 0
+{"delete":"graft-agents-m4a-releases","ok":true,"errors":[]}
+row token and secret files shredded
+runner scripts: ["graft-runners"]
+runner store secrets named graft-agents-m4a-: []
+runner buckets: []
+agents container applications: [{"app":"graft-agents-m4a-controller-taskbox","running":1}]
+{"delete_app":true,"errors":[]}
+TEARDOWN FAILED: agents containers still running: [
+  {
+    "app": "graft-agents-m4a-controller-taskbox",
+    "running": 1
+  }
+]
+graft-runners applications: [{"app":"graft-runners-runnerbox","running":0}]
+sweep: no shard container running
+shardkill deleted: True
+agents apps after: []
+runner store secrets named graft-agents-m4a-: []

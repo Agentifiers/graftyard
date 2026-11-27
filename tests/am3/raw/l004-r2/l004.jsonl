@@ -1,0 +1,20 @@
+{"t":1795778106583,"task":201,"id":"01a21cb7-84df-8896-923c-7b32ba821b63","requester":"m3-admin"}
+{"t":1795778110502,"hold":true}
+{"t":1795778110503,"check":"the task's requester is m3-admin","ok":true}
+{"t":1795778119143,"check":"the task runs","ok":true}
+{"t":1795778207689,"work_head":"fe0d910ed646e1ed62606d226cfcfab11c759c62","heads":["fe0d910ed646e1ed62606d226cfcfab11c759c62","d2bc40af522fd7d2dc866ccac5bceb978eacd036","e114fcaeb58e3826f74a67106ee5a39a94cbe261"]}
+{"t":1795778209059,"pr":1,"draft":true,"node_head":"fe0d910ed646e1ed62606d226cfcfab11c759c62"}
+{"t":1795778209326,"check":"the pull request's head is the harness's second push","ok":true}
+{"t":1795778451952,"timeout":"the run waiting on the current head","ms":240000}
+{"t":1795778451953,"run":null}
+{"t":1795778451953,"check":"a run whose `secret` job waits on the current head","ok":false}
+{"t":1795780119238,"task":201,"id":"01a21cd6-3bd2-8f73-a688-4bc876f78a73","requester":"m3-admin"}
+{"t":1795780123979,"hold":true}
+{"t":1795780123980,"check":"the task's requester is m3-admin","ok":true}
+{"t":1795780132340,"check":"the task runs","ok":true}
+{"t":1795780216659,"work_head":"3d13284d1ae3a6b5d400e0873d8eac0f6eb063bc","heads":["3d13284d1ae3a6b5d400e0873d8eac0f6eb063bc","dba3c7d46fc882203296f1a5be2f4b4a19f6aa71","e114fcaeb58e3826f74a67106ee5a39a94cbe261"]}
+{"t":1795780218192,"pr":3,"draft":true,"node_head":"3d13284d1ae3a6b5d400e0873d8eac0f6eb063bc"}
+{"t":1795780218661,"check":"the pull request's head is the harness's second push","ok":true}
+{"t":1795780462969,"timeout":"the run waiting on the current head","ms":240000}
+{"t":1795780462970,"run":null}
+{"t":1795780462970,"check":"a run whose `secret` job waits on the current head","ok":false}
