@@ -98,7 +98,18 @@ hook)
     curl -s -m 60 -X POST -H "x-probe-token: $(cat "$K/probe.token")" -H 'content-type: application/json' \
       --data-binary @"$K/hook.body" "$PROBE_URL/hook" | jq -c '{status, url: .body.url, secret: .body.secret, events: .body.events}'
     shred -u "$K/hook.body"
-  } 2>&1 | log ;;
+    # A signed ping through the front must reach the controller's intake (202) before any task is created: real1's
+    # first smoke had every `graftyard_task` delivery answer 401 "bad signature", and the task never started.
+    body='{"zen":"kill-row hook check"}'
+    sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$(cat "$K/webhook.secret")" | sed 's/.* //')
+    for i in 1 2 3 4 5 6; do
+      s=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'x-github-event: ping' -H "x-github-delivery: hookcheck-$TAG-$i-$(date +%s)" \
+        -H "x-hub-signature-256: sha256=$sig" -H 'content-type: application/json' --data "$body" "$FRONT_URL/")
+      echo "signed ping $i: $s"; [ "$s" = 202 ] && break; sleep 10
+    done
+    [ "$s" = 202 ] || echo "HOOK CHECK FAILED: the controller refuses the row's webhook secret"
+  } 2>&1 | log
+  if grep -q "HOOK CHECK FAILED" "$L"; then exit 2; fi ;;
 probe-deploy)
   day probe-deploy ;;
 repo)
