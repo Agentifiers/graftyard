@@ -7,7 +7,7 @@ branch `refs/heads/graftyard/<task>/work` one step at a time until it holds `PUS
 pushes. Then it reports `Finished` to the box. After every turn it reports `Used` with the task's model tokens so far,
 as Claude Code's own result counts them.
 
-Claude Code talks to `https://api.anthropic.com/v1/messages` through the router, which drops the dummy
+Claude Code talks to the model at `ANTHROPIC_BASE_URL` (the operator's token proxy, `/v1/messages`) through the router, which drops the dummy
 `ANTHROPIC_API_KEY` and sets the model key. It may use only `Read`, `Write` and `Edit`: git stays here, so every push
 goes through this script under the task's prefix.
 
@@ -22,7 +22,7 @@ import urllib.request
 
 host, repo = sys.argv[1], sys.argv[2]
 pushes = int(sys.argv[3]) if len(sys.argv) > 3 else 6
-model = sys.argv[4] if len(sys.argv) > 4 else "sonnet"
+model = sys.argv[4] if len(sys.argv) > 4 else os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5")
 sandbox = os.environ["GRAFTYARD_SANDBOX"]
 start = os.environ.get("GRAFTYARD_START", "")
 task = sandbox.rsplit("-", 1)[0]

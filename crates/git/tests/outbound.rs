@@ -288,3 +288,22 @@ fn l0_02_an_unknown_go_module_or_a_registry_query_is_refused() {
         ["refs/heads/a", "refs/heads/b"]
     );
 }
+
+/// The router counts a model reply's tokens from its `usage`: a JSON reply's, and a stream's, where `message_start`
+/// carries the input and cache counts and each `message_delta` the cumulative output, so only the last delta counts.
+/// The price is Sonnet's list price per million: $3 input, $15 output, $3.75 cache write, $0.30 cache read.
+#[test]
+fn the_router_counts_model_usage_from_json_and_streamed_replies() {
+    use graftyard_git::outbound::ModelUsage;
+    let json = br#"{"id":"m","usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":40,"cache_read_input_tokens":3000}}"#;
+    let want = ModelUsage { input: 1000, output: 200, cache_write: 40, cache_read: 3000 };
+    assert_eq!(ModelUsage::of(json), want);
+    let sse = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1000,\"output_tokens\":1,\"cache_creation_input_tokens\":40,\"cache_read_input_tokens\":3000}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":120}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":200}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    assert_eq!(ModelUsage::of(sse), want, "the output is the last delta's, not a sum of deltas");
+    assert_eq!(ModelUsage::of(b"not json"), ModelUsage::default());
+    let mut t = ModelUsage::default();
+    t.add(want);
+    t.add(want);
+    // 2000 * 3 + 400 * 15 + 80 * 3.75 + 6000 * 0.3 = 6000 + 6000 + 300 + 1800 micro-dollars.
+    assert_eq!(t.sonnet_micro_usd(), 14_100);
+}

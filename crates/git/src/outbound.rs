@@ -440,3 +440,57 @@ pub fn go_module(path: &str) -> Option<String> {
     }
     Some(out)
 }
+
+/// The model tokens one forwarded inference response reports, from Anthropic's `usage` block: a JSON reply's, or a
+/// stream's `message_start` (input and cache) and `message_delta` (output, cumulative) events. The router sums them per
+/// task, so a row's model spend is counted from what passed through it, not from the harness's word.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+}
+
+impl ModelUsage {
+    /// The usage `body` reports, a JSON response or a `text/event-stream` one; zero when it reports none.
+    pub fn of(body: &[u8]) -> ModelUsage {
+        let mut u = ModelUsage::default();
+        let mut take = |usage: &Value, output_only: bool| {
+            let n = |k: &str| usage.get(k).and_then(Value::as_u64);
+            if !output_only {
+                u.input = n("input_tokens").unwrap_or(u.input);
+                u.cache_write = n("cache_creation_input_tokens").unwrap_or(u.cache_write);
+                u.cache_read = n("cache_read_input_tokens").unwrap_or(u.cache_read);
+            }
+            u.output = n("output_tokens").unwrap_or(u.output);
+        };
+        if let Ok(v) = serde_json::from_slice::<Value>(body) {
+            take(&v["usage"], false);
+            return u;
+        }
+        for line in body.split(|&b| b == b'\n') {
+            let Some(data) = line.strip_prefix(b"data:") else { continue };
+            let Ok(v) = serde_json::from_slice::<Value>(data.trim_ascii()) else { continue };
+            match v["type"].as_str() {
+                Some("message_start") => take(&v["message"]["usage"], false),
+                Some("message_delta") => take(&v["usage"], true),
+                _ => {}
+            }
+        }
+        u
+    }
+
+    pub fn add(&mut self, o: ModelUsage) {
+        self.input += o.input;
+        self.output += o.output;
+        self.cache_write += o.cache_write;
+        self.cache_read += o.cache_read;
+    }
+
+    /// The tokens' price in micro-dollars at Sonnet's list price: $3 per million input tokens, $15 per million
+    /// output, $3.75 per million cache writes, $0.30 per million cache reads [doc: Anthropic pricing].
+    pub fn sonnet_micro_usd(&self) -> u64 {
+        (self.input * 300 + self.output * 1_500 + self.cache_write * 375 + self.cache_read * 30) / 100
+    }
+}

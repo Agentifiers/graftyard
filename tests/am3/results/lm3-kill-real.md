@@ -17,15 +17,15 @@ the A3 controller head (below) is merged and on the install, and after the lead 
   `x-api-key` and `anthropic-version` pass through) and passes on the head.
 - **The harness image** `tests/am3/hosted/kill/claude/`: `node:22-alpine` with git, python3 and
   `@anthropic-ai/claude-code@2.1.332`, run as a non-root user. `ANTHROPIC_API_KEY` is a dummy that the router
-  overwrites. `NODE_EXTRA_CA_CERTS` points at the container's CA, so Claude Code's TLS to `api.anthropic.com` goes
+  overwrites. `NODE_EXTRA_CA_CERTS` points at the container's CA, so Claude Code's TLS to the model host goes
   through the router. `run.py` does what `harness.py` does around the model: it clones through the router, checks out
   `GRAFTYARD_START`, and builds `refs/heads/graftyard/<task>/work`. The difference is that each step is one `claude -p`
   turn that writes `work/<n>.md`, allowed only `Read`, `Write` and `Edit`. `run.py` commits and pushes each step
   itself, so no push can leave the task's prefix. After each turn it reports `Used` with the task's tokens so far.
   Then it reports `Finished`. The scripted image (`tests/am3/hosted/kill/Dockerfile`) is unchanged.
-- **The route's model arm.** `taskbox.json` gains `route_others: [{"ModelInference": {"host": "api.anthropic.com",
+- **The route's model arm.** `taskbox.json` gains `route_others: [{"ModelInference": {"host": "token-proxy.workinprogress.dev",
   "path": "/v1/messages"}}]` and `secrets.MODEL_KEY` names the runner store's key secret (not null as in the scripted
-  row). `harness` becomes `["python3", "/run.py", <host>, "m3org/killreal-<tag>", "6", "sonnet"]`.
+  row). `harness` becomes `["python3", "/run.py", <host>, "m3org/killreal-<tag>", "6", "claude-sonnet-5-5"]`.
 - **F144 and F145 fixed** in the same head (OPEN-QUESTIONS, the lead's numbering): `graftyard_task` deliveries answer
   500 today, and a cancelled box keeps its alarm. The row's teardown still deletes the `TaskBox` namespace and shows
   none remains, as LM-3's in-repo row does.
@@ -46,18 +46,22 @@ drawn from 0 to 20 s.
 | Work lost | At most 2 minutes from the kill back to the last acked commit | More than 2 minutes lost |
 | Every task finishes | 10 of 10 `Done`, 6 commits on each work branch | A task stalls past `TASK_IDLE`, or ends `Failed` |
 | Late traffic | After each restart, a `Finished` report and an outbound request from the old `SandboxId` are replayed (`/_controller/box/{task}/_late`): 20 of 20 answered 403, `late` reads 2 on every box, and the controller logs one refusal line per replay | Any late report acted on |
-| The model arm | Every model call goes through the router: the controller logs no `ModelPath`, `ModelPayload` or `UnlistedHost` refusal for `api.anthropic.com`, and each task's `Used` reports climb | A model call that bypasses the router, or a key the Sandbox chose (none can be: it holds a dummy) |
+| The model arm | Every model call goes through the router: the controller logs no `ModelPath`, `ModelPayload` or `UnlistedHost` refusal for the model host, and each task's `Used` reports climb | A model call that bypasses the router, or a key the Sandbox chose (none can be: it holds a dummy) |
 
 The `Used` reports also feed the box's budget (`TaskBudget`, 2,000,000 task tokens): none should come near it.
 
 ## Stop
 
-- **Model tokens: $25.** Read from the provider: the Anthropic Console's usage page for the row's key, or the Admin
-  API's usage report if the operator's key has one. When no provider read exists, it is estimated from the tasks'
-  `Used` reports at the model's list price (Sonnet: $3 per million input tokens, $15 per million output, cache reads at
-  $0.30), read after every task. Estimate: 10 tasks, 6 turns each plus about 3 restarted turns, at roughly 20,000
-  tokens per turn, mostly cached system prompt, comes to about 1.3 million tokens, or $1 to $5. The key's own $25
-  monthly limit at the provider is the hard stop.
+- **Model tokens: $25**, counted by the row itself, since the operator's token proxy
+  (`https://token-proxy.workinprogress.dev`, FRAME on main 70aa964b) has no limit the row can read. The router reads
+  the `usage` of every model reply it forwards, JSON or streamed (`graftyard_git::outbound::ModelUsage`), and adds it
+  to the task's box (`TaskBox.model`, served by `/_controller/box/{task}/status`). The driver sums every task's box at
+  Sonnet's list price ($3 per million input tokens, $15 output, $3.75 cache writes, $0.30 cache reads) after every
+  kill and every task, and aborts the row at $25. The model is `claude-sonnet-5-5` (`ANTHROPIC_MODEL` and
+  `ANTHROPIC_SMALL_FAST_MODEL` in the image); `claude-sonnet-5`, `claude-sonnet-4-6` and `claude-sonnet-4-5-20250929`
+  are fallbacks only if 5-5 errors. Estimate: 10 tasks, 6 turns each plus about 3 restarted turns, at roughly 20,000
+  tokens per turn, mostly cached system prompt, comes to about 1.3 million tokens, or $1 to $5. The one-task smoke's
+  counted spend goes to the lead before the 10-task row.
 - **Cloudflare: $3** across graft-m4a and the runner account's `graft-agents-m4a-`, read by the row's `cost` step before
   every step. The scripted row cost $0.38. Claude Code turns are slower than `harness.py`'s 15 s interval, so the
   Sandboxes live longer (`standard-2`, about 10 to 15 minutes each).
@@ -66,7 +70,8 @@ The `Used` reports also feed the box's budget (`TaskBudget`, 2,000,000 task toke
 ## Driver
 
 `tests/am3/hosted/kill-row.sh` with a `REAL=1` mode, which builds `tests/am3/hosted/kill/claude/` instead of
-`tests/am3/hosted/kill/`, writes the model arm and `MODEL_KEY` into `taskbox.json`, and runs `kill.mjs` with
+`tests/am3/hosted/kill/`, writes the model arm and `MODEL_KEY: "graft-agents-m4a-MODEL_KEY_A"` (the key the lead stored in the runner store; the
+teardown keeps it with `KEEP_SECRETS` until this row's own teardown deletes it) into `taskbox.json`, and runs `kill.mjs` with
 `PUSHES=6`. A smoke of one task first (killed once, between pushes) proves the key, the model arm and the restart
 before the 10.
 

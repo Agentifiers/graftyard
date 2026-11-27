@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::RefPattern;
 use crate::controller::{Resume, SandboxId, StepErr, Task, TaskEvent, TaskState};
+use crate::issues::IssueNumber;
 use crate::pkt::{Pkt, Reader};
 use crate::refs::ObjectId;
 use crate::session_log::{LOG_TRIES, Pushed};
@@ -63,6 +64,13 @@ pub const SILENT_MAX: Duration = Duration::from_secs(10 * 60);
 /// How long a box waits on a held version before it fails its task [guess]: an hour is past a `ControllerRoll`'s
 /// abort on a healthy deploy API, and a task that waits longer has outlived `TASK_WALL` anyway.
 pub const HOLD_MAX: Duration = Duration::from_secs(60 * 60);
+/// How many tries the host makes at a task's lease and draft before the task goes on without them [guess]: the start
+/// and two alarms.
+pub const OPEN_TRIES: u8 = 3;
+/// The branch the task's draft pull request opens from, under the task's prefix; the harness pushes its work there.
+pub fn work_branch(id: &graftyard_identity::SessionId) -> String {
+    format!("{}{}/work", crate::task::RUN_PREFIX, id.text())
+}
 /// The most acked heads a box keeps for its session log's `pushes` [guess]: a 60-minute task pushing every 15 s
 /// makes 240.
 pub const PUSHES_MAX: usize = 1_024;
@@ -91,6 +99,18 @@ pub struct TaskBox {
     /// The session log's push.
     #[serde(default)]
     pub log: LogState,
+    /// The model tokens of every inference response the router forwarded for this task.
+    #[serde(default)]
+    pub model: crate::outbound::ModelUsage,
+    /// Whether the host holds the task's Shared lease (A3 step 6).
+    #[serde(default)]
+    pub leased: bool,
+    /// The task's draft pull request (A3 step 6), once the host opened it.
+    #[serde(default)]
+    pub draft: Option<IssueNumber>,
+    /// How many tries at the lease and the draft failed, at most `OPEN_TRIES`.
+    #[serde(default)]
+    pub open_tries: u8,
 }
 
 /// Where a task's session log is.
@@ -164,6 +184,10 @@ impl TaskBox {
             base: Some(TaskApiState::Queued),
             pushes: Vec::new(),
             log: LogState::Unreported,
+            model: Default::default(),
+            leased: false,
+            draft: None,
+            open_tries: 0,
         }
     }
 
@@ -273,6 +297,28 @@ impl TaskBox {
         match owed {
             Some(state) => self.answered(state, if refused { status } else { 503 }),
             None => self.log_answered(if refused { Pushed::Refused } else { Pushed::Retry }),
+        }
+    }
+
+    /// Whether the host should take the task's Shared lease or open its draft now (A3 step 6): a running task that
+    /// lacks either, under `OPEN_TRIES` failed tries.
+    pub fn open_due(&self) -> bool {
+        (!self.leased || self.draft.is_none())
+            && self.open_tries < OPEN_TRIES
+            && matches!(self.task.state, TaskState::Running { .. })
+    }
+
+    /// The host's try at A3 step 6: whether the lease is held now, and the draft it opened, if any. A new draft makes
+    /// the base owe the task's state again, so the next `PATCH` carries `pr_number`. A try that leaves either missing
+    /// counts toward `OPEN_TRIES`; a task goes on without them after that.
+    pub fn opened(&mut self, leased: bool, draft: Option<IssueNumber>) {
+        self.leased |= leased;
+        if let Some(n) = draft.filter(|_| self.draft.is_none()) {
+            self.draft = Some(n);
+            self.base = None;
+        }
+        if !self.leased || self.draft.is_none() {
+            self.open_tries = self.open_tries.saturating_add(1);
         }
     }
 
@@ -441,4 +487,39 @@ fn report_lines(response: &[u8]) -> Option<Vec<String>> {
         }
     }
     Some(lines)
+}
+
+/// The draft's empty commit (A3 step 6): `parent`'s tree with `parent` as its one parent, by `who`, its message naming
+/// the task's session page at `origin` (`https://<host>/<owner>/<repo>`), and the `git-receive-pack` request that
+/// creates the task's work branch at it. The pack holds the commit alone; the tree and the parent are the base's.
+pub fn draft_push(
+    id: &graftyard_identity::SessionId,
+    parent: ObjectId,
+    tree: ObjectId,
+    origin: &str,
+    who: &crate::init::Signature<'_>,
+) -> (ObjectId, Vec<u8>) {
+    use sha1::{Digest, Sha1};
+    let sig = format!("{} <{}> {} +0000", who.name, who.email, who.at.0 / 1000);
+    let msg =
+        format!("Graftyard task {}\n\nGraftyard-Session: {origin}/_graftyard/sessions/{}\n", id.text(), id.text());
+    let commit = format!("tree {}\nparent {}\nauthor {sig}\ncommitter {sig}\n\n{msg}", tree.hex(), parent.hex());
+    let commit_id = crate::init::object_id("commit", commit.as_bytes());
+    let mut pack = b"PACK".to_vec();
+    pack.extend_from_slice(&2u32.to_be_bytes());
+    pack.extend_from_slice(&1u32.to_be_bytes());
+    crate::init::entry(&mut pack, 1, commit.as_bytes());
+    let trailer: [u8; 20] = Sha1::digest(&pack).into();
+    pack.extend_from_slice(&trailer);
+    let mut b = Vec::new();
+    let cmd = format!(
+        "{} {} {}\0report-status agent=graft-controller",
+        ObjectId::ZERO.hex(),
+        commit_id.hex(),
+        work_branch(id)
+    );
+    crate::pkt::data(&mut b, cmd.as_bytes());
+    crate::pkt::flush(&mut b);
+    b.extend_from_slice(&pack);
+    (commit_id, b)
 }

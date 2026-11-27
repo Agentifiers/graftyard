@@ -338,6 +338,97 @@ fn a_refused_mint_settles_what_the_box_owes_the_base() {
     assert!(!b.log_due());
 }
 
+/// A3 step 6: a running task owes its Shared lease and its draft until both are held, and a new draft makes the base
+/// owe the task's state again, so the next `PATCH` carries `pr_number`. A partial try counts, and after `OPEN_TRIES`
+/// the task goes on without them; a queued or final task owes neither.
+#[test]
+fn a_running_task_opens_its_lease_and_draft_once() {
+    use graftyard_git::issues::IssueNumber;
+    use graftyard_git::task::TaskApiState::InProgress;
+    use graftyard_git::taskbox::OPEN_TRIES;
+    assert!(!TaskBox::new(task()).open_due(), "a queued task opens nothing");
+    let mut b = started();
+    b.answered(InProgress, 200);
+    assert!(b.open_due());
+    b.opened(true, None);
+    assert!(b.leased && b.open_due(), "the lease alone leaves the draft owed");
+    assert_eq!(b.unreported(), None);
+    b.opened(false, Some(IssueNumber(7)));
+    assert_eq!(b.draft, Some(IssueNumber(7)));
+    assert!(b.leased, "a later try that did not lease keeps the lease held");
+    assert!(!b.open_due());
+    assert_eq!(b.unreported(), Some(InProgress), "the draft is sent with the next PATCH");
+    b.opened(true, Some(IssueNumber(9)));
+    assert_eq!(b.draft, Some(IssueNumber(7)), "a task has one draft");
+    let mut f = started();
+    for _ in 0..OPEN_TRIES {
+        assert!(f.open_due());
+        f.opened(false, None);
+    }
+    assert!(!f.open_due(), "after OPEN_TRIES the task goes on without them");
+    let mut d = started();
+    d.cancel();
+    assert!(!d.open_due());
+}
+
+/// The draft's empty commit is the base's tree on the base's head, and its push creates the task's work branch with
+/// a pack of that commit alone, which git indexes once the base's objects are there.
+#[test]
+fn the_draft_push_is_an_empty_commit_on_the_base_head() {
+    use graftyard_git::init::Signature;
+    use graftyard_git::taskbox::{draft_push, work_branch};
+    use graftyard_types::Timestamp;
+    let dir = std::env::temp_dir().join(format!("graftyard-draft-push-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let git = |args: &[&str], input: Option<&[u8]>| -> String {
+        use std::io::Write;
+        let mut p = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "a")
+            .env("GIT_AUTHOR_EMAIL", "a@b")
+            .env("GIT_COMMITTER_NAME", "a")
+            .env("GIT_COMMITTER_EMAIL", "a@b")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(i) = input {
+            p.stdin.take().unwrap().write_all(i).unwrap();
+        }
+        let o = p.wait_with_output().unwrap();
+        assert!(o.status.success(), "git {args:?}");
+        String::from_utf8(o.stdout).unwrap().trim().to_string()
+    };
+    git(&["init", "-q"], None);
+    std::fs::write(dir.join("README.md"), "base\n").unwrap();
+    git(&["add", "README.md"], None);
+    git(&["commit", "-q", "-m", "base"], None);
+    let head = ObjectId::parse_hex(git(&["rev-parse", "HEAD"], None).as_bytes()).unwrap();
+    let tree = ObjectId::parse_hex(git(&["rev-parse", "HEAD^{tree}"], None).as_bytes()).unwrap();
+    let id = SessionId::parse(ID, None).unwrap();
+    let who =
+        Signature { name: "graftyard-workspace[bot]", email: "w@users.noreply.h", at: Timestamp(1_793_000_000_000) };
+    let (c, req) = draft_push(&id, head, tree, "https://h.example/o/r", &who);
+    // The request: one command creating the work branch at `c`, a flush, then the pack.
+    let mut r = pkt::Reader::new(&req);
+    let line = r.next_pkt().unwrap().unwrap().text().unwrap().to_vec();
+    let want = format!("{} {} {}\0", ObjectId::ZERO.hex(), c.hex(), work_branch(&id));
+    assert!(line.starts_with(want.as_bytes()), "{}", String::from_utf8_lossy(&line));
+    assert_eq!(work_branch(&id), format!("refs/heads/graftyard/{ID}/work"));
+    let pack = &req[req.windows(4).position(|w| w == b"PACK").unwrap()..];
+    git(&["index-pack", "--strict", "--stdin"], Some(pack));
+    let hex = c.hex();
+    git(&["fsck", "--strict", "--no-dangling", &hex], None);
+    assert_eq!(git(&["rev-parse", &format!("{hex}^{{tree}}")], None), tree.hex(), "an empty commit");
+    assert_eq!(git(&["rev-parse", &format!("{hex}^")], None), head.hex());
+    let msg = git(&["log", "-1", "--format=%B", &hex], None);
+    assert!(msg.contains(&format!("Graftyard-Session: https://h.example/o/r/_graftyard/sessions/{ID}")), "{msg}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// AM3-WP4: a reported session log holds the final `PATCH` until the host's push of it is answered, since `decide`
 /// takes the session ref only while the base reads the task live. A push with no answer is tried again, and after
 /// `LOG_TRIES` with none the task is let go; a refusal lets it go at once; a second report is refused. A state that is
