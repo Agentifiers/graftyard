@@ -1,0 +1,53 @@
+2026-11-27T06:35:13Z
+3529a45fc
+spend since 2026-11-27T06:18:23Z: graft-m4a $0.02, graft-agents-m4a- $0, graft-runners $0.0, total $0.02 (stop $2.00)
+2026-11-27T06:35:21.762Z {"task":201,"id":"01a21bb7-6179-85b9-af45-b039f52a0109","requester":"m3-admin"}
+2026-11-27T06:35:27.931Z {"hold":true}
+2026-11-27T06:35:27.932Z {"check":"the task's requester is m3-admin","ok":true}
+2026-11-27T06:35:34.570Z {"check":"the task runs","ok":true}
+2026-11-27T06:35:54.340Z {"work_head":"0f3cf250744450c78ae13cf232f055c98d1933b1","heads":["0f3cf250744450c78ae13cf232f055c98d1933b1","af42c27ee3a4bf34ffa1171d97a55fedc5d417e6","d2667fcca3b76fa683ddf5fa97041bc9a5e69e53"]}
+2026-11-27T06:35:55.641Z {"pr":1,"draft":true,"node_head":"0f3cf250744450c78ae13cf232f055c98d1933b1"}
+2026-11-27T06:35:55.923Z {"check":"the pull request's head is the harness's second push","ok":true}
+2026-11-27T06:35:59.317Z {"run":{"id":1376442,"fork":true,"head_sha":"1597b011aabf6b71a52616aca2cc71e5d00df9a1","jobs":[{"id":1376443,"name":"plain","state":"Queued","waits_on":null,"status":"queued","conclusion":null,"steps":0,"started_at":null},{"id":1376444,"name":"missed","state":"Queued","waits_on":null,"status":"queued","conclusion":null,"steps":0,"started_at":null},{"id":1376445,"name":"secret","state":"SecretsWait","waits_on":"0f3cf250744450c78ae13cf232f055c98d1933b1","status":"waiting","conclusion":null,"steps":0,"started_at":null}],"created_at":"2026-11-27T06:36:04Z"}}
+2026-11-27T06:35:59.317Z {"check":"the agent run is marked fork","ok":true}
+2026-11-27T06:36:23.736Z {"job":"plain","started_at":"2026-11-27T06:36:22Z","run_to_start_ms":18000,"conclusion":"success","log":{"status":200,"hash":null,"len":null,"real":false,"empty":false,"raw_value_in_log":false,"token_write":403}}
+2026-11-27T06:36:23.736Z {"check":"`plain` starts within 30 s of its run (18000 ms)","ok":true}
+2026-11-27T06:36:23.737Z {"check":"`plain`'s token cannot write (403)","ok":true}
+2026-11-27T06:36:26.506Z {"job":"missed","started_at":"2026-11-27T06:36:22Z","run_to_start_ms":18000,"conclusion":"success","log":{"status":200,"hash":"e3b0c44298fc1c14","len":0,"real":false,"empty":true,"raw_value_in_log":false,"token_write":null}}
+2026-11-27T06:36:26.506Z {"check":"`missed` starts within 30 s of its run (18000 ms)","ok":true}
+2026-11-27T06:36:26.506Z {"check":"`missed` (a reference the scanner misses) runs with an empty secret","ok":true}
+2026-11-27T06:36:28.216Z {"secret_job":{"id":1376445,"name":"secret","state":"SecretsWait","waits_on":"0f3cf250744450c78ae13cf232f055c98d1933b1","status":"waiting","conclusion":null,"steps":0,"started_at":null}}
+2026-11-27T06:36:28.216Z {"check":"`secret` waits on its own head (SecretsWait, GHES waiting, no step run)","ok":true}
+2026-11-27T06:36:29.477Z {"negative":"the requester's approval (m3-admin)","status":200,"review":"APPROVED"}
+2026-11-27T06:37:32.048Z {"after":"the requester's approval (m3-admin)","secret_job":{"id":1376445,"name":"secret","state":"SecretsWait","waits_on":"0f3cf250744450c78ae13cf232f055c98d1933b1","status":"waiting","conclusion":null,"steps":0,"started_at":null}}
+2026-11-27T06:37:32.048Z {"check":"the requester's approval (m3-admin) releases nothing for 60 s","ok":true}
+2026-11-27T06:37:35.255Z {"negative":"m3-member's approval of an older head","status":200,"review":"APPROVED"}
+2026-11-27T06:38:37.636Z {"after":"m3-member's approval of an older head","secret_job":{"id":1376445,"name":"secret","state":"SecretsWait","waits_on":"0f3cf250744450c78ae13cf232f055c98d1933b1","status":"waiting","conclusion":null,"steps":0,"started_at":null}}
+2026-11-27T06:38:37.636Z {"check":"m3-member's approval of an older head releases nothing for 60 s","ok":true}
+2026-11-27T06:38:39.020Z {"approve":200,"review":"APPROVED"}
+2026-11-27T06:43:41.274Z {"timeout":"`secret` released","ms":300000}
+2026-11-27T06:43:41.274Z {"released":null,"approve_to_release_ms":null}
+2026-11-27T06:43:41.275Z {"check":"m3-member's approval of the current head releases `secret`","ok":false}
+2026-11-27T06:43:41.275Z {"secret_done":null,"log":null}
+2026-11-27T06:43:41.275Z {"check":"the released `secret` reads the real secret (its hash and length; the value never printed)","ok":false}
+2026-11-27T06:43:41.275Z {"check":"the released job's token write is still refused (undefined)","ok":true}
+2026-11-27T06:43:41.275Z {"check":"the released job started after the approval","ok":false}
+2026-11-27T06:43:53.897Z {"runs":3,"other_secret_jobs":[{"state":"SecretsWait","waits_on":"15285ff28adab1401e0f98991c37f81cbb62ecaf","steps":0},{"state":"SecretsWait","waits_on":"b037bf87c00f531e3b349299d98be88b3864de01","steps":0}],"secret_lines_read":3,"leaks":0}
+2026-11-27T06:43:53.897Z {"check":"every agent run of the pull request is fork","ok":true}
+2026-11-27T06:43:53.897Z {"check":"every other head's `secret` stays waiting","ok":true}
+2026-11-27T06:43:53.897Z {"check":"no job of an agent run read the secret before AgentGate held for its head (0 leaks)","ok":true}
+2026-11-27T06:43:55.706Z {"cancel_run":1376446,"status":202}
+2026-11-27T06:43:57.292Z {"cancel_run":1376442,"status":202}
+2026-11-27T06:43:58.722Z {"cancel_run":1376438,"status":202}
+2026-11-27T06:44:01.199Z {"control_push":true}
+2026-11-27T06:44:03.360Z {"control_pr":2}
+2026-11-27T06:44:10.286Z {"control_run":{"id":1376450,"fork":false,"head_sha":"8715e0e6bb7895cc704b81fc1fbf5902dda6e18e","jobs":[{"id":1376451,"name":"plain","state":"Queued","waits_on":null,"status":"queued","conclusion":null,"steps":0,"started_at":null},{"id":1376452,"name":"missed","state":"Queued","waits_on":null,"status":"queued","conclusion":null,"steps":0,"started_at":null},{"id":1376453,"name":"secret","state":"Queued","waits_on":null,"status":"queued","conclusion":null,"steps":0,"started_at":null}]}}
+2026-11-27T06:44:10.286Z {"check":"control: a human's run is not fork and no job waits","ok":true}
+2026-11-27T06:44:35.515Z {"control_secret":{"id":1376453,"name":"secret","state":"Completed","waits_on":null,"status":"completed","conclusion":"success","steps":4,"started_at":"2026-11-27T06:44:32Z"},"log":{"status":200,"hash":"2c481d760f655e6e","len":29,"real":true,"empty":false,"raw_value_in_log":false,"token_write":403}}
+2026-11-27T06:44:35.515Z {"check":"control: the human run's `secret` reads the secret at once","ok":true}
+2026-11-27T06:44:36.543Z {"cancel_control":409}
+2026-11-27T06:44:38.775Z {"unhold":true}
+2026-11-27T06:44:39.662Z {"cancel_task":200}
+VERDICT l004 FAIL m3-member's approval of the current head releases `secret`; the released `secret` reads the real secret (its hash and length; the value never printed); the released job started after the approval
+l004 exit 1
+spend since 2026-11-27T06:18:23Z: graft-m4a $0.13, graft-agents-m4a- $0.01, graft-runners $0.0, total $0.14 (stop $2.00)

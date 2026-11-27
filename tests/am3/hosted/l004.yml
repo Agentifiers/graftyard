@@ -1,0 +1,29 @@
+on: pull_request
+jobs:
+  plain:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -s -o /dev/null -w 'token write %{http_code}\n' -X POST -H "authorization: token $T" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/refs" -d "{\"ref\":\"refs/heads/l004-probe-$GITHUB_RUN_ID-plain\",\"sha\":\"$GITHUB_SHA\"}"
+        env:
+          T: ${{ github.token }}
+  missed:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          printf 'secret %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"
+        env:
+          S: |-
+            ${{ secrets
+            .L004_SECRET }}
+  secret:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          printf 'secret %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"
+        env:
+          S: ${{ secrets.L004_SECRET }}
+      - run: |
+          curl -s -o /dev/null -w 'token write %{http_code}\n' -X POST -H "authorization: token $T" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/refs" -d "{\"ref\":\"refs/heads/l004-probe-$GITHUB_RUN_ID-secret\",\"sha\":\"$GITHUB_SHA\"}"
+        env:
+          T: ${{ github.token }}

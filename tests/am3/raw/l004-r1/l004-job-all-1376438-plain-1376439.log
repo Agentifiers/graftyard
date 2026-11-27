@@ -1,0 +1,15 @@
+2026-11-27T06:36:21.4438471Z Current runner version: '2.338.2'
+2026-11-27T06:36:21.4448375Z Runner name: 'graftyard-hosted-1f2d4668'
+2026-11-27T06:36:21.4449491Z Machine name: '671f9760b631037ac381f6b0795d213ec1611324a4fa8f92a53baaa08a4ac2a'
+2026-11-27T06:36:21.4454280Z Prepare workflow directory
+2026-11-27T06:36:21.5349155Z Prepare all required actions
+2026-11-27T06:36:21.5474761Z Complete job name: plain
+2026-11-27T06:36:21.6863209Z ##[group]Run curl -s -o /dev/null -w 'token write %{http_code}\n' -X POST -H "authorization: token $T" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/refs" -d "{\"ref\":\"refs/heads/l004-probe-$GITHUB_RUN_ID-plain\",\"sha\":\"$GITHUB_SHA\"}"
+2026-11-27T06:36:21.6863461Z [36;1mcurl -s -o /dev/null -w 'token write %{http_code}\n' -X POST -H "authorization: token $T" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/refs" -d "{\"ref\":\"refs/heads/l004-probe-$GITHUB_RUN_ID-plain\",\"sha\":\"$GITHUB_SHA\"}"[0m
+2026-11-27T06:36:21.6970378Z shell: /usr/bin/bash -e {0}
+2026-11-27T06:36:21.6971561Z env:
+2026-11-27T06:36:21.6973294Z   GRAFTYARD_ACTIONS: true
+2026-11-27T06:36:21.6973578Z   T: ***
+2026-11-27T06:36:21.6973612Z ##[endgroup]
+2026-11-27T06:36:24.3740339Z token write 403
+2026-11-27T06:36:24.4125706Z Cleaning up orphan processes
