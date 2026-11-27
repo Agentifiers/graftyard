@@ -120,9 +120,9 @@ struct Grant {
 impl Grant {
     fn of(c: &crate::host::Core<Repo>) -> Result<Grant> {
         let ChainId::Repo(repo) = c.join.chain else { return Err("not a repository chain".into()) };
-        let net = NetworkId::of_root(repo);
         let sites: Vec<SiteId> = c.join.record.sites.iter().copied().collect();
         let fold = &c.m.group_fold().fold;
+        let net = git::tiers::network(&*fold.core, repo);
         Ok(Grant {
             net,
             owner: fold.authz_owner().map_or(0, |o| o.0.0 as u64),
@@ -340,6 +340,38 @@ mod tests {
         });
         assert_eq!(Repo::read_json(&fold, &q)["fanout"], 4);
         assert!(Repo::reads().contains(&REPO_FORMAT_FANOUT));
+    }
+
+    /// AM3-WP2a head 2: the leader's pack markers, promotions, test merges, warms and fan-out grants key a fork's
+    /// chain by its network (`Family::network`, from the `Genesis` row), and a root's by its own id, as on main. Only a
+    /// repository chain has one.
+    #[test]
+    fn a_fork_chains_network_keys_its_packs_and_a_roots_is_its_own_id() {
+        use graftyard_types::{ChainId, NetworkId};
+        let (fork, base) = (RepoId(DbId(9)), NetworkId(DbId(3)));
+        let mut fold = RepoFold::new(fork, AccountId(DbId(1)));
+        assert_eq!(Repo::network(&fold, ChainId::Repo(fork)), Some(NetworkId::of_root(fork)));
+        let genesis = RepoEvent::Genesis {
+            owner: AccountId(DbId(1)),
+            network: base,
+            name: graftyard_identity::RepoName::parse("fork").unwrap(),
+            fork_of: Some((base.root(), Index(5))),
+        };
+        fold.apply_entry(&LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(1),
+            prev: Digest([0; 32]),
+            format: graftyard_git::issue_ops::call::REPO_FORMAT_FORKS,
+            tiers: TierSet::CORE,
+            at: Timestamp(1),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![genesis]),
+        });
+        assert_eq!(Repo::network(&fold, ChainId::Repo(fork)), Some(base));
+        assert_eq!(graftyard_git::first_shard_name(base, graftyard_types::SiteId(1)), "git#1#net:3");
+        assert_eq!(Repo::network(&fold, ChainId::RepoMeta(fork)), None);
+        assert!(Repo::reads().contains(&graftyard_git::issue_ops::call::REPO_FORMAT_FORKS));
     }
 
     /// G26: the same read answers the `settings` row's default branch, which the shard points HEAD at, and before the

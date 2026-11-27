@@ -636,6 +636,20 @@ fn a_root_repositorys_network_names_and_keys_are_mains() {
     assert_eq!(R2Key::pack_prefix(n), "pack/131171/");
 }
 
+#[test]
+fn a_forks_shard_query_names_its_network_and_a_roots_keeps_mains_bytes() {
+    use graftyard_git::{shard_network, shard_query};
+    use graftyard_types::RepoId;
+
+    let root = RepoId(DbId(131171));
+    let fork = RepoId(DbId(131172));
+    let network = NetworkId(DbId(131171));
+    assert_eq!(shard_query(root, NetworkId::of_root(root)), "repo=131171");
+    assert_eq!(shard_query(fork, network), "repo=131172&net=131171");
+    assert_eq!(shard_network(fork, Some(network)), network);
+    assert_eq!(shard_network(root, None), NetworkId::of_root(root));
+}
+
 /// AM3-WP2a, 32.34: a fork's `Genesis` names its network in one core row. A root has no such event, and its own
 /// network id is a no-op rather than a row that would move every root's rows (`decisions/DECISIONS.md`,
 /// "`fork-network-read`").

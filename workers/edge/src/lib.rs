@@ -2938,7 +2938,7 @@ fn validate_url(repo: &Repo, head: &[u8], tipsn: usize, agent: bool, pack: &[u8]
     let sum = |b: &[u8]| Digest(Sha256::digest(b).into()).hex();
     let record = serde_json::to_string(&repo.record).unwrap_or_default();
     let record: String = url::form_urlencoded::byte_serialize(record.as_bytes()).collect();
-    let mut url = format!("https://shard/validate?repo={}&record={record}&tipsn={tipsn}", repo.id.0.0);
+    let mut url = format!("{}&record={record}&tipsn={tipsn}", shard_at_url("/validate", repo));
     let detailn = head.len() - tipsn;
     if detailn > 0 {
         url.push_str(&format!("&detailn={detailn}"));
@@ -3067,6 +3067,13 @@ fn shard_order(repo: &Repo, pinned: Option<SiteId>) -> Vec<SiteId> {
 fn mark_shard(repo: &Repo, site: SiteId, failed: bool) {
     let seen = if failed { Seen::Failed } else { Seen::Answered };
     COLD.with(|m| note(&mut m.borrow_mut(), (repo.id.0.0, site.0), seen, now().0));
+}
+
+/// `https://shard<path>?<repo and, for a fork, net>` (`graftyard_git::shard_query`): every call to a network's git
+/// cache shard names the repository this way, so a fork's call reaches its network's disk and a root's keeps main's
+/// bytes.
+pub(crate) fn shard_at_url(path: &str, repo: &Repo) -> String {
+    format!("https://shard{path}?{}", graftyard_git::shard_query(repo.id, repo.network()))
 }
 
 /// How long the first shard tried, usually the home's, may hold a validate in its catch-up before the edge tries the
@@ -3307,7 +3314,7 @@ async fn validate_streamed(
     let record = serde_json::to_string(&repo.record).map(|r| String::from(js_sys::encode_uri_component(&r)));
     let record = record.unwrap_or_default();
     let probe = |i: usize, site: SiteId| {
-        let url = format!("https://shard/catchup?repo={}&record={record}", repo.id.0.0);
+        let url = format!("{}&record={record}", shard_at_url("/catchup", repo));
         let url = shard_url(&url, i, sites.len(), moved_to(repo, site));
         async move {
             let mut init = RequestInit::new();
@@ -3715,7 +3722,7 @@ async fn upload_pack(c: &Ctx<'_>, repo: &Repo, front: UploadFront) -> Result<Res
     // edge streams the chain's packs from the first chain bucket that holds them all, so only the tail leaves the
     // container. A chain file that no chain bucket holds sends the miss back to the shard for the composed pack.
     let fill = key.as_ref().map_or(String::new(), |k| format!("&fill={}", k.digest().hex()));
-    let url = format!("https://shard/upload-pack?repo={}{fill}", repo.id.0.0);
+    let url = format!("{}{fill}", shard_at_url("/upload-pack", repo));
     let tail_url = format!("{url}{}", if key.is_some() { "&tail=1" } else { "" });
     let mut r = shard_read(c, repo, &tail_url, Method::Post, &proto, Some(&body)).await?;
     if r.status_code() == 200 && r.headers().get("x-graft-compose")?.as_deref() == Some(graftyard_git::compose::TAIL) {
@@ -3788,7 +3795,7 @@ async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service, si
         }
         Service::UploadPack => {
             // v0: the shard's own advertisement, after it caught up to the leader's refs.
-            let url = format!("https://shard/info-refs?repo={}", repo.id.0.0);
+            let url = shard_at_url("/info-refs", repo);
             let mut r = shard_read(c, repo, &url, Method::Get, proto.as_deref().unwrap_or(""), None).await?;
             let b = r.bytes().await?;
             Ok(Response::from_bytes(b)?.with_headers(git_headers(c.rid, &service.advertisement_type())?))
@@ -3923,9 +3930,17 @@ async fn bed_archive(c: &Ctx<'_>, repo: &Repo, from: u64, to: u64) -> Result<ser
         }
         r.bytes().await
     };
-    let promoted = call_shard(format!("/promote?repo={}", repo.id.0.0), serde_json::to_vec(&sums)?).await?;
+    let promoted = call_shard(
+        format!("/promote?{}", graftyard_git::shard_query(repo.id, repo.network())),
+        serde_json::to_vec(&sums)?,
+    )
+    .await?;
     let ix: PackIndex = serde_json::from_slice(
-        &call_shard(format!("/validate?repo={}&tipsn=0", repo.id.0.0), promoted.clone()).await?,
+        &call_shard(
+            format!("/validate?{}&tipsn=0", graftyard_git::shard_query(repo.id, repo.network())),
+            promoted.clone(),
+        )
+        .await?,
     )?;
     let raw = buckets(c.env, c.sites)?;
     let refs: Vec<(SiteId, &R2)> =
@@ -4568,10 +4583,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             let mut init = RequestInit::new();
             init.with_method(if inner == "/status" { Method::Get } else { Method::Post });
             shard_at(c, &repo, at)?
-                .fetch_with_request(Request::new_with_init(
-                    &format!("https://shard{inner}?repo={}", repo.id.0.0),
-                    &init,
-                )?)
+                .fetch_with_request(Request::new_with_init(&shard_at_url(inner, &repo), &init)?)
                 .await
         }
         _ => text(c.rid, 404, "not found\n"),
@@ -5807,6 +5819,26 @@ mod tests {
         assert_ne!(rebuilt.digest(), guessed.digest(), "the fork's entry is under its network's key");
         assert_eq!(super::front_key(Some(rebuilt.clone()), base), (Some(rebuilt), true), "a key on the network stays");
         assert_eq!(super::front_key(None, base), (None, true));
+    }
+
+    /// AM3-WP2a head 2: a fork's shard calls name its network, so the shard keys the network's disk; a root's keep
+    /// main's bytes.
+    #[test]
+    fn a_forks_shard_calls_name_its_network_and_a_roots_keep_mains_bytes() {
+        let record = PlacementRecord {
+            name: PlacementName::Tri,
+            sites: [SiteId(0), SiteId(1), SiteId(2)].into_iter().collect(),
+            home: SiteId(0),
+            generation: 1,
+            moving_from: None,
+            at: Timestamp(1),
+        };
+        let repo = |id: i64| super::Repo::new(RepoId(DbId(id)), AccountId(DbId(9)), record.clone());
+        let (root, fork) = (repo(131_901), repo(131_902));
+        fork.fix(Some(NetworkId(DbId(131_900))));
+        root.fix(None);
+        assert_eq!(super::shard_at_url("/upload-pack", &root), "https://shard/upload-pack?repo=131901");
+        assert_eq!(super::shard_at_url("/upload-pack", &fork), "https://shard/upload-pack?repo=131902&net=131900");
     }
 
     /// Every try but the last says another shard follows, so a rehydrating shard answers it at once; the last try
