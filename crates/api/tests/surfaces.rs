@@ -300,7 +300,7 @@ fn every_captured_query_answers_without_errors() {
     }
     assert_eq!(
         ran, 32,
-        "32 of the 36 captured documents are queries (the 3 `gh release` ones too; tests/blobs.rs runs them on releases)"
+        "32 of the 39 captured documents are queries (the 3 `gh release` ones too; tests/blobs.rs runs them on releases)"
     );
 }
 
@@ -1892,6 +1892,151 @@ fn graphql_milestones_read_what_rest_wrote_and_a_pull_requests_app_writes_them()
             "{perms:?}"
         );
     }
+}
+
+/// F149 (32.37): gh's milestone writes, its own documents as fixtures. `gh issue edit -m` (`IssueUpdate-1`, with
+/// `--remove-milestone` and `-t -b -m`), `gh pr edit -m` (`PullRequestUpdate-1`), `gh pr create -m`'s second
+/// mutation (`PullRequestCreateMetadata-1`) and `gh issue create -m` (`IssueCreate-1`) plan `SetMilestone`,
+/// `EditWithMilestone` and `OpenIssueWithMilestone`, commit, and render from `&Acked`. Before 32.37, `milestoneId` is
+/// refused as not served and `updateIssue` is `undefinedField`, as on main.
+#[test]
+fn gh_milestone_writes_commit_the_32_37_commands() {
+    use graftyard_api::hosted::HostedDir;
+    use graftyard_api::rest::plan_create_milestone;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    for t in ["v1.0", "v2.0"] {
+        c.commit(WRITER, plan_create_milestone(&json!({ "title": t })).unwrap()).unwrap();
+    }
+    let mi = |c: &Chain, n: u32| {
+        let id = graftyard_git::tiers::milestone(&c.members[0].meta, n).unwrap().id;
+        NodeId::scoped(NodeType::Milestone, REPO, id.0).encode()
+    };
+    let (m1, m2) = (mi(&c, 1), mi(&c, 2));
+    let at = |c: &Chain, n: u32| graftyard_git::tiers::issue_milestone(&c.members[0].meta, IssueNumber(n));
+    // Plans gh's document with its variables' ids replaced, commits it as the writer, and returns the planned op and
+    // the rendered reply.
+    let run = |c: &mut Chain, f: &str, input: Value| -> (IssueOp, Value) {
+        let d = doc(f);
+        let vars = json!({ "input": input }).as_object().cloned();
+        let (planned, op) = {
+            let r = c.repo(0, &h, &dir);
+            let req = Request::parse(&d.query, vars.clone(), None).unwrap();
+            assert_eq!(route(&req).unwrap(), Some(Target::Id(REPO.0.0)), "{f}");
+            let p = plan(&req, &r).unwrap();
+            let Plan::Issue(op) = p.plan.clone() else { panic!() };
+            (p, *op)
+        };
+        let out = c.commit(WRITER, op.clone()).unwrap();
+        let r = c.repo(0, &h, &dir);
+        let reply = render(&Request::parse(&d.query, vars.clone(), None).unwrap(), &planned, &ack(out), &r);
+        assert!(reply.get("errors").is_none(), "{f}: {reply}");
+        keep(&format!("{f}-milestone"), &d, &vars, &reply);
+        (op, reply)
+    };
+    let issue =
+        NodeId::scoped(NodeType::Issue, REPO, c.repo(0, &h, &dir).item(IssueNumber(1)).unwrap().row.id.0).encode();
+    let pull = NodeId::scoped(NodeType::PullRequest, REPO, c.repo(0, &h, &dir).item(IssueNumber(2)).unwrap().row.id.0)
+        .encode();
+
+    // `gh issue edit 1 -m v2.0`: milestone 2 by its node id, which holds its id, not its number.
+    let (op, reply) = run(&mut c, "IssueUpdate-1", json!({ "id": issue, "milestoneId": m2 }));
+    assert_eq!(op, IssueOp::SetMilestone { n: IssueNumber(1), milestone: Some(2) });
+    assert_eq!((at(&c, 1), reply["data"]["updateIssue"]["__typename"].clone()), (Some(2), json!("UpdateIssuePayload")));
+    // `gh issue edit 1 -t X -b Y -m v1.0`: one command, title, body and milestone together.
+    let (op, _) = run(&mut c, "IssueUpdate-1", json!({ "id": issue, "title": "X", "body": "Y", "milestoneId": m1 }));
+    assert!(
+        matches!(&op, IssueOp::EditWithMilestone { milestone: Some(1), changes, .. } if changes.len() == 2),
+        "{op:?}"
+    );
+    let it = c.repo(0, &h, &dir).item(IssueNumber(1)).unwrap();
+    assert_eq!((&*it.row.title, &*it.row.body, at(&c, 1)), ("X", "Y", Some(1)));
+    // `gh issue edit 1 --remove-milestone`.
+    let (op, _) = run(&mut c, "IssueUpdate-1", json!({ "id": issue, "milestoneId": null }));
+    assert_eq!((op, at(&c, 1)), (IssueOp::SetMilestone { n: IssueNumber(1), milestone: None }, None));
+    // `gh issue edit 1 -t W -b V` without a milestone is one `Edit`; `-t Z` alone the title change gh sends without
+    // a milestone, and `UpdateIssuePayload.issue` is the issue after it.
+    let (op, _) = run(&mut c, "IssueUpdate-1", json!({ "id": issue, "title": "W", "body": "V" }));
+    assert!(matches!(&op, IssueOp::Edit { changes, .. } if changes.len() == 2), "{op:?}");
+    let it = c.repo(0, &h, &dir).item(IssueNumber(1)).unwrap();
+    assert_eq!((&*it.row.title, &*it.row.body), ("W", "V"));
+    let (op, _) = run(&mut c, "IssueUpdate-1", json!({ "id": issue, "title": "Z" }));
+    assert!(matches!(op, IssueOp::Change { .. }), "{op:?}");
+    let q = "mutation($input: UpdateIssueInput!) { updateIssue(input: $input) { issue { number title milestone { title } } } }";
+    let vars = json!({ "input": { "id": issue, "milestoneId": m2 } }).as_object().cloned();
+    let planned = plan(&Request::parse(q, vars.clone(), None).unwrap(), &c.repo(0, &h, &dir)).unwrap();
+    let Plan::Issue(op) = planned.plan.clone() else { panic!() };
+    let out = c.commit(WRITER, *op).unwrap();
+    let reply = render(&Request::parse(q, vars, None).unwrap(), &planned, &ack(out), &c.repo(0, &h, &dir));
+    let i = &reply["data"]["updateIssue"]["issue"];
+    assert_eq!(
+        (i["number"].clone(), i["title"].clone(), i["milestone"]["title"].clone()),
+        (json!(1), json!("Z"), json!("v2.0"))
+    );
+
+    // `gh pr edit 2 -m v1.0`, `-t X -m v2.0`, and `gh pr create -m`'s `PullRequestCreateMetadata`.
+    let (op, reply) = run(&mut c, "PullRequestUpdate-1", json!({ "pullRequestId": pull, "milestoneId": m1 }));
+    assert_eq!((op, at(&c, 2)), (IssueOp::SetMilestone { n: IssueNumber(2), milestone: Some(1) }, Some(1)));
+    assert_eq!(reply["data"]["updatePullRequest"]["__typename"], json!("UpdatePullRequestPayload"));
+    let (op, _) = run(&mut c, "PullRequestUpdate-1", json!({ "pullRequestId": pull, "title": "X", "milestoneId": m2 }));
+    assert!(
+        matches!(&op, IssueOp::EditWithMilestone { milestone: Some(2), changes, .. } if changes.len() == 1),
+        "{op:?}"
+    );
+    assert_eq!((&*c.repo(0, &h, &dir).item(IssueNumber(2)).unwrap().row.title, at(&c, 2)), ("X", Some(2)));
+    let (_, reply) = run(&mut c, "PullRequestCreateMetadata-1", json!({ "pullRequestId": pull, "milestoneId": null }));
+    assert_eq!((at(&c, 2), reply["data"]["updatePullRequest"]["clientMutationId"].clone()), (None, json!(null)));
+
+    // `gh issue create -t T -b B -m v2.0`: the issue and its milestone in one command.
+    let repo = NodeId::top(NodeType::Repository, REPO.0.0).encode();
+    let (op, reply) =
+        run(&mut c, "IssueCreate-1", json!({ "repositoryId": repo, "title": "T", "body": "B", "milestoneId": m2 }));
+    assert!(matches!(op, IssueOp::OpenIssueWithMilestone { milestone: 2, .. }), "{op:?}");
+    let url = reply["data"]["createIssue"]["issue"]["url"].as_str().unwrap();
+    let n: u32 = url.rsplit('/').next().unwrap().parse().unwrap();
+    assert_eq!(at(&c, n), Some(2));
+
+    // A milestone id of another repository, an issue id in `milestoneId`, or a deleted milestone: NOT_FOUND, nothing
+    // planned. An issue's id in `updatePullRequest` and a pull request's in `updateIssue` are NOT_FOUND too.
+    let r = c.repo(0, &h, &dir);
+    let ask_plan = |f: &str, input: Value| {
+        let d = doc(f);
+        plan(&Request::parse(&d.query, json!({ "input": input }).as_object().cloned(), None).unwrap(), &r)
+    };
+    // Milestone 1's own id under another repository: it names no milestone here.
+    let m1_id = graftyard_git::tiers::milestone(&c.members[0].meta, 1).unwrap().id.0;
+    let elsewhere = NodeId::scoped(NodeType::Milestone, graftyard_types::RepoId(DbId(8)), m1_id).encode();
+    for bad in [elsewhere, issue.clone(), NodeId::scoped(NodeType::Milestone, REPO, 999_999).encode()] {
+        let e = ask_plan("IssueUpdate-1", json!({ "id": issue, "milestoneId": bad })).unwrap_err();
+        assert_eq!(e["errors"][0]["type"], json!("NOT_FOUND"), "{e}");
+    }
+    assert_eq!(
+        ask_plan("IssueUpdate-1", json!({ "id": pull, "milestoneId": null })).unwrap_err()["errors"][0]["type"],
+        json!("NOT_FOUND")
+    );
+    assert_eq!(
+        ask_plan("PullRequestUpdate-1", json!({ "pullRequestId": issue, "milestoneId": null })).unwrap_err()["errors"]
+            [0]["type"],
+        json!("NOT_FOUND")
+    );
+    // Labels on `updateIssue` stay refused, so nothing is half applied.
+    let e = ask_plan("IssueUpdate-1", json!({ "id": issue, "labelIds": ["x"], "milestoneId": null })).unwrap_err();
+    assert_eq!(e["errors"][0]["type"], json!("UNPROCESSABLE"), "{e}");
+    drop(r);
+
+    // Before 32.37: `milestoneId` is refused as not served, and `updateIssue` is no mutation the planner knows.
+    let off = HostedDir { home: Some(dir.home()), ..Default::default() };
+    let r = graftyard_api::view::Repo { dir: &off, ..c.repo(0, &h, &dir) };
+    let ask_off = |f: &str, input: Value| {
+        let d = doc(f);
+        plan(&Request::parse(&d.query, json!({ "input": input }).as_object().cloned(), None).unwrap(), &r)
+    };
+    let e = ask_off("PullRequestUpdate-1", json!({ "pullRequestId": pull, "milestoneId": m1 })).unwrap_err();
+    assert_eq!(e["errors"][0]["message"], json!("milestoneId is not served"), "{e}");
+    let e = ask_off("IssueCreate-1", json!({ "repositoryId": repo, "title": "T", "milestoneId": m1 })).unwrap_err();
+    assert_eq!(e["errors"][0]["message"], json!("milestoneId is not served"), "{e}");
+    let e = ask_off("IssueUpdate-1", json!({ "id": issue, "title": "Q" })).unwrap_err();
+    assert_eq!(e["errors"][0]["type"], json!("undefinedField"), "{e}");
 }
 
 /// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the

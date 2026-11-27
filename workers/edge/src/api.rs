@@ -1750,6 +1750,11 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         Ok(t) => t,
         Err(e) => return Ok(Reply::json(200, json!({ "errors": [e.json()] }))),
     };
+    // F149: `updateIssue` routes to its issue's repository only once 32.37 is enabled; until then it answers as on
+    // main, which routed it nowhere.
+    let milestones_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_MILESTONES);
+    let target =
+        target.filter(|_| milestones_on || !gq.roots().is_ok_and(|r| r.iter().any(|(f, _)| f == "updateIssue")));
     // A merge reads only the rows it plans from, and its logins while the git cache plans it: neither needs the
     // other, and only the leader's render reads them (the `Plan::Merge` arm). Every other request reads both tiers
     // and its logins first.

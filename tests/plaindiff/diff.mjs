@@ -35,6 +35,10 @@ const lsRefs = Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt
 const fetchV2 = Buffer.concat([pkt("command=fetch\n"), Buffer.from("0001"), pkt(`want ${"1".repeat(40)}\n`), pkt("done\n"), Buffer.from("0000")]);
 const v2 = { "git-protocol": "version=2", "user-agent": "git/2.43.0" };
 const up = { ...auth, ...v2, "content-type": "application/x-git-upload-pack-request" };
+// A new-format node id (`graftyard_wire::NodeId::encode`): the prefix, then base64url of the MessagePack `[0, ids...]`.
+const mp = (v) => v < 0x80 ? [v] : v < 0x100 ? [0xcc, v] : v < 0x10000 ? [0xcd, v >> 8, v & 255]
+  : [0xce, (v >>> 24) & 255, (v >> 16) & 255, (v >> 8) & 255, v & 255];
+const nodeId = (prefix, ...ids) => `${prefix}_${Buffer.from([0x90 | (ids.length + 1), 0, ...ids.flatMap(mp)]).toString("base64url")}`;
 const reqs = [
   ["info-refs-upload", "GET", `${p}/info/refs?service=git-upload-pack`, { ...auth, ...v2 }],
   ["ls-refs", "POST", `${p}/git-upload-pack`, up, lsRefs],
@@ -93,6 +97,10 @@ const reqs = [
   // issue's or pull request's `milestone`, which no row names, main's `null`.
   ["graphql-milestones", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "query RepositoryMilestoneList($endCursor:String$name:String!$owner:String!$states:[MilestoneState!]!){repository(owner: $owner, name: $name){milestones(states: $states, first: 100, after: $endCursor){nodes{id,title},pageInfo{hasNextPage,endCursor}}}}", variables: { endCursor: null, name: seed.repo, owner: seed.login, states: ["OPEN"] } })],
   ["graphql-milestone-1", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: `{ repository(owner: "${seed.login}", name: "${seed.repo}") { milestone(number: 1) { title } } }` })],
+  // F149: with 32.37 off, gh's `issue edit -m` mutation answers as main did (routed nowhere), and `createIssue` with
+  // `milestoneId` is refused as not served, before any issue is opened.
+  ["graphql-update-issue", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "mutation IssueUpdate($input:UpdateIssueInput!){updateIssue(input: $input){__typename}}", variables: { input: { id: nodeId("I", seed.id, 1), milestoneId: null } } })],
+  ["graphql-create-issue-milestone", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "mutation IssueCreate($input: CreateIssueInput!) { createIssue(input: $input) { issue { id url } } }", variables: { input: { repositoryId: nodeId("R", seed.id), title: "T", milestoneId: nodeId("MI", seed.id, 1) } } })],
   ["graphql-item-milestones", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: `{ repository(owner: "${seed.login}", name: "${seed.repo}") { issues(first: 5) { nodes { number milestone { title } } } pullRequests(first: 5) { nodes { number milestone { title } } } } }` })],
 ];
 const mask = (s) => s.replace(/bx\dr\d+/g, "LABELNAME").replace(/"(node_id|id)":(\d+|"[^"]*")/g, '"$1":"*"')

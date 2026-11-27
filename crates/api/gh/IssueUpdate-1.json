@@ -1,0 +1,17 @@
+{
+ "commands": [
+  "issue edit 1 -R o/r -m v1.0",
+  "issue edit 1 -R o/r --remove-milestone",
+  "issue edit 1 -R o/r -t X",
+  "issue edit 1 -R o/r -t X -b Y -m v1.0"
+ ],
+ "operation": "IssueUpdate",
+ "query": "mutation IssueUpdate($input:UpdateIssueInput!){updateIssue(input: $input){__typename}}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "input": {
+   "id": "I_1",
+   "milestoneId": "I_1"
+  }
+ }
+}

@@ -1,0 +1,17 @@
+{
+ "commands": [
+  "pr edit 2 -R o/r -m v1.0",
+  "pr edit 2 -R o/r -b X",
+  "pr edit 2 -R o/r -t X -m v1.0",
+  "pr edit 2 -R o/r --remove-milestone"
+ ],
+ "operation": "PullRequestUpdate",
+ "query": "mutation PullRequestUpdate($input:UpdatePullRequestInput!){updatePullRequest(input: $input){__typename}}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "input": {
+   "milestoneId": "I_1",
+   "pullRequestId": "I_1"
+  }
+ }
+}

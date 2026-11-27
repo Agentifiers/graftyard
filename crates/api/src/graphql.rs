@@ -48,8 +48,10 @@ pub fn route(req: &Request<'_>) -> Result<Option<Target>, GqlError> {
                 Some(Target::Name { owner: o.into(), name: n.into() })
             }),
             "node" => str_arg(&a, "id").and_then(route_id),
-            // GHES names `dequeuePullRequest`'s pull request `id`.
-            "dequeuePullRequest" => a.get("input").and_then(|i| i.get("id")).and_then(Value::as_str).and_then(route_id),
+            // GHES names `dequeuePullRequest`'s pull request `id`, and `updateIssue`'s issue.
+            "dequeuePullRequest" | "updateIssue" => {
+                a.get("input").and_then(|i| i.get("id")).and_then(Value::as_str).and_then(route_id)
+            }
             _ => a.get("input").and_then(|i| {
                 ["repositoryId", "subjectId", "pullRequestId", "labelableId", "assignableId"]
                     .iter()
@@ -113,6 +115,12 @@ fn item_of(r: &Repo<'_>, id: &str) -> Option<IssueNumber> {
     }
     let it = r.item_by_id(DbId(id.id()))?;
     (it.is_pull() == (id.ty == NodeType::PullRequest)).then_some(it.n)
+}
+
+/// The number of the milestone a `MI_` node id names in this repository, which holds the milestone's id, not its number.
+fn milestone_of(r: &Repo<'_>, id: &str) -> Option<u32> {
+    let id = NodeId::parse(id).filter(|n| n.ty == NodeType::Milestone && n.repo() == Some(r.at.id))?;
+    graftyard_git::tiers::milestones(r.meta).into_iter().find(|(_, m)| m.id.0 == id.id()).map(|(n, _)| n)
 }
 
 /// The signed-in user, for `viewer`: gh's `auth login` and `auth status` ask `viewer { login }` and nothing else.
@@ -232,12 +240,33 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
         s(k).and_then(NodeId::parse).is_some_and(|n| n.ty == NodeType::Repository && n.repo() == Some(r.at.id))
     };
     let planned = |plan, subject| Ok(Planned { field: field.clone(), plan, subject });
+    // F149: once 32.37 is enabled, `milestoneId` (a milestone's node id, or `null` to clear it) rides the command the
+    // rest of the input plans, as REST's `milestone` does (`crate::rest::with_milestone`); until then it is refused as
+    // not served, as before.
+    let milestone = || -> Result<Option<Option<u32>>, Value> {
+        Ok(match input.get("milestoneId") {
+            None => None,
+            Some(_) if !r.dir.milestones() => None,
+            Some(Value::Null) => Some(None),
+            Some(v) => {
+                let id = v.as_str().unwrap_or("");
+                let n = milestone_of(r, id).ok_or_else(|| {
+                    not_found(field, format!("Could not resolve to a node with the global id of '{id}'."))
+                })?;
+                Some(Some(n))
+            }
+        })
+    };
+    let served = |k: &str| k == "milestoneId" && r.dir.milestones();
     match field.as_str() {
         "createIssue" => {
             if !repo_ok("repositoryId") {
                 return Err(not_found(field, "Could not resolve to a Repository with that id."));
             }
             for k in ["milestoneId", "issueTypeId", "parentIssueId", "issueTemplate", "agentAssignment"] {
+                if served(k) {
+                    continue;
+                }
                 if input.get(k).is_some_and(|v| !v.is_null()) {
                     return Err(unprocessable(field, format!("{k} is not served")));
                 }
@@ -254,6 +283,10 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
                 body: s("body").unwrap_or("").into(),
                 labels: labels.into_iter().map(|i| LabelId(DbId(i))).collect(),
                 assignees: assignees.into_iter().map(|i| AccountId(DbId(i))).collect::<SmallVec<_>>(),
+            };
+            let op = match milestone()? {
+                Some(m) => crate::rest::with_milestone(op, m),
+                None => op,
             };
             planned(Plan::Issue(Box::new(op)), None)
         }
@@ -302,25 +335,39 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
             planned(Plan::Issue(Box::new(op)), Some(n))
         }
         // `gh pr edit --body`/`--title` (AM1's plan blocks): `updatePullRequest` with `body` or `title`, one change per
-        // command. Every other field is not served, and a request naming one is refused, so nothing is half applied.
-        "updatePullRequest" => {
-            let n = s("pullRequestId")
+        // command; `gh issue edit`'s `updateIssue` likewise, served once 32.37 is enabled (until then it is
+        // `undefinedField`, and the edge does not route it, as on main). Once 32.37 is enabled, a `milestoneId` (`gh pr edit
+        // --milestone`, `gh issue edit --milestone`, and `gh pr create --milestone`'s second mutation) rides the same
+        // command: alone it is a `SetMilestone`, with a title or body an `EditWithMilestone`, as REST's issue `PATCH`
+        // plans it. Every other field is not served, and a request naming one is refused, so nothing is half applied.
+        "updatePullRequest" | "updateIssue" if field == "updatePullRequest" || r.dir.milestones() => {
+            let pull = field == "updatePullRequest";
+            let n = s(if pull { "pullRequestId" } else { "id" })
                 .and_then(|id| item_of(r, id))
-                .filter(|n| r.item(*n).is_some_and(|it| it.is_pull()))
+                .filter(|n| r.item(*n).is_some_and(|it| it.is_pull() == pull))
                 .ok_or_else(|| not_found(field, "Could not resolve to a node with that global id."))?;
-            for k in
-                ["assigneeIds", "baseRefName", "labelIds", "maintainerCanModify", "milestoneId", "projectIds", "state"]
-            {
-                if input.get(k).is_some_and(|v| !v.is_null()) {
+            let unserved: &[&str] = if pull {
+                &["assigneeIds", "baseRefName", "labelIds", "maintainerCanModify", "milestoneId", "projectIds", "state"]
+            } else {
+                &["assigneeIds", "labelIds", "milestoneId", "projectIds", "state", "issueTypeId", "agentAssignment"]
+            };
+            for k in unserved {
+                if !served(k) && input.get(*k).is_some_and(|v| !v.is_null()) {
                     return Err(unprocessable(field, format!("{k} is not served")));
                 }
             }
-            let change = match (s("body"), s("title")) {
-                (Some(b), None) => graftyard_git::issues::IssueChange::Body(b.into()),
-                (None, Some(t)) => graftyard_git::issues::IssueChange::Title(t.into()),
-                _ => return Err(unprocessable(field, "exactly one of body and title is served per request")),
+            use graftyard_git::issues::IssueChange;
+            let mut changes: SmallVec<[IssueChange; 3]> = SmallVec::new();
+            changes.extend(s("title").map(|t| IssueChange::Title(t.into())));
+            changes.extend(s("body").map(|b| IssueChange::Body(b.into())));
+            let op = match milestone()? {
+                Some(m) => crate::rest::with_milestone(IssueOp::Edit { n, changes, labels: None, assignees: None }, m),
+                None if changes.len() == 1 => IssueOp::Change { n, change: changes.remove(0) },
+                // `gh issue edit -t -b` sends both: one `Edit`, all or nothing, as REST's `PATCH` plans it.
+                None if !pull && !changes.is_empty() => IssueOp::Edit { n, changes, labels: None, assignees: None },
+                None => return Err(unprocessable(field, "exactly one of body and title is served per request")),
             };
-            planned(Plan::Issue(Box::new(IssueOp::Change { n, change })), Some(n))
+            planned(Plan::Issue(Box::new(op)), Some(n))
         }
         // `gh pr ready` and `gh pr ready --undo` (B0-36's ready-for-review): the draft flag, which `decide` refuses an
         // `Agent` to clear (`AgentRule::ReadyForReview`).
@@ -571,6 +618,7 @@ impl Obj for Payload<'_> {
             "createPullRequest" => "CreatePullRequestPayload",
             "addPullRequestReview" => "AddPullRequestReviewPayload",
             "updatePullRequest" => "UpdatePullRequestPayload",
+            "updateIssue" => "UpdateIssuePayload",
             "markPullRequestReadyForReview" => "MarkPullRequestReadyForReviewPayload",
             "convertPullRequestToDraft" => "ConvertPullRequestToDraftPayload",
             "addLabelsToLabelable" => "AddLabelsToLabelablePayload",
@@ -587,6 +635,7 @@ impl Obj for Payload<'_> {
         Some(match (f, self.root.out) {
             ("clientMutationId", _) => leaf(Value::Null),
             ("issue" | "pullRequest", IssueOut::Number(n)) => node(*n),
+            ("issue", IssueOut::Done) if self.root.p.field == "updateIssue" => node(self.root.p.subject?),
             ("pullRequest", IssueOut::Done)
                 if matches!(
                     self.root.p.field.as_str(),
@@ -608,7 +657,7 @@ impl Obj for Payload<'_> {
             {
                 node(self.root.p.subject?)
             }
-            ("actor", _) if self.root.p.field == "updatePullRequest" => Out::Null,
+            ("actor", _) if matches!(self.root.p.field.as_str(), "updatePullRequest" | "updateIssue") => Out::Null,
             ("commentEdge", IssueOut::Id(id)) => obj(Edge { r, n: self.root.p.subject?, id: *id }),
             ("pullRequestReview", IssueOut::Id(id)) => obj(crate::gql::review(r, self.root.p.subject?, *id)?),
             ("subject", _) => node(self.root.p.subject?),
