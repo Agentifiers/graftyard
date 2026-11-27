@@ -239,6 +239,15 @@ and a log cut mid-line; the cause is not known. Its rows are `l014-run3.*`. Run 
   - graftyard-insights' token: skipped, the lead's ruling.
   - Another bot's assignment: the edge answers 201 to assigning `m3-ci[bot]` but leaves the issue with no assignees,
     and `GET /users/m3-ci[bot]` answers 404. So the controller's create from that issue ran with no bot assignment.
+  - **The lead's ruling (2026-11-27): this cell is judged as it ran, not as incomplete.** The design makes its
+    precondition unrepresentable, so no setup can assign another bot. GHES 3.22 silently ignores an assignee that
+    cannot be assigned: "Only users with push access can add assignees to an issue. Assignees are silently ignored
+    otherwise" (https://docs.github.com/en/enterprise-server@3.22/rest/issues/assignees) [doc]. Graftyard drops every
+    bot login but `graftyard-agent`'s: "Any other login is dropped" (`design/AGENT-LAYER.md`, "Tasks and the activity
+    feed") [doc]. The cell rests on two things: the 201 with no assignee, which is that drop, and the controller's
+    create from the issue refused 403, 100 of 100, with no `graftyard-agent` assignment on it. The next rerun adds
+    a variant: `graftyard-agent`'s bot assigned by an App token, so no human assigner (`tiers::assigned_by` ignores an
+    App's add), with the controller's create from that issue refused.
 
 **Spend and teardown.**
 - The row cost $1.30 of its $3 stop: graft-m4a $1.30, the runner account $0.03. The UTC day stands at graft-m4a $4.05

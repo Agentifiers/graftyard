@@ -2,7 +2,7 @@
 # graft-controller's own build answers a `graftyard_task` delivery from graft-agents-front in local workerd (F144).
 # Builds workers/controller (test-faults, or the product build with PRODUCT=1), serves it with a local Secrets Store
 # webhook secret and the TaskBox binding, and sends signed deliveries with and without `x-graftyard-agents-front`. A
-# `cancelled` delivery for a task with no box answers the box's own 404; with the front header the response still
+# `cancelled` delivery for a task with no box answers the box's own 202, which it stores as final (F156); with the front header the response still
 # carries `x-graftyard-controller-version`. Before F144's fix the front's copy answered 500 "Can't modify immutable
 # headers", because the version report was set on the TaskBox stub's response. Exits 1 on any 500 or a missing
 # version report. Run from the repository root.
@@ -47,8 +47,8 @@ fail = []
 for delivery, front in (("ctlboot-1", False), ("ctlboot-2", True)):
     code, version, text = send(delivery, front)
     print(f"graftyard_task cancelled, front {front}: {code} version {version} {text!r}")
-    if code != 404 or b"no box" not in text:
-        fail.append(f"front {front}: {code}, not the box's 404")
+    if code != 202 or b'"box":false' not in text:
+        fail.append(f"front {front}: {code}, not the box's 202 for a cancel before its box (F156)")
     if front and not version:
         fail.append("front: no x-graftyard-controller-version")
 print("  FAIL: " + "; ".join(fail) if fail else "deliveries ok")

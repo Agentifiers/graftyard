@@ -522,14 +522,47 @@ impl IssueCall {
         } else if self.op.is_lease() {
             cmd.decide_lease(&view, deps, s.at())?
         } else {
-            // A REST create with a milestone (32.37) is authored as 32.29's is.
-            let bot = matches!(self.format(), REPO_FORMAT_ROUTES | REPO_FORMAT_ISSUE_COMMENT)
-                || matches!(self.op, IssueOp::OpenIssueWithMilestone { .. });
             let pause = (self.pause || edit).then(|| s.applied());
+            let bot = self.bot_author();
             cmd.decide_in(&view, deps, self.agent_events(), self.session.as_ref(), leases, self.reviews, bot, pause)?
         };
         let authz = self.render_lacks_authz().then(|| owner_authz(s.fold(), deps)).flatten();
         Ok((evs, IssueCallOut { out, render: self.render.clone(), authz }))
+    }
+
+    /// `IssueCmd::decide_in`'s `bot_author`: formats 32.29 and 32.32, and a create with a milestone (32.37), which is
+    /// authored as 32.29's is.
+    fn bot_author(&self) -> bool {
+        matches!(self.format(), REPO_FORMAT_ROUTES | REPO_FORMAT_ISSUE_COMMENT)
+            || matches!(self.op, IssueOp::OpenIssueWithMilestone { .. })
+    }
+
+    /// The App whose bot account (`AppId::bot`) this command's `decide` may name in a row its reply renders, so the edge
+    /// reads the bot's login into the render first (F155): an App's `OpenIssue` or issue `Comment` under `bot_author`,
+    /// its create with a milestone, its commit status, and its milestone create. A milestone update keeps the creator
+    /// the tiers already name, and an `Assign`'s actor is never rendered (`tiers::assigned_by` drops bots).
+    pub fn names_bot(&self) -> Option<graftyard_identity::AppId> {
+        let Actor::App { app, .. } = self.actor.actor else { return None };
+        let named = match &self.op {
+            IssueOp::OpenIssue { .. } | IssueOp::Comment { on: crate::issues::CommentTarget::Issue(_), .. } => {
+                self.bot_author()
+            }
+            IssueOp::OpenIssueWithMilestone { .. }
+            | IssueOp::RecordStatus(_)
+            | IssueOp::DefineMilestone { n: None, .. } => true,
+            _ => false,
+        };
+        named.then_some(app)
+    }
+
+    /// Records `login` as the login of the bot `names_bot` names in the render's directory (`HostedDir.logins`), so the
+    /// leader's reply names it. Nothing for a command that names none.
+    pub fn name_bot(&mut self, login: String) {
+        if let Some(app) = self.names_bot()
+            && let Some(logins) = self.render.pointer_mut("/dir/logins").and_then(Value::as_object_mut)
+        {
+            logins.insert(app.bot().0.0.to_string(), Value::String(login));
+        }
     }
 
     /// Whether the edge sent the render without the owner's `Authz` (`HostedDir.authz` null), for the leader to fill.

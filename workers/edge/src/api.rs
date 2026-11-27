@@ -1102,6 +1102,14 @@ async fn commit_issue_rid(
     // issue has a task: its entry may pause or resume the issue's Graftyard-run tasks, and carries a body edit's leases.
     call.pause = IssueCall::pausable(&call.op)
         && c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_HOST_PAUSE);
+    // F155: a row this command's `decide` writes may name the App's bot account, which the tiers did not name when the
+    // edge read its logins; its login goes into the render, or the reply names `ghost[bot]`.
+    if let Some(app) = call.names_bot()
+        && !rd.dir.logins.contains_key(&app.bot().0.0)
+        && let Some(l) = bot_login(c, app).await
+    {
+        call.name_bot(l);
+    }
     if !c.cfg.enabled.contains(&call.format()) {
         let f = call.format();
         return Ok(unavailable(&format!(
@@ -1312,7 +1320,7 @@ pub(crate) async fn tasks(
         Err(r) => return Ok(r),
     };
     let Some(who) = who else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
-    if let Some(r) = t::agent_session_create(&op, c.agent_session) {
+    if let Some(r) = t::agent_session_create(&op, c.agent_session, authz) {
         return Ok(r);
     }
     let created = matches!(op, IssueOp::CreateTask(_) | IssueOp::CreateRun(_));
@@ -2255,14 +2263,6 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // install's `AgentApp` rows for `is_agent`.
     if graftyard_api::trust::opted_in(agent_accept.as_deref()) {
         rd.dir.install = crate::install_authz(c).await;
-    }
-    // A status an App sets, or an issue or a comment it writes through REST, names its bot account, which the tiers
-    // do not name yet.
-    if (routes_on && matches!(tail, ["statuses", _] | ["issues"]) || comment_on && comment_route)
-        && let (Method::Post, Some(Actor::App { app, .. })) = (&method, who.as_ref().map(|w| w.actor))
-        && let Some(l) = bot_login(c, app).await
-    {
-        rd.dir.logins.insert(app.bot().0.0, l);
     }
     // A REST issue create's body, read before the view borrows `rd`: an assignee login the tiers do not name is read
     // into the directory, so the plan resolves it and the leader renders it.
