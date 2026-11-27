@@ -1,0 +1,26 @@
+2026-11-26T22:25:21Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $1.29, graft-agents-m4a- $0.04, graft-runners $0.0, total $1.33 (stop $3.00)
+2026-11-26T22:25:44.062Z {"holder":201}
+2026-11-26T22:25:45.296Z {"create":"b036 shipped","status":201,"id":"01a219f7-2e1f-821f-a4a4-db6c12d20cda","state":"queued"}
+2026-11-26T22:25:49.011Z {"hold":"01a219f7-2e1f-821f-a4a4-db6c12d20cda","on":true,"ok":true}
+2026-11-26T22:25:58.178Z {"live":"b036 shipped","id":"01a219f7-2e1f-821f-a4a4-db6c12d20cda","in_progress":true}
+2026-11-26T22:34:58.401Z {"hold":"01a219f7-2e1f-821f-a4a4-db6c12d20cda","on":false,"ok":true}
+2026-11-26T22:34:59.452Z {"cancel":"01a219f7-2e1f-821f-a4a4-db6c12d20cda","status":200}
+2026-11-26T22:47:21.256Z {"mode":"shipped","lease_ref_write":{"422 refused: b036/mwy4fb0x/** is leased Exclusive by user 7100002 (task 131072.b036h-mwy4fb0x)":100},"push_after_cancel":{"refused: push needs a live task; the token names no task":100},"rest_after_cancel":{"422 refused: push needs a live task; the token names no task":100}}
+2026-11-26T22:47:21.257Z {"check":"shipped: 100 of 100 ref writes into the scope refused naming the lease","ok":true}
+2026-11-26T22:47:21.257Z {"check":"shipped: 100 of 100 pushes after cancel refused","ok":true}
+2026-11-26T22:47:21.257Z {"check":"shipped: 100 of 100 REST ref writes after cancel refused","ok":true}
+2026-11-26T22:47:25.074Z {"create":"b036 widened","status":201,"id":"01a21a0b-0377-8cba-b81a-c834e2978de3","state":"queued"}
+2026-11-26T22:47:29.413Z {"hold":"01a21a0b-0377-8cba-b81a-c834e2978de3","on":true,"ok":true}
+2026-11-26T22:47:37.643Z {"live":"b036 widened","id":"01a21a0b-0377-8cba-b81a-c834e2978de3","in_progress":true}
+2026-11-26T22:56:13.848Z {"hold":"01a21a0b-0377-8cba-b81a-c834e2978de3","on":false,"ok":true}
+2026-11-26T22:56:14.681Z {"cancel":"01a21a0b-0377-8cba-b81a-c834e2978de3","status":200}
+2026-11-26T23:13:51.335Z {"mode":"widened","lease_ref_write":{"422 refused: b036/mwy4fb0x/** is leased Exclusive by user 7100002 (task 131072.b036h-mwy4fb0x)":100},"push_after_cancel":{"refused: push needs a live task; the token names no task":99,"rejected":1},"rest_after_cancel":{"422 refused: push needs a live task; the token names no task":100}}
+2026-11-26T23:13:51.335Z {"check":"widened: 100 of 100 ref writes into the scope refused naming the lease","ok":true}
+2026-11-26T23:13:51.336Z {"check":"widened: 100 of 100 pushes after cancel refused","ok":true}
+2026-11-26T23:13:51.336Z {"check":"widened: 100 of 100 REST ref writes after cancel refused","ok":true}
+2026-11-26T23:13:53.808Z {"installation_back":"shipped"}
+2026-11-26T23:13:59.062Z {"incomplete":"the fork push after cancel waits for AM3-WP2a (lead's ruling)"}
+VERDICT b036 INCOMPLETE incomplete: the fork push after cancel waits for AM3-WP2a (lead's ruling)
+b036 exit 0

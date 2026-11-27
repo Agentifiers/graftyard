@@ -1,0 +1,61 @@
+2026-11-26T23:25:40Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $1.97, graft-agents-m4a- $0.07, graft-runners $0.0, total $2.04 (stop $3.00)
+2026-11-26T23:26:14.723Z {"agentapp_user_token":true}
+2026-11-26T23:26:14.731Z {"incomplete":"an MCP token: graft-m4a runs no graft-mcp App and its edge has neither 17.4 nor 20.4, so none can be minted"}
+2026-11-26T23:26:14.731Z {"incomplete":"graftyard-insights' installation token: skipped (lead's ruling)"}
+2026-11-26T23:26:21.939Z {"agents_off":200,"enabled":false}
+2026-11-26T23:26:25.424Z {"ia":6,"ib":7,"assign_ours":201,"assign_other":201,"other_bot":"undefined[bot]","ib_assignees":[]}
+2026-11-26T23:26:25.424Z {"incomplete":"another bot's assignment: the edge did not assign undefined[bot] (201); #ib has no bot assignment"}
+2026-11-26T23:28:57.305Z {"cell":"off/installation token (m3-ci, an AgentApp)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+2026-11-26T23:28:57.307Z {"check":"off: installation token (m3-ci, an AgentApp), 100 of 100 refused","ok":false}
+2026-11-26T23:31:21.593Z {"cell":"off/AgentApp's user token (m3-ci for m3-member)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+2026-11-26T23:31:21.593Z {"check":"off: AgentApp's user token (m3-ci for m3-member), 100 of 100 refused","ok":false}
+2026-11-26T23:34:09.608Z {"cell":"off/demoted user (m3-member past DEMOTE_PER_MIN)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":52,"403 A user with 60 writes in the last minute is classed as an agent and cannot create a Grafty":48},"off":48}
+2026-11-26T23:34:09.608Z {"check":"off: demoted user (m3-member past DEMOTE_PER_MIN), 100 of 100 refused","ok":false}
+2026-11-26T23:36:00.709Z {"cell":"off/read-only user (m3-reader)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+2026-11-26T23:36:00.709Z {"check":"off: read-only user (m3-reader), 100 of 100 refused","ok":false}
+2026-11-26T23:37:18.620Z {"cell":"off/user with X-Graftyard-Agent-Session (m3-admin)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+2026-11-26T23:37:18.621Z {"check":"off: user with X-Graftyard-Agent-Session (m3-admin), 100 of 100 refused","ok":false}
+2026-11-26T23:39:45.401Z {"cell":"off/controller from an issue assigned to another bot","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+2026-11-26T23:39:45.401Z {"check":"off: controller from an issue assigned to another bot, 100 of 100 refused","ok":false}
+2026-11-26T23:42:07.631Z {"cell":"off/controller with a prompt and no issue","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+2026-11-26T23:42:07.631Z {"check":"off: controller with a prompt and no issue, 100 of 100 refused","ok":false}
+2026-11-26T23:43:53.031Z {"cell":"off/human writer (m3-admin), the valid creator","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-26T23:43:53.031Z {"check":"off: human writer (m3-admin), the valid creator, 100 of 100 refused","ok":true}
+2026-11-26T23:46:15.650Z {"cell":"off/controller from an issue assigned to its bot","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-26T23:46:15.651Z {"check":"off: controller from an issue assigned to its bot, 100 of 100 refused","ok":true}
+2026-11-26T23:46:17.524Z {"agents_on":200,"enabled":true}
+2026-11-26T23:48:43.055Z {"cell":"on/installation token (m3-ci, an AgentApp)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+2026-11-26T23:48:43.055Z {"check":"on: installation token (m3-ci, an AgentApp), 100 of 100 refused","ok":true}
+2026-11-26T23:51:11.177Z {"cell":"on/AgentApp's user token (m3-ci for m3-member)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+2026-11-26T23:51:11.178Z {"check":"on: AgentApp's user token (m3-ci for m3-member), 100 of 100 refused","ok":true}
+2026-11-26T23:54:04.886Z {"cell":"on/demoted user (m3-member past DEMOTE_PER_MIN)","statuses":{"201 ":52,"403 A user with 60 writes in the last minute is classed as an agent and cannot create a Grafty":48},"off":52}
+2026-11-26T23:54:04.886Z {"check":"on: demoted user (m3-member past DEMOTE_PER_MIN), 100 of 100 refused","ok":false}
+2026-11-26T23:55:52.173Z {"cell":"on/read-only user (m3-reader)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+2026-11-26T23:55:52.174Z {"check":"on: read-only user (m3-reader), 100 of 100 refused","ok":true}
+2026-11-26T23:57:11.053Z {"cell":"on/user with X-Graftyard-Agent-Session (m3-admin)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+2026-11-26T23:57:11.053Z {"check":"on: user with X-Graftyard-Agent-Session (m3-admin), 100 of 100 refused","ok":true}
+2026-11-26T23:59:32.708Z {"cell":"on/controller from an issue assigned to another bot","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+2026-11-26T23:59:32.708Z {"check":"on: controller from an issue assigned to another bot, 100 of 100 refused","ok":true}
+2026-11-27T00:01:55.435Z {"cell":"on/controller with a prompt and no issue","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+2026-11-27T00:01:55.436Z {"check":"on: controller with a prompt and no issue, 100 of 100 refused","ok":true}
+2026-11-27T00:02:44.318Z {"prefix_sample":20,"derived":20}
+2026-11-27T00:02:44.318Z {"check":"a body that sets prefix: 20 of 20 accepted with the prefix derived from the id","ok":true}
+2026-11-27T00:04:02.515Z {"cell":"on/body sets session for a Graftyard-run task","statuses":{"422 Validation Failed":100},"off":0}
+2026-11-27T00:04:02.516Z {"check":"on: body sets session for a Graftyard-run task, 100 of 100 refused","ok":true}
+2026-11-27T00:07:56.003Z {"cap_fill":{"201":100}}
+2026-11-27T00:07:56.003Z {"check":"m3-member's first 100 open tasks (control)","ok":true}
+2026-11-27T00:10:43.134Z {"cell":"on/101st open task for one requester (External, m3-ci for m3-member)","statuses":{"422 The requester has too many open tasks":100},"off":0}
+2026-11-27T00:10:43.134Z {"check":"on: 101st open task for one requester (External, m3-ci for m3-member), 100 of 100 refused","ok":true}
+2026-11-27T00:12:34.378Z {"cell":"on/101st open task for one requester (Graftyard-run, m3-member)","statuses":{"422 The requester has too many open tasks":100},"off":0}
+2026-11-27T00:12:34.378Z {"check":"on: 101st open task for one requester (Graftyard-run, m3-member), 100 of 100 refused","ok":true}
+2026-11-27T00:12:41.200Z {"create":"l014 live","status":201,"id":"01a21a59-1524-8dda-bcc5-f1b914ec4e79","state":"queued"}
+2026-11-27T00:12:46.787Z {"hold":"01a21a59-1524-8dda-bcc5-f1b914ec4e79","on":true,"ok":true}
+2026-11-27T00:12:55.805Z {"live":"l014 live","id":"01a21a59-1524-8dda-bcc5-f1b914ec4e79","in_progress":true}
+2026-11-27T00:12:58.972Z {"cancelled_run":200,"cancelled_external":200,"live":"01a21a59-1524-8dda-bcc5-f1b914ec4e79"}
+2026-11-27T00:15:30.111Z {"cell":"on/PATCH of a cancelled Graftyard-run task to in_progress (graftyard-agent)","statuses":{"409 The task is cancelled":100},"off":0}
+2026-11-27T00:15:30.111Z {"check":"on: PATCH of a cancelled Graftyard-run task to in_progress (graftyard-agent), 100 of 100 refused","ok":true}
+2026-11-27T00:18:04.823Z {"cell":"on/PATCH of a cancelled External task to in_progress (m3-ci)","statuses":{"409 The task is cancelled":100},"off":0}
+2026-11-27T00:18:04.823Z {"check":"on: PATCH of a cancelled External task to in_progress (m3-ci), 100 of 100 refused","ok":true}
+2026-11-27T00:19:30.893Z {"cell":"on/PAT

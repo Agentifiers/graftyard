@@ -1,0 +1,30 @@
+2026-11-26T20:48:52Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $0.61, graft-agents-m4a- $0.03, graft-runners $0.0, total $0.64 (stop $3.00)
+2026-11-26T20:49:13.943Z {"issue":201,"n":1,"author":"m3-reader"}
+2026-11-26T20:49:15.303Z {"assign":201}
+2026-11-26T20:57:15.020Z {"hold":"01a219a6-0ad2-8d62-b501-6399710e6731","on":true,"ok":true}
+2026-11-26T20:57:23.882Z {"check":"the task runs","ok":true}
+2026-11-26T20:57:38.538Z {"writer_edit":200,"state_after":"in_progress"}
+2026-11-26T20:57:40.163Z {"check":"a writer's edit pauses nothing","ok":true}
+2026-11-26T20:57:44.275Z {"reader_edit":200,"state_in_reply_window":"waiting_for_user"}
+2026-11-26T20:57:44.275Z {"check":"the base reads waiting_for_user right after the reader's edit","ok":true}
+node:fs:624
+    return binding.readFileUtf8(path, stringToFlags(options.flag));
+                   ^
+
+Error: ENOENT: no such file or directory, open 'https://graft-agents-m4a-front.<runner-sub>.workers.dev'
+    at readFileSync (node:fs:624:20)
+    at box (file://~/lmr/tests/am3/hosted/inrepo.mjs:312:49)
+    at file://~/lmr/tests/am3/hosted/inrepo.mjs:316:71
+    at until (file://~/lmr/tests/am3/hosted/inrepo.mjs:43:21)
+    at file://~/lmr/tests/am3/hosted/inrepo.mjs:316:20
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: 'https://graft-agents-m4a-front.<runner-sub>.workers.dev'
+}
+
+Node.js v26.12.0
+pause exit 1

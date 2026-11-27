@@ -1,0 +1,24 @@
+2026-11-26T20:13:07Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $0.33, graft-agents-m4a- $0.02, graft-runners $0.0, total $0.35 (stop $3.00)
+2026-11-26T20:13:31.314Z {"holder":201}
+2026-11-26T20:13:32.682Z {"create":"b036 shipped","status":201,"id":"01a2197e-219a-8b84-b822-731895af4218","state":"queued"}
+2026-11-26T20:13:36.695Z {"hold":"01a2197e-219a-8b84-b822-731895af4218","on":true,"ok":true}
+2026-11-26T20:13:43.783Z {"live":"b036 shipped","id":"01a2197e-219a-8b84-b822-731895af4218","in_progress":true}
+2026-11-26T20:21:14.139Z {"hold":"01a2197e-219a-8b84-b822-731895af4218","on":false,"ok":true}
+2026-11-26T20:21:15.316Z {"cancel":"01a2197e-219a-8b84-b822-731895af4218","status":200}
+2026-11-26T20:32:34.707Z {"mode":"shipped","lease_ref_write":{"422 refused: b036/mwxzp91v/** is leased Exclusive by user 7100002 (task 131072.b036h-mwxzp91v)":100},"push_after_cancel":{"refused: push needs a live task; the token names no task":100},"rest_after_cancel":{"422 refused: push needs a live task; the token names no task":100}}
+2026-11-26T20:32:34.708Z {"check":"shipped: 100 of 100 ref writes into the scope refused naming the lease","ok":true}
+2026-11-26T20:32:34.708Z {"check":"shipped: 100 of 100 pushes after cancel refused","ok":true}
+2026-11-26T20:32:34.708Z {"check":"shipped: 100 of 100 REST ref writes after cancel refused","ok":true}
+file://~/lmr/tests/am1/hosted/lib.mjs:176
+  if (!o?.ok && !allowed.includes(refusal(o))) throw new Error(`${chain}: ${refusal(o)}`);
+                                                     ^
+
+Error: authz:7100001: BadRecord
+    at must (file://~/lmr/tests/am1/hosted/lib.mjs:176:54)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async file://~/lmr/tests/am3/hosted/inrepo.mjs:194:16
+
+Node.js v26.12.0
+b036 exit 1

@@ -1,0 +1,7 @@
+{"t":1795735482186,"issue_task":"01a21a2c-3278-86c8-8fe8-934a18748539","states":["queued","in_progress","completed"],"end":"completed","work_ref":true,"pr_number":null}
+{"t":1795735482195,"check":"the issue task reads queued, in_progress, completed in order (queued,in_progress,completed)","ok":true}
+{"t":1795735482195,"check":"the harness's pushes are under the task's prefix","ok":true}
+{"t":1795735482195,"incomplete":"pr_number on a draft whose AgentMeta names the task: no product path opens it (F140, pending (b))"}
+{"t":1795735483288,"prompt_create":201,"id":"01a21a2d-2b56-8771-8eb1-7a882a78b1d6"}
+{"t":1795735540688,"prompt_task":"01a21a2d-2b56-8771-8eb1-7a882a78b1d6","states":["queued","in_progress","completed"],"end":"completed"}
+{"t":1795735540689,"check":"the prompt-only task completes the same way (queued,in_progress,completed)","ok":true}

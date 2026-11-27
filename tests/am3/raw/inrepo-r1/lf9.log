@@ -1,0 +1,17 @@
+2026-11-26T23:13:59Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $1.77, graft-agents-m4a- $0.06, graft-runners $0.0, total $1.83 (stop $3.00)
+2026-11-26T23:14:28.654Z {"other_repo":201}
+2026-11-26T23:14:30.023Z {"create":"lf9","status":201,"id":"01a21a23-cea8-81b8-94cb-83db3eea13bd","state":"queued"}
+2026-11-26T23:14:34.494Z {"hold":"01a21a23-cea8-81b8-94cb-83db3eea13bd","on":true,"ok":true}
+2026-11-26T23:14:43.318Z {"live":"lf9","id":"01a21a23-cea8-81b8-94cb-83db3eea13bd","in_progress":true}
+2026-11-26T23:14:43.318Z {"check":"a live task","ok":true}
+2026-11-26T23:22:26.084Z {"third_app":{"422":100},"other_repo":{"422":100},"outside_prefix":{"refused: app 3866624 may push only refs/heads/graftyard/<task>/*/**":100}}
+2026-11-26T23:22:26.084Z {"check":"100 of 100 third-App task mints refused","ok":true}
+2026-11-26T23:22:26.084Z {"check":"100 of 100 other-repository mints refused","ok":true}
+2026-11-26T23:22:26.084Z {"check":"100 of 100 pushes outside the prefix refused","ok":true}
+2026-11-26T23:22:29.053Z {"hold":"01a21a23-cea8-81b8-94cb-83db3eea13bd","on":false,"ok":true}
+2026-11-26T23:22:30.256Z {"cancel":"01a21a23-cea8-81b8-94cb-83db3eea13bd","status":200}
+2026-11-26T23:22:34.524Z {"delete_other":204}
+VERDICT lf9 PASS 
+lf9 exit 0

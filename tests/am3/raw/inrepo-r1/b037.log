@@ -1,0 +1,16 @@
+2026-11-26T23:22:34Z
+dccb79754
+row since 2026-11-26T17:48:12Z: graft-m4a $1.92, graft-agents-m4a- $0.07, graft-runners $0.0, total $1.99 (stop $3.00)
+2026-11-26T23:22:49.640Z {"create":"b037","status":201,"id":"01a21a2b-6f73-85e1-99cd-0e454c070c46","state":"queued"}
+2026-11-26T23:22:55.909Z {"hold":"01a21a2b-6f73-85e1-99cd-0e454c070c46","on":true,"ok":true}
+2026-11-26T23:23:03.972Z {"live":"b037","id":"01a21a2b-6f73-85e1-99cd-0e454c070c46","in_progress":true}
+2026-11-26T23:23:03.973Z {"check":"a live task","ok":true}
+2026-11-26T23:23:11.420Z {"session_push":true}
+2026-11-26T23:23:11.421Z {"check":"graftyard-workspace pushes its session ref under its live task","ok":true}
+2026-11-26T23:23:21.285Z {"seen":{"v0":false,"v1":false,"v2":false,"v2_other_prefix":false,"mirror":false,"v2_matching_fetch":true}}
+2026-11-26T23:23:21.285Z {"check":"the session ref is hidden from v0, v1, v2 without a matching ref-prefix, and --mirror","ok":true}
+2026-11-26T23:23:21.285Z {"check":"a v2 fetch whose ref-prefix starts with the session ref gets it","ok":true}
+2026-11-26T23:23:23.631Z {"hold":"01a21a2b-6f73-85e1-99cd-0e454c070c46","on":false,"ok":true}
+2026-11-26T23:23:24.787Z {"cancel":"01a21a2b-6f73-85e1-99cd-0e454c070c46","status":200}
+VERDICT b037 PASS 
+b037 exit 0
