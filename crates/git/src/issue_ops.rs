@@ -20,7 +20,7 @@ use graftyard_types::{AccountId, ChainId, DbId, RequestId, Tier, Timestamp};
 use smallvec::{SmallVec, smallvec};
 
 use crate::blob::DurableBlob;
-use crate::issues::{AssetId, AssetRecord, LfsLockEvent, LockId, ReleaseRecord, RepoReleaseId};
+use crate::issues::{AssetId, AssetRecord, LfsLockEvent, LockId, MilestoneEvent, ReleaseRecord, RepoReleaseId};
 use crate::issues::{
     BODY_MAX, BranchRule, CHECK_RETENTION_MAX, CheckConclusion, CheckRunUpdate, CheckSource, CheckStatus, CommentEvent,
     CommentId, CommentTarget, Grantee, HeadSpec, IssueCapture, IssueChange, IssueNumber, LABEL_MAX, LabelEvent,
@@ -355,6 +355,45 @@ pub enum IssueOp<B = DurableBlob> {
         labels: Option<SmallVec<[LabelId; 4]>>,
         assignees: Option<SmallVec<[AccountId; 2]>>,
     },
+    // ---- milestones, format 32.37 (`call::REPO_FORMAT_MILESTONES`) ----
+    /// `POST /repos/{o}/{r}/milestones` (`n: None`, the next number) and `PATCH .../milestones/{n}`: the milestone
+    /// whole. Write or more, as GHES gates creating and editing milestones; a title another milestone has is `Exists`.
+    DefineMilestone {
+        n: Option<u32>,
+        title: Box<str>,
+        description: Option<Box<str>>,
+        open: bool,
+        due_on: Option<Timestamp>,
+    },
+    /// `DELETE .../milestones/{n}`: the milestone and every issue's link to it, in one entry. Write or more.
+    DeleteMilestone {
+        n: u32,
+    },
+    /// An issue's milestone, or none. Triage or more, as GHES gates applying a milestone; a caller below it changes
+    /// nothing, as GHES ignores a field the caller may not set.
+    SetMilestone {
+        n: IssueNumber,
+        milestone: Option<u32>,
+    },
+    /// A REST issue `PATCH` that names `milestone` with any other field: `Edit` and a `SetMilestone` decided against
+    /// the same view, so the whole edit commits in one entry or not at all. Its own tag, so `Edit`'s encoding of
+    /// committed 32.35 entries is unchanged.
+    EditWithMilestone {
+        n: IssueNumber,
+        changes: SmallVec<[IssueChange; 3]>,
+        labels: Option<SmallVec<[LabelId; 4]>>,
+        assignees: Option<SmallVec<[AccountId; 2]>>,
+        milestone: Option<u32>,
+    },
+    /// A REST `POST /repos/{o}/{r}/issues` that names `milestone`: `OpenIssue`, and the new issue's milestone in the
+    /// same command, set only for a caller with triage or more.
+    OpenIssueWithMilestone {
+        title: Box<str>,
+        body: Box<str>,
+        labels: SmallVec<[LabelId; 4]>,
+        assignees: SmallVec<[AccountId; 2]>,
+        milestone: u32,
+    },
 }
 
 impl<B> IssueOp<B> {
@@ -426,7 +465,30 @@ impl<B> IssueOp<B> {
             O::CreateRun(n) => O::CreateRun(n),
             O::Assign { n, add, remove } => O::Assign { n, add, remove },
             O::Edit { n, changes, labels, assignees } => O::Edit { n, changes, labels, assignees },
+            O::DefineMilestone { n, title, description, open, due_on } => {
+                O::DefineMilestone { n, title, description, open, due_on }
+            }
+            O::DeleteMilestone { n } => O::DeleteMilestone { n },
+            O::SetMilestone { n, milestone } => O::SetMilestone { n, milestone },
+            O::EditWithMilestone { n, changes, labels, assignees, milestone } => {
+                O::EditWithMilestone { n, changes, labels, assignees, milestone }
+            }
+            O::OpenIssueWithMilestone { title, body, labels, assignees, milestone } => {
+                O::OpenIssueWithMilestone { title, body, labels, assignees, milestone }
+            }
         })
+    }
+
+    /// Whether this is a milestone command, format 32.37.
+    pub fn is_milestone(&self) -> bool {
+        matches!(
+            self,
+            IssueOp::DefineMilestone { .. }
+                | IssueOp::DeleteMilestone { .. }
+                | IssueOp::SetMilestone { .. }
+                | IssueOp::EditWithMilestone { .. }
+                | IssueOp::OpenIssueWithMilestone { .. }
+        )
     }
 
     /// Whether this is a lease command (`crate::lease::decide`).
@@ -564,6 +626,7 @@ impl IssueCmd {
             IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => TierSet::CORE,
             // A body edit may replace a plan-block lease (Core); an edit may close or reopen a pull request (Core).
             IssueOp::Change { change: IssueChange::Body(_), .. } | IssueOp::Edit { .. } => both,
+            IssueOp::EditWithMilestone { .. } | IssueOp::OpenIssueWithMilestone { .. } => both,
             _ => TierSet::METADATA,
         }
     }
@@ -574,7 +637,9 @@ impl IssueCmd {
         d.extend(crate::repo::authz_chains(Some(view.owner()), view.settings().and_then(|s| s.enterprise)));
         crate::repo::with_install(&mut d, &self.actor);
         let install = ChainId::Authz(graftyard_identity::install_account());
-        if matches!(self.op, IssueOp::Assign { .. } | IssueOp::Edit { .. }) && !d.contains(&install) {
+        if matches!(self.op, IssueOp::Assign { .. } | IssueOp::Edit { .. } | IssueOp::EditWithMilestone { .. })
+            && !d.contains(&install)
+        {
             d.push(install);
         }
         d
@@ -1063,6 +1128,95 @@ impl IssueCmd {
                     part(IssueOp::Assign { n: *n, add, remove })?;
                 }
                 Ok((evs, IssueOut::Done))
+            }
+            IssueOp::DefineMilestone { n, title, description, open, due_on } => {
+                need(RepoPermission::Write)?;
+                if title.trim().is_empty() || chars(title) > TITLE_MAX {
+                    return Err(IssueErr::Invalid("milestone title"));
+                }
+                if description.as_deref().is_some_and(|d| chars(d) > BODY_MAX) {
+                    return Err(IssueErr::Invalid("milestone description"));
+                }
+                // A title another milestone has, in any case [inference: GHES refuses a taken title 422
+                // `already_exists`; its case rule is not documented].
+                let lower = title.to_lowercase();
+                let all = crate::tiers::milestones(v.meta());
+                if all.iter().any(|(m, r)| r.title.to_lowercase() == lower && Some(*m) != *n) {
+                    return Err(IssueErr::Exists);
+                }
+                let (n, id) = match n {
+                    Some(n) => (*n, crate::tiers::milestone(v.meta(), *n).ok_or(IssueErr::NotFound)?.id),
+                    None => (crate::tiers::milestone_last(v.meta()) + 1, v.next_id(Tier::Metadata)?),
+                };
+                let ev = MilestoneEvent::Defined {
+                    n,
+                    id,
+                    title: title.clone(),
+                    description: description.clone(),
+                    open: *open,
+                    due_on: *due_on,
+                    actor: me,
+                };
+                Ok((one(RepoEvent::Milestones(ev)), IssueOut::Id(id)))
+            }
+            IssueOp::DeleteMilestone { n } => {
+                need(RepoPermission::Write)?;
+                crate::tiers::milestone(v.meta(), *n).ok_or(IssueErr::NotFound)?;
+                Ok((one(RepoEvent::Milestones(MilestoneEvent::Deleted { n: *n })), IssueOut::Done))
+            }
+            IssueOp::SetMilestone { n, milestone } => {
+                issue(*n)?;
+                // GHES applies a milestone for triage or more and ignores the field from anyone else.
+                if perm < Some(RepoPermission::Triage) {
+                    return Ok((smallvec![], IssueOut::Done));
+                }
+                if milestone.is_some_and(|m| crate::tiers::milestone(v.meta(), m).is_none()) {
+                    return Err(IssueErr::Invalid("milestone"));
+                }
+                if crate::tiers::issue_milestone(v.meta(), *n) == *milestone {
+                    return Ok((SmallVec::new(), IssueOut::Done));
+                }
+                let ev = MilestoneEvent::Set { issue: *n, milestone: *milestone, actor: me };
+                Ok((one(RepoEvent::Milestones(ev)), IssueOut::Done))
+            }
+            // An edit or a create with its milestone: each part decided as its own command against the same view, so
+            // any refusal refuses the whole command.
+            IssueOp::EditWithMilestone { n, changes, labels, assignees, milestone } => {
+                let mut evs: SmallVec<[RepoEvent; 4]> = SmallVec::new();
+                let edit = IssueOp::Edit {
+                    n: *n,
+                    changes: changes.clone(),
+                    labels: labels.clone(),
+                    assignees: assignees.clone(),
+                };
+                for op in [edit, IssueOp::SetMilestone { n: *n, milestone: *milestone }] {
+                    let cmd = IssueCmd { op, actor: self.actor.clone(), request: self.request };
+                    for e in cmd.decide_in(v, deps, false, None, leases, false, false, pause)?.0 {
+                        if !evs.contains(&e) {
+                            evs.push(e);
+                        }
+                    }
+                }
+                Ok((evs, IssueOut::Done))
+            }
+            IssueOp::OpenIssueWithMilestone { title, body, labels, assignees, milestone } => {
+                let open = IssueOp::OpenIssue {
+                    title: title.clone(),
+                    body: body.clone(),
+                    labels: labels.clone(),
+                    assignees: assignees.clone(),
+                };
+                let cmd = IssueCmd { op: open, actor: self.actor.clone(), request: self.request };
+                let (mut evs, out) = cmd.decide_in(v, deps, agent, session, leases, reviews, bot_author, pause)?;
+                let IssueOut::Number(n) = out else { return Ok((evs, out)) };
+                if perm >= Some(RepoPermission::Triage) {
+                    if crate::tiers::milestone(v.meta(), *milestone).is_none() {
+                        return Err(IssueErr::Invalid("milestone"));
+                    }
+                    let ev = MilestoneEvent::Set { issue: n, milestone: Some(*milestone), actor: me };
+                    evs.push(RepoEvent::Milestones(ev));
+                }
+                Ok((evs, out))
             }
             IssueOp::Assign { n, add, remove } => {
                 issue(*n)?;
@@ -1710,7 +1864,15 @@ impl IssueCmd {
             | IssueOp::Dismiss { .. }
             | IssueOp::RequestReviews { .. }
             | IssueOp::Resolve { .. } => smallvec![w("pull_requests")],
-            IssueOp::Close { n } | IssueOp::Change { n, .. } | IssueOp::Edit { n, .. } => smallvec![on(*n)],
+            IssueOp::Close { n }
+            | IssueOp::Change { n, .. }
+            | IssueOp::Edit { n, .. }
+            | IssueOp::EditWithMilestone { n, .. }
+            | IssueOp::SetMilestone { n, .. } => smallvec![on(*n)],
+            IssueOp::OpenIssueWithMilestone { .. } => smallvec![w("issues")],
+            // An App's milestone write needs `issues` [inference: GHES 3.22's description files the milestone routes
+            // under the `issues` category].
+            IssueOp::DefineMilestone { .. } | IssueOp::DeleteMilestone { .. } => smallvec![w("issues")],
             IssueOp::Comment { on: CommentTarget::Issue(n), .. } => smallvec![w("issues"), on(*n)],
             IssueOp::Comment { on: CommentTarget::Review { .. }, .. } => smallvec![w("pull_requests")],
             IssueOp::Comment { on: CommentTarget::Commit { .. }, .. } => smallvec![w("contents")],
@@ -1774,6 +1936,7 @@ impl IssueCmd {
                 RepoEvent::Comment(CommentEvent::Created { id, .. }) => return IssueOut::Id(id.0),
                 RepoEvent::Review(ReviewEvent::Submitted { id, .. }) => return IssueOut::Id(id.0),
                 RepoEvent::Labels(LabelEvent::Defined { id, .. }) => return IssueOut::Id(id.0),
+                RepoEvent::Milestones(MilestoneEvent::Defined { id, .. }) => return IssueOut::Id(*id),
                 RepoEvent::Rule(r) if matches!(self.op, IssueOp::SetRule { .. }) => return IssueOut::Id(r.id),
                 RepoEvent::Release { id, record: Some(_), .. } => return IssueOut::Id(id.0),
                 RepoEvent::ReleaseAsset { id, asset: Some(_), .. } => return IssueOut::Id(id.0),

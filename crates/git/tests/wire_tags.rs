@@ -358,6 +358,8 @@ fn current() -> (Vec<String>, Vec<String>) {
         id::sealed::SecretScope, id::sealed::SecretVisibility,
         // R24: inside `RepoEvent::WorkflowJob`.
         git::workflow_job::JobAction,
+        // Milestones (32.37): inside `RepoEvent::Milestones`.
+        git::issues::MilestoneEvent,
     }
 }
 

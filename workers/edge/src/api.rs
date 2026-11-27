@@ -1935,6 +1935,8 @@ fn rest_decided(method: &Method, tail: &[&str]) -> bool {
             | (Method::Patch | Method::Delete, ["issues", "comments", _])
             | (Method::Put | Method::Delete, ["issues", _, "lock"])
             | (Method::Patch | Method::Delete, ["labels", _])
+            | (Method::Post, ["milestones"])
+            | (Method::Patch | Method::Delete, ["milestones", _])
             | (Method::Put | Method::Delete, ["branches", .., "protection"])
             | (Method::Post, ["git", "refs"])
             | (Method::Patch, ["git", "refs", ..])
@@ -2119,6 +2121,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let writes_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT);
     // F137's label update is served only once 32.36 is enabled; until then it answers as before (404).
     let label_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_LABEL_UPDATE);
+    // Milestones are served only once 32.37 is enabled, reads included, so no client reads a list it cannot write;
+    // until then every milestone route answers as before (404), and an issue body's `milestone` is ignored.
+    let milestones_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_MILESTONES);
     let writes_route =
         matches!((&method, tail), (Method::Patch, ["issues", "comments", _]) | (_, ["issues", _, "lock"]));
     c.decided.set(
@@ -2126,7 +2131,8 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             && (routes_on || tail != ["issues"])
             && (comment_on || !comment_route)
             && (writes_on || !writes_route)
-            && (label_on || !matches!((&method, tail), (Method::Patch, ["labels", _]))),
+            && (label_on || !matches!((&method, tail), (Method::Patch, ["labels", _])))
+            && (milestones_on || tail.first() != Some(&"milestones")),
     );
     let merge_of = rest_merge(&method, tail);
     c.leader_reads.set(merge_of.is_some());
@@ -2275,7 +2281,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let edit_on = c.cfg.enabled.contains(&graftyard_git::issue_ops::call::REPO_FORMAT_HOST_PAUSE);
     let assign_body = match (assign_on, &method, tail) {
         (true, Method::Post | Method::Delete, ["issues", _, "assignees"]) | (_, Method::Patch, ["issues", _])
-            if assign_on || edit_on || writes_on =>
+            if assign_on || edit_on || writes_on || milestones_on =>
         {
             let b = serde_json::from_slice::<Value>(&req.bytes().await?).unwrap_or(Value::Null);
             for login in rest::assignee_logins(&b) {
@@ -2344,6 +2350,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             Err(e) => unavailable(&format!("the git cache: {e}")),
         },
         (Method::Get, ["labels"]) => rest::list_labels(&r, query),
+        (Method::Get, ["milestones"]) if milestones_on => rest::list_milestones(&r, query),
+        (Method::Get, ["milestones", n]) if milestones_on => rest::get_milestone(&r, n),
+        (Method::Get, ["milestones", n, "labels"]) if milestones_on => rest::milestone_labels(&r, n, query),
         (Method::Get, ["commits", reference, "check-suites"]) => match rest::resolve(&r, reference) {
             Some(sha) => match commit_object(c, &rd.repo, sha).await {
                 Ok(Some(raw)) => rest::list_check_suites_for_ref(&r, sha, &raw, query),
@@ -2368,6 +2377,37 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             };
             match rest::plan_create_label(&body(req.bytes().await?)) {
                 Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::LabelCreated).await?,
+                Err(x) => x,
+            }
+        }
+        // Milestones (32.37): a create, an update and a delete, served only once `FormatsEnable` enabled it.
+        (Method::Post, ["milestones"]) if milestones_on => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_create_milestone(&body(req.bytes().await?)) {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::MilestoneSaved { created: true }).await?,
+                Err(x) => x,
+            }
+        }
+        (Method::Patch, ["milestones", n]) if milestones_on => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_update_milestone(&r, n, &body(req.bytes().await?)) {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::MilestoneSaved { created: false }).await?,
+                Err(x) => x,
+            }
+        }
+        (Method::Delete, ["milestones", n]) if milestones_on => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_delete_milestone(&r, n) {
+                Ok(op) => commit_deleted(c, &rd, &who, to_wire(op), rest::MILESTONE_DELETE_DOC).await?,
                 Err(x) => x,
             }
         }
@@ -2478,12 +2518,20 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         // may pause the issue's tasks in the same entry), with the assignment route's 200. Any other body, once 32.35 is
         // enabled, is one `Edit` that commits whole or not at all, with `What::IssueUpdated`'s; an assignees-only body
         // is F20's arm above. Until its format is enabled, each shape answers as before (404).
+        // Once 32.37 is enabled, a body that names `milestone` is one 32.37 command: the rest of the body as it plans
+        // alone, with the milestone set in the same command.
         (Method::Patch, ["issues", n])
             if let Some(plan) = {
                 let b = assign_body.as_ref().unwrap_or(&Value::Null);
-                match rest::plan_issue_edit(&r, n, b) {
-                    Some(plan) => edit_on.then_some(plan),
-                    None => writes_on.then(|| rest::plan_issue_update(&r, n, b)),
+                match rest::split_milestone(&r, b) {
+                    Ok((rest, Some(m))) if milestones_on => {
+                        Some(rest::plan_issue_update(&r, n, &rest).map(|op| rest::with_milestone(op, m)))
+                    }
+                    Err(x) if milestones_on => Some(Err(x)),
+                    _ => match rest::plan_issue_edit(&r, n, b) {
+                        Some(plan) => edit_on.then_some(plan),
+                        None => writes_on.then(|| rest::plan_issue_update(&r, n, b)),
+                    },
                 }
             } =>
         {
@@ -2496,7 +2544,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                     let n = n.parse().unwrap_or(0);
                     // A `Change` keeps the single-field route's render, which every 32.33 member has.
                     let what = match op {
-                        IssueOp::Edit { .. } => What::IssueUpdated { n },
+                        IssueOp::Edit { .. } | IssueOp::EditWithMilestone { .. } | IssueOp::SetMilestone { .. } => {
+                            What::IssueUpdated { n }
+                        }
                         _ => What::IssueAssigned { n, created: false },
                     };
                     commit_issue(c, &rd, &who, to_wire(op), what).await?
@@ -2656,7 +2706,16 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Ok(w) => w,
                 Err(x) => return Ok(x),
             };
-            match rest::plan_create_issue(&r, issue_body.as_ref().unwrap_or(&Value::Null)) {
+            // Once 32.37 is enabled, a `milestone` is set in the create's own command.
+            let b = issue_body.as_ref().unwrap_or(&Value::Null);
+            let plan = match rest::split_milestone(&r, b) {
+                Ok((rest, Some(m))) if milestones_on => {
+                    rest::plan_create_issue(&r, &rest).map(|op| rest::with_milestone(op, m))
+                }
+                Err(x) if milestones_on => Err(x),
+                _ => rest::plan_create_issue(&r, b),
+            };
+            match plan {
                 Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::IssueCreated).await?,
                 Err(x) => x,
             }

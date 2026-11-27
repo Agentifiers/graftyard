@@ -1623,6 +1623,147 @@ fn rest_label_routes_and_route_docs_render_as_ghes_does() {
     }
 }
 
+/// Milestones (format 32.37): a create is 201 with `Location` and the pinned `milestone`; a partial `PATCH` keeps what
+/// it leaves out, and closing stamps `closed_at`; an issue `PATCH` that names `milestone` plans one 32.37 command with
+/// the rest of the body, and `issue_json` then renders the milestone with its counts, which move when the issue
+/// closes; the list filters and sorts; a taken title is `already_exists`; a delete is 204 and clears the issue's
+/// `milestone`, and a refused one names its route's page. An issue with no milestone renders `null` as before.
+#[test]
+fn rest_milestones_render_as_ghes_does() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_err, render_ok};
+    use graftyard_api::rest::{
+        MILESTONE_DELETE_DOC, get_issue, get_milestone, list_milestones, milestone_labels, plan_create_issue,
+        plan_create_milestone, plan_delete_milestone, plan_issue_update, plan_update_milestone, split_milestone,
+        with_milestone,
+    };
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let logins: std::collections::BTreeMap<i64, String> =
+        [(OWNER, "o".to_owned()), (WRITER, "alice".to_owned()), (READER, "bob".to_owned())].into();
+    let hosted = HostedDir { home: Some(dir.home()), logins, ..Default::default() };
+    let render = |what: What, doc: Option<&str>| Render {
+        host: h.name().to_owned(),
+        isolation: false,
+        dir: hosted.clone(),
+        what,
+        doc: doc.map(Into::into),
+    };
+    let before = get_issue(&c.repo(0, &h, &dir), "1");
+    assert_eq!(before.value()["milestone"], json!(null), "no milestone, no row");
+
+    for bad in [
+        json!({}),
+        json!({ "title": " " }),
+        json!({ "title": "x", "state": "done" }),
+        json!({ "title": "x", "due_on": "tomorrow" }),
+    ] {
+        assert_eq!(plan_create_milestone(&bad).unwrap_err().status, 422, "{bad}");
+    }
+    let op = plan_create_milestone(&json!({ "title": "v1.0", "description": "first",
+        "due_on": "2026-12-01T00:00:00Z" }))
+    .unwrap();
+    let out = c.commit(WRITER, op).unwrap();
+    let m = &c.members[0];
+    let created = render_ok(&render(What::MilestoneSaved { created: true }, None), &ack(out), &m.core, &m.meta).reply();
+    assert_eq!(created.status, 201);
+    let v = created.value();
+    assert_eq!((v["number"].clone(), v["state"].clone(), v["title"].clone()), (json!(1), json!("open"), json!("v1.0")));
+    assert_eq!((v["due_on"].clone(), v["creator"]["login"].clone()), (json!("2026-12-01T00:00:00Z"), json!("alice")));
+    assert_eq!(created.header("location"), Some("https://ghes.example.com/api/v3/repos/o/r/milestones/1"));
+    assert!(v["node_id"].as_str().unwrap().starts_with("MI_"), "{v}");
+    keep_rest_as("milestone-created", "POST", "/repos/{owner}/{repo}/milestones", &created);
+    // The owner's milestone: no other row names the owner, so the directory reads its login from this row.
+    c.commit(OWNER, plan_create_milestone(&json!({ "title": "v2.0" })).unwrap()).unwrap();
+    let named = graftyard_api::hosted::accounts(&c.members[0].core, &c.members[0].meta);
+    assert!(named.contains(&AccountId(DbId(OWNER))), "a milestone's creator is named: {named:?}");
+    // A taken title, in any case: `already_exists`.
+    let e = c.commit(WRITER, plan_create_milestone(&json!({ "title": "V1.0" })).unwrap()).unwrap_err();
+    let taken = render_err(&render(What::MilestoneSaved { created: true }, None), &e).reply();
+    assert_eq!((taken.status, taken.value()["errors"][0]["code"].clone()), (422, json!("already_exists")));
+    let e = c.commit(READER, plan_create_milestone(&json!({ "title": "v3" })).unwrap()).unwrap_err();
+    assert_eq!(render_err(&render(What::MilestoneSaved { created: true }, None), &e).reply().status, 403);
+
+    // An issue `PATCH` with `milestone` and a title: one command with the rest of the body; `milestone` alone is a
+    // `SetMilestone`; a number no milestone has is 422.
+    let plan = |c: &Chain, n: &str, body: Value| {
+        let (rest, m) = split_milestone(&c.repo(0, &h, &dir), &body)?;
+        plan_issue_update(&c.repo(0, &h, &dir), n, &rest).map(|op| with_milestone(op, m.expect("a milestone")))
+    };
+    assert_eq!(split_milestone(&c.repo(0, &h, &dir), &json!({ "milestone": 9 })).unwrap_err().status, 422);
+    assert_eq!(split_milestone(&c.repo(0, &h, &dir), &json!({ "title": "t" })).unwrap().1, None);
+    let op = plan(&c, "1", json!({ "milestone": "1" })).unwrap();
+    assert_eq!(op, IssueOp::SetMilestone { n: IssueNumber(1), milestone: Some(1) });
+    let op = plan(&c, "1", json!({ "title": "renamed", "milestone": 1 })).unwrap();
+    assert!(matches!(&op, IssueOp::EditWithMilestone { milestone: Some(1), changes, .. } if changes.len() == 1));
+    let out = c.commit(WRITER, op).unwrap();
+    let m = &c.members[0];
+    let reply = render_ok(&render(What::IssueUpdated { n: 1 }, None), &ack(out), &m.core, &m.meta).reply();
+    let v = reply.value();
+    assert_eq!((v["title"].clone(), v["milestone"]["number"].clone()), (json!("renamed"), json!(1)));
+    assert_eq!((v["milestone"]["open_issues"].clone(), v["milestone"]["closed_issues"].clone()), (json!(1), json!(0)));
+    keep_rest_as("issue-with-milestone", "PATCH", "/repos/{owner}/{repo}/issues/{issue_number}", &reply);
+    // A create with a milestone, and the closed issue 3 joining it: the counts follow each issue's state.
+    let (rest, m) = split_milestone(&c.repo(0, &h, &dir), &json!({ "title": "new", "milestone": 1 })).unwrap();
+    let op = with_milestone(plan_create_issue(&c.repo(0, &h, &dir), &rest).unwrap(), m.unwrap());
+    assert!(matches!(op, IssueOp::OpenIssueWithMilestone { milestone: 1, .. }), "{op:?}");
+    c.commit(WRITER, op).unwrap();
+    c.commit(WRITER, plan(&c, "3", json!({ "milestone": 1 })).unwrap()).unwrap();
+    let got = get_milestone(&c.repo(0, &h, &dir), "1");
+    assert_eq!((got.value()["open_issues"].clone(), got.value()["closed_issues"].clone()), (json!(2), json!(1)));
+    keep_rest("milestone-get", "/repos/{owner}/{repo}/milestones/{milestone_number}", &got);
+    c.commit(WRITER, IssueOp::Close { n: IssueNumber(1) }).unwrap();
+    let got = get_milestone(&c.repo(0, &h, &dir), "1");
+    assert_eq!((got.value()["open_issues"].clone(), got.value()["closed_issues"].clone()), (json!(1), json!(2)));
+    // The labels of its issues: issue 1's `bug`, once.
+    let labels = milestone_labels(&c.repo(0, &h, &dir), "1", "");
+    let names: Vec<Value> = labels.value().as_array().unwrap().iter().map(|l| l["name"].clone()).collect();
+    assert_eq!(names, vec![json!("bug")]);
+    keep_rest("milestone-labels", "/repos/{owner}/{repo}/milestones/{milestone_number}/labels", &labels);
+    assert_eq!(milestone_labels(&c.repo(0, &h, &dir), "9", "").status, 404);
+
+    // A partial `PATCH` keeps the description and due date; closing stamps `closed_at`.
+    let op = plan_update_milestone(&c.repo(0, &h, &dir), "1", &json!({ "state": "closed" })).unwrap();
+    let out = c.commit(WRITER, op).unwrap();
+    let m = &c.members[0];
+    let saved = render_ok(&render(What::MilestoneSaved { created: false }, None), &ack(out), &m.core, &m.meta).reply();
+    let v = saved.value();
+    assert_eq!(saved.status, 200);
+    assert_eq!((v["state"].clone(), v["description"].clone()), (json!("closed"), json!("first")));
+    assert_eq!(v["due_on"], json!("2026-12-01T00:00:00Z"));
+    assert!(v["closed_at"].is_string(), "{v}");
+    keep_rest_as("milestone-updated", "PATCH", "/repos/{owner}/{repo}/milestones/{milestone_number}", &saved);
+    assert_eq!(plan_update_milestone(&c.repo(0, &h, &dir), "9", &json!({})).unwrap_err().status, 404);
+
+    // The list: open by default, `all` sorted by due date with none last, `desc` reversed.
+    let numbers = |q: &str| -> Vec<Value> {
+        let l = list_milestones(&c.repo(0, &h, &dir), q);
+        l.value().as_array().unwrap().iter().map(|m| m["number"].clone()).collect()
+    };
+    assert_eq!(numbers(""), vec![json!(2)]);
+    assert_eq!(numbers("state=closed"), vec![json!(1)]);
+    assert_eq!(numbers("state=all"), vec![json!(1), json!(2)]);
+    assert_eq!(numbers("state=all&direction=desc"), vec![json!(2), json!(1)]);
+    keep_rest(
+        "milestones-list",
+        "/repos/{owner}/{repo}/milestones",
+        &list_milestones(&c.repo(0, &h, &dir), "state=all"),
+    );
+
+    // A delete: 204, and the issue's `milestone` is `null` again; a refused one names its route's page.
+    let e = render_err(&render(What::Deleted, Some(MILESTONE_DELETE_DOC)), &IssueErr::Forbidden).reply();
+    assert!(e.value()["documentation_url"].as_str().unwrap().ends_with("/rest/issues/milestones#delete-a-milestone"));
+    let op = plan_delete_milestone(&c.repo(0, &h, &dir), "1").unwrap();
+    let out = c.commit(WRITER, op).unwrap();
+    let m = &c.members[0];
+    assert_eq!(
+        render_ok(&render(What::Deleted, Some(MILESTONE_DELETE_DOC)), &ack(out), &m.core, &m.meta).reply().status,
+        204
+    );
+    assert_eq!(get_milestone(&c.repo(0, &h, &dir), "1").status, 404);
+    assert_eq!(get_issue(&c.repo(0, &h, &dir), "1").value()["milestone"], json!(null));
+    assert_eq!(plan_delete_milestone(&c.repo(0, &h, &dir), "1").unwrap_err().status, 404);
+}
+
 /// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the
 /// label the leader holds after the entry, a taken name answers gh's `already_exists`, and an issue opened with the
 /// label is in `GET /repos/o/r/issues?labels=bug&sort=updated` from the next read, newest update first.

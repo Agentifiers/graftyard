@@ -381,7 +381,7 @@ pub fn issue_json(r: &Repo<'_>, it: &Item) -> Value {
         "labels": labels,
         "assignee": assignees.first().cloned().unwrap_or(Value::Null),
         "assignees": assignees,
-        "milestone": null,
+        "milestone": issue_milestone_json(r, it.n),
         "locked": row.locked.is_some(),
         "comments": row.comments,
         "created_at": iso(row.created),
@@ -2242,6 +2242,268 @@ pub fn label_updated(after: &Repo<'_>, id: i64) -> Reply {
 /// rest as a label create's, with this route's documentation.
 pub fn label_update_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
     label_refused(e).with_doc(LABEL_UPDATE_DOC)
+}
+
+// ---- milestones (format 32.37) ----
+
+const MILESTONES_DOC: &str = "rest/issues/milestones#create-a-milestone";
+const MILESTONE_UPDATE_DOC: &str = "rest/issues/milestones#update-a-milestone";
+/// `DELETE milestones/{n}`'s documentation, for `Render::doc`.
+pub const MILESTONE_DELETE_DOC: &str = "rest/issues/milestones#delete-a-milestone";
+
+/// The pinned `milestone` object: its counts from the `milestone_issue` index, its creator through `simple_user`.
+pub fn milestone_json(r: &Repo<'_>, n: u32, m: &graftyard_git::tiers::MilestoneRow) -> Value {
+    let (api, web) = (r.host.api(), r.host.web());
+    let (o, name) = (&r.at.owner, &r.at.name);
+    let (open, closed) = graftyard_git::tiers::milestone_counts(r.meta, n);
+    json!({
+        "url": format!("{api}/repos/{o}/{name}/milestones/{n}"),
+        "html_url": format!("{web}/{o}/{name}/milestone/{n}"),
+        "labels_url": format!("{api}/repos/{o}/{name}/milestones/{n}/labels"),
+        "id": m.id.0,
+        "node_id": scoped(NodeType::Milestone, r, m.id.0),
+        "number": n,
+        "state": if m.open { "open" } else { "closed" },
+        "title": &*m.title,
+        "description": m.description.as_deref(),
+        "creator": simple_user(r.host, r.dir, m.creator),
+        "open_issues": open,
+        "closed_issues": closed,
+        "created_at": iso(m.created),
+        "updated_at": iso(m.updated),
+        "closed_at": m.closed.map(iso),
+        "due_on": m.due_on.map(iso),
+    })
+}
+
+/// Issue or pull request `n`'s milestone as the pinned object, or `null`: an issue with none has no row, so its
+/// bytes are as before milestones.
+pub fn issue_milestone_json(r: &Repo<'_>, n: IssueNumber) -> Value {
+    graftyard_git::tiers::issue_milestone(r.meta, n)
+        .and_then(|m| Some(milestone_json(r, m, &graftyard_git::tiers::milestone(r.meta, m)?)))
+        .unwrap_or(Value::Null)
+}
+
+/// The milestone a path segment names by number, if it exists.
+fn milestone_at(r: &Repo<'_>, n: &str) -> Option<(u32, graftyard_git::tiers::MilestoneRow)> {
+    let n = n.parse::<u32>().ok()?;
+    Some((n, graftyard_git::tiers::milestone(r.meta, n)?))
+}
+
+/// `GET /repos/{owner}/{repo}/milestones`: `state` (`open` by default, `closed`, `all`), sorted by `due_on` (a
+/// milestone with none last) or `completeness` (closed issues over all), `asc` by default, then by number.
+pub fn list_milestones(r: &Repo<'_>, query: &str) -> Reply {
+    let state = param(query, "state").unwrap_or("open");
+    let mut all: Vec<(u32, graftyard_git::tiers::MilestoneRow)> = graftyard_git::tiers::milestones(r.meta)
+        .into_iter()
+        .filter(|(_, m)| match state {
+            "closed" => !m.open,
+            "all" => true,
+            _ => m.open,
+        })
+        .collect();
+    let done = |n: u32| {
+        let (o, c) = graftyard_git::tiers::milestone_counts(r.meta, n);
+        (c * 1000).checked_div(o + c).unwrap_or(0)
+    };
+    match param(query, "sort") {
+        Some("completeness") => all.sort_by_key(|(n, _)| (done(*n), *n)),
+        _ => all.sort_by_key(|(n, m)| (m.due_on.is_none(), m.due_on, *n)),
+    }
+    if param(query, "direction") == Some("desc") {
+        all.reverse();
+    }
+    let items = all.iter().map(|(n, m)| milestone_json(r, *n, m)).collect();
+    paged_values(r, "/milestones", query, items)
+}
+
+/// `GET /repos/{owner}/{repo}/milestones/{milestone_number}`: the pinned `milestone`, or 404.
+pub fn get_milestone(r: &Repo<'_>, n: &str) -> Reply {
+    match milestone_at(r, n) {
+        Some((n, m)) => Reply::json(200, milestone_json(r, n, &m)),
+        None => Reply::not_found(),
+    }
+}
+
+/// `GET /repos/{owner}/{repo}/milestones/{milestone_number}/labels`: the labels of the milestone's issues and pull
+/// requests, each once, by name; 404 for an unknown milestone.
+pub fn milestone_labels(r: &Repo<'_>, n: &str, query: &str) -> Reply {
+    let Some((n, _)) = milestone_at(r, n) else { return Reply::not_found() };
+    let mut seen: Vec<(DbId, graftyard_git::tiers::LabelRow)> = Vec::new();
+    for open in [true, false] {
+        let key = [Val::Int(i64::from(n)), Val::Int(i64::from(open))];
+        for (k, _) in r.meta.prefix("milestone_issue", &key) {
+            let Some(Val::Int(i)) = k.get(2) else { continue };
+            for (id, l) in r.labels_of(IssueNumber(*i as u32)) {
+                if !seen.iter().any(|(s, _)| *s == id) {
+                    seen.push((id, l));
+                }
+            }
+        }
+    }
+    seen.sort_by_key(|(_, l)| l.name.0.to_lowercase());
+    let items = seen.iter().map(|(id, l)| label_json(r, *id, l)).collect();
+    paged_values(r, &format!("/milestones/{n}/labels"), query, items)
+}
+
+/// A `POST` or `PATCH` milestone body as the `DefineMilestone` of milestone `n` (`None` for a create): `title`
+/// (required on create), `state`, `description` (an empty one clears it) and `due_on` (ISO 8601, or `null` to clear
+/// it). A field the body leaves out keeps `was`'s value.
+fn define_milestone(
+    n: Option<u32>,
+    body: &Value,
+    was: Option<&graftyard_git::tiers::MilestoneRow>,
+    doc: &'static str,
+) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    let invalid = |field: &'static str, code: &'static str| {
+        Reply::json(
+            422,
+            crate::wire::validation_error(
+                "Validation Failed",
+                doc,
+                &[crate::wire::FieldError { resource: "Milestone", field, code }],
+            ),
+        )
+    };
+    let Some(o) = body.as_object() else { return Err(invalid("title", "missing_field")) };
+    let title = match (o.get("title"), was) {
+        (Some(Value::String(t)), _) if !t.trim().is_empty() => t.as_str().into(),
+        (None | Some(Value::Null), Some(w)) => w.title.clone(),
+        (None | Some(Value::Null), None) => return Err(invalid("title", "missing_field")),
+        _ => return Err(invalid("title", "invalid")),
+    };
+    let open = match o.get("state") {
+        None | Some(Value::Null) => was.is_none_or(|w| w.open),
+        Some(Value::String(s)) if s == "open" => true,
+        Some(Value::String(s)) if s == "closed" => false,
+        _ => return Err(invalid("state", "invalid")),
+    };
+    let description = match o.get("description") {
+        None => was.and_then(|w| w.description.clone()),
+        Some(Value::Null) => None,
+        Some(Value::String(d)) if d.is_empty() => None,
+        Some(Value::String(d)) => Some(d.as_str().into()),
+        _ => return Err(invalid("description", "invalid")),
+    };
+    let due_on = match o.get("due_on") {
+        None => was.and_then(|w| w.due_on),
+        Some(Value::Null) => None,
+        Some(Value::String(d)) => Some(graftyard_wire::parse_iso(d).ok_or_else(|| invalid("due_on", "invalid"))?),
+        _ => return Err(invalid("due_on", "invalid")),
+    };
+    Ok(graftyard_git::issue_ops::IssueOp::DefineMilestone { n, title, description, open, due_on })
+}
+
+/// `POST /repos/{owner}/{repo}/milestones`: a `DefineMilestone` of the next number.
+pub fn plan_create_milestone(body: &Value) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    define_milestone(None, body, None, MILESTONES_DOC)
+}
+
+/// `PATCH /repos/{owner}/{repo}/milestones/{milestone_number}`: a `DefineMilestone` of its number, each field the
+/// body leaves out kept from the row. An unknown milestone is 404.
+pub fn plan_update_milestone(r: &Repo<'_>, n: &str, body: &Value) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    let (n, was) = milestone_at(r, n).ok_or_else(Reply::not_found)?;
+    define_milestone(Some(n), body, Some(&was), MILESTONE_UPDATE_DOC)
+}
+
+/// `DELETE /repos/{owner}/{repo}/milestones/{milestone_number}`: a `DeleteMilestone`, whose 204 is `What::Deleted`'s,
+/// refused with this route's documentation. An unknown milestone is 404.
+pub fn plan_delete_milestone(r: &Repo<'_>, n: &str) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    let (n, _) = milestone_at(r, n).ok_or_else(Reply::not_found)?;
+    Ok(graftyard_git::issue_ops::IssueOp::DeleteMilestone { n })
+}
+
+/// The reply of a committed `DefineMilestone`: the milestone after the entry, found by the id `decide` gave it, 201
+/// with `Location` for a create, 200 for an update.
+pub fn milestone_saved(
+    acked: &graftyard_raft::Acked<graftyard_git::issue_ops::IssueOut>,
+    after: &Repo<'_>,
+    created: bool,
+) -> Reply {
+    let graftyard_git::issue_ops::IssueOut::Id(id) = acked.out else {
+        return Reply::error(500, "Internal Server Error", "rest");
+    };
+    let Some((n, m)) = graftyard_git::tiers::milestones(after.meta).into_iter().find(|(_, m)| m.id == id) else {
+        return Reply::error(500, "Internal Server Error", "rest");
+    };
+    let v = milestone_json(after, n, &m);
+    if created {
+        let loc = v["url"].as_str().unwrap_or_default().to_owned();
+        Reply::json(201, v).with("location", loc)
+    } else {
+        Reply::json(200, v)
+    }
+}
+
+/// The `milestone` an issue create or `PATCH` body names (32.37), and the body without it, which the issue's own
+/// planner reads as before: `None` when the body names none, `Some(None)` for `null` (clear it), else the number, as
+/// an integer or a string of one. A number no milestone has, or another type, is 422.
+pub fn split_milestone(r: &Repo<'_>, body: &Value) -> Result<(Value, Option<Option<u32>>), Reply> {
+    let mut rest = body.clone();
+    let Some(v) = rest.as_object_mut().and_then(|o| o.remove("milestone")) else { return Ok((rest, None)) };
+    let n = match &v {
+        Value::Null => return Ok((rest, Some(None))),
+        Value::Number(x) => x.as_u64(),
+        Value::String(s) => s.parse::<u64>().ok(),
+        _ => None,
+    };
+    match n.and_then(|n| u32::try_from(n).ok()).filter(|n| graftyard_git::tiers::milestone(r.meta, *n).is_some()) {
+        Some(n) => Ok((rest, Some(Some(n)))),
+        None => Err(Reply::json(
+            422,
+            crate::wire::validation_error(
+                "Validation Failed",
+                ISSUE_UPDATE_DOC,
+                &[crate::wire::FieldError { resource: "Issue", field: "milestone", code: "invalid" }],
+            ),
+        )),
+    }
+}
+
+/// An issue create or edit `op` with the `milestone` its body named (`split_milestone`), as one 32.37 command: a
+/// create is `OpenIssueWithMilestone` (a `null` changes nothing on a new issue), an edit that changes nothing else
+/// `SetMilestone`, and any other edit `EditWithMilestone`.
+pub fn with_milestone(
+    op: graftyard_git::issue_ops::IssueOp,
+    milestone: Option<u32>,
+) -> graftyard_git::issue_ops::IssueOp {
+    use graftyard_git::issue_ops::IssueOp;
+    match op {
+        IssueOp::OpenIssue { title, body, labels, assignees } => match milestone {
+            Some(milestone) => IssueOp::OpenIssueWithMilestone { title, body, labels, assignees, milestone },
+            None => IssueOp::OpenIssue { title, body, labels, assignees },
+        },
+        IssueOp::Edit { n, changes, labels: None, assignees: None } if changes.is_empty() => {
+            IssueOp::SetMilestone { n, milestone }
+        }
+        IssueOp::Edit { n, changes, labels, assignees } => {
+            IssueOp::EditWithMilestone { n, changes, labels, assignees, milestone }
+        }
+        IssueOp::Change { n, change } => IssueOp::EditWithMilestone {
+            n,
+            changes: smallvec::smallvec![change],
+            labels: None,
+            assignees: None,
+            milestone,
+        },
+        op => op,
+    }
+}
+
+/// A refused `DefineMilestone`: a taken title is GitHub's 422 `already_exists`; 401, 403, 404, 503 as every write.
+pub fn milestone_refused(e: &graftyard_git::issue_ops::IssueErr, created: bool) -> Reply {
+    let doc = if created { MILESTONES_DOC } else { MILESTONE_UPDATE_DOC };
+    match e {
+        graftyard_git::issue_ops::IssueErr::Exists => Reply::json(
+            422,
+            crate::wire::validation_error(
+                "Validation Failed",
+                doc,
+                &[crate::wire::FieldError { resource: "Milestone", field: "title", code: "already_exists" }],
+            ),
+        ),
+        e => write_refused(e, doc),
+    }
 }
 
 /// `GET /repos/{owner}/{repo}/assignees/{assignee}` (F137): 204 when the assignee's permission on the repository,

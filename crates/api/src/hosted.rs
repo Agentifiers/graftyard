@@ -308,8 +308,9 @@ impl TierRows {
 
 /// The tables whose rows name an account a reply may render, by tier: authors, assignees, reviewers, status creators,
 /// release authors, asset uploaders, lock owners, mergers, and a task's requester, whom no other row may name: without
-/// it the requester rendered as `ghost` (F138, LM-3's batched row r1). A task's user creator is its requester.
-const NAMING: [(graftyard_types::Tier, &str); 10] = {
+/// it the requester rendered as `ghost` (F138, LM-3's batched row r1). A task's user creator is its requester. A
+/// milestone's creator likewise (32.37), whom no other row need name.
+const NAMING: [(graftyard_types::Tier, &str); 11] = {
     use graftyard_types::Tier::{Core, Metadata};
     [
         (Metadata, "issue"),
@@ -320,6 +321,7 @@ const NAMING: [(graftyard_types::Tier, &str); 10] = {
         (Metadata, "release"),
         (Metadata, "asset"),
         (Metadata, "lfs_lock"),
+        (Metadata, "milestone"),
         (Core, "pull_head"),
         (Core, "agent_task"),
     ]
@@ -347,6 +349,7 @@ fn row_account(table: &str, key: &[Val], cols: &[Val]) -> Option<AccountId> {
         "release" => rec::<ReleaseRow>(cols).rec.author,
         "asset" => rec::<AssetRow>(cols).uploader,
         "lfs_lock" => Some(rec::<LockRow>(cols).owner),
+        "milestone" => rec::<graftyard_git::tiers::MilestoneRow>(cols).creator,
         "pull_head" => match rec::<PullHead>(cols).state {
             PrState::Merged { by, .. } => Some(by.0),
             _ => None,
@@ -639,6 +642,11 @@ pub enum What {
     LabelUpdated {
         id: i64,
     },
+    /// `POST /repos/{o}/{r}/milestones` (201 with `Location`, `created`) and `PATCH .../milestones/{n}` (200): the
+    /// pinned `milestone` after the entry (format 32.37).
+    MilestoneSaved {
+        created: bool,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -747,6 +755,7 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::StatusCreated { sha, id } => WireReply::of(&crate::rest::status_created(acked, &r, *sha, *id)),
         What::LabelCreated => WireReply::of(&crate::rest::label_created(acked, &r)),
         What::LabelUpdated { id } => WireReply::of(&crate::rest::label_updated(&r, *id)),
+        What::MilestoneSaved { created } => WireReply::of(&crate::rest::milestone_saved(acked, &r, *created)),
         What::AgentPolicy => {
             WireReply::of(&Reply::json(200, crate::agents::policy_json(&graftyard_git::tiers::agent_policy(core))))
         }
@@ -819,6 +828,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::RestMerge | What::StatusCreated { .. } => WireReply::of(&crate::release::refused(e)),
         What::LabelCreated => WireReply::of(&crate::rest::label_refused(e)),
         What::LabelUpdated { .. } => WireReply::of(&crate::rest::label_update_refused(e)),
+        What::MilestoneSaved { created } => WireReply::of(&crate::rest::milestone_refused(e, *created)),
         What::AgentPolicy => WireReply::of(&crate::release::refused(e)),
         What::Task { .. } => WireReply::of(&crate::tasks::refused(e)),
         What::RepoSaved { .. } => WireReply::of(&crate::repos::refused(e)),
