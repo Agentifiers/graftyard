@@ -66,7 +66,10 @@ taskbox)
   { read -r app ws <"$K/app-ids"
     # The harness image is built here with the legacy builder and pushed to the runner account's registry: the orb's
     # docker has no buildx, which wrangler's own Dockerfile build needs (`--load`).
-    (cd tests/am3/hosted/kill && DOCKER_BUILDKIT=0 docker build -q -t $P-sandbox:kill-$TAG . >/dev/null) &&
+    # REAL=1: LM-3's real-harness case (`tests/am3/results/lm3-kill-real.md`): the Claude Code image, the model arm on
+    # the operator's token proxy, and the model key the lead stored in the runner store.
+    ctx=tests/am3/hosted/kill; [ -n "${REAL:-}" ] && ctx=tests/am3/hosted/kill/claude
+    (cd $ctx && DOCKER_BUILDKIT=0 docker build -q -t $P-sandbox:kill-$TAG . >/dev/null) &&
       runner npx --prefix tests/m0 wrangler containers push $P-sandbox:kill-$TAG 2>&1 | grep -E "digest|Pushed image" | tail -2
     dig=$(docker image inspect $P-sandbox:kill-$TAG --format '{{index .RepoDigests 0}}' 2>/dev/null | sed 's/.*@//')
     [ -n "$dig" ] || dig=$(docker image inspect $P-sandbox:kill-$TAG --format '{{.Id}}')
@@ -77,6 +80,10 @@ taskbox)
         harness: ["python3", "/harness.py", $host, "'"${HARNESS_REPO:-m3org/kill-$TAG}"'", "'"${HARNESS_PUSHES:-8}"'", "15"],
         secrets: {AGENT_APP_KEY: "\($p)AGENTS_APP_KEY_A", WORKSPACE_APP_KEY: "\($p)WORKSPACE_APP_KEY_A", MODEL_KEY: null}}' \
       >"$K/taskbox.json"
+    [ -n "${REAL:-}" ] && jq --arg p "$P-" --arg host "$EDGE_HOST" --arg repo "${HARNESS_REPO:-m3org/killreal-$TAG}" \
+      '. + {harness: ["python3", "/run.py", $host, $repo, "6", "claude-sonnet-5-5"],
+            route_others: [{ModelInference: {host: "token-proxy.workinprogress.dev", path: "/v1/messages"}}]}
+       | .secrets.MODEL_KEY = "\($p)MODEL_KEY_A"' "$K/taskbox.json" >"$K/tb.tmp" && mv "$K/tb.tmp" "$K/taskbox.json"
     [ -n "${FRONTB:-}" ] && jq --arg f $FRONT '. + {agents_front: $f}' "$K/taskbox.json" >"$K/tb.tmp" && mv "$K/tb.tmp" "$K/taskbox.json"
     jq -c . "$K/taskbox.json"
   } 2>&1 | log ;;
