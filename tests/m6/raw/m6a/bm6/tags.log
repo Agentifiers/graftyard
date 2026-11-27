@@ -1,0 +1,13 @@
+2026-11-27T01:46:48Z
+70aa964b
+{"script":"graft-m6a-site-a","version":"bc564b55","percentage":50,"tag":"2-fd2dc2f99b2f"}
+{"script":"graft-m6a-site-a","version":"4521cbcf","percentage":50,"tag":"1-b4a1f526f173"}
+{"script":"graft-m6a-site-b","version":"b75dcdba","percentage":100,"tag":"1-b4a1f526f173"}
+{"script":"graft-m6a-site-c","version":"5d2a93f7","percentage":100,"tag":"1-b4a1f526f173"}
+{"script":"graft-m6a-spare-wnam","version":"d9794db7","percentage":100,"tag":"1-b4a1f526f173"}
+{"script":"graft-m6a-workflows","version":"4219479e","percentage":100,"tag":"1-b4a1f526f173"}
+{"script":"graft-m6a-edge","version":"b136fb3a","percentage":100,"tag":"1-b4a1f526f173"}
+{"script":"graft-m6a-ops","version":"798e7d2a","percentage":100,"tag":"1-b4a1f526f173"}
+{"count":92,"current":{"intent":"SiteDay { target: Site(SiteId(0)), release: ReleaseId([253, 45, 194, 249, 155, 47, 219, 87, 178, 131, 180, 23, 130, 112, 197, 95, 143, 176, 58, 6, 188, 86, 200, 6, 108, 30, 251, 36, 8, 245, 65, 14]) }","next":3,"since":1795743976958,"state":"Running { step: 3 }"},"drained":[0],"site_release":{"0":"b4a1f526","1":"b4a1f526","2":"b4a1f526","3":"b4a1f526"},"uploads":["b4a1f526","fd2dc2f9"],"enabled":0}
+spend: row $0.05, day $0.05, total $49.27 (stops $10, $20, $70)
+2026-11-27T01:46:56Z

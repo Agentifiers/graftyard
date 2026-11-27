@@ -1,0 +1,17 @@
+2026-11-27T00:05:41Z
+70aa964b
+checkout: origin/main 70aa964b, clean
+row start 2026-11-27T00:05:41Z; CLI ~/.cache/cli-target/release/graftyard, relview ~/workspace/repo/tests/m3/hosted/tools/target/release/relview, both from 70aa964b
+spend: row $0.0, day $0.0, total $49.22 (stops $10, $20, $70)
+{"count":21,"current":null,"drained":[],"site_release":{},"uploads":[],"enabled":0}
+graft-ops cron ["* * * * *"]
+{"bm6_deploy_tokens":[]}
+shards {"graft-m6a-spare-wnam-gitshard":0,"graft-m6a-site-c-gitshard":0,"graft-m6a-site-b-gitshard":0,"graft-m6a-site-a-gitshard":0}
+{"script":"graft-m6a-site-a","created_on":"2026-11-25T00:06:48.059557Z","versions":["8fae5383 100"]}
+{"script":"graft-m6a-site-b","created_on":"2026-11-25T00:06:57.197506Z","versions":["fe929410 100"]}
+{"script":"graft-m6a-site-c","created_on":"2026-11-25T00:07:05.989186Z","versions":["f28c7f4b 100"]}
+{"script":"graft-m6a-spare-wnam","created_on":"2026-11-25T00:07:15.146066Z","versions":["b2d9ce8b 100"]}
+{"script":"graft-m6a-edge","created_on":"2026-11-24T10:16:45.18272Z","versions":["4e6852bb 100"]}
+{"script":"graft-m6a-workflows","created_on":"2026-11-25T04:11:53.514564Z","versions":["b1a6a928 100"]}
+{"script":"graft-m6a-ops","created_on":"2026-11-26T06:06:40.335071Z","versions":["82bc3adb 100"]}
+2026-11-27T00:07:55Z

@@ -1,0 +1,9 @@
+2026-11-27T00:35:08Z
+70aa964b
+r1 b4a1f526f173aa70854714629c8e0f866f16911c9a255fa66530104ba75aa21c signed and verified: ["edge/index.js","edge/index_bg.wasm","formats.txt","ops/index.js","ops/index_bg.wasm","site/index.js","site/index_bg.wasm","workflows/entry.js","workflows/move.mjs"]
+r2 fd2dc2f99b2fdb57b283b4178270c55f8fb03a06bc56c8066c1efb2408f5410e signed and verified: ["edge/index.js","edge/index_bg.wasm","edge/marker.js","formats.txt","ops/index.js","ops/index_bg.wasm","ops/marker.js","site/index.js","site/index_bg.wasm","site/marker.js","workflows/entry.js","workflows/marker.js","workflows/move.mjs"]
+formats.txt: 20 formats, 16.2 17.2 17.5 18.2 18.3 20.1 20.2 32.1 32.4 32.5 32.6 32.7 32.8 32.9 32.11 32.12 32.13 32.14 32.18 32.26 
+site wasm sha256 843875b4be8ff543
+edge wasm sha256 02d77794b106dc2a
+ops wasm sha256 e5612028f8124464
+2026-11-27T00:35:40Z

@@ -1,0 +1,8 @@
+2026-11-27T02:39:34Z
+70aa964b
+deploy token before: 200 (want 200)
+{"revoke":"graft-m6a-bm6-deploy","ok":true,"errors":[]}
+deploy token after: 401 (want 401)
+token file shredded
+{"bm6_deploy_tokens":[]}
+2026-11-27T02:39:41Z

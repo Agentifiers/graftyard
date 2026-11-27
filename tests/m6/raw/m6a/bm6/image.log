@@ -1,0 +1,13 @@
+2026-11-27T00:08:26Z
+70aa964b
+spend: row $0.0, day $0.0, total $49.22 (stops $10, $20, $70)
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+sha256:452434174ce28a0ea9d2e23c74e01a964628708450ad59f32ddc67d736e8c117
+aa9b4cea0861: Pushed
+70aa964b: digest: sha256:452434174ce28a0ea9d2e23c74e01a964628708450ad59f32ddc67d736e8c117 size: 1411
+Pushed image: registry.cloudflare.com/<install-account>/graft-m6a-gitshard:70aa964b
+image graft-m6a-gitshard@sha256:452434174ce28a0ea9d2e23c74e01a964628708450ad59f32ddc67d736e8c117 from 70aa964b
+2026-11-27T00:10:34Z
