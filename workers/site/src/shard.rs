@@ -892,7 +892,8 @@ impl DurableObject for GitShard {
         // container's running git processes and the network's pack counts, all and kept (`procs`).
         if path == "/status" {
             let running = self.state.container().is_some_and(|c| c.running());
-            let net = q(&url, "repo").and_then(|v| v.parse().ok()).map(|r| NetworkId(DbId(r)));
+            let net =
+                q(&url, "net").or_else(|| q(&url, "repo")).and_then(|v| v.parse().ok()).map(|r| NetworkId(DbId(r)));
             if let Some(net) = net {
                 self.restore_budget(net).await;
             }
@@ -964,7 +965,11 @@ impl DurableObject for GitShard {
         }
         let repo: i64 = q(&url, "repo").and_then(|v| v.parse().ok()).ok_or("repo")?;
         let repo = RepoId(DbId(repo));
-        let (net, chain) = (NetworkId::of_root(repo), ChainId::Repo(repo));
+        let net =
+            graftyard_git::shard_network(repo, q(&url, "net").and_then(|v| v.parse().ok()).map(|n| NetworkId(DbId(n))));
+        // A fork's call names its network (`net`), while its own chain is the group the shard commits to. Catch-up
+        // (`Jobs::run`) still reads the network's root chain until multi-chain catch-up (AM3-WP2a head 4).
+        let chain = ChainId::Repo(repo);
         let cause = q(&url, "cause")
             .as_deref()
             .and_then(graftyard_git::prsync::MergeCause::parse)

@@ -15,14 +15,14 @@ from plant121 import run  # noqa: E402
 M = 'workers/site/src/member.rs'
 T = ['cargo', 'test', '-q', '-p', 'graftyard-site', '--lib',
      'a_moves_warm_ask_starts_the_shard_but_keeps_it_no_longer_than_promote_lapse']
-URL = '"https://shard/catchup?warm=start&repo={}&record={record}&wait={WARM_ASK_WAIT_S}&next=1"'
+URL = '"https://shard/catchup?warm=start&{}&record={record}&wait={WARM_ASK_WAIT_S}&next=1"'
 MUTANTS = [
     ("the warm ask is a client's request, as on main", M, URL,
-     '"https://shard/catchup?repo={}&record={record}&wait={WARM_ASK_WAIT_S}&next=1"', T),
+     '"https://shard/catchup?{}&record={record}&wait={WARM_ASK_WAIT_S}&next=1"', T),
     ("the warm ask is a keep-warm call, which never starts a stopped shard", M, URL,
-     '"https://shard/catchup?warm=1&repo={}&record={record}&wait={WARM_ASK_WAIT_S}&next=1"', T),
+     '"https://shard/catchup?warm=1&{}&record={record}&wait={WARM_ASK_WAIT_S}&next=1"', T),
     ("the warm ask waits out a rehydrate instead of trying the next shard", M, URL,
-     '"https://shard/catchup?warm=start&repo={}&record={record}&wait={WARM_ASK_WAIT_S}"', T),
+     '"https://shard/catchup?warm=start&{}&record={record}&wait={WARM_ASK_WAIT_S}"', T),
 ]
 
 if __name__ == '__main__':

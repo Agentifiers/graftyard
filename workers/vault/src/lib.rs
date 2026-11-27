@@ -31,7 +31,7 @@ use graftyard_git::pack::PackId;
 use graftyard_git::repo::{REPO_FORMAT_V1, RepoEvent, stored_packs};
 use graftyard_git::{CONSUMED_KEEP, R2Key};
 use graftyard_raft::{EntryBody, Format, LogEntry, Term, codec};
-use graftyard_types::{ChainId, Digest, Index, NetworkId, Timestamp};
+use graftyard_types::{ChainId, Digest, Index, NetworkId, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -81,15 +81,6 @@ pub fn pack_key(network: NetworkId, id: PackId) -> String {
     R2Key::Pack { network, id }.to_string()
 }
 
-/// The network whose prefix holds a repository chain's packs: the repository's own id, as the edge places them
-/// (`NetworkId::of_root`, the edge's `Repo::network`) [inference: forks into a shared network are not built].
-fn network_of(chain: ChainId) -> Option<NetworkId> {
-    match chain {
-        ChainId::Repo(r) | ChainId::RepoMeta(r) => Some(NetworkId::of_root(r)),
-        _ => None,
-    }
-}
-
 /// A copy the vault owes: a pack an entry named, or the snapshot an `Archived` named.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,7 +110,7 @@ impl Copy {
 /// The owed copies one pass takes: one per turn, round and round, starting with the first turn after `after` (where
 /// the last pass stopped), at most `n`. So one network's backlog delays another's copy by at most
 /// ceil(turns / `COPIES_PER_PASS`) passes, not by the backlog.
-fn in_turns(copies: &BTreeSet<Copy>, after: Option<Turn>, n: usize) -> Vec<Copy> {
+fn in_turns<'a>(copies: impl IntoIterator<Item = &'a Copy>, after: Option<Turn>, n: usize) -> Vec<Copy> {
     let mut turns: BTreeMap<Turn, VecDeque<&Copy>> = BTreeMap::new();
     for c in copies {
         turns.entry(c.turn()).or_default().push_back(c);
@@ -171,9 +162,53 @@ pub struct VaultState {
     /// did not decode, so no pack or snapshot they name is known. Both are alarmed.
     pub missed: u64,
     pub undecoded: u64,
+    /// Each fork's network, from its chain's `Genesis` (AM3-WP2a). Only forks are kept: a root's network is its own
+    /// id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub networks: BTreeMap<RepoId, NetworkId>,
 }
 
 impl VaultState {
+    /// The network whose prefix holds a repository chain's packs: a fork's from its `Genesis`, else the repository's
+    /// own id (`NetworkId::of_root`).
+    pub fn network_of(&self, chain: ChainId) -> Option<NetworkId> {
+        match chain {
+            ChainId::Repo(r) | ChainId::RepoMeta(r) => {
+                Some(self.networks.get(&r).copied().unwrap_or(NetworkId::of_root(r)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Records that `repo` is a fork in `network` and moves what its chain already put under its own id there: a
+    /// backfilled chain absorbs later rows before its `Genesis`. Only `repo`'s chains name `of_root(repo)`, since a
+    /// fork's id is never a network's.
+    fn fork(&mut self, repo: RepoId, network: NetworkId) {
+        self.networks.insert(repo, network);
+        let own = NetworkId::of_root(repo);
+        let moved: Vec<Copy> =
+            self.copies.iter().filter(|c| matches!(c, Copy::Pack { network: n, .. } if *n == own)).cloned().collect();
+        for c in moved {
+            self.copies.remove(&c);
+            if let Copy::Pack { id, checksum, bytes, .. } = c {
+                self.copies.insert(Copy::Pack { network, id, checksum, bytes });
+            }
+        }
+        let keys: Vec<(String, PackId)> = self
+            .gc
+            .keys()
+            .filter_map(|k| match k.parse::<R2Key>() {
+                Ok(R2Key::Pack { network: n, id }) if n == own => Some((k.clone(), id)),
+                _ => None,
+            })
+            .collect();
+        for (k, id) in keys {
+            if let Some(g) = self.gc.remove(&k) {
+                self.gc.entry(pack_key(network, id)).or_insert(g);
+            }
+        }
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("json")
     }
@@ -335,9 +370,10 @@ fn row_format(row: &[u8]) -> Option<Format> {
 
 /// Folds one chain's stored rows into what the vault owes: packs and snapshots to copy, packs the install's GC may
 /// delete, and deleted repositories. Only repository chains' rows of the repository family are decoded; one that does
-/// not decode is counted, since a pack it names would be unknown.
+/// not decode is counted, since a pack it names would be unknown. A fork's `Genesis` names its network, which keys
+/// its packs from then on (`VaultState::fork`).
 pub fn absorb(st: &mut VaultState, chain: ChainId, rows: &[Vec<u8>]) {
-    let Some(network) = network_of(chain) else { return };
+    let (ChainId::Repo(repo) | ChainId::RepoMeta(repo)) = chain else { return };
     for row in rows {
         if row_format(row).is_none_or(|f| f.family != REPO_FAMILY) {
             continue;
@@ -347,6 +383,15 @@ pub fn absorb(st: &mut VaultState, chain: ChainId, rows: &[Vec<u8>]) {
             continue;
         };
         let EntryBody::Events(events) = &e.body else { continue };
+        for ev in events {
+            if let RepoEvent::Genesis { network, .. } = ev
+                && network.root() != repo
+                && st.networks.get(&repo) != Some(network)
+            {
+                st.fork(repo, *network);
+            }
+        }
+        let network = st.network_of(chain).expect("a repository chain");
         for (id, checksum, bytes) in stored_packs(events) {
             st.copies.insert(Copy::Pack { network, id, checksum, bytes });
         }
@@ -679,10 +724,20 @@ pub async fn pass<H: Host>(h: &H) -> Result<(Report, VaultState), String> {
         }
     }
 
-    // Owed copies, a turn at a time.
+    // Owed copies, a turn at a time. A backfilled repository chain whose index 1 is not read yet may be a fork whose
+    // `Genesis` moves the packs it put under its own id to its network: those wait for it.
     let turn_before = st.copy_turn;
-    let owed = in_turns(&st.copies, st.copy_turn, COPIES_PER_PASS);
-    r.more |= owed.len() < st.copies.len();
+    let unread: BTreeSet<NetworkId> = st
+        .backfill
+        .iter()
+        .filter_map(|(c, b)| match c {
+            ChainId::Repo(r) if b.next == Index(1) => Some(NetworkId::of_root(*r)),
+            _ => None,
+        })
+        .collect();
+    let ready = || st.copies.iter().filter(|c| !matches!(c, Copy::Pack { network, .. } if unread.contains(network)));
+    let owed = in_turns(ready(), st.copy_turn, COPIES_PER_PASS);
+    r.more |= owed.len() < ready().count();
     for c in owed {
         st.copy_turn = Some(c.turn());
         let got = match &c {
@@ -712,10 +767,14 @@ pub async fn pass<H: Host>(h: &H) -> Result<(Report, VaultState), String> {
     // the install first answered 404.
     let due: Vec<(ChainId, Timestamp)> = st.deleted.iter().filter(|(_, t)| now >= **t).map(|(c, t)| (*c, *t)).collect();
     for (chain, until) in due {
-        let Some(network) = network_of(chain) else { continue };
-        for key in h.list(&R2Key::pack_prefix(network)).await? {
-            if key.ends_with(".pack") {
-                st.gc.entry(key).or_insert(Gc { after: until, probed: None, gone: None });
+        let (ChainId::Repo(repo) | ChainId::RepoMeta(repo)) = chain else { continue };
+        // A deleted fork's packs are its network's, which other members may still use: left for now (AM3-WP2a slice
+        // 2 settles a network's purge).
+        if !st.networks.contains_key(&repo) {
+            for key in h.list(&R2Key::pack_prefix(NetworkId::of_root(repo))).await? {
+                if key.ends_with(".pack") {
+                    st.gc.entry(key).or_insert(Gc { after: until, probed: None, gone: None });
+                }
             }
         }
         st.deleted.remove(&chain);
