@@ -1,0 +1,20 @@
+{
+  "GRAFTYARD_ACTIONS_CACHE": "1",
+  "GRAFTYARD_ACTIVITY": "1",
+  "GRAFTYARD_AGENT_CI": "1",
+  "GRAFTYARD_APP_HOOKS": "1",
+  "GRAFTYARD_ARTIFACTS_V4": "1",
+  "GRAFTYARD_AUDIT": "1",
+  "GRAFTYARD_CUSTOMER_KEY": "031923da25f100f1e0586087cd86b749be1ae6d26a75f4fa8cc6112f2dd882bd",
+  "GRAFTYARD_HOST": "graft-m4a-edge.<sub>.workers.dev",
+  "GRAFTYARD_INSTALL": "01M79F6BJFJSQCH68C772935XB",
+  "GRAFTYARD_JOB_TOKENS": "1",
+  "GRAFTYARD_OIDC_CLAIMS": "1",
+  "GRAFTYARD_OIDC_HEAD_REF": "1",
+  "GRAFTYARD_PR_TRIGGER": "1",
+  "GRAFTYARD_REUSABLE": "1",
+  "GRAFTYARD_SECRETS_WAIT": "1",
+  "GRAFTYARD_SITES": "[{\"id\":0,\"script\":\"graft-m4a-site-a\",\"account\":\"<install-account>\",\"region\":\"enam\",\"jurisdiction\":null,\"bucket\":\"graft-m4a-site-a-packs\",\"release\":null,\"link\":{\"binding\":{\"member_class\":\"Member\"}},\"spare\":false},{\"id\":1,\"script\":\"graft-m4a-site-b\",\"account\":\"<install-account>\",\"region\":\"weur\",\"jurisdiction\":null,\"bucket\":\"graft-m4a-site-b-packs\",\"release\":null,\"link\":{\"binding\":{\"member_class\":\"Member\"}},\"spare\":false},{\"id\":2,\"script\":\"graft-m4a-site-c\",\"account\":\"<install-account>\",\"region\":\"apac\",\"jurisdiction\":null,\"bucket\":\"graft-m4a-site-c-packs\",\"release\":null,\"link\":{\"binding\":{\"member_class\":\"Member\"}},\"spare\":false}]",
+  "SHARD_INSTANCE": "standard-4",
+  "SITE_ID": "1"
+}

@@ -1,0 +1,14 @@
+{
+ "commands": [
+  "issue lock 1",
+  "issue unlock 1"
+ ],
+ "operation": "IssueByNumber",
+ "query": "\n\tquery IssueByNumber($owner: String!, $repo: String!, $number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\thasIssuesEnabled\n\t\t\tissue: issueOrPullRequest(number: $number) {\n\t\t\t\t__typename\n\t\t\t\t...on Issue{activeLockReason,id,locked,number,title,url}\n\t\t\t\t...on PullRequest{activeLockReason,id,locked,number,title,url}\n\t\t\t}\n\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "number": 1,
+  "owner": "o",
+  "repo": "r"
+ }
+}

@@ -1,0 +1,10 @@
+2026-11-27T10:21:55Z
+9e7c8eaf6
+{"script":"graft-m4a-site-a","created_on":"2026-11-27T06:22:50.894013Z","versions":["d59e6458 100"]}
+{"script":"graft-m4a-site-b","created_on":"2026-11-27T06:22:59.741755Z","versions":["cecd6a85 100"]}
+{"script":"graft-m4a-site-c","created_on":"2026-11-27T06:23:09.046682Z","versions":["afd86f1c 100"]}
+{"script":"graft-m4a-edge","created_on":"2026-11-27T06:27:12.992834Z","versions":["50b5577a 100"]}
+{"script":"graft-m4a-ops","created_on":"2026-11-25T14:56:05.928151Z","versions":["ac4cd9a5 100"]}
+FORMATS_ENABLED: 41 formats; 32.34 0, 32.35 0, 32.36 0, 32.37 0; 21.14 1, 32.32 1, 32.33 1
+site a flags: ["GRAFTYARD_ACTIONS_CACHE=1","GRAFTYARD_ACTIVITY=1","GRAFTYARD_AGENT_CI=1","GRAFTYARD_APP_HOOKS=1","GRAFTYARD_ARTIFACTS_V4=1","GRAFTYARD_AUDIT=1","GRAFTYARD_HOST=graft-m4a-edge.<sub>.workers.dev","GRAFTYARD_JOB_TOKENS=1","GRAFTYARD_OIDC_CLAIMS=1","GRAFTYARD_OIDC_HEAD_REF=1","GRAFTYARD_PR_TRIGGER=1","GRAFTYARD_REUSABLE=1","GRAFTYARD_SECRETS_WAIT=1"]
+row not started (no cost.from)

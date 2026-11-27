@@ -1,0 +1,28 @@
+{"t":1795775455328,"check":"issues.update title and body: 200 with both","ok":true}
+{"t":1795775456176,"check":"issue PATCH read back over REST and GraphQL","ok":true}
+{"t":1795775457231,"check":"issues.updateComment: 200 with the new body","ok":true}
+{"t":1795775458041,"check":"comment edit read back over REST and GraphQL","ok":true}
+{"t":1795775459321,"check":"issues.lock: 204","ok":true}
+{"t":1795775459818,"check":"lock read back over REST (locked: true)","ok":true}
+{"t":1795775460136,"gap":"Issue.locked over GraphQL","answer":{"errors":[{"message":"Field 'locked' doesn't exist on type 'Issue'","path":["repository","issue","locked"],"type":"undefinedField"}]}}
+{"t":1795775461573,"check":"issues.unlock: 204, read back locked: false","ok":true}
+{"t":1795775461983,"check":"issues.getLabel matches case-insensitively","ok":true}
+{"t":1795775463085,"check":"issues.updateLabel: 200, renamed and recoloured","ok":true}
+{"t":1795775464250,"check":"label update read back over REST and GraphQL (old name 404)","ok":true}
+{"t":1795775466350,"check":"issues.createMilestone twice: 201, numbered, creator m3-admin","ok":true}
+{"t":1795775467452,"check":"a second milestone titled V1 is 422","ok":true}
+{"t":1795775467933,"check":"issues.getMilestone: 200","ok":true}
+{"t":1795775469234,"check":"issues.updateMilestone closes v2: 200 closed","ok":true}
+{"t":1795775470197,"check":"issues.listMilestones: open lists v1, closed lists v2","ok":true}
+{"t":1795775471117,"check":"milestones read back over GraphQL (open list, milestone(number:))","ok":true}
+{"t":1795775472135,"check":"issues.update milestone: 200 with v1","ok":true}
+{"t":1795775473279,"check":"issue milestone read back over REST and GraphQL, v1 counts 1 open issue","ok":true}
+{"t":1795775474226,"check":"an unknown milestone number is 422 and changes nothing","ok":true}
+{"t":1795775475616,"check":"issues.update milestone null clears it (REST and GraphQL)","ok":true}
+{"t":1795775477125,"check":"issues.create with milestone: 201, read back over GraphQL","ok":true}
+{"t":1795775477416,"check":"issues.listLabelsForMilestone: 200","ok":true}
+{"t":1795775482584,"check":"a pull_requests-only App token creates a milestone, its creator the bot","ok":false,"seen":[201,"ghost[bot]"]}
+{"t":1795775485287,"check":"the same token deletes it: 204, then REST 404 and GraphQL null","ok":true}
+{"t":1795775488065,"check":"a contents-only App token is refused 403","ok":true}
+{"t":1795775489724,"check":"issues.deleteMilestone v2: 204, REST 404, GraphQL null","ok":true}
+{"t":1795775491819,"check":"issues.deleteLabel: 204, REST 404, GraphQL gone","ok":true}

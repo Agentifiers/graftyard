@@ -1,0 +1,14 @@
+{
+ "commands": [
+  "issue comment 1 --edit-last -b X"
+ ],
+ "operation": "CommentUpdate",
+ "query": "mutation CommentUpdate($input:UpdateIssueCommentInput!){updateIssueComment(input: $input){issueComment{url}}}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "input": {
+   "body": "X",
+   "id": "I_1"
+  }
+ }
+}
