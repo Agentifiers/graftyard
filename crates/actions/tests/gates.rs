@@ -138,6 +138,7 @@ impl World {
                 ACTIONS_FORMAT_ANNOTATIONS,
                 graftyard_actions::shard::ACTIONS_FORMAT_AGENT_CI,
                 graftyard_actions::shard::ACTIONS_FORMAT_SECRETS_WAIT,
+                graftyard_actions::shard::ACTIONS_FORMAT_SECRETS_BRANCH,
             ],
             ActionsFold::default(),
             now,
@@ -1245,6 +1246,75 @@ fn an_agent_runs_secret_jobs_wait_for_the_gate_on_their_own_head_then_alone_read
         .collect();
     assert_eq!(reads, [false, false, true, true, false, true], "only the released jobs read secrets");
     assert!(f.run(run).unwrap().run.fork, "a released job keeps the fork run's token");
+}
+
+/// F150 (0x15.15): two agent branches waiting on one commit, each with a `push` run and a `pull_request` run (#4 from
+/// `a`, #5 from `b`). `ReleaseSecretsOn` for `a` and #4 releases only `a`'s two runs, not `b`'s at the same commit, nor
+/// `a`'s at another commit; one for #5 alone releases `b`'s pull request run but not its `push` run, whose branch it did
+/// not name. 0x15.14's `ReleaseSecrets` for that commit releases every run of the repository waiting on it.
+#[test]
+fn a_per_branch_release_reaches_only_the_gated_branchs_runs_at_that_commit() {
+    let mut w = World::new();
+    w.register(3);
+    let secret = JobSpec {
+        steps: serde_json::json!([{ "type": "action", "environment": { "type": 2, "map": [
+            { "Key": "TOKEN", "Value": { "type": 3, "expr": "secrets.NPM_TOKEN" } }
+        ] } }])
+        .to_string()
+        .into(),
+        ..spec("publish", &[])
+    };
+    let head = oid(31);
+    let mut index = 10;
+    let mut waiting = |w: &mut World, event: &str, head_ref: &str, at: ObjectId| -> RunId {
+        index += 1;
+        let run = WorkflowRun {
+            id: RunId(DbId(0)),
+            repo: REPO,
+            workflow: ".github/workflows/ci.yml".into(),
+            event: event.into(),
+            head_sha: at.0,
+            head_ref: head_ref.into(),
+            trigger: (ChainId::Repo(REPO), Index(index)),
+            attempt: 1,
+            concurrency: None,
+            fork: true,
+        };
+        let create = ActionsOp::CreateRun { run, jobs: vec![secret.clone()] };
+        match w.shard_cmd(op(ActionsOp::CreateRunWaiting { create: Box::new(create), head: at.0 })) {
+            Some(Ok(ActionsOut::Run(id))) => id,
+            o => panic!("{o:?}"),
+        }
+    };
+    let (a, b) = ("refs/heads/graftyard/run-1/a", "refs/heads/graftyard/run-2/b");
+    let runs = [
+        waiting(&mut w, "push", a, head),
+        waiting(&mut w, "pull_request", "refs/pull/4/merge", head),
+        waiting(&mut w, "push", b, head),
+        waiting(&mut w, "pull_request", "refs/pull/5/merge", head),
+        waiting(&mut w, "push", a, oid(32)),
+    ];
+    let released = |w: &World| -> Vec<bool> {
+        let f = w.fold();
+        runs.iter().map(|r| f.released(f.run(*r).unwrap().jobs[0])).collect()
+    };
+    assert_eq!(released(&w), [false; 5]);
+    let on = |branch: &str, pulls: &[u32]| ActionsOp::ReleaseSecretsOn {
+        repo: REPO,
+        head: head.0,
+        branch: branch.into(),
+        pulls: pulls.iter().map(|n| IssueNumber(*n)).collect(),
+    };
+    assert!(matches!(
+        w.shard_cmd(ActionsCmd { actor: ActionsActor::Admin(OWNER), op: on(a, &[4]) }),
+        Some(Err(ActionsErr::Forbidden))
+    ));
+    assert!(matches!(w.shard_cmd(op(on(a, &[4]))), Some(Ok(_))));
+    assert_eq!(released(&w), [true, true, false, false, false], "only branch a's runs at that commit");
+    assert!(matches!(w.shard_cmd(op(on(a, &[5]))), Some(Ok(_))));
+    assert_eq!(released(&w), [true, true, false, true, false], "#5's run, not b's push run, which it did not name");
+    assert!(matches!(w.shard_cmd(op(ActionsOp::ReleaseSecrets { repo: REPO, head: head.0 })), Some(Ok(_))));
+    assert_eq!(released(&w), [true, true, true, true, false], "0x15.14 releases every run waiting on the commit");
 }
 
 // ---- R24: `workflow_job` to an App ----

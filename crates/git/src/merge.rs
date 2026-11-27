@@ -434,9 +434,21 @@ pub fn agent_gate_holds(
     branch: &RefName,
     head: ObjectId,
 ) -> bool {
+    !agent_gate_pulls(core, repo, branch, head).is_empty()
+}
+
+/// The open pull requests of `repo` with `AgentMeta` whose head is `branch` and where `AgentGate` holds at `head`: the
+/// ones whose runs `ReleaseSecretsOn` releases (F150).
+pub fn agent_gate_pulls(
+    core: &(impl Read + ?Sized),
+    repo: graftyard_types::RepoId,
+    branch: &RefName,
+    head: ObjectId,
+) -> Vec<IssueNumber> {
     crate::tiers::pulls_from(core, repo, branch)
         .into_iter()
-        .any(|n| crate::tiers::agent_meta(core, n).is_some() && gate_holds(core, n, head).is_ok())
+        .filter(|n| crate::tiers::agent_meta(core, *n).is_some() && gate_holds(core, *n, head).is_ok())
+        .collect()
 }
 
 /// `AgentGate` for a PR with `AgentMeta`: distinct approvers on the current head, the requester excluded, at least
