@@ -89,7 +89,7 @@ edge)
     echo "edge from TREE $(git -C "${TREE:?}" rev-parse --short HEAD)"
     [ -d /tmp/bf71web ] && { rm -rf /tmp/bf71web.prev; mv /tmp/bf71web /tmp/bf71web.prev; }
     cp -r "$WEB" /tmp/bf71web
-    ROW=lm3inrepo ADDFMT=32.32,32.33 HOSTV=$WD bash "$REPO/tests/m4/wp3/bf74/row.sh" "$TAG" edge
+    ROW=lm3inrepo ADDFMT=${ADDFMT-32.32,32.33} HOSTV=$WD bash "$REPO/tests/m4/wp3/bf74/row.sh" "$TAG" edge
     live=$(api "$B/workers/scripts/graft-m4a-edge/settings" | jq -r '.result.bindings[] | select(.name == "FORMATS_ENABLED") | .text')
     echo "FORMATS_ENABLED now $(echo "$live" | tr ',' '\n' | wc -l) formats; has 32.32: $(echo ",$live," | grep -c ',32.32,'), 32.33: $(echo ",$live," | grep -c ',32.33,')"
   } 2>&1 | log ;;
@@ -105,7 +105,7 @@ agents)
       echo "kill-row $s exit $e"; [ $e -eq 0 ] || break
     done
   } 2>&1 | log ;;
-repo | reader | l012 | b036 | lf9 | b037 | pause | a3 | l014 | l004)
+repo | reader | l012 | b036 | lf9 | b037 | pause | a3 | l014 | l004 | milestone)
   { spend | tee /dev/stderr | grep -q "^STOP" && { echo "not run: past the stop"; exit 3; }
     PROBE_URL=$PROBE_URL node tests/am3/hosted/inrepo.mjs "$STEP" "$O" "inrepo-$TAG" "$K/ctrl.token" "$FRONT_URL"; echo "$STEP exit $?"
   } 2>&1 | log ;;
@@ -132,5 +132,5 @@ teardown)
   } 2>&1 | log
   if grep -q "TEARDOWN FAILED\|SWEEP FAILED\|teardown exit [^0]\|sweep exit [^0]" "$L"; then echo "FAIL: containers left running or teardown failed" >&2; exit 2; fi ;;
 cost) spend 2>&1 | log ;;
-*) echo "step: state site edge agents repo reader l012 b036 lf9 b037 pause a3 l014 l004 teardown cost"; exit 2 ;;
+*) echo "step: state site edge agents repo reader l012 b036 lf9 b037 pause a3 l014 l004 milestone teardown cost"; exit 2 ;;
 esac

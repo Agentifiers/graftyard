@@ -5,7 +5,7 @@
 //
 //   node tests/am3/hosted/inrepo.mjs <line> <out dir> <repo name> [ctrl token file] [front url]
 //
-// Lines: repo | reader | l012 | b036 | lf9 | b037 | pause | a3 | l014 | l004 | teardown. Each appends JSON rows to
+// Lines: repo | reader | l012 | b036 | lf9 | b037 | pause | a3 | l014 | l004 | milestone | teardown. Each appends JSON rows to
 // <out>/<line>.jsonl and prints one `VERDICT <line> PASS|FAIL|INCOMPLETE <why>` line. No token is printed (`lib.mjs`'s
 // `scan`). Tokens of graftyard-agent and graftyard-workspace come from the probe Worker's `/mint` (PROBE_URL, with
 // ~/.graft-m4a/kill/probe.token), which signs the App JWT inside the Worker.
@@ -453,6 +453,35 @@ if (line === "repo") {
   tail.stdout.on("data", (d) => { tailBuf += d; });
   tail.stderr.on("data", () => {});
   await sleep(15_000);
+  // The burst on Cloudflare clocks (the lead's rule, 2026-11-27): each task's `created_at` and its cancel's `updated_at`
+  // (whole seconds) from the task API, against the controller's Workers Logs timestamps. The orb's clock is not used.
+  // Gate: create or cancel to the box's `stored` or `cancelled` line within 5 s; Sandbox start reported apart.
+  const burstTiming = async (timed) => {
+    await sleep(30_000);
+    tail.kill("SIGTERM");
+    const events = tailBuf.split(/\n(?=\{)/).map((x) => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean);
+    writeFileSync(join(out, "l014-tail.jsonl"), events.map((e) => JSON.stringify({ t: e.eventTimestamp, logs: (e.logs ?? []).map((l) => [l.timestamp, String(l.message?.[0] ?? "").slice(0, 160)]) })).join("\n") + "\n");
+    const lines = events.flatMap((e) => (e.logs ?? []).map((l) => ({ at: l.timestamp, m: String(l.message?.[0] ?? "") })));
+    const first = (re) => lines.filter((l) => re.test(l.m)).sort((a, b) => a.at - b.at)[0]?.at;
+    const rows = [];
+    for (const id of [...new Set(timed.map((e) => e.id))]) {
+      const t = await task(id);
+      const created = Date.parse(t?.created_at ?? ""), updated = Date.parse(t?.updated_at ?? "");
+      const stored = first(new RegExp(`task ${id} stored`)), started = first(new RegExp(`task ${id} started`));
+      const cancelled = first(new RegExp(`task ${id} cancelled`));
+      rows.push({ id, state: t?.state, created_at: t?.created_at, updated_at: t?.updated_at,
+        stored_ms: stored ? stored - created : null, started_ms: started ? started - created : null,
+        cancel_ms: cancelled ? cancelled - updated : null });
+    }
+    writeFileSync(join(out, "l014-burst.json"), JSON.stringify(rows, null, 1));
+    const ms = (k) => rows.map((r) => r[k]).filter((x) => x !== null).sort((a, b) => a - b);
+    const sum = (k) => { const v = ms(k); return { n: v.length, min: v[0], p50: v[Math.floor(v.length / 2)], max: v.at(-1) }; };
+    ev({ burst: { tasks: rows.length, stored: sum("stored_ms"), cancelled: sum("cancel_ms"), sandbox_started_info: sum("started_ms"),
+      note: "Cloudflare clocks; created_at and updated_at are whole seconds, so each figure may read up to 1 s high" } });
+    const late = rows.filter((r) => r.stored_ms === null || r.cancel_ms === null || r.stored_ms > 5000 || r.cancel_ms > 5000);
+    ev({ burst_late: late.map((r) => ({ id: r.id, stored_ms: r.stored_ms, cancel_ms: r.cancel_ms })) });
+    check(rows.length === PREFIX_N && late.length === 0, `every create and cancel of the ${PREFIX_N}-task burst stored at the controller within 5 s (Cloudflare clocks)`);
+  };
   const reader = secret(readFileSync(READER_FILE, "utf8").trim());
   const ci = (await ghs({})).body?.token;
   const agentTok = await tok("agent", { repositories: [name] });
@@ -476,6 +505,13 @@ if (line === "repo") {
   // #ib assigned to m3-ci's bot when the edge accepts that assignment.
   const ia = (await api("POST", `${V3}/issues`, admin, { title: "l014 assigned to graftyard-agent" })).body?.number;
   const ib = (await api("POST", `${V3}/issues`, admin, { title: "l014 assigned to another bot" })).body?.number;
+  // The lead's variant of the other-bot cell (l014b): graftyard-agent's bot assigned by an App token, so no human
+  // assigned it (`tiers::assigned_by` ignores an App's add); the controller's create from #ic must be refused.
+  const ic = (await api("POST", `${V3}/issues`, admin, { title: "l014 bot assigned by an App" })).body?.number;
+  // Rule 1 (F151): an App token that reaches the repository without issues: write.
+  const noIssues = (await ghs({ repositories: [name], permissions: { contents: "read", metadata: "read" } })).body;
+  ev({ no_issues_token: !!noIssues?.token, permissions: noIssues?.permissions });
+  if (!noIssues?.token) check(false, "an m3-ci token with contents: read and no issues could be minted");
   // The edge serves no `GET /app`, so run 1's slug read gave none and #ib went unassigned; m3-ci's slug is the one its
   // record registers (`tests/am1/hosted/app-perms.mjs`).
   const slug = (await api("GET", "/api/v3/app", null, undefined, { authorization: `Bearer ${appJwt()}` })).body?.slug ?? "m3-ci";
@@ -485,7 +521,12 @@ if (line === "repo") {
   const ab = await api("POST", `${V3}/issues/${ib}/assignees`, admin, { assignees: [`${slug}[bot]`] });
   const other = (ab.body?.assignees ?? []).map((x) => x.login);
   ev({ ia, ib, assign_ours: aa.status, assign_other: ab.status, other_bot: `${slug}[bot]`, ib_assignees: other });
-  if (!other.includes(`${slug}[bot]`)) gap(`another bot's assignment: the edge did not assign ${slug}[bot] (${ab.status}); #ib has no bot assignment`);
+  // The lead's ruling (2026-11-27): the drop is the cell's precondition shown, not a gap ([doc], lm3-inrepo.md).
+  check(ab.status === 201 && other.length === 0, `another bot's assignment: 201 with ${slug}[bot] dropped (GHES ignores it)`);
+  const ac = await api("POST", `${V3}/issues/${ic}/assignees`, agentTok, { assignees: [BOT_LOGIN] });
+  const icBy = (ac.body?.assignees ?? []).map((x) => x.login);
+  ev({ ic, assign_by_app: ac.status, ic_assignees: icBy });
+  check(ac.status === 201 && icBy.includes(BOT_LOGIN), "graftyard-agent's token assigns its own bot to #ic (no human assigner)");
   // Demotion counts m3-member's committed writes in the last DEMOTE_WINDOW (60 s) at the create's own entry, and task
   // creates do not count (graftyard_raft::admit). Run 1 sent 64 comments per 25 creates without counting what
   // committed, and 52 creates came after the window drained.
@@ -509,11 +550,13 @@ if (line === "repo") {
   const SESS = "graftyard_run.00000000-0000-4000-8000-000000000001";
   const creators = [
     ["installation token (m3-ci, an AgentApp)", () => ci, () => ({ prompt: "p" })],
+    ...(noIssues?.token ? [["App token without issues: write (m3-ci, contents: read)", () => secret(noIssues.token), () => ({ prompt: "p" })]] : []),
     ...(ghu ? [["AgentApp's user token (m3-ci for m3-member)", () => ghu, () => ({ prompt: "p" })]] : []),
     ["demoted user (m3-member past DEMOTE_PER_MIN)", () => member, () => ({ prompt: "p" })],
     ["read-only user (m3-reader)", () => reader, () => ({ prompt: "p" })],
     ["user with X-Graftyard-Agent-Session (m3-admin)", () => admin, () => ({ prompt: "p" }), { "x-graftyard-agent-session": SESS }],
     ["controller from an issue assigned to another bot", () => agentTok, () => ({ issue_number: ib })],
+    ["controller from an issue whose bot an App assigned (no human)", () => agentTok, () => ({ issue_number: ic })],
     ["controller with a prompt and no issue", () => agentTok, () => ({ prompt: "p" })],
   ];
   const cells = {};
@@ -542,7 +585,10 @@ if (line === "repo") {
     ["controller from an issue assigned to its bot", () => agentTok, () => ({ issue_number: ia })]]) await runCase("off", c, (s) => s === 422);
   const on = await api("PATCH", "/api/graftyard/v1/orgs/m3org/agents", admin, { agents_enabled: true, workspace: "in_repo" });
   ev({ agents_on: on.status, enabled: on.body?.agents_enabled });
-  for (const c of creators) await runCase("on", c, (s) => s === 403 || s === 422);
+  // L014_ON_PHASE=0 (l014b): the off phase and the burst only; the on phase's bad cases are rerun1's, unchanged by
+  // this edge day except the rule-1 App, which runs here.
+  const FULL = process.env.L014_ON_PHASE !== "0";
+  for (const c of FULL ? creators : creators.filter(([k]) => k.startsWith("App token without") || k.includes("whose bot an App assigned"))) await runCase("on", c, (s) => s === 403 || s === 422);
   // A body that sets `prefix` (accepted, the prefix derived from the id), cancelled at once; and one that sets
   // `session` for a Graftyard-run task (refused).
   const timed = [];
@@ -557,6 +603,11 @@ if (line === "repo") {
     }
   }
   ev({ prefix_sample: PREFIX_N, derived: prefixes.filter(Boolean).length });
+  if (!FULL) {
+    await burstTiming(timed);
+    writeFileSync(join(out, "l014-cells.json"), JSON.stringify(cells, null, 1));
+    verdict();
+  }
   check(prefixes.every(Boolean), `a body that sets prefix: ${PREFIX_N} of ${PREFIX_N} accepted with the prefix derived from the id`);
   await runCase("on", ["body sets session for a Graftyard-run task", () => admin, (i) => ({ prompt: "p", session: `mine-${i}` })], (s) => s === 422);
   // 101 open tasks for one requester. The cap counts every kind per requester (`task::open_counts`), so m3-ci's
@@ -630,6 +681,22 @@ if (line === "repo") {
   check(timed.length > 0 && missing === 0 && lat.every((x) => x <= 5000), "every create and cancel at the controller within 5 s");
   check(!hookOther.body?.url, "no other App's webhook can receive a task delivery (m3-ci has none)");
   writeFileSync(join(out, "l014-cells.json"), JSON.stringify(cells, null, 1));
+} else if (line === "milestone") {
+  // M4-WP4's F155 check (`tests/am3/hosted/f137.mjs`, octokit): an App's milestone create through Octokit answers 201
+  // naming its bot, `m3-ci[bot]` with type Bot, and the same token deletes it.
+  const { Octokit } = await import("../../m0/wp15/node_modules/@octokit/rest/dist-src/index.js");
+  const t = (await ghs({ repositories: [name], permissions: { pull_requests: "write", metadata: "read" } })).body?.token;
+  if (!t) { check(false, "a pull_requests-only m3-ci token could be minted"); verdict(); }
+  const { EDGE } = await import("../../am1/hosted/lib.mjs");
+  const o = new Octokit({ baseUrl: `${EDGE}/api/v3`, auth: secret(t) });
+  const call = (route, p) => o.request(route, { owner: "m3org", repo: name, ...p }).catch((e) => ({ status: e.status ?? 0, data: e.response?.data }));
+  for (let i = 0; i < 3; i++) {
+    const c = await call("POST /repos/{owner}/{repo}/milestones", { title: `l014b by app ${i}` });
+    ev({ create: c.status, number: c.data?.number, creator: c.data?.creator?.login, type: c.data?.creator?.type });
+    check(c.status === 201 && c.data?.creator?.login === "m3-ci[bot]" && c.data?.creator?.type === "Bot", `octokit createMilestone ${i + 1} by m3-ci: 201, creator m3-ci[bot] (Bot)`);
+    const d = await call("DELETE /repos/{owner}/{repo}/milestones/{milestone_number}", { milestone_number: c.data?.number });
+    check(d.status === 204, `the same token deletes milestone ${i + 1}: 204`);
+  }
 } else if (line === "teardown") {
   const d = await api("DELETE", V3, admin);
   ev({ delete: R, status: d.status });
