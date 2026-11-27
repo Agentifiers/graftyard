@@ -427,10 +427,10 @@ One occurrence is not a claim and has no row: `design/SHARED.md`, "Read this fir
 
 | Group | Rows |
 | --- | --- |
-| Foundation and protocol | 140 |
+| Foundation and protocol | 141 |
 | Cloudflare platform facts | 25 |
 | Git and storage | 42 |
 | Release and operations | 67 |
 | Agents | 50 |
 | Costs | 13 |
-| Total | 337 |
+| Total | 338 |
