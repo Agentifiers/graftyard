@@ -17,7 +17,7 @@
 //
 // Times are the orb's; the box's `at` is Cloudflare's. No token is printed (`lib.mjs`'s `scan`).
 import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
-import { EDGE, OP, api, log, must, sleep, tokens, be64, secret } from "../../am1/hosted/lib.mjs";
+import { EDGE, OP, Git, api, log, must, sleep, tokens, be64, secret } from "../../am1/hosted/lib.mjs";
 import { createHash } from "node:crypto";
 
 const [step, ...args] = process.argv.slice(2);
@@ -56,6 +56,18 @@ if (step === "install") {
   if (made.status !== 201) process.exit(1);
   const inst = await api("GET", `/api/v3/repos/m3org/${name}`, admin);
   log(`read m3org/${name}: ${inst.status} default ${inst.body?.default_branch}`);
+} else if (step === "exits") {
+  // The real-harness smoke's first gate: every `claude` turn's exit code, which `run.py` writes into each work
+  // commit's message (`claude exit <n>`), read from every branch of m3org/<name> through the credential helper.
+  const [name] = args;
+  const g = new Git(`m3org/${name}`).as(admin);
+  const c = g.run(["clone", "-q", "--bare", g.url, g.wt], g.dir);
+  if (!c.ok) { log(`clone m3org/${name}: ${c.out}`); process.exit(1); }
+  const l = g.run(["log", "--all", "--format=%s", "--grep=claude exit"], g.wt);
+  const counts = {};
+  for (const m of l.out.matchAll(/claude exit (-?\d+)/g)) counts[m[1]] = (counts[m[1]] ?? 0) + 1;
+  log(`claude turns by exit code: ${JSON.stringify(counts)}`);
+  process.exit(Object.keys(counts).length && Object.keys(counts).every((k) => k === "0") ? 0 : 4);
 } else if (step === "delete") {
   const [name] = args;
   const d = await api("DELETE", `/api/v3/repos/m3org/${name}`, admin);

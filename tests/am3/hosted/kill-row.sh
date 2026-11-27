@@ -80,7 +80,7 @@ taskbox)
         harness: ["python3", "/harness.py", $host, "'"${HARNESS_REPO:-m3org/kill-$TAG}"'", "'"${HARNESS_PUSHES:-8}"'", "15"],
         secrets: {AGENT_APP_KEY: "\($p)AGENTS_APP_KEY_A", WORKSPACE_APP_KEY: "\($p)WORKSPACE_APP_KEY_A", MODEL_KEY: null}}' \
       >"$K/taskbox.json"
-    [ -n "${REAL:-}" ] && jq --arg p "$P-" --arg host "$EDGE_HOST" --arg repo "${HARNESS_REPO:-m3org/killreal-$TAG}" \
+    [ -n "${REAL:-}" ] && jq --arg p "$P-" --arg host "$EDGE_HOST" --arg repo "${HARNESS_REPO:-m3org/kill-$TAG}" \
       '. + {harness: ["python3", "/run.py", $host, $repo, "6", "claude-sonnet-5-5"],
             route_others: [{ModelInference: {host: "token-proxy.workinprogress.dev", path: "/v1/messages"}}]}
        | .secrets.MODEL_KEY = "\($p)MODEL_KEY_A"' "$K/taskbox.json" >"$K/tb.tmp" && mv "$K/tb.tmp" "$K/taskbox.json"
@@ -105,8 +105,21 @@ repo)
   { node tests/am3/hosted/kill.mjs repo "kill-$TAG"; echo "repo exit $?"; } 2>&1 | log ;;
 row | smoke)
   { [ -s "$O/row.from" ] || date -u +%s >"$O/row.from"
+    # REAL=1 (the real-harness case): the controller's log for the whole step, so the smoke's gate can read every
+    # refusal (`graft-controller: task <id> refused <rule>: <text>`), and after it every work branch's commit messages,
+    # which carry each `claude` turn's exit code (`claude exit <n>`).
+    [ -n "${REAL:-}" ] && { runner npx --prefix tests/m0 wrangler tail $CTRL --format json >"$O/$STEP-ctail.json" 2>/dev/null & TAILPID=$!; sleep 8; }
     node tests/am3/hosted/kill.mjs "$STEP" "$O" "kill-$TAG" "$K/ctrl.token" "$FRONT_URL"
     echo "row exit $?"
+    if [ -n "${REAL:-}" ]; then
+      sleep 10; kill $TAILPID 2>/dev/null; wait $TAILPID 2>/dev/null
+      refused=$(grep -o 'refused [A-Za-z]*: [^"]*' "$O/$STEP-ctail.json" | sort | uniq -c)
+      echo "controller refusals: ${refused:-none}"
+      other=$(echo "$refused" | grep -v -E 'refused (Model[A-Za-z]*):' | grep -c refused)
+      node tests/am3/hosted/kill.mjs exits "kill-$TAG"; bad=$?
+      if [ "$other" = 0 ] && [ "$bad" = 0 ]; then echo "GATE PASS: every claude turn exited 0 and no refusal but the model arm's"
+      else echo "GATE FAIL: exits check $bad (0 = all turns exited 0), $other refusals off the model arm"; fi
+    fi
   } 2>&1 | log ;;
 teardown)
   { node tests/am3/hosted/kill.mjs delete "kill-$TAG"
