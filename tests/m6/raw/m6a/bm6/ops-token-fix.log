@@ -1,0 +1,7 @@
+2026-11-27T00:41:06Z
+fix: the deploy token lacked Secrets Store Write (graft-ops' Ops upload: 400 10021); reminted with it, as b07r2 does
+{"revoke":"graft-m6a-bm6-deploy","ok":true,"errors":[]}
+{"mint":"graft-m6a-bm6-deploy","ok":true,"id":"59261300","errors":[]}
+{"patch":"graft-m6a-ops-deploy-token","ok":true,"errors":[]}
+{"bm6_deploy_tokens":[{"id":"59261300","groups":["Workers Containers Write","Secrets Store Write","Workers Scripts Write"]}]}
+2026-11-27T00:41:10Z

@@ -1,0 +1,23 @@
+2026-11-27T02:40:08Z
+70aa964b
+spend: row $0.07, day $0.07, total $49.28 (stops $10, $20, $70)
+{"step":"op","chain":"names:24","op":"PutAccount","ok":true,"refused":null,"error":null}
+{"step":"op","chain":"names:24","op":"InitPlacement","ok":true,"refused":null,"error":null}
+{"step":"op","chain":"names:24","op":"ClaimLogin","ok":true,"refused":null,"error":null}
+{"step":"op","chain":"names:24","op":"SetAccountLogin","ok":true,"refused":null,"error":null}
+{"step":"create","chain":"authz:7663093","joins":[200,200,200],"role":"leader"}
+{"step":"op","chain":"authz:7663093","op":"Open","ok":true,"refused":null,"error":null}
+{"step":"op","chain":"tokens:180","op":"Store","ok":true,"refused":null,"error":null}
+{"step":"repo","status":201,"ms":38268,"full_name":"r66-bm6-1879/bm6","id":131072,"message":null}
+{"step":"seeded","owner":7663093,"login":"r66-bm6-1879","repo":"bm6","full_name":"r66-bm6-1879/bm6","chains":["repo:131072","authz:7663093","tokens:180","names:24","names:618"]}
+owner r66-bm6-1879, repository r66-bm6-1879/bm6, chains ["repo:131072","authz:7663093","tokens:180","names:24","names:618"]
+{"at":"2026-11-27T02:41:25Z","file":"big-0.bin","bytes":3145728,"ref":"refs/heads/main","ok":true,"ms":6781,"tip":"b86f48fb463628b6b92f2a3c79fe96fda8aab352","err":""}
+{"at":"2026-11-27T02:41:29Z","file":"big-1.bin","bytes":3145728,"ref":"refs/heads/main","ok":true,"ms":3388,"tip":"d6ae0ba93214247298fc4b3d9e69069f08acea6e","err":""}
+{"at":"2026-11-27T02:41:31Z","file":"small-2.txt","bytes":2000,"ref":"refs/heads/main","ok":true,"ms":2736,"tip":"413f4c90e0e3f9aea1173c9b09be96e95e723e75","err":""}
+{"at":"2026-11-27T02:41:34Z","file":"pr.txt","bytes":500,"ref":"refs/heads/f","ok":true,"ms":2936,"tip":"942c6be8fc608d8b12b48b60e423b3cf29a05776","err":""}
+<edge>/r66-bm6-1879/bm6/pull/1
+gh pr create exit 0
+1	bm6 lifeboat pr	f	OPEN	2026-11-27T02:41:54Z
+942c6be8fc608d8b12b48b60e423b3cf29a05776 refs/heads/f
+413f4c90e0e3f9aea1173c9b09be96e95e723e75 refs/heads/main
+2026-11-27T02:41:42Z

@@ -155,7 +155,9 @@ PY
 ops)
   { stops || exit 1
     deployment $OPS
-    [ -s "$K/$DEPLOY_NAME.json" ] || mint $DEPLOY_NAME $SCRIPTS_WRITE $CONTAINERS_WRITE
+    # Secrets Store Write too: without it graft-ops' upload of a script bound to a Secrets Store secret (graft-ops itself)
+    # answers 400 10021 (OPEN-QUESTIONS A54; bm6 day 1 hit it).
+    [ -s "$K/$DEPLOY_NAME.json" ] || mint $DEPLOY_NAME $SCRIPTS_WRITE $CONTAINERS_WRITE adc8fa2bc6124928a8b3314dc63a1235
     ( umask 077; jq -c '{value: .result.value}' "$K/$DEPLOY_NAME.json" >"$K/deploy-token.value" )
     put_secret graft-m6a-ops-deploy-token "$K/deploy-token.value"; shred -u "$K/deploy-token.value"
     api "/r2/buckets?per_page=100" | jq -e --arg b $RELEASES '[.result.buckets[].name] | index($b)' >/dev/null \
