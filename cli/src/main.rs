@@ -527,7 +527,9 @@ enum AppsCmd {
 enum AgentsCmd {
     /// Without --app-ids: draws the Apps' keys, graftyard-agent's webhook secret, and the agents executor key into the
     /// agents account's Secrets Store, writes agents.json and the slug claims, and prints the executor public key for
-    /// `Keys.agents_executor`. With --app-ids: writes the registration requests.
+    /// `Keys.agents_executor`. With --app-ids: writes the registration requests. Their `PutApp` writes each App's whole
+    /// record with no webhook secret (and no webhook URL without --webhook-url), so committing them again on a live
+    /// install clears graftyard-agent's webhook until `PATCH /app/hook/config` (`SetAppHook`) sets it again.
     Init {
         /// The install's host.
         #[arg(long, required_unless_present = "app_ids", conflicts_with = "app_ids")]
