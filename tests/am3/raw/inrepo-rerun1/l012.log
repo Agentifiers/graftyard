@@ -1,0 +1,18 @@
+2026-11-27T07:35:48Z
+897e58164
+row since 2026-11-27T07:30:21Z: graft-m4a $0.01, graft-agents-m4a- $0, graft-runners $0.0, total $0.01 (stop $3.00)
+2026-11-27T07:35:57.907Z {"policy":200,"leases":"agents_exclusive"}
+2026-11-27T07:36:09.586Z {"holder_task":201,"holder_lease":201,"lease":"01M8DYY7WT0000000000000001"}
+2026-11-27T07:36:09.587Z {"check":"the policy and the holder's Exclusive lease","ok":true}
+2026-11-27T07:36:10.803Z {"create":"l012 pusher","status":201,"id":"01a21bef-20c9-824b-bc55-936c04faf38d","state":"queued"}
+2026-11-27T07:36:14.499Z {"hold":"01a21bef-20c9-824b-bc55-936c04faf38d","on":true,"ok":true}
+2026-11-27T07:36:21.685Z {"live":"l012 pusher","id":"01a21bef-20c9-824b-bc55-936c04faf38d","in_progress":true}
+2026-11-27T07:36:21.685Z {"check":"a live Graftyard-run task","ok":true}
+2026-11-27T07:47:03.745Z {"kind":"Graftyard-run App (graftyard-workspace)","pushes":{"refused: l012/mwyo35xi/** is leased Exclusive by user 7100002 (task 131072.l012h-mwyo35xi":100},"writes":{"422 refused: l012/mwyo35xi/** is leased Exclusive by user 7100002 (task 131072.l012h-mwyo35xi)":100}}
+2026-11-27T07:47:03.746Z {"check":"100 of 100 pushes refused naming the lease, none NoLiveTask","ok":true}
+2026-11-27T07:47:03.746Z {"check":"100 of 100 REST ref writes refused naming the lease","ok":true}
+2026-11-27T07:47:05.579Z {"hold":"01a21bef-20c9-824b-bc55-936c04faf38d","on":false,"ok":true}
+2026-11-27T07:47:06.737Z {"cancel":"01a21bef-20c9-824b-bc55-936c04faf38d","status":200}
+2026-11-27T07:47:10.127Z {"policy_back":200}
+VERDICT l012 PASS 
+l012 exit 0

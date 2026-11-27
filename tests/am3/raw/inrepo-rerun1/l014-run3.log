@@ -1,0 +1,33 @@
+2026-11-27T08:25:44Z
+897e58164
+row since 2026-11-27T07:30:21Z: graft-m4a $0.42, graft-agents-m4a- $0.01, graft-runners $0.0, total $0.43 (stop $3.00)
+2026-11-27T08:26:21.535Z {"agentapp_user_token":true}
+2026-11-27T08:26:21.547Z {"incomplete":"an MCP token: graft-m4a runs no graft-mcp App and its edge has neither 17.4 nor 20.4, so none can be minted"}
+2026-11-27T08:26:21.550Z {"incomplete":"graftyard-insights' installation token: skipped (lead's ruling)"}
+2026-11-27T08:26:27.843Z {"agents_off":200,"enabled":false}
+2026-11-27T08:26:31.295Z {"ia":4,"ib":5,"assign_ours":201,"assign_other":201,"other_bot":"m3-ci[bot]","ib_assignees":[]}
+2026-11-27T08:26:31.298Z {"incomplete":"another bot's assignment: the edge did not assign m3-ci[bot] (201); #ib has no bot assignment"}
+2026-11-27T08:28:48.611Z {"cell":"off/installation token (m3-ci, an AgentApp)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-27T08:28:48.611Z {"check":"off: installation token (m3-ci, an AgentApp), 100 of 100 refused","ok":true}
+2026-11-27T08:31:05.336Z {"cell":"off/AgentApp's user token (m3-ci for m3-member)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-27T08:31:05.336Z {"check":"off: AgentApp's user token (m3-ci for m3-member), 100 of 100 refused","ok":true}
+2026-11-27T08:33:26.606Z {"demote":{"phase":"off","comments":341,"shed":39,"held_min":66,"held_max":129}}
+2026-11-27T08:33:26.606Z {"cell":"off/demoted user (m3-member past DEMOTE_PER_MIN)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-27T08:33:26.606Z {"check":"off: demoted user (m3-member past DEMOTE_PER_MIN), 100 of 100 refused","ok":true}
+2026-11-27T08:35:07.813Z {"cell":"off/read-only user (m3-reader)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-27T08:35:07.813Z {"check":"off: read-only user (m3-reader), 100 of 100 refused","ok":true}
+2026-11-27T08:36:18.681Z {"cell":"off/user with X-Graftyard-Agent-Session (m3-admin)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+2026-11-27T08:36:18.681Z {"check":"off: user with X-Graftyard-Agent-Session (m3-admin), 100 of 100 refused","ok":false}
+2026-11-27T08:38:34.756Z {"cell":"off/controller from an issue assigned to another bot","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-27T08:38:34.756Z {"check":"off: controller from an issue assigned to another bot, 100 of 100 refused","ok":true}
+2026-11-27T08:40:48.544Z {"cell":"off/controller with a prompt and no issue","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-27T08:40:48.545Z {"check":"off: controller with a prompt and no issue, 100 of 100 refused","ok":true}
+2026-11-27T08:42:28.152Z {"cell":"off/human writer (m3-admin), the valid creator","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-27T08:42:28.152Z {"check":"off: human writer (m3-admin), the valid creator, 100 of 100 refused","ok":true}
+2026-11-27T08:44:44.471Z {"cell":"off/controller from an issue assigned to its bot","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+2026-11-27T08:44:44.471Z {"check":"off: controller from an issue assigned to its bot, 100 of 100 refused","ok":true}
+2026-11-27T08:44:46.403Z {"agents_on":200,"enabled":true}
+2026-11-27T08:47:03.097Z {"cell":"on/installation token (m3-ci, an AgentApp)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+2026-11-27T08:47:03.098Z {"check":"on: installation token (m3-ci, an AgentApp), 100 of 100 refused","ok":true}
+2026-11-27T08:49:20.735Z {"cell":"on/AgentApp's user token (m3-ci for m3-member)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+2026-11-27T08:49:20.735Z {"check":"on

@@ -1,0 +1,8 @@
+2026-11-27T07:30:21Z
+897e58164
+{"script":"graft-m4a-site-a","created_on":"2026-11-27T06:22:50.894013Z","versions":["d59e6458 100"]} []
+{"script":"graft-m4a-site-b","created_on":"2026-11-27T06:22:59.741755Z","versions":["cecd6a85 100"]} []
+{"script":"graft-m4a-site-c","created_on":"2026-11-27T06:23:09.046682Z","versions":["afd86f1c 100"]} []
+{"script":"graft-m4a-edge","created_on":"2026-11-27T06:27:12.992834Z","versions":["50b5577a 100"]} ["FORMATS_ENABLED=41 has 32.32: true, 32.33: true"]
+{"script":"graft-m4a-ops","created_on":"2026-11-25T14:56:05.928151Z","versions":["ac4cd9a5 100"]} []
+row since 2026-11-27T07:30:21Z: graft-m4a $0.0, graft-agents-m4a- $0, graft-runners $0, total $0.0 (stop $3.00)

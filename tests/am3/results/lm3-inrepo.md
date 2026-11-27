@@ -168,3 +168,85 @@ from 17:48Z. Teardown, 00:23 to 00:28Z:
 After teardown graft-m4a reads $2.79 since 17:48Z; the agents prefix reads $0 once its scripts are gone, so the row's
 total is about $2.91, under the $3.00 stop.
 
+
+## Rerun row (rerun1, 2026-11-27): L0-12 run 2 and L0-14 rerun
+
+This row was the lead's GO after LM-1's L0-04 row (07:10Z), with a $3 stop over a baseline taken at the start. At
+07:27Z, graft-m4a read $2.74 and the runner account $0.50 since 00:00Z. The drivers ran from main `897e5816`. There was
+no site or edge day. LM-1's day left the sites on `3529a45f` with test-faults, which contains the F147 fix (a `d59e6458`,
+b `cecd6a85`, c `afd86f1c`). The edge was `50b5577a`, with 41 formats including 32.32, 32.33 and 21.14. Every live
+setting was kept, including `GRAFTYARD_SECRETS_WAIT` and `GRAFTYARD_AGENT_CI`. The agents half was kill-row's, under
+tag rerun1, and its `hook` step's signed ping answered 202. The repository and reader lines passed. Logs are in
+`tests/am3/raw/inrepo-rerun1/`. Every run counts.
+
+| Line | Runs | Result |
+| --- | --- | --- |
+| L0-12, Graftyard-run kind | 2: **PASS** | Both refused 100 of 100 naming the lease ("`l012/<tag>/**` is leased Exclusive by user 7100002"), with none refused before the lease check: the pushes, and the REST ref writes (422). No scratch push was lost |
+| L0-14 | 2: no verdict (driver); 3: no verdict (the process was killed); 4: **FAIL** | Run 4 below. One off cell fails the pass line (F151), and the 5 s delivery line is not met as measured |
+
+**L0-14 run 2 (08:00Z)** stopped in the off phase's demoted cell. The demote step needs 72 of m3-member's comments
+committed within 20 s. The repository's shard commits them at about 3 a second, and 16 workers drew 503 "the
+repository's tier rows did not answer; retry" on a third or more. So no attempt passed 49, and the driver stopped the
+line. The two cells before it answered 422, 100 of 100.
+
+The driver now keeps 6 comment workers running for the whole demoted cell. Each create waits until at least 66 of
+m3-member's committed comments fall in the last 50 s, which is inside the 60 s `DEMOTE_WINDOW`. Runs 3 and 4 held 66 to
+129.
+
+The other-bot issue now assigns `m3-ci[bot]` by its registered slug, because the edge serves no `GET /app`.
+
+**L0-14 run 3 (08:25Z)** ran 12 cells, all matching run 4. Then its process was killed at about 08:51Z, with no output
+and a log cut mid-line; the cause is not known. Its rows are `l014-run3.*`. Run 4 ran as a supervised orb service.
+
+**L0-14 run 4 (08:59Z to 10:05Z), 100 tries per cell:**
+
+- **`agents_enabled` off: 8 of 9 cells answered 422** "Graftyard-run tasks are not enabled for this organization",
+  100 of 100 each. That covers the installation token, the `AgentApp`'s user token, the demoted user, the read-only
+  user, both bad controller creates, the human writer, and the controller from an issue assigned to its bot. F147 holds
+  on the sites.
+- **The ninth cell fails.** A create from m3-admin with `X-Graftyard-Agent-Session` answered 403 "Only a person who can
+  push…", 100 of 100. The edge refuses a session-header create before the commit, so the org's switch is never read
+  (`decisions/OPEN-QUESTIONS.md`, F151). Nothing was accepted.
+- **`agents_enabled` on: every bad case was refused 100 of 100:**
+  - the installation token, the `AgentApp` user token and the read-only user (403);
+  - the demoted user, refused as the agent class (403), which is run 1's failed cell, now passing;
+  - the session header and both bad controller creates (403);
+  - a body setting `session` (422);
+  - the 101st open task in both kinds (422);
+  - a `PATCH` of a cancelled task to `in_progress` in both kinds (409);
+  - a host-only `cancelled` state (422);
+  - another App's `PATCH` (403);
+  - token requests: naming another App's task (422), with a repository outside the token's list (422), with every
+    repository of the installation (422), naming an External task (422), and naming a cancelled task (422).
+- **Controls:**
+  - a body that sets `prefix`: 20 of 20 accepted, with the prefix derived from the id;
+  - m3-member's first 100 open tasks: 100 accepted;
+  - both Apps' mints on the live task: 201, 100 of 100 each.
+- **Delivery timing: not met as measured.**
+  - The driver timed 43 creates and cancels from its own clock to the controller's line: 42 seen, 1 missing, p50 39.6 s.
+  - The orb's clock was not synchronized and read 16.3 s behind Cloudflare's, so that gap is not the delivery's.
+  - On Cloudflare clocks, from each task's `created_at` or `updated_at` to the controller's `started` or `cancelled`
+    line, the 20-task prefix sample took 10.9 to 30.7 s from create to start (p50 23.2 s), and 12.2 to 31.8 s from
+    cancel to line.
+  - The gap grew task by task through the sample, so the deliveries queued behind each other. The two creates made
+    alone took 2.5 and 3.1 s.
+  - The `created_at` stamps have whole-second precision, which adds up to 1 s.
+  - So the controller saw a burst of creates and cancels 10 to 30 s late, and one alone in about 3 s
+    [measured, `l014-tail.jsonl`, the task API].
+- **No other App's webhook received a task delivery:** m3-ci has none.
+- **Incomplete, as in run 1:**
+  - The MCP token: graft-m4a has no graft-mcp App.
+  - graftyard-insights' token: skipped, the lead's ruling.
+  - Another bot's assignment: the edge answers 201 to assigning `m3-ci[bot]` but leaves the issue with no assignees,
+    and `GET /users/m3-ci[bot]` answers 404. So the controller's create from that issue ran with no bot assignment.
+
+**Spend and teardown.**
+- The row cost $1.30 of its $3 stop: graft-m4a $1.30, the runner account $0.03. The UTC day stands at graft-m4a $4.05
+  and the runner account $0.53.
+- Teardown ran 10:10 to 10:15Z:
+  - m3org/inrepo-rerun1 deleted, m3-reader's PAT revoked (401 after) and the user suspended;
+  - installations 7190003 and 7190004 uninstalled, agents_enabled false;
+  - every `graft-agents-m4a-` script, secret and bucket deleted, the TaskBox container application deleted (0 running),
+    and no box namespace left;
+  - `graft-runners-runnerbox` 0 running;
+  - the shard sweep tore down 1 shard container, and a second sweep found none.

@@ -1,0 +1,17 @@
+2026-11-27T10:12:53Z
+4fb7f48e4
+2026-11-27T10:12:55.089Z delete m3org/kill-rerun1: 404
+2026-11-27T10:12:56.941Z PATCH /orgs/m3org/agents: 200 {"agents_enabled":false,"code_mode":false,"workspace":"in_repo","workspace_org":"m3org-agents"}
+2026-11-27T10:12:57.328Z installation 7190003 uninstalled from m3org
+2026-11-27T10:12:57.622Z installation 7190004 uninstalled from m3org
+objects deleted: 0
+{"delete":"graft-agents-m4a-releases","ok":true,"errors":[]}
+row token and secret files shredded
+runner scripts: ["graft-runners"]
+runner store secrets named graft-agents-m4a-: []
+runner buckets: []
+agents container applications: [{"app":"graft-agents-m4a-controller-taskbox","running":0}]
+{"delete_app":true,"errors":[]}
+{"torn_down": 1, "codes": {"200": 1}}
+sweep: no shard container running
+agents apps after: []

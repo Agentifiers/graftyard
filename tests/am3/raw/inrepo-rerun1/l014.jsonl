@@ -1,0 +1,81 @@
+{"t":1795769986828,"agentapp_user_token":true}
+{"t":1795769986837,"incomplete":"an MCP token: graft-m4a runs no graft-mcp App and its edge has neither 17.4 nor 20.4, so none can be minted"}
+{"t":1795769986837,"incomplete":"graftyard-insights' installation token: skipped (lead's ruling)"}
+{"t":1795769994987,"agents_off":200,"enabled":false}
+{"t":1795769998671,"ia":6,"ib":7,"assign_ours":201,"assign_other":201,"other_bot":"m3-ci[bot]","ib_assignees":[]}
+{"t":1795769998671,"incomplete":"another bot's assignment: the edge did not assign m3-ci[bot] (201); #ib has no bot assignment"}
+{"t":1795770136449,"cell":"off/installation token (m3-ci, an AgentApp)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795770136450,"check":"off: installation token (m3-ci, an AgentApp), 100 of 100 refused","ok":true}
+{"t":1795770272019,"cell":"off/AgentApp's user token (m3-ci for m3-member)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795770272020,"check":"off: AgentApp's user token (m3-ci for m3-member), 100 of 100 refused","ok":true}
+{"t":1795770410997,"demote":{"phase":"off","comments":326,"shed":41,"held_min":67,"held_max":125}}
+{"t":1795770410998,"cell":"off/demoted user (m3-member past DEMOTE_PER_MIN)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795770410998,"check":"off: demoted user (m3-member past DEMOTE_PER_MIN), 100 of 100 refused","ok":true}
+{"t":1795770512888,"cell":"off/read-only user (m3-reader)","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795770512889,"check":"off: read-only user (m3-reader), 100 of 100 refused","ok":true}
+{"t":1795770584469,"cell":"off/user with X-Graftyard-Agent-Session (m3-admin)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":100}
+{"t":1795770584469,"check":"off: user with X-Graftyard-Agent-Session (m3-admin), 100 of 100 refused","ok":false}
+{"t":1795770715617,"cell":"off/controller from an issue assigned to another bot","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795770715617,"check":"off: controller from an issue assigned to another bot, 100 of 100 refused","ok":true}
+{"t":1795770847408,"cell":"off/controller with a prompt and no issue","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795770847409,"check":"off: controller with a prompt and no issue, 100 of 100 refused","ok":true}
+{"t":1795770948063,"cell":"off/human writer (m3-admin), the valid creator","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795770948064,"check":"off: human writer (m3-admin), the valid creator, 100 of 100 refused","ok":true}
+{"t":1795771081079,"cell":"off/controller from an issue assigned to its bot","statuses":{"422 Graftyard-run tasks are not enabled for this organization":100},"off":0}
+{"t":1795771081080,"check":"off: controller from an issue assigned to its bot, 100 of 100 refused","ok":true}
+{"t":1795771083014,"agents_on":200,"enabled":true}
+{"t":1795771219289,"cell":"on/installation token (m3-ci, an AgentApp)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795771219290,"check":"on: installation token (m3-ci, an AgentApp), 100 of 100 refused","ok":true}
+{"t":1795771360087,"cell":"on/AgentApp's user token (m3-ci for m3-member)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795771360087,"check":"on: AgentApp's user token (m3-ci for m3-member), 100 of 100 refused","ok":true}
+{"t":1795771498322,"demote":{"phase":"on","comments":310,"shed":50,"held_min":67,"held_max":118}}
+{"t":1795771498322,"cell":"on/demoted user (m3-member past DEMOTE_PER_MIN)","statuses":{"403 A user with 60 writes in the last minute is classed as an agent and cannot create a Grafty":100},"off":0}
+{"t":1795771498322,"check":"on: demoted user (m3-member past DEMOTE_PER_MIN), 100 of 100 refused","ok":true}
+{"t":1795771599646,"cell":"on/read-only user (m3-reader)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795771599646,"check":"on: read-only user (m3-reader), 100 of 100 refused","ok":true}
+{"t":1795771672519,"cell":"on/user with X-Graftyard-Agent-Session (m3-admin)","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795771672519,"check":"on: user with X-Graftyard-Agent-Session (m3-admin), 100 of 100 refused","ok":true}
+{"t":1795771809866,"cell":"on/controller from an issue assigned to another bot","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795771809867,"check":"on: controller from an issue assigned to another bot, 100 of 100 refused","ok":true}
+{"t":1795771946464,"cell":"on/controller with a prompt and no issue","statuses":{"403 Only a person who can push to the repository creates a Graftyard-run task, never an App's ":100},"off":0}
+{"t":1795771946465,"check":"on: controller with a prompt and no issue, 100 of 100 refused","ok":true}
+{"t":1795771989970,"prefix_sample":20,"derived":20}
+{"t":1795771989970,"check":"a body that sets prefix: 20 of 20 accepted with the prefix derived from the id","ok":true}
+{"t":1795772060206,"cell":"on/body sets session for a Graftyard-run task","statuses":{"422 Validation Failed":100},"off":0}
+{"t":1795772060206,"check":"on: body sets session for a Graftyard-run task, 100 of 100 refused","ok":true}
+{"t":1795772285434,"cap_fill":{"201":100}}
+{"t":1795772285435,"check":"m3-member's first 100 open tasks (control)","ok":true}
+{"t":1795772441001,"cell":"on/101st open task for one requester (External, m3-ci for m3-member)","statuses":{"422 The requester has too many open tasks":100},"off":0}
+{"t":1795772441001,"check":"on: 101st open task for one requester (External, m3-ci for m3-member), 100 of 100 refused","ok":true}
+{"t":1795772538137,"cell":"on/101st open task for one requester (Graftyard-run, m3-member)","statuses":{"422 The requester has too many open tasks":100},"off":0}
+{"t":1795772538138,"check":"on: 101st open task for one requester (Graftyard-run, m3-member), 100 of 100 refused","ok":true}
+{"t":1795772543606,"create":"l014 live","status":201,"id":"01a21c62-af8d-8719-868d-8d5f83d27ab8","state":"queued"}
+{"t":1795772549556,"hold":"01a21c62-af8d-8719-868d-8d5f83d27ab8","on":true,"ok":true}
+{"t":1795772558239,"live":"l014 live","id":"01a21c62-af8d-8719-868d-8d5f83d27ab8","in_progress":true}
+{"t":1795772561049,"cancelled_run":200,"cancelled_external":200,"live":"01a21c62-af8d-8719-868d-8d5f83d27ab8"}
+{"t":1795772704217,"cell":"on/PATCH of a cancelled Graftyard-run task to in_progress (graftyard-agent)","statuses":{"409 The task is cancelled":100},"off":0}
+{"t":1795772704217,"check":"on: PATCH of a cancelled Graftyard-run task to in_progress (graftyard-agent), 100 of 100 refused","ok":true}
+{"t":1795772845052,"cell":"on/PATCH of a cancelled External task to in_progress (m3-ci)","statuses":{"409 The task is cancelled":100},"off":0}
+{"t":1795772845052,"check":"on: PATCH of a cancelled External task to in_progress (m3-ci), 100 of 100 refused","ok":true}
+{"t":1795772922050,"cell":"on/PATCH state cancelled (host-only) on a live task","statuses":{"422 Validation Failed":100},"off":0}
+{"t":1795772922051,"check":"on: PATCH state cancelled (host-only) on a live task, 100 of 100 refused","ok":true}
+{"t":1795773064583,"cell":"on/PATCH of graftyard-agent's task by another App (m3-ci)","statuses":{"403 Must be the task's App, its requester, or a repository admin":100},"off":0}
+{"t":1795773064583,"check":"on: PATCH of graftyard-agent's task by another App (m3-ci), 100 of 100 refused","ok":true}
+{"t":1795773178890,"cell":"on/mint naming another App's task (m3-ci's JWT)","statuses":{"422 graftyard_task names a task of another App":100},"off":0}
+{"t":1795773178891,"check":"on: mint naming another App's task (m3-ci's JWT), 100 of 100 as expected","ok":true}
+{"t":1795773250363,"cell":"on/mint with a repository outside the task's","statuses":{"422 repository \"b035-r1\" is not accessible to this installation":100},"off":0}
+{"t":1795773250364,"check":"on: mint with a repository outside the task's, 100 of 100 as expected","ok":true}
+{"t":1795773321059,"cell":"on/mint with every repository of the installation","statuses":{"422 graftyard_task needs repositories that name the task's repository":100},"off":0}
+{"t":1795773321059,"check":"on: mint with every repository of the installation, 100 of 100 as expected","ok":true}
+{"t":1795773437412,"cell":"on/mint naming an External task","statuses":{"422 graftyard_task names a task that is not a live graftyard_run task":100},"off":0}
+{"t":1795773437412,"check":"on: mint naming an External task, 100 of 100 as expected","ok":true}
+{"t":1795773555083,"cell":"on/mint naming a cancelled task","statuses":{"422 graftyard_task names a task that is not a live graftyard_run task":100},"off":0}
+{"t":1795773555083,"check":"on: mint naming a cancelled task, 100 of 100 as expected","ok":true}
+{"t":1795773675032,"cell":"on/mint: graftyard-workspace on the live task (control)","statuses":{"201 ":100},"off":0}
+{"t":1795773675032,"check":"on: mint: graftyard-workspace on the live task (control), 100 of 100 as expected","ok":true}
+{"t":1795773792465,"cell":"on/mint: graftyard-agent on the live task (control)","statuses":{"201 ":100},"off":0}
+{"t":1795773792466,"check":"on: mint: graftyard-agent on the live task (control), 100 of 100 as expected","ok":true}
+{"t":1795773798017,"hold":"01a21c62-af8d-8719-868d-8d5f83d27ab8","on":false,"ok":true}
+{"t":1795773916908,"deliveries":{"expected":43,"at_controller":42,"missing":1,"late":42,"p50":39555,"max":47801,"tail_events":714},"m3ci_hook":200,"m3ci_hook_url":"none"}
+{"t":1795773916909,"check":"every create and cancel at the controller within 5 s","ok":false}
+{"t":1795773916909,"check":"no other App's webhook can receive a task delivery (m3-ci has none)","ok":true}
