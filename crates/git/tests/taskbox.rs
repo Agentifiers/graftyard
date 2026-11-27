@@ -563,3 +563,65 @@ fn a_paused_and_resumed_task_gets_one_log_before_its_final_state() {
     finish(&mut b, 2).unwrap();
     assert_eq!(b.unreported(), None);
 }
+
+/// F156: a delivery is answered once its box is stored, and the start runs after. A `cancelled` delivery that reached
+/// the object before its `created` one is final: the box is stored `Cancelled`, owes the base nothing, and no start or
+/// alarm starts a Sandbox. A cancel that lands while a start launches leaves the box final, and the container that
+/// start began stops.
+#[test]
+fn a_cancel_before_or_during_the_first_start_is_final() {
+    // Before: the cancel came first.
+    let mut b = TaskBox::queued(task(), true);
+    assert_eq!(b.task.state, TaskState::Cancelled);
+    assert!(!b.start_due(), "a cancelled box owes no start");
+    assert_eq!(b.start("v1", 0), Err(StepErr::Final));
+    assert_eq!(b.generation, 0, "no Sandbox was ever named");
+    assert_eq!(b.on(alarm(false, "v1"), HEARTBEAT.as_millis() as u64), Ok(Act::Keep));
+    assert_eq!(b.after_start(false), Act::Keep);
+    assert_eq!(b.unreported(), None, "the cancel endpoint set the state");
+    // A created delivery with no cancel before it: queued until its alarm's start.
+    let mut q = TaskBox::queued(task(), false);
+    assert!(q.start_due());
+    assert_eq!(q.on(alarm(false, "v1"), 0), Ok(Act::Keep), "the heartbeat itself starts nothing");
+    // During: the start named its Sandbox, and the cancel landed across the launch's awaits.
+    assert_eq!(q.start("v1", 0), Ok(Act::Start { sandbox: sb(1), from: Resume::Base }));
+    assert!(!q.start_due());
+    assert_eq!(q.cancel(), Act::Stop);
+    assert_eq!(q.after_start(true), Act::Stop, "the container that start began stops");
+    assert_eq!(q.after_start(false), Act::Keep);
+    assert_eq!(q.on(alarm(true, "v1"), 10), Ok(Act::Stop), "a later alarm stops one still running");
+    assert_eq!(q.on(alarm(false, "v1"), 20), Ok(Act::Keep), "and starts none");
+    assert_eq!(q.on(pushed(sb(1), ObjectId([3; 20])), 30), Err(Report::Refused(StepErr::Final)));
+    // A start not cancelled keeps its container.
+    let mut r = TaskBox::queued(task(), false);
+    r.start("v1", 0).unwrap();
+    assert_eq!(r.after_start(true), Act::Keep);
+}
+
+/// F156: a start that cannot gather its inputs does not leave a delivery answered 202 queued forever: after
+/// `START_TRIES` failed tries the task fails, and the base is owed `failed`. One that started counts no more.
+#[test]
+fn a_first_start_that_keeps_failing_fails_the_task_and_tells_the_base() {
+    use graftyard_git::task::TaskApiState::Failed;
+    use graftyard_git::taskbox::START_TRIES;
+    let mut b = TaskBox::queued(task(), false);
+    for _ in 1..START_TRIES {
+        b.unstarted("graftyard-workspace installation: 503");
+        assert!(b.start_due(), "still queued before the last try");
+    }
+    b.unstarted("graftyard-workspace installation: 503");
+    assert!(matches!(b.task.state, TaskState::Failed { .. }), "{:?}", b.task.state);
+    assert!(!b.start_due());
+    assert_eq!(b.unreported(), Some(Failed));
+    let mut s = TaskBox::queued(task(), false);
+    s.start("v1", 0).unwrap();
+    s.unstarted("late");
+    assert_eq!(s.start_tries, 0);
+    // A box paused before its first start waits for it again on resume, rather than starting without its inputs.
+    use graftyard_git::task::TaskApiState::{Queued, WaitingForUser};
+    let base = |state| Input::Base { state, version: "v1".into() };
+    let mut p = TaskBox::queued(task(), false);
+    assert_eq!(p.on(base(WaitingForUser), 0), Ok(Act::Stop));
+    assert_eq!(p.on(base(Queued), 10), Ok(Act::Keep));
+    assert!(p.start_due());
+}
