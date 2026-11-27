@@ -1,0 +1,14 @@
+{
+ "commands": [
+  "pr create -R o/r -H f -B main -t T -b B -m v1.0"
+ ],
+ "operation": "PullRequestCreateMetadata",
+ "query": "\n\t\tmutation PullRequestCreateMetadata($input: UpdatePullRequestInput!) {\n\t\t\tupdatePullRequest(input: $input) { clientMutationId }\n\t\t}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "input": {
+   "milestoneId": "I_1",
+   "pullRequestId": "I_1"
+  }
+ }
+}

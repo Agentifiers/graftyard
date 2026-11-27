@@ -38,9 +38,10 @@ requests.
 The milestones package (format 32.37, 2026-11-27) added the query documents gh 2.102.1 sent for `issue create -m
 v1.0`, `issue edit 1 -m v1.0`, `issue edit 1 --remove-milestone`, `issue list -m 1`, `pr create ... -m v1.0` and `pr
 edit 2 -m v1.0`, captured the same way: `RepositoryMilestoneList-1.json`, `RepositoryMilestoneByNumber-1.json`,
-`IssueByNumber-5.json` and `PullRequestByNumber-5.json`. The same run's mutations (`IssueUpdate`, `PullRequestUpdate`,
-`PullRequestCreateMetadata` and `createIssue` with `milestoneId`) are not committed: GraphQL's milestone writes are not
-served (`decisions/DECISIONS.md`, "`milestones`").
+`IssueByNumber-5.json` and `PullRequestByNumber-5.json`. F149 (2026-11-27) added that run's mutations, with `issue edit
+1 -t X`, `issue edit 1 -t X -b Y -m v1.0`, `pr edit 2 -b X`, `pr edit 2 -t X -m v1.0` and `pr edit 2
+--remove-milestone` captured the same way: `IssueUpdate-1.json`, `PullRequestUpdate-1.json` and
+`PullRequestCreateMetadata-1.json`. `issue create -m v1.0` sends `IssueCreate-1.json`'s document with `milestoneId`.
 
 ## The oracle
 
