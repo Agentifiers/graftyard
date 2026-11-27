@@ -600,8 +600,23 @@ fn a_human_writer_creates_a_run_task_only_with_agents_enabled_in_repo() {
     use graftyard_identity::WorkspaceMode::{Fork, InRepo};
     let mut w = run_world();
     let before = task_entries(&w).len();
-    // Off by default: 422.
-    assert_eq!(task_err(&run_create(&mut w, user(WRITER), None, Some("fix it"))), Some(TaskErr::AgentsOff));
+    // Off by default: 422 for every create, whoever sends it, before the creator rule (F147, L0-14: "422 for every
+    // create while off").
+    for who in [
+        user(WRITER),
+        app(RUN),
+        app(CLAUDE),
+        claimed(WS, Some(&run_task())),
+        user(VIA_APP),
+        user(VIA_MCP),
+        user(READER),
+    ] {
+        assert_eq!(
+            task_err(&run_create(&mut w, who.clone(), None, Some("fix it"))),
+            Some(TaskErr::AgentsOff),
+            "{who:?}"
+        );
+    }
     agents(&mut w, true, Fork);
     assert_eq!(task_err(&run_create(&mut w, user(WRITER), None, Some("fix it"))), Some(TaskErr::ForkMode));
     agents(&mut w, true, InRepo);

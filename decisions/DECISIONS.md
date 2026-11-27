@@ -12245,3 +12245,31 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 - `tests/plaindiff/run.sh`: the five new request pairs stay main's 404 on the seed, which holds no issue and does not enable 32.35.
 
 **Flip.** A GHES release that applies an issue `PATCH` field by field, or a client that needs a partial edit. Or fold rows for milestones, issue types or field values, which would let the `Edit` carry them.
+
+### `a3-open`: the controller opens a task's Shared lease and draft pull request at its first alarm, under the token each needs, with `**` as the lease's paths until a planner names them, 2026-11-27
+
+**Status.** Built at $0 on branch `a3-controller` (F140), with F144 and F145 in the same head. Native-tested; the controller's wasm builds and clippy passes under test-faults; `tests/ctlboot/run.sh` passes. Not yet hosted: the A3 row on graft-m4a is its proof. No repository format and no `decide` change, so no format number and no plant (284 stays reserved for this head if a later change needs one).
+
+**Decision.**
+- A3 step 6 runs at the task's first alarm, `OPEN_AFTER` (1 s) after its box starts, not inside the `graftyard_task` delivery, whose attempt deadline is 10 s (`hooks::ATTEMPT_DEADLINE_MS`). A failed step is logged and tried again at the next alarm, up to `OPEN_TRIES` (3) tries in all (`TaskBox::open_due`, `TaskBox::opened`); after that the task goes on without it. Neither failure fails the task.
+- The Shared lease goes under `graftyard-workspace`'s token: `POST /api/graftyard/v1/repos/{o}/{r}/leases` needs push access, and `graftyard-agent` has `contents: read`. `X-Graftyard-Agent-Session` and the token's `graftyard_task` claim make the task its holder, so the task's final state releases it in the same command (`task::release`).
+- **Interim paths: `**`, for an hour.** A3 step 6 says "the paths it plans to touch", and no planner names them yet, so the lease covers the whole tree for `TASK_WALL`, the task's 60-minute cap. Shared leases never block, so `**` refuses nothing; it shows the task in `PathSet.planned`, the feed and the overlap check as touching everything. A planner that names the task's paths replaces it.
+- The draft opens from an empty commit (`taskbox::draft_push`: the base's default-branch tree on its head, with a `Graftyard-Session` trailer) pushed as `refs/heads/graftyard/<task>/work` under `graftyard-workspace`'s token, the branch the harness then pushes its work to. A retry whose earlier push landed is refused as existing and goes on to the pull request.
+- The draft goes over GraphQL `createPullRequest` under `graftyard-agent`'s token, with the `graftyard_task` claim and `X-Graftyard-Agent-Session`. `graftyard-workspace` cannot open it: its manifest grants `contents: write` alone and `OpenPr` needs `pull_requests: write` (`IssueCall::app_needs`). And `decide` names the task in `AgentMeta` only when the task's App is the creating App, which is `graftyard-agent`.
+- The draft's number is the box's (`TaskBox.draft`). A new draft makes the base owe the task's state again, so the next `PATCH .../tasks/{id}` carries `pr_number`.
+- Step 8's verdict pass-through is not here: nothing produces the `graftyard/overlap` check runs yet (OPEN-QUESTIONS F146, carried to AM4-WP2).
+
+**Why.** F140: no product path opened a Graftyard-run task's draft, so A3 step 6 could not run hosted. The lead ruled the controller opens it over GraphQL (2026-11-26) and approved this token split and the `**` interim (2026-11-27).
+
+**What it beat.**
+- The lease and the draft both under `graftyard-workspace`: the draft is refused 403, and `AgentMeta` would not name the task.
+- Both under `graftyard-agent`: the lease needs push access, which `contents: read` does not give.
+- Opening them inside the `graftyard_task` delivery: three round trips plus a push risk the delivery's 10 s deadline, and a redelivery would race the first try.
+- A REST `POST .../pulls` on the edge: the design has the controller open the draft (A3 step 6), and the edge serves no such route.
+
+**Evidence.**
+- `crates/git/tests/taskbox.rs`, `a_running_task_opens_its_lease_and_draft_once`: a queued, cancelled, or exhausted task opens nothing; a partial try keeps what it got and counts; a task has one draft; a new draft makes the base owe the task's state again.
+- `crates/git/tests/taskbox.rs`, `the_draft_push_is_an_empty_commit_on_the_base_head`: git indexes the push's pack strictly against the base, `fsck` passes, the commit's tree is the base's tree and its parent the base's head, and its command creates `refs/heads/graftyard/<task>/work`.
+- `cargo clippy --target wasm32-unknown-unknown --features test-faults -- -D warnings` in `workers/controller`: clean.
+
+**Flip.** A planner names a task's paths: the lease takes them instead of `**`. Or the hosted A3 row shows `createPullRequest` refused under `graftyard-agent`'s claim: then the edge's `OpenPr` authorization is the fix, not the token split.

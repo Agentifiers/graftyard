@@ -668,7 +668,13 @@ pub fn decide(
         IssueOp::CreateRun(n) => {
             // A human writer's create (`design/AGENT-LAYER.md`, Shape, "Tasks and the activity feed"), or the
             // controller's: `graftyard-agent`'s own installation token, with no task claim, from an issue whose latest
-            // `Assigned` entry names its bot, for that entry's actor (F20). Fork mode is AM3-WP3's rest.
+            // `Assigned` entry names its bot, for that entry's actor (F20). Fork mode is AM3-WP3's rest. The org's switch
+            // comes before the creator rule: while it is off every create answers 422, whoever sends it (F147, L0-14).
+            let owner = ctx.owner.ok_or(TaskErr::NotYours)?;
+            let policy = owner.policy();
+            if !policy.agents_enabled {
+                return Err(TaskErr::AgentsOff);
+            }
             let u = match actor {
                 TaskActor::User(u) => {
                     if !ctx.human_writer || ctx.perm < Some(RepoPermission::Write) {
@@ -688,11 +694,6 @@ pub fn decide(
                     }
                 }
             };
-            let owner = ctx.owner.ok_or(TaskErr::NotYours)?;
-            let policy = owner.policy();
-            if !policy.agents_enabled {
-                return Err(TaskErr::AgentsOff);
-            }
             if policy.agents_workspace != graftyard_identity::WorkspaceMode::InRepo {
                 return Err(TaskErr::ForkMode);
             }
