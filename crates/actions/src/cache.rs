@@ -171,9 +171,22 @@ pub struct PushRows {
 graftyard_identity::tail_serde!(PushRows { events: BTreeMap<RunId, Box<str>>, } more: AnnotationRows);
 
 /// Format 0x15.10's rows (BF-76): each finished job's check-run annotations (`ActionsEvent::JobAnnotations`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// `secrets-wait`'s rows (0x15.14) are a trailing part of their own, so a fold with none keeps 0x15.10's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AnnotationRows {
     pub annotations: BTreeMap<JobId, Vec<graftyard_git::issues::CheckAnnotation>>,
+    pub more: SecretRows,
+}
+
+graftyard_identity::tail_serde!(AnnotationRows {
+    annotations: BTreeMap<JobId, Vec<graftyard_git::issues::CheckAnnotation>>,
+} more: SecretRows);
+
+/// Format 0x15.14's rows (F142): the jobs `GateHeld` released from `SecretsWait`, the only jobs of a fork run that
+/// may read secrets (`ActionsFold::released`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretRows {
+    pub released: std::collections::BTreeSet<JobId>,
 }
 
 impl CacheRows {

@@ -512,6 +512,20 @@ pub fn pull_head(r: &(impl Read + ?Sized), n: IssueNumber) -> Option<PullHead> {
     get_rec(r, "pull_head", &[n_key(n)])
 }
 
+/// The head branches of `repo`'s open pull requests whose head is `sha` (`open_head`): where `AgentGate` for `sha` is
+/// read (`crate::merge::agent_gate_holds`).
+pub fn pulls_with_head(r: &(impl Read + ?Sized), repo: RepoId, sha: ObjectId) -> Vec<RefName> {
+    r.prefix("open_head", &[sha_key(&sha)])
+        .into_iter()
+        .filter_map(|(k, _)| match k.get(1) {
+            Some(Val::Int(n)) => pull_head(r, IssueNumber(*n as u32)),
+            _ => None,
+        })
+        .filter(|ph| ph.head.repo == repo)
+        .map(|ph| ph.head.branch)
+        .collect()
+}
+
 /// Open pull requests whose head is `branch` of `repo`.
 pub(crate) fn pulls_from(r: &(impl Read + ?Sized), repo: RepoId, branch: &RefName) -> Vec<IssueNumber> {
     r.prefix("pull_by_head", &[int(repo.0.0), ref_key(branch)])

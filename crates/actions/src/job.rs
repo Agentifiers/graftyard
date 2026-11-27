@@ -63,6 +63,15 @@ pub enum JobState {
         needs: SmallVec<[JobId; 4]>,
         since: Timestamp,
     },
+    /// `secrets-wait` (0x15.14, F142): a job of an agent run whose steps reference a secret
+    /// (`crate::secrets::references`), waiting for `AgentGate` on `head`, the agent's commit the run is for. No runner
+    /// takes it; `GateHeld` releases it to `Queued`, or to `Pending` while it has needs, and only then may it read
+    /// secrets (`crate::secrets::reads_secrets`).
+    SecretsWait {
+        needs: SmallVec<[JobId; 4]>,
+        since: Timestamp,
+        head: [u8; 20],
+    },
 }
 
 impl JobState {
@@ -84,7 +93,7 @@ impl JobState {
     /// When the leader's alarm must act on this job: a lease end, or the queue limit.
     pub fn deadline(&self) -> Option<Timestamp> {
         match self {
-            JobState::Queued { since, .. } => Some(after(*since, QUEUE_LIMIT)),
+            JobState::Queued { since, .. } | JobState::SecretsWait { since, .. } => Some(after(*since, QUEUE_LIMIT)),
             JobState::Assigned { lease_until, .. } | JobState::InProgress { lease_until, .. } => Some(*lease_until),
             _ => None,
         }
@@ -105,6 +114,8 @@ pub enum JobEvent {
     Cancel,
     /// `agent-ci` (0x15.13): a writer approved the job's held run (`ActionsOp::ApproveRun`).
     Approved,
+    /// `secrets-wait` (0x15.14): `AgentGate` holds for the waiting job's head (`ActionsOp::ReleaseSecrets`).
+    GateHeld,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
@@ -122,6 +133,7 @@ fn state_name(s: &JobState) -> &'static str {
         JobState::InProgress { .. } => "InProgress",
         JobState::Completed { .. } => "Completed",
         JobState::Held { .. } => "Held",
+        JobState::SecretsWait { .. } => "SecretsWait",
     }
 }
 
@@ -137,6 +149,7 @@ fn event_name(e: &JobEvent) -> &'static str {
         JobEvent::QueueExpired => "QueueExpired",
         JobEvent::Cancel => "Cancel",
         JobEvent::Approved => "Approved",
+        JobEvent::GateHeld => "GateHeld",
     }
 }
 
@@ -167,9 +180,15 @@ pub fn transition(
             Some(S::Queued { labels: labels.clone(), since: now })
         }
         (S::Held { needs, .. }, E::Approved) => Some(S::Pending { needs: needs.clone() }),
-        (S::Pending { .. }, E::NeedsFailed) => Some(done(Conclusion::Skipped)),
+        (S::SecretsWait { needs, .. }, E::GateHeld) if needs.is_empty() => {
+            Some(S::Queued { labels: labels.clone(), since: now })
+        }
+        (S::SecretsWait { needs, .. }, E::GateHeld) => Some(S::Pending { needs: needs.clone() }),
+        (S::Pending { .. } | S::SecretsWait { .. }, E::NeedsFailed) => Some(done(Conclusion::Skipped)),
         (S::Queued { .. }, E::Matched(r)) => Some(S::Assigned { runner: *r, lease_until: lease }),
-        (S::Queued { since, .. }, E::QueueExpired) if now >= after(*since, QUEUE_LIMIT) => {
+        (S::Queued { since, .. } | S::SecretsWait { since, .. }, E::QueueExpired)
+            if now >= after(*since, QUEUE_LIMIT) =>
+        {
             Some(done(Conclusion::Failure))
         }
         (S::Assigned { runner, .. }, E::Acquired) => Some(S::InProgress { runner: *runner, lease_until: lease }),
@@ -299,6 +318,47 @@ mod tests {
         assert_eq!(derive_run_status(&[done.clone(), blocked.clone()]), RunStatus::Held);
         assert_eq!(derive_run_status(&[done.clone(), q]), RunStatus::InProgress);
         assert_eq!(derive_run_status(&[done]), RunStatus::Completed(Conclusion::Success));
+    }
+
+    /// `secrets-wait` (0x15.14): a job waiting for `AgentGate` takes no runner and no `NeedsMet`; `GateHeld` queues it
+    /// or, with needs, makes it pending; a failed need skips it, it fails at the queue limit and not before, and a
+    /// stall moves its queue time as a queued job's.
+    #[test]
+    fn a_secrets_waiting_job_takes_no_runner_until_the_gate_then_queues_or_waits_for_its_needs() {
+        let l = labels();
+        let need: SmallVec<[JobId; 4]> = smallvec::smallvec![JobId(DbId(3))];
+        let free = JobState::SecretsWait { needs: SmallVec::new(), since: t(1), head: [7; 20] };
+        let blocked = JobState::SecretsWait { needs: need.clone(), since: t(1), head: [7; 20] };
+        for e in [JobEvent::Matched(R), JobEvent::NeedsMet, JobEvent::Acquired, JobEvent::Approved] {
+            assert!(transition(&free, &e, &l, t(5)).is_err(), "{e:?} on a waiting job");
+        }
+        assert_eq!(
+            transition(&free, &JobEvent::GateHeld, &l, t(5)).unwrap(),
+            JobState::Queued { labels: l.clone(), since: t(5) }
+        );
+        assert_eq!(transition(&blocked, &JobEvent::GateHeld, &l, t(5)).unwrap(), JobState::Pending { needs: need });
+        assert_eq!(
+            transition(&blocked, &JobEvent::NeedsFailed, &l, t(6)).unwrap().completed(),
+            Some(Conclusion::Skipped)
+        );
+        let limit = QUEUE_LIMIT.as_secs() + 1;
+        assert!(transition(&free, &JobEvent::QueueExpired, &l, t(limit - 1)).is_err(), "one second early");
+        assert_eq!(
+            transition(&free, &JobEvent::QueueExpired, &l, t(limit)).unwrap().completed(),
+            Some(Conclusion::Failure)
+        );
+        assert_eq!(free.deadline(), Some(t(limit)));
+        // Only a waiting job is released by the gate.
+        let q = JobState::Queued { labels: l.clone(), since: t(1) };
+        assert!(transition(&q, &JobEvent::GateHeld, &l, t(5)).is_err());
+        assert!(
+            transition(&JobState::Held { needs: SmallVec::new(), since: t(1) }, &JobEvent::GateHeld, &l, t(5)).is_err()
+        );
+        assert_eq!(
+            derive_run_status(std::slice::from_ref(&free)),
+            RunStatus::Queued,
+            "a run of waiting jobs reads queued"
+        );
     }
 
     #[test]

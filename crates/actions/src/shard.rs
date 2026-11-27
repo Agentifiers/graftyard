@@ -84,10 +84,16 @@ pub const ACTIONS_FORMAT_PUSH: Format = Format { family: 0x15, version: 12 };
 /// holds 0x15.13 sends `ApproveRun`, after the day that shipped this reader to every member (`decisions/DECISIONS.md`,
 /// "`agent-ci`").
 pub const ACTIONS_FORMAT_AGENT_CI: Format = Format { family: 0x15, version: 13 };
+/// `secrets-wait` (F142, `AgentPolicy.ci` `AutoReadOnly`): `CreateRunWaiting`, whose entry parks an agent run's jobs
+/// whose steps reference a secret (`ActionsEvent::SecretsWait`, `JobState::SecretsWait`), and `ReleaseSecrets`, which
+/// releases those waiting on a head `AgentGate` now holds for (`JobEvent::GateHeld`), and only those may read secrets
+/// (`ActionsFold::released`). Only a site whose site day set `GRAFTYARD_SECRETS_WAIT` sends either, after the day that
+/// shipped this reader to every member (`decisions/DECISIONS.md`, "`secrets-wait`").
+pub const ACTIONS_FORMAT_SECRETS_WAIT: Format = Format { family: 0x15, version: 14 };
 /// Every Actions format this release reads, which a member's `reads()` is: a format a command can be sent as and a
 /// member does not list is refused `Unsupported` on every site, as 0x15.7 was on main 46ea4200
 /// (`every_command_format_is_read`).
-pub const ACTIONS_FORMATS: [Format; 12] = [
+pub const ACTIONS_FORMATS: [Format; 13] = [
     ACTIONS_FORMAT,
     ACTIONS_FORMAT_ANNOTATIONS,
     ACTIONS_FORMAT_MERGE_GROUP,
@@ -100,6 +106,7 @@ pub const ACTIONS_FORMATS: [Format; 12] = [
     ACTIONS_FORMAT_REUSABLE,
     ACTIONS_FORMAT_PUSH,
     ACTIONS_FORMAT_AGENT_CI,
+    ACTIONS_FORMAT_SECRETS_WAIT,
 ];
 
 #[cfg(test)]
@@ -311,6 +318,14 @@ pub enum ActionsEvent {
     RunHeld {
         run: RunId,
     },
+    /// `secrets-wait` (0x15.14): in its `RunCreated`'s entry, the jobs of an agent run under `AutoReadOnly` whose steps
+    /// reference a secret (`crate::secrets::references`). Each moves to `JobState::SecretsWait` on `head`, the agent's
+    /// commit `AgentGate` must hold for, keeping its `needs`.
+    SecretsWait {
+        run: RunId,
+        head: [u8; 20],
+        jobs: Vec<JobId>,
+    },
 }
 
 impl Record for ActionsEvent {
@@ -446,6 +461,8 @@ trait Tables {
     fn put_event(&mut self, _run: RunId, _payload: &str) {}
     /// A finished job's annotations, which `decide` never reads either.
     fn put_annotations(&mut self, _job: JobId, _a: &[CheckAnnotation]) {}
+    /// A job `GateHeld` released, which may read secrets; `decide` never reads it either.
+    fn put_released(&mut self, _job: JobId) {}
 }
 
 fn is_queued(s: &JobState) -> bool {
@@ -485,6 +502,9 @@ fn apply_event(t: &mut impl Tables, ev: &ActionsEvent, at: Timestamp) {
                 t.put_job(*job, row);
                 if moved {
                     t.queue_moved();
+                }
+                if *event == JobEvent::GateHeld {
+                    t.put_released(*job);
                 }
             }
         }
@@ -542,6 +562,22 @@ fn apply_event(t: &mut impl Tables, ev: &ActionsEvent, at: Timestamp) {
                 }
             }
         }
+        ActionsEvent::SecretsWait { head, jobs, .. } => {
+            for j in jobs {
+                let Some(row) = t.job(*j) else { continue };
+                // Only a job not started yet waits, as `RunHeld` holds only those.
+                if !matches!(&row.state, JobState::Queued { .. } | JobState::Pending { .. }) {
+                    continue;
+                }
+                let was_queued = is_queued(&row.state);
+                let wait = JobState::SecretsWait { needs: row.spec.needs.clone(), since: at, head: *head };
+                let row = JobRow { state: wait, version: row.version + 1, ..row.clone() };
+                t.put_job(*j, row);
+                if was_queued {
+                    t.queue_moved();
+                }
+            }
+        }
     }
 }
 
@@ -556,7 +592,7 @@ fn extended(s: &JobState, x: ExtendLeases) -> Option<JobState> {
         {
             lease_until.0 += by
         }
-        JobState::Queued { since, .. } => since.0 += by,
+        JobState::Queued { since, .. } | JobState::SecretsWait { since, .. } => since.0 += by,
         _ => return None,
     }
     Some(s)
@@ -646,6 +682,9 @@ impl Tables for ActionsFold {
     }
     fn put_annotations(&mut self, job: JobId, a: &[CheckAnnotation]) {
         self.more.more.more.more.more.more.more.annotations.insert(job, a.to_vec());
+    }
+    fn put_released(&mut self, job: JobId) {
+        self.more.more.more.more.more.more.more.more.released.insert(job);
     }
     fn put_number(&mut self, run: RunId, number: u64) {
         let Some(row) = self.runs.get(&run) else { return };
@@ -765,6 +804,11 @@ impl ActionsFold {
     /// A finished job's check-run annotations (`ActionsEvent::JobAnnotations`, BF-76).
     pub fn job_annotations(&self, j: JobId) -> &[CheckAnnotation] {
         self.more.more.more.more.more.more.more.annotations.get(&j).map_or(&[], Vec::as_slice)
+    }
+    /// `secrets-wait` (0x15.14): whether `GateHeld` released job `j` from `SecretsWait`, after `AgentGate` held for its
+    /// head: the only job of a fork run the edge opens secrets for (`job_config`).
+    pub fn released(&self, j: JobId) -> bool {
+        self.more.more.more.more.more.more.more.more.released.contains(&j)
     }
     /// The run of a running job, which a cache call acts for.
     pub fn cache_run(&self, job: JobId) -> Result<&WorkflowRun, ActionsErr> {
@@ -1050,6 +1094,13 @@ impl Scratch for ActionsScratch<'_> {
             ActionsEvent::RunHeld { run } if self.run(*run).is_none() => {
                 Err("a hold for a run the entry did not create".into())
             }
+            ActionsEvent::SecretsWait { run, jobs, .. } => match self.run(*run) {
+                None => Err("a secrets wait for a run the entry did not create".into()),
+                Some(r) if jobs.iter().any(|j| !r.jobs.contains(j)) => {
+                    Err("a secrets wait for another run's job".into())
+                }
+                Some(_) => Ok(()),
+            },
             ActionsEvent::RunEvent { run, .. } if !self.run(*run).is_some_and(|r| r.run.is_push()) => {
                 Err("a push payload for a run the entry did not create, or not a push run".into())
             }
@@ -1303,6 +1354,19 @@ pub enum ActionsOp {
     ApproveRun {
         run: RunId,
     },
+    /// `secrets-wait` (0x15.14): `create`, a run-creating op for an agent run under `ci: AutoReadOnly`, whose entry also
+    /// parks each job whose steps reference a secret until `AgentGate` holds for `head` (`ActionsEvent::SecretsWait`).
+    /// `head` is the agent's commit: a push's new tip, or a pull request's head, not its test merge.
+    CreateRunWaiting {
+        create: Box<ActionsOp>,
+        head: [u8; 20],
+    },
+    /// `secrets-wait` (0x15.14): `AgentGate` holds for `head` of `repo`, as the trigger read it on the repository's
+    /// leader: `GateHeld` for every job of the repository's runs waiting on that head. Nothing waiting writes nothing.
+    ReleaseSecrets {
+        repo: RepoId,
+        head: [u8; 20],
+    },
 }
 
 impl ActionsOp {
@@ -1316,7 +1380,7 @@ impl ActionsOp {
             | ActionsOp::CreateRunAs { run, .. }
             | ActionsOp::CreateRunPlanned { run, .. }
             | ActionsOp::CreateRunPush { run, .. } => Some(run),
-            ActionsOp::CreateRunHeld { create } => create.created(),
+            ActionsOp::CreateRunHeld { create } | ActionsOp::CreateRunWaiting { create, .. } => create.created(),
             _ => None,
         }
     }
@@ -1396,13 +1460,22 @@ fn release_needs(s: &ActionsScratch<'_>, evs: &mut SmallVec<[ActionsEvent; 4]>) 
     }
     for run in runs {
         for j in s.run_jobs(run) {
-            let JobState::Pending { needs } = &j.state else { continue };
+            // A job waiting for `AgentGate` (0x15.14) is skipped as a pending one is once a need did not succeed; it
+            // waits on while they all succeed, and `ReleaseSecrets` queues it.
+            let (needs, waiting) = match &j.state {
+                JobState::Pending { needs } => (needs, false),
+                JobState::SecretsWait { needs, .. } => (needs, true),
+                _ => continue,
+            };
             if done.contains_key(&j.spec.id) {
                 continue;
             }
             let of = |n: &JobId| done.get(n).copied().or_else(|| s.job(*n).and_then(|x| x.state.completed()));
             let Some(cs) = needs.iter().map(of).collect::<Option<Vec<_>>>() else { continue };
             let event = if cs.iter().all(|c| *c == Conclusion::Success) {
+                if waiting {
+                    continue;
+                }
                 JobEvent::NeedsMet
             } else {
                 done.insert(j.spec.id, Conclusion::Skipped);
@@ -1411,6 +1484,24 @@ fn release_needs(s: &ActionsScratch<'_>, evs: &mut SmallVec<[ActionsEvent; 4]>) 
             evs.push(ActionsEvent::Job { job: j.spec.id, version: j.version, event });
         }
     }
+}
+
+/// `ReleaseSecrets`' events: `GateHeld` for each job of `repo`'s runs waiting on `head`, then `NeedsMet` for one
+/// whose needs all succeeded while it waited, since no later completion would release it from `Pending`.
+fn release_secrets(s: &ActionsScratch<'_>, repo: RepoId, head: &[u8; 20]) -> SmallVec<[ActionsEvent; 4]> {
+    let mut evs = SmallVec::new();
+    for (id, j) in s.jobs() {
+        let JobState::SecretsWait { needs, head: h, .. } = &j.state else { continue };
+        if h != head || s.run(j.run).is_none_or(|r| r.run.repo != repo) {
+            continue;
+        }
+        evs.push(ActionsEvent::Job { job: id, version: j.version, event: JobEvent::GateHeld });
+        let met = |n: &JobId| s.job(*n).and_then(|x| x.state.completed()) == Some(Conclusion::Success);
+        if !needs.is_empty() && needs.iter().all(met) {
+            evs.push(ActionsEvent::Job { job: id, version: j.version + 1, event: JobEvent::NeedsMet });
+        }
+    }
+    evs
 }
 
 impl ActionsCmd {
@@ -1606,6 +1697,7 @@ impl Command for ActionsCmd {
 
     fn format(&self) -> Format {
         match &self.op {
+            ActionsOp::CreateRunWaiting { .. } | ActionsOp::ReleaseSecrets { .. } => ACTIONS_FORMAT_SECRETS_WAIT,
             ActionsOp::CreateRunHeld { .. } | ActionsOp::ApproveRun { .. } => ACTIONS_FORMAT_AGENT_CI,
             // A `push` run's key names its ref (0x15.12), so every call that creates one is 0x15.12: a member that
             // keys runs the old way never applies one.
@@ -1715,6 +1807,32 @@ impl Command for ActionsCmd {
                     evs.push(ActionsEvent::RunHeld { run: id });
                 }
                 Ok((evs, out))
+            }
+            // The wrapped create is operator-only itself. The jobs that wait are read from the command alone (each
+            // job's steps), so a follower's `decide` and the leader's agree.
+            ActionsOp::CreateRunWaiting { create, head } => {
+                let nested = matches!(**create, ActionsOp::CreateRunHeld { .. } | ActionsOp::CreateRunWaiting { .. });
+                if create.created().is_none() || nested {
+                    return Err(ActionsErr::Illegal("CreateRunWaiting takes a run create".into()));
+                }
+                let inner = ActionsCmd { actor: self.actor.clone(), op: (**create).clone() };
+                let (mut evs, out) = inner.decide(s, &[])?;
+                let created = evs.iter().find_map(|e| match e {
+                    ActionsEvent::RunCreated { run, jobs } => Some((run.id, jobs)),
+                    _ => None,
+                });
+                if let Some((run, jobs)) = created {
+                    let jobs: Vec<JobId> =
+                        jobs.iter().filter(|j| crate::secrets::references(&j.steps)).map(|j| j.id).collect();
+                    if !jobs.is_empty() {
+                        evs.push(ActionsEvent::SecretsWait { run, head: *head, jobs });
+                    }
+                }
+                Ok((evs, out))
+            }
+            ActionsOp::ReleaseSecrets { repo, head } => {
+                only(operator)?;
+                Ok((release_secrets(s, *repo, head), ActionsOut::Done))
             }
             ActionsOp::ApproveRun { run } => {
                 only(admin)?;
@@ -1834,7 +1952,7 @@ impl Command for ActionsCmd {
                 let mut evs = SmallVec::new();
                 for (id, j) in s.jobs() {
                     let event = match &j.state {
-                        JobState::Queued { .. } => JobEvent::QueueExpired,
+                        JobState::Queued { .. } | JobState::SecretsWait { .. } => JobEvent::QueueExpired,
                         JobState::Assigned { .. } | JobState::InProgress { .. } => JobEvent::LeaseExpired,
                         _ => continue,
                     };
@@ -2777,8 +2895,8 @@ mod tests {
                 annotations: Vec::new(),
             },
             ActionsOp::CreateRunPush {
-                run: WorkflowRun { event: "push".into(), ..r },
-                jobs: j,
+                run: WorkflowRun { event: "push".into(), ..r.clone() },
+                jobs: j.clone(),
                 permissions: p,
                 actor: None,
                 event: "{}".into(),
@@ -2791,7 +2909,19 @@ mod tests {
             ActionsOp::CacheDropRepo { repo: RepoId(DbId(7)) },
             ActionsOp::ApproveRun { run: RunId(DbId(1)) },
             held,
+            ActionsOp::ReleaseSecrets { repo: RepoId(DbId(7)), head: [1; 20] },
         ]);
+        // The site's decode of a waiting call (`runsvc::waiting`) is `CreateRunWaiting` on the agent's head, sent as
+        // 0x15.14 whatever create it wraps.
+        let call = crate::runsvc::create_run_call(&r, &j, &Vec::new(), false, None, None, None);
+        let (_, waiting) = crate::runsvc::create_run_op(&crate::runsvc::waiting(call, &[9; 20])).unwrap();
+        let ActionsOp::CreateRunWaiting { head, .. } = &waiting else { panic!("{waiting:?}") };
+        assert_eq!(*head, [9; 20]);
+        assert_eq!(
+            ActionsCmd { actor: ActionsActor::Operator, op: waiting.clone() }.format(),
+            ACTIONS_FORMAT_SECRETS_WAIT
+        );
+        ops.push(waiting);
         for op in ops {
             let f = ActionsCmd { actor: ActionsActor::Operator, op: op.clone() }.format();
             assert!(ACTIONS_FORMATS.contains(&f), "{op:?} is sent as {f:?}, which no member reads");
@@ -2799,7 +2929,7 @@ mod tests {
         // 0x15.11 is another branch's (the lead's reservation); it joins this list as it merges.
         let mut versions: Vec<u16> = ACTIONS_FORMATS.iter().map(|f| f.version).collect();
         versions.sort_unstable();
-        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]);
+        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14]);
     }
 
     /// A recorded stall moves a live lease and a queued job's `since` by exactly its length, through the fold and

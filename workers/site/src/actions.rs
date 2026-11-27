@@ -132,6 +132,11 @@ impl Family for Actions {
         if let Some(j) = id_of(q, "job") {
             return serde_json::to_value(f.job(JobId(j))).unwrap_or(Value::Null);
         }
+        // `secrets-wait` (0x15.14): `{"released": job}`, whether `GateHeld` released the job, which the edge reads
+        // before it opens a fork run's job's secrets. A member built before it answers the summary below, with none.
+        if let Some(j) = id_of(q, "released") {
+            return json!({ "released": f.released(JobId(j)) });
+        }
         // F122: `{"subRepo": repo}`, the repository's `sub` setting, and `{"orgSub": true}`, the owner's template on
         // shard 0. A member built before 0x15.8 answers the summary below, with neither field.
         if let Some(r) = id_of(q, "subRepo") {
@@ -289,6 +294,14 @@ pub fn artifacts_v4(env: &worker::Env) -> bool {
 /// its reader to every member, and only beside `GRAFTYARD_ACTIONS_CACHE`, since the head rides with the base.
 pub fn oidc_head_ref(env: &worker::Env) -> bool {
     env.var("GRAFTYARD_OIDC_HEAD_REF").is_ok_and(|v| v.to_string() == "1")
+}
+
+/// Whether a site day set `GRAFTYARD_SECRETS_WAIT` (`secrets-wait`, F142), after the day that shipped format 0x15.14's
+/// reader, beside `GRAFTYARD_AGENT_CI`: only then does `ActionsTrigger` send an `AutoReadOnly` agent run waiting
+/// (`CreateRunWaiting`) and release its jobs once `AgentGate` holds (`ReleaseSecrets`). It gates only what the site
+/// sends: `decide` reads no flag, so every member decides one command alike.
+pub fn secrets_wait(env: &worker::Env) -> bool {
+    env.var("GRAFTYARD_SECRETS_WAIT").is_ok_and(|v| v.to_string() == "1")
 }
 
 /// Whether a site day set `GRAFTYARD_AGENT_CI` (`agent-ci`), after the day that shipped format 0x15.13's reader: only
@@ -965,6 +978,21 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
             match commit(h, fresh_rid(), ActionsActor::Admin(admin), ActionsOp::ApproveRun { run }).await {
                 Ok(Ok(_)) => json!({ "status": 201, "body": {} }),
                 Ok(Err(ActionsErr::NotFound)) => refused(404, "Not Found"),
+                Ok(r) => refused(409, r),
+                Err(e) => refused(503, e),
+            }
+        }
+        // `secrets-wait` (0x15.14): `ReleaseSecrets` from `ActionsTrigger`, which found `AgentGate` holding for `head`
+        // on the repository's leader. A retried release releases nothing twice: a released job no longer waits.
+        ("release_secrets", None) => {
+            let repo = serde_json::from_value::<graftyard_types::RepoId>(b["repo"].clone());
+            let head = b["head"].as_str().and_then(|h| graftyard_git::refs::ObjectId::parse_hex(h.as_bytes()));
+            let (Ok(repo), Some(head)) = (repo, head) else {
+                return Ok(refused(400, "repo and head are required"));
+            };
+            let rid = fresh_rid();
+            match commit(h, rid, ActionsActor::Operator, ActionsOp::ReleaseSecrets { repo, head: head.0 }).await {
+                Ok(Ok(_)) => json!({ "status": 200, "body": {} }),
                 Ok(r) => refused(409, r),
                 Err(e) => refused(503, e),
             }

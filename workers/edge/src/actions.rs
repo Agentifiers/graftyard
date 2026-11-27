@@ -388,7 +388,12 @@ impl AcquireReads for Acquire<'_, '_> {
         repo: &crate::Repo,
         authz: &AuthzFold,
     ) -> std::result::Result<(Pairs, Pairs), String> {
-        job_config(self.c, run, job, repo, authz).await
+        // `secrets-wait` (0x15.14): a fork run's job reads secrets only once `GateHeld` released it, which only the
+        // shard's fold records; a shard built before 0x15.14 answers no `released` field, so none is.
+        let released = run.fork
+            && self.c.cfg.enabled.contains(&graftyard_actions::shard::ACTIONS_FORMAT_SECRETS_WAIT)
+            && shard_read(self.c, self.chain, json!({ "released": job.spec.id.0.0 })).await?["released"] == json!(true);
+        job_config(self.c, run, job, repo, authz, released).await
     }
 }
 
@@ -397,7 +402,10 @@ type Pairs = Vec<(String, String)>;
 /// The secrets and variables `job` reads (`design/SHARED.md`, "Actions", Who decrypts): its repository's, its
 /// environment's, and the org rows whose visibility reaches its repository, the repository's winning a name over the
 /// org's and the environment's over both, as on GitHub [doc: "Using secrets in GitHub Actions", precedence]. A
-/// fork-PR run reads no secret; it still reads variables, which GitHub passes to forks [doc]. Secrets are opened by
+/// fork-PR run reads no secret; it still reads variables, which GitHub passes to forks [doc]. The one exception is a job
+/// `released` from `SecretsWait` (0x15.14, F142): an agent run's job that waited until `AgentGate` held for its head,
+/// which gets its secrets and keeps the fork run's read-only token (`decisions/DECISIONS.md`, "`secrets-wait`").
+/// Secrets are opened by
 /// `graft-ops` (`POST /actions/open`), so only the job message ever holds a plaintext, and nothing here logs one.
 /// Nothing is read before 32.23 and 0x12.12 are enabled.
 async fn job_config(
@@ -406,6 +414,7 @@ async fn job_config(
     job: &JobRow,
     repo: &crate::Repo,
     authz: &AuthzFold,
+    released: bool,
 ) -> std::result::Result<(Pairs, Pairs), String> {
     use graftyard_identity::sealed::{EnvName, SecretScope};
     if !c.cfg.enabled.contains(&graftyard_git::secrets::REPO_FORMAT_SECRETS)
@@ -448,7 +457,7 @@ async fn job_config(
         }
     }
     let vars: Pairs = vars.into_iter().collect();
-    if run.fork || sealed.is_empty() {
+    if !graftyard_actions::secrets::reads_secrets(run, released) || sealed.is_empty() {
         return Ok((Vec::new(), vars));
     }
     let req = json!({
@@ -1000,7 +1009,9 @@ pub async fn rest_read(c: &Ctx<'_>, rd: &Read, view: &graftyard_api::view::Repo<
     let created = jobs
         .iter()
         .filter_map(|j| match &j.state {
-            JobState::Queued { since, .. } | JobState::Held { since, .. } => Some(*since),
+            JobState::Queued { since, .. } | JobState::Held { since, .. } | JobState::SecretsWait { since, .. } => {
+                Some(*since)
+            }
             JobState::Completed { at, .. } => Some(*at),
             _ => None,
         })

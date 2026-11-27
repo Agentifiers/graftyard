@@ -35,10 +35,12 @@ pub fn conclusion_word(c: Conclusion) -> &'static str {
 }
 
 /// A job's `status` and `conclusion`. `Pending` (needs unmet) is GHES's `waiting`; `Assigned` is still `queued`
-/// until the runner acquires it. A `Held` job is listed by no read (`visible_jobs`), so its words are `Pending`'s.
+/// until the runner acquires it. A `Held` job is listed by no read (`visible_jobs`), so its words are `Pending`'s. A
+/// job waiting for `AgentGate` (`SecretsWait`, 0x15.14) is GHES's `waiting` too, as a job waiting on a protection rule
+/// reads [doc: GHES 3.22 `job.status` enum: `queued`, `in_progress`, `completed`, `waiting`, `requested`, `pending`].
 pub fn job_status(s: &JobState) -> (&'static str, Option<&'static str>) {
     match s {
-        JobState::Pending { .. } | JobState::Held { .. } => ("waiting", None),
+        JobState::Pending { .. } | JobState::Held { .. } | JobState::SecretsWait { .. } => ("waiting", None),
         JobState::Queued { .. } | JobState::Assigned { .. } => ("queued", None),
         JobState::InProgress { .. } => ("in_progress", None),
         JobState::Completed { conclusion, .. } => ("completed", Some(conclusion_word(*conclusion))),
@@ -350,5 +352,24 @@ mod tests {
         assert_eq!(visible_jobs(&held).count(), 0);
         let both = [done.clone(), held[0].clone()];
         assert_eq!(visible_jobs(&both).map(|j| j.spec.id).collect::<Vec<_>>(), [done.spec.id]);
+
+        // `secrets-wait` (0x15.14): a job waiting for `AgentGate` is listed and reads GHES's `waiting`, as a job waiting
+        // on a protection rule does, and its run reads `queued` beside a job not started yet, `in_progress` beside a
+        // running one. The job's body is written for `crates/api/gh/validate.py` when `GRAFTYARD_REPLIES` is set.
+        let wait = row(13, JobState::SecretsWait { needs: Default::default(), since: Timestamp(1), head: [7; 20] });
+        let w = job(&c, &run, &wait, "2026-11-14T00:00:00Z", &[], None);
+        assert_eq!((w["status"].as_str(), w["conclusion"].as_str()), (Some("waiting"), None));
+        assert!(w["started_at"].is_string() && w["completed_at"].is_null() && w["runner_id"].is_null());
+        assert_eq!(visible_jobs(std::slice::from_ref(&wait)).count(), 1);
+        let r = workflow_run(&c, &run, std::slice::from_ref(&wait), "2026-11-14T00:00:00Z", "2026-11-14T00:00:00Z");
+        assert_eq!((r["status"].as_str(), r["conclusion"].as_str()), (Some("queued"), None));
+        let r2 =
+            workflow_run(&c, &run, &[running.clone(), wait.clone()], "2026-11-14T00:00:00Z", "2026-11-14T00:00:00Z");
+        assert_eq!(r2["status"], "in_progress");
+        if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
+            let v = json!({ "method": "GET", "path": "/repos/{owner}/{repo}/actions/jobs/{job_id}", "status": 200, "body": w });
+            std::fs::write(format!("{dir}/secrets-wait-job.rest.json"), serde_json::to_vec_pretty(&v).unwrap())
+                .unwrap();
+        }
     }
 }
