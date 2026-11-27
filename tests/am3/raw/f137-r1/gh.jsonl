@@ -1,0 +1,44 @@
+{"t":1795775601938,"check":"milestone gh1 made","ok":true}
+{"t":1795775603838,"gh":"label create q -c ededed","code":0,"out":""}
+{"t":1795775604732,"check":"gh label create: exit 0, read back over REST and GraphQL","ok":true}
+{"t":1795775607767,"gh":"label edit q -d by gh","code":0,"out":""}
+{"t":1795775608567,"check":"gh label edit: exit 0, description read back over REST and GraphQL","ok":true}
+{"t":1795775610014,"gh":"label delete q --yes","code":0,"out":""}
+{"t":1795775611365,"check":"gh label delete: exit 0, REST 404, GraphQL gone","ok":true}
+{"t":1795775615433,"gh":"issue edit 1 -t gh t -b gh b","code":0,"out":"<edge>/m3org/f137-r1/issues/1\n"}
+{"t":1795775615434,"check":"gh issue edit -t -b: exit 0","ok":true}
+{"t":1795775616271,"check":"gh issue edit -t -b read back over REST and GraphQL","ok":true}
+{"t":1795775619227,"gh":"issue edit 1 -m gh1","code":0,"out":"<edge>/m3org/f137-r1/issues/1\n"}
+{"t":1795775619227,"check":"gh issue edit -m: exit 0","ok":true}
+{"t":1795775619984,"check":"gh issue edit -m read back over REST and GraphQL","ok":true}
+{"t":1795775622298,"gh":"issue edit 1 --remove-milestone","code":0,"out":"<edge>/m3org/f137-r1/issues/1\n"}
+{"t":1795775622298,"check":"gh issue edit --remove-milestone: exit 0","ok":true}
+{"t":1795775623433,"check":"gh issue edit --remove-milestone read back over REST and GraphQL","ok":true}
+{"t":1795775627057,"gh":"issue edit 1 -t gh t2 -b gh b2 -m gh1","code":0,"out":"<edge>/m3org/f137-r1/issues/1\n"}
+{"t":1795775627058,"check":"gh issue edit -t -b -m: exit 0","ok":true}
+{"t":1795775627825,"check":"gh issue edit -t -b -m read back over REST and GraphQL (one EditWithMilestone)","ok":true}
+{"t":1795775630238,"gh":"issue create -t gh made -b b -m gh1","code":0,"out":"<edge>/m3org/f137-r1/issues/5\n"}
+{"t":1795775631019,"check":"gh issue create -m: exit 0, read back over REST and GraphQL","ok":true}
+{"t":1795775634351,"gh":"pr edit 2 -m gh1","code":0,"out":"<edge>/m3org/f137-r1/pull/2\n"}
+{"t":1795775635085,"check":"gh pr edit -m: exit 0, read back over REST and GraphQL","ok":true}
+{"t":1795775639193,"gh":"pr edit 2 --remove-milestone","code":0,"out":"<edge>/m3org/f137-r1/pull/2\n"}
+{"t":1795775640342,"check":"gh pr edit --remove-milestone: exit 0, read back over REST and GraphQL","ok":true}
+{"t":1795775640865,"gh":"issue view 1 --json title,body,milestone","code":0,"out":"{\"body\":\"gh b2\",\"milestone\":{\"number\":5,\"title\":\"gh1\",\"description\":\"\",\"dueOn\":null},\"title\":\"gh t2\"}\n"}
+{"t":1795775640866,"check":"gh issue view --json reads the title and milestone","ok":true}
+{"t":1795775646166,"unknown":"a deleted milestone's id","reply":{"data":{"updateIssue":null},"errors":[{"message":"Could not resolve to a node with the global id of 'MI_kwDOAAEAY84AUAAI'.","path":["updateIssue"],"type":"NOT_FOUND"}]}}
+{"t":1795775646166,"check":"gh's IssueUpdate with a deleted milestone's id as milestoneId: NOT_FOUND","ok":true}
+{"t":1795775647476,"check":"... and issue I is unchanged over REST and GraphQL (milestone gh1, title, body, updated_at)","ok":true}
+{"t":1795775649632,"unknown":"an issue's id","reply":{"data":{"updateIssue":null},"errors":[{"message":"Could not resolve to a node with the global id of 'I_kwDOAAEAY84AUIAA'.","path":["updateIssue"],"type":"NOT_FOUND"}]}}
+{"t":1795775649632,"check":"gh's IssueUpdate with an issue's id as milestoneId: NOT_FOUND","ok":true}
+{"t":1795775650939,"check":"... and issue I is unchanged over REST and GraphQL (milestone gh1, title, body, updated_at)","ok":true}
+{"t":1795775651655,"gh":"issue edit 1 -m nosuch","code":1,"out":"failed to update <edge>/m3org/f137-r1/issues/1: 'nosuch' not found\nfailed to update 1 issue\n"}
+{"t":1795775651656,"note":"gh resolves -m by title before it sends: an unknown title fails in gh, no mutation sent","code":1}
+{"t":1795775654626,"gh":"issue lock 1","code":1,"out":"GraphQL: Field 'activeLockReason' doesn't exist on type 'Issue' (repository.issue.activeLockReason), Field 'locked' doesn't exist on type 'Issue' (repository.issue.locked)\n"}
+{"t":1795775654626,"gap":"gh issue lock 1","code":1}
+{"t":1795775656206,"check":"gap probe gh issue lock changes nothing","ok":true}
+{"t":1795775658637,"gh":"issue comment 1 --edit-last -b probe","code":1,"out":"GraphQL: a mutation runs through plan\n"}
+{"t":1795775658637,"gap":"gh issue comment 1 --edit-last -b probe","code":1}
+{"t":1795775660244,"check":"gap probe gh issue comment changes nothing","ok":true}
+{"t":1795775661770,"gh":"issue list -m gh1","code":1,"out":"GraphQL: search qualifier 'milestone:gh1' is not served (search)\n"}
+{"t":1795775661770,"gap":"gh issue list -m gh1","code":1}
+{"t":1795775663268,"check":"gap probe gh issue list changes nothing","ok":true}

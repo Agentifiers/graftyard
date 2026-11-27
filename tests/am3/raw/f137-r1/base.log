@@ -1,0 +1,28 @@
+2026-11-27T10:22:58Z
+9e7c8eaf6
+row since 2026-11-27T10:22:05Z: graft-m4a $0.0, graft-agents-m4a- $0, graft-runners $0, total $0.0 (stop $1.50)
+2026-11-27T10:23:05.827Z {"check":"base: issue PATCH title and body (32.35) answers as main","ok":true}
+2026-11-27T10:23:06.662Z {"check":"base: comment PATCH (32.35) answers as main","ok":true}
+2026-11-27T10:23:07.368Z {"check":"base: issue lock (32.35) answers as main","ok":true}
+2026-11-27T10:23:08.055Z {"check":"base: issue unlock (32.35) answers as main","ok":true}
+2026-11-27T10:23:08.640Z {"check":"base: label PATCH (32.36) answers as main","ok":true}
+2026-11-27T10:23:08.930Z {"check":"base: label GET by name (no format) answers as main","ok":true}
+2026-11-27T10:23:09.195Z {"check":"base: milestones GET (32.37) answers as main","ok":true}
+2026-11-27T10:23:09.853Z {"check":"base: milestone POST (32.37) answers as main","ok":true}
+2026-11-27T10:23:10.218Z {"check":"base: milestone 1 GET (32.37) answers as main","ok":true}
+2026-11-27T10:23:10.869Z {"check":"base: issue PATCH milestone (32.37) answers as main","ok":true}
+2026-11-27T10:23:11.614Z {"check":"base: an issue create naming milestone is 422 invalid, as on main","ok":true}
+2026-11-27T10:23:11.904Z {"check":"base: Repository.milestones is undefinedField","ok":true}
+2026-11-27T10:23:12.385Z {"check":"base: Repository.milestone is undefinedField","ok":true}
+2026-11-27T10:23:12.594Z {"check":"base: gh's IssueUpdate is routed nowhere, as on main","ok":true}
+2026-11-27T10:23:14.180Z {"check":"base: createIssue with milestoneId is not served","ok":true}
+2026-11-27T10:23:15.527Z {"check":"base: updatePullRequest with milestoneId is not served","ok":true}
+2026-11-27T10:23:15.801Z {"check":"base: Issue.milestone is null","ok":true}
+2026-11-27T10:23:17.221Z {"gh":"label edit plain -d base","code":1,"out":"HTTP 404: Not Found (<edge>/api/v3/repos/m3org/f137-r1/labels/plain)\n"}
+2026-11-27T10:23:17.221Z {"check":"base: gh label edit fails on its 404","ok":true}
+2026-11-27T10:23:19.586Z {"gh":"issue edit 1 -m base","code":1,"out":"error fetching milestones: GraphQL: Field 'milestones' doesn't exist on type 'Repository' (repository.milestones)\n"}
+2026-11-27T10:23:19.587Z {"check":"base: gh issue edit -m fails (no milestone list)","ok":true}
+2026-11-27T10:23:21.841Z {"check":"base: issue I and pull request A are unchanged","ok":true}
+2026-11-27T10:23:22.111Z {"check":"base: the label `plain` is unchanged","ok":true}
+VERDICT base PASS 
+base exit 0

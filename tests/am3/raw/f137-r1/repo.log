@@ -1,0 +1,12 @@
+2026-11-27T10:22:05Z
+9e7c8eaf6
+row since 2026-11-27T10:22:05Z: graft-m4a $0, graft-agents-m4a- $0, graft-runners $0, total $0 (stop $1.50)
+2026-11-27T10:22:35.072Z {"check":"the row's repository is created","ok":true}
+2026-11-27T10:22:40.102Z {"check":"issue I, its comment and `plain` are made","ok":true}
+2026-11-27T10:22:47.856Z {"check":"branch f pushed","ok":true}
+2026-11-27T10:22:49.658Z {"seeded":{"issue":1,"issueNode":"I_kwDOAAEAY84AUIAA","comment":5242880,"pr":2}}
+2026-11-27T10:22:49.658Z {"check":"pull request A is open","ok":true}
+2026-11-27T10:22:51.836Z {"m3ci_permissions":{"checks":"write","contents":"write","issues":"write","metadata":"read","pull_requests":"write"}}
+2026-11-27T10:22:51.836Z {"check":"m3-ci's installation holds issues and pull_requests write (the App lines need both)","ok":true}
+VERDICT repo PASS 
+repo exit 0

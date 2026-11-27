@@ -1,0 +1,9 @@
+2026-11-27T10:34:40Z
+9e7c8eaf6
+2026-11-27T10:34:43.531Z {"delete":"m3org/f137-r1","status":204}
+delete exit 0
+shardkill deployed: https://graft-m4a-shardkill.<sub>.workers.dev
+{"torn_down": 0, "codes": {}}
+sweep: no shard container running
+shardkill deleted: True
+sweep exit 0

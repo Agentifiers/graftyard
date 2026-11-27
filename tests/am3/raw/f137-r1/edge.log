@@ -1,0 +1,20 @@
+2026-11-27T10:25:23Z
+9e7c8eaf6
+row since 2026-11-27T10:22:05Z: graft-m4a $0.01, graft-agents-m4a- $0, graft-runners $0, total $0.01 (stop $1.50)
+already on: 
+adding: 32.35,32.36,32.37
+edge from TREE b12a07a06
+2026-11-27T10:25:27Z
+9e7c8eaf6
+before {"script":"graft-m4a-edge","created_on":"2026-11-27T06:27:12.992834Z","versions":["50b5577a 100"]}
+deploy exit 0
+Current Version ID: 06370a45-7cfa-4178-b961-a982fa04f360
+binding diff (plain text; only HOST and FORMATS_ENABLED by ADDFMT may change):
+<   "FORMATS_ENABLED": "32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2
+>   "FORMATS_ENABLED": "32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2
+after {"script":"graft-m4a-edge","created_on":"2026-11-27T10:29:23.218592Z","versions":["06370a45 100"]}
+edge: graft-m4a-edge serves 06370a45 at 100% (rev [INFO]: 🌀  Compiling to Wasm...), as ~/workspace/repo/tests/m4/raw/wp3/f137/r1/edge-deploy.raw deployed
+edgever exit 0
+FORMATS_ENABLED 41 -> 44: added ['32.35', '32.36', '32.37'], removed []
+other plain-text vars changed: none
+edge diff ok

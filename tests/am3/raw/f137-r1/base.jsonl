@@ -1,0 +1,23 @@
+{"t":1795774985826,"check":"base: issue PATCH title and body (32.35) answers as main","ok":true}
+{"t":1795774986662,"check":"base: comment PATCH (32.35) answers as main","ok":true}
+{"t":1795774987368,"check":"base: issue lock (32.35) answers as main","ok":true}
+{"t":1795774988055,"check":"base: issue unlock (32.35) answers as main","ok":true}
+{"t":1795774988640,"check":"base: label PATCH (32.36) answers as main","ok":true}
+{"t":1795774988930,"check":"base: label GET by name (no format) answers as main","ok":true}
+{"t":1795774989195,"check":"base: milestones GET (32.37) answers as main","ok":true}
+{"t":1795774989853,"check":"base: milestone POST (32.37) answers as main","ok":true}
+{"t":1795774990218,"check":"base: milestone 1 GET (32.37) answers as main","ok":true}
+{"t":1795774990869,"check":"base: issue PATCH milestone (32.37) answers as main","ok":true}
+{"t":1795774991614,"check":"base: an issue create naming milestone is 422 invalid, as on main","ok":true}
+{"t":1795774991904,"check":"base: Repository.milestones is undefinedField","ok":true}
+{"t":1795774992385,"check":"base: Repository.milestone is undefinedField","ok":true}
+{"t":1795774992594,"check":"base: gh's IssueUpdate is routed nowhere, as on main","ok":true}
+{"t":1795774994180,"check":"base: createIssue with milestoneId is not served","ok":true}
+{"t":1795774995527,"check":"base: updatePullRequest with milestoneId is not served","ok":true}
+{"t":1795774995801,"check":"base: Issue.milestone is null","ok":true}
+{"t":1795774997221,"gh":"label edit plain -d base","code":1,"out":"HTTP 404: Not Found (<edge>/api/v3/repos/m3org/f137-r1/labels/plain)\n"}
+{"t":1795774997221,"check":"base: gh label edit fails on its 404","ok":true}
+{"t":1795774999586,"gh":"issue edit 1 -m base","code":1,"out":"error fetching milestones: GraphQL: Field 'milestones' doesn't exist on type 'Repository' (repository.milestones)\n"}
+{"t":1795774999587,"check":"base: gh issue edit -m fails (no milestone list)","ok":true}
+{"t":1795775001841,"check":"base: issue I and pull request A are unchanged","ok":true}
+{"t":1795775002110,"check":"base: the label `plain` is unchanged","ok":true}

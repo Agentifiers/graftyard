@@ -1,0 +1,33 @@
+2026-11-27T10:30:41Z
+9e7c8eaf6
+row since 2026-11-27T10:22:05Z: graft-m4a $0.03, graft-agents-m4a- $0, graft-runners $0.0, total $0.03 (stop $1.50)
+2026-11-27T10:30:55.329Z {"check":"issues.update title and body: 200 with both","ok":true}
+2026-11-27T10:30:56.176Z {"check":"issue PATCH read back over REST and GraphQL","ok":true}
+2026-11-27T10:30:57.231Z {"check":"issues.updateComment: 200 with the new body","ok":true}
+2026-11-27T10:30:58.041Z {"check":"comment edit read back over REST and GraphQL","ok":true}
+2026-11-27T10:30:59.321Z {"check":"issues.lock: 204","ok":true}
+2026-11-27T10:30:59.818Z {"check":"lock read back over REST (locked: true)","ok":true}
+2026-11-27T10:31:00.136Z {"gap":"Issue.locked over GraphQL","answer":{"errors":[{"message":"Field 'locked' doesn't exist on type 'Issue'","path":["repository","issue","locked"],"type":"undefinedField"}]}}
+2026-11-27T10:31:01.573Z {"check":"issues.unlock: 204, read back locked: false","ok":true}
+2026-11-27T10:31:01.984Z {"check":"issues.getLabel matches case-insensitively","ok":true}
+2026-11-27T10:31:03.086Z {"check":"issues.updateLabel: 200, renamed and recoloured","ok":true}
+2026-11-27T10:31:04.250Z {"check":"label update read back over REST and GraphQL (old name 404)","ok":true}
+2026-11-27T10:31:06.350Z {"check":"issues.createMilestone twice: 201, numbered, creator m3-admin","ok":true}
+2026-11-27T10:31:07.452Z {"check":"a second milestone titled V1 is 422","ok":true}
+2026-11-27T10:31:07.933Z {"check":"issues.getMilestone: 200","ok":true}
+2026-11-27T10:31:09.234Z {"check":"issues.updateMilestone closes v2: 200 closed","ok":true}
+2026-11-27T10:31:10.197Z {"check":"issues.listMilestones: open lists v1, closed lists v2","ok":true}
+2026-11-27T10:31:11.117Z {"check":"milestones read back over GraphQL (open list, milestone(number:))","ok":true}
+2026-11-27T10:31:12.135Z {"check":"issues.update milestone: 200 with v1","ok":true}
+2026-11-27T10:31:13.280Z {"check":"issue milestone read back over REST and GraphQL, v1 counts 1 open issue","ok":true}
+2026-11-27T10:31:14.227Z {"check":"an unknown milestone number is 422 and changes nothing","ok":true}
+2026-11-27T10:31:15.616Z {"check":"issues.update milestone null clears it (REST and GraphQL)","ok":true}
+2026-11-27T10:31:17.126Z {"check":"issues.create with milestone: 201, read back over GraphQL","ok":true}
+2026-11-27T10:31:17.416Z {"check":"issues.listLabelsForMilestone: 200","ok":true}
+2026-11-27T10:31:22.585Z {"check":"a pull_requests-only App token creates a milestone, its creator the bot","ok":false,"seen":[201,"ghost[bot]"]}
+2026-11-27T10:31:25.288Z {"check":"the same token deletes it: 204, then REST 404 and GraphQL null","ok":true}
+2026-11-27T10:31:28.065Z {"check":"a contents-only App token is refused 403","ok":true}
+2026-11-27T10:31:29.724Z {"check":"issues.deleteMilestone v2: 204, REST 404, GraphQL null","ok":true}
+2026-11-27T10:31:31.819Z {"check":"issues.deleteLabel: 204, REST 404, GraphQL gone","ok":true}
+VERDICT octokit FAIL a pull_requests-only App token creates a milestone, its creator the bot
+octokit exit 1
