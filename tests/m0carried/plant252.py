@@ -52,8 +52,8 @@ MUTANTS = [
      '        let version = Version::At { r#ref: from.r#ref.clone(), sha: from.sha };',
      '        let version = Version::Named("main".into());', T),
     ("the leader takes a planned call as a plain run", R, '    if !b["plan"].is_null() {', '    if false {', T),
-    ("the release reads no 0x15.9", S, '    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_REUSABLE,\n    ACTIONS_FORMAT_PUSH,\n    ACTIONS_FORMAT_AGENT_CI,\n    ACTIONS_FORMAT_SECRETS_WAIT,\n];',
-     '    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_PUSH,\n    ACTIONS_FORMAT_AGENT_CI,\n    ACTIONS_FORMAT_SECRETS_WAIT,\n];',
+    ("the release reads no 0x15.9", S, '    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_REUSABLE,\n    ACTIONS_FORMAT_PUSH,\n    ACTIONS_FORMAT_AGENT_CI,\n    ACTIONS_FORMAT_SECRETS_WAIT,\n    ACTIONS_FORMAT_SECRETS_BRANCH,\n];',
+     '    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_CLAIMS,\n    ACTIONS_FORMAT_PUSH,\n    ACTIONS_FORMAT_AGENT_CI,\n    ACTIONS_FORMAT_SECRETS_WAIT,\n    ACTIONS_FORMAT_SECRETS_BRANCH,\n];',
      ['cargo', 'test', '-q', '-p', 'graftyard-actions', '--lib', 'every_command_format_is_read']),
 ]
 

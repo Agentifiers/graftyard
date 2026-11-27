@@ -767,6 +767,34 @@ pub fn waiting(mut call: Value, head: &[u8; 20]) -> Value {
     call
 }
 
+/// `secrets-wait`: `ActionsTrigger`'s `release_secrets` call for `head` of `repo`, naming the gated `branch` and its
+/// pull requests when `on` holds them (0x15.15, after the day that set `GRAFTYARD_SECRETS_BRANCH`), else 0x15.14's.
+pub fn release_call(
+    repo: graftyard_types::RepoId,
+    head: graftyard_git::refs::ObjectId,
+    on: Option<(&graftyard_git::refs::RefName, &[graftyard_git::issues::IssueNumber])>,
+) -> Value {
+    let mut call = json!({ "op": "release_secrets", "repo": repo, "head": head.hex() });
+    if let Some((branch, pulls)) = on {
+        call["branch"] = json!(branch.display());
+        call["pulls"] = json!(pulls);
+    }
+    call
+}
+
+/// `secrets-wait`: the command a shard leader commits for a `release_secrets` call from `ActionsTrigger`, which found
+/// `AgentGate` holding for `head` on the repository's leader. With `branch` (and the gated pull requests `pulls`, 0x15.15,
+/// F150) it is `ReleaseSecretsOn`, which releases only that branch's runs; without, 0x15.14's `ReleaseSecrets`.
+pub fn release_op(b: &Value) -> Result<crate::shard::ActionsOp, String> {
+    let repo: graftyard_types::RepoId = serde_json::from_value(b["repo"].clone()).map_err(|e| format!("repo: {e}"))?;
+    let head = b["head"].as_str().and_then(|h| graftyard_git::refs::ObjectId::parse_hex(h.as_bytes())).ok_or("head")?.0;
+    let Some(branch) = b["branch"].as_str() else {
+        return Ok(crate::shard::ActionsOp::ReleaseSecrets { repo, head });
+    };
+    let pulls = serde_json::from_value(b["pulls"].clone()).map_err(|e| format!("pulls: {e}"))?;
+    Ok(crate::shard::ActionsOp::ReleaseSecretsOn { repo, head, branch: branch.into(), pulls })
+}
+
 /// The command a shard leader commits for a `create_run_call`, with the run's key, wrapped in `CreateRunHeld` when
 /// the call is `held` and in `CreateRunWaiting` when it is `waiting`: `CreateRunPush` (0x15.12) for a
 /// `push` run's call that carries its event (`push_run_call`), with its plan when it has one, `CreateRunPlanned` for

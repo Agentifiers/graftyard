@@ -304,6 +304,13 @@ pub fn secrets_wait(env: &worker::Env) -> bool {
     env.var("GRAFTYARD_SECRETS_WAIT").is_ok_and(|v| v.to_string() == "1")
 }
 
+/// Whether a site day set `GRAFTYARD_SECRETS_BRANCH` (F150), after the day that shipped format 0x15.15's reader: only
+/// then does `ActionsTrigger` release an approved head's waiting jobs with `ReleaseSecretsOn`, for the gated branch's
+/// runs alone. Until then it sends 0x15.14's `ReleaseSecrets`, which also releases another branch's runs at that commit.
+pub fn secrets_branch(env: &worker::Env) -> bool {
+    env.var("GRAFTYARD_SECRETS_BRANCH").is_ok_and(|v| v.to_string() == "1")
+}
+
 /// Whether a site day set `GRAFTYARD_AGENT_CI` (`agent-ci`), after the day that shipped format 0x15.13's reader: only
 /// then does `ActionsTrigger` follow a repository's `AgentPolicy.ci` for an agent's runs (`crate::actions_trigger`).
 pub fn agent_ci(env: &worker::Env) -> bool {
@@ -983,15 +990,14 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
             }
         }
         // `secrets-wait` (0x15.14): `ReleaseSecrets` from `ActionsTrigger`, which found `AgentGate` holding for `head`
-        // on the repository's leader. A retried release releases nothing twice: a released job no longer waits.
+        // on the repository's leader, or `ReleaseSecretsOn` for that branch's runs alone when the call names it
+        // (0x15.15, F150). A retried release releases nothing twice: a released job no longer waits.
         ("release_secrets", None) => {
-            let repo = serde_json::from_value::<graftyard_types::RepoId>(b["repo"].clone());
-            let head = b["head"].as_str().and_then(|h| graftyard_git::refs::ObjectId::parse_hex(h.as_bytes()));
-            let (Ok(repo), Some(head)) = (repo, head) else {
-                return Ok(refused(400, "repo and head are required"));
+            let op = match runsvc::release_op(&b) {
+                Ok(op) => op,
+                Err(e) => return Ok(refused(400, e)),
             };
-            let rid = fresh_rid();
-            match commit(h, rid, ActionsActor::Operator, ActionsOp::ReleaseSecrets { repo, head: head.0 }).await {
+            match commit(h, fresh_rid(), ActionsActor::Operator, op).await {
                 Ok(Ok(_)) => json!({ "status": 200, "body": {} }),
                 Ok(r) => refused(409, r),
                 Err(e) => refused(503, e),

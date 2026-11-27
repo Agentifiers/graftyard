@@ -90,10 +90,15 @@ pub const ACTIONS_FORMAT_AGENT_CI: Format = Format { family: 0x15, version: 13 }
 /// (`ActionsFold::released`). Only a site whose site day set `GRAFTYARD_SECRETS_WAIT` sends either, after the day that
 /// shipped this reader to every member (`decisions/DECISIONS.md`, "`secrets-wait`").
 pub const ACTIONS_FORMAT_SECRETS_WAIT: Format = Format { family: 0x15, version: 14 };
+/// `secrets-wait` per branch (F150): `ReleaseSecretsOn`, which releases only the jobs of runs on the branch whose pull
+/// request's `AgentGate` holds, where 0x15.14's `ReleaseSecrets` releases every run of the repository at that head.
+/// Only a site whose site day set `GRAFTYARD_SECRETS_BRANCH` sends it, after the day that shipped this reader to every
+/// member (`decisions/DECISIONS.md`, "`secrets-wait`").
+pub const ACTIONS_FORMAT_SECRETS_BRANCH: Format = Format { family: 0x15, version: 15 };
 /// Every Actions format this release reads, which a member's `reads()` is: a format a command can be sent as and a
 /// member does not list is refused `Unsupported` on every site, as 0x15.7 was on main 46ea4200
 /// (`every_command_format_is_read`).
-pub const ACTIONS_FORMATS: [Format; 13] = [
+pub const ACTIONS_FORMATS: [Format; 14] = [
     ACTIONS_FORMAT,
     ACTIONS_FORMAT_ANNOTATIONS,
     ACTIONS_FORMAT_MERGE_GROUP,
@@ -107,6 +112,7 @@ pub const ACTIONS_FORMATS: [Format; 13] = [
     ACTIONS_FORMAT_PUSH,
     ACTIONS_FORMAT_AGENT_CI,
     ACTIONS_FORMAT_SECRETS_WAIT,
+    ACTIONS_FORMAT_SECRETS_BRANCH,
 ];
 
 #[cfg(test)]
@@ -1363,9 +1369,21 @@ pub enum ActionsOp {
     },
     /// `secrets-wait` (0x15.14): `AgentGate` holds for `head` of `repo`, as the trigger read it on the repository's
     /// leader: `GateHeld` for every job of the repository's runs waiting on that head. Nothing waiting writes nothing.
+    /// It also releases another branch's runs at the same commit, which no gate held for (F150); `ReleaseSecretsOn`
+    /// replaces it once 0x15.15 is enabled.
     ReleaseSecrets {
         repo: RepoId,
         head: [u8; 20],
+    },
+    /// `secrets-wait` per branch (0x15.15, F150): `AgentGate` holds for `head` on pull requests `pulls` of `repo`, all
+    /// from head branch `branch`, as the trigger read it on the repository's leader: `GateHeld` for every job waiting
+    /// on `head` whose run is a `push` run of `branch` or a `pull_request` run of one of `pulls`. An approval of one
+    /// pull request releases nothing of another's, even at the same commit.
+    ReleaseSecretsOn {
+        repo: RepoId,
+        head: [u8; 20],
+        branch: Box<str>,
+        pulls: Vec<graftyard_git::issues::IssueNumber>,
     },
 }
 
@@ -1486,13 +1504,19 @@ fn release_needs(s: &ActionsScratch<'_>, evs: &mut SmallVec<[ActionsEvent; 4]>) 
     }
 }
 
-/// `ReleaseSecrets`' events: `GateHeld` for each job of `repo`'s runs waiting on `head`, then `NeedsMet` for one
-/// whose needs all succeeded while it waited, since no later completion would release it from `Pending`.
-fn release_secrets(s: &ActionsScratch<'_>, repo: RepoId, head: &[u8; 20]) -> SmallVec<[ActionsEvent; 4]> {
+/// `ReleaseSecrets`' and `ReleaseSecretsOn`'s events: `GateHeld` for each job of `repo`'s runs waiting on `head`
+/// whose run `on` takes, then `NeedsMet` for one whose needs all succeeded while it waited, since no later completion
+/// would release it from `Pending`.
+fn release_secrets(
+    s: &ActionsScratch<'_>,
+    repo: RepoId,
+    head: &[u8; 20],
+    on: impl Fn(&WorkflowRun) -> bool,
+) -> SmallVec<[ActionsEvent; 4]> {
     let mut evs = SmallVec::new();
     for (id, j) in s.jobs() {
         let JobState::SecretsWait { needs, head: h, .. } = &j.state else { continue };
-        if h != head || s.run(j.run).is_none_or(|r| r.run.repo != repo) {
+        if h != head || s.run(j.run).is_none_or(|r| r.run.repo != repo || !on(&r.run)) {
             continue;
         }
         evs.push(ActionsEvent::Job { job: id, version: j.version, event: JobEvent::GateHeld });
@@ -1698,6 +1722,7 @@ impl Command for ActionsCmd {
     fn format(&self) -> Format {
         match &self.op {
             ActionsOp::CreateRunWaiting { .. } | ActionsOp::ReleaseSecrets { .. } => ACTIONS_FORMAT_SECRETS_WAIT,
+            ActionsOp::ReleaseSecretsOn { .. } => ACTIONS_FORMAT_SECRETS_BRANCH,
             ActionsOp::CreateRunHeld { .. } | ActionsOp::ApproveRun { .. } => ACTIONS_FORMAT_AGENT_CI,
             // A `push` run's key names its ref (0x15.12), so every call that creates one is 0x15.12: a member that
             // keys runs the old way never applies one.
@@ -1832,7 +1857,16 @@ impl Command for ActionsCmd {
             }
             ActionsOp::ReleaseSecrets { repo, head } => {
                 only(operator)?;
-                Ok((release_secrets(s, *repo, head), ActionsOut::Done))
+                Ok((release_secrets(s, *repo, head, |_| true), ActionsOut::Done))
+            }
+            ActionsOp::ReleaseSecretsOn { repo, head, branch, pulls } => {
+                only(operator)?;
+                let on = |r: &WorkflowRun| {
+                    (r.is_push() && r.head_ref == *branch)
+                        || (r.is_pull_request()
+                            && pulls.iter().any(|n| *r.head_ref == *graftyard_git::tiers::merge_ref(*n).display()))
+                };
+                Ok((release_secrets(s, *repo, head, on), ActionsOut::Done))
             }
             ActionsOp::ApproveRun { run } => {
                 only(admin)?;
@@ -2911,6 +2945,31 @@ mod tests {
             held,
             ActionsOp::ReleaseSecrets { repo: RepoId(DbId(7)), head: [1; 20] },
         ]);
+        // The site's decode of a release (`runsvc::release_op`): with a branch it is `ReleaseSecretsOn`, sent as
+        // 0x15.15; without one it stays 0x15.14's `ReleaseSecrets`.
+        let branch = graftyard_git::refs::RefName::parse(b"refs/heads/a").unwrap();
+        let pulls = [4, 5].map(graftyard_git::issues::IssueNumber);
+        let repo = RepoId(DbId(7));
+        let on = crate::runsvc::release_call(repo, graftyard_git::refs::ObjectId([9; 20]), Some((&branch, &pulls)));
+        let op = crate::runsvc::release_op(&on).unwrap();
+        assert_eq!(
+            op,
+            ActionsOp::ReleaseSecretsOn {
+                repo: RepoId(DbId(7)),
+                head: [9; 20],
+                branch: "refs/heads/a".into(),
+                pulls: vec![graftyard_git::issues::IssueNumber(4), graftyard_git::issues::IssueNumber(5)],
+            }
+        );
+        assert_eq!(
+            ActionsCmd { actor: ActionsActor::Operator, op: op.clone() }.format(),
+            ACTIONS_FORMAT_SECRETS_BRANCH
+        );
+        ops.push(op);
+        let plain =
+            crate::runsvc::release_op(&crate::runsvc::release_call(repo, graftyard_git::refs::ObjectId([9; 20]), None))
+                .unwrap();
+        assert_eq!(plain, ActionsOp::ReleaseSecrets { repo: RepoId(DbId(7)), head: [9; 20] });
         // The site's decode of a waiting call (`runsvc::waiting`) is `CreateRunWaiting` on the agent's head, sent as
         // 0x15.14 whatever create it wraps.
         let call = crate::runsvc::create_run_call(&r, &j, &Vec::new(), false, None, None, None);
@@ -2929,7 +2988,7 @@ mod tests {
         // 0x15.11 is another branch's (the lead's reservation); it joins this list as it merges.
         let mut versions: Vec<u16> = ACTIONS_FORMATS.iter().map(|f| f.version).collect();
         versions.sort_unstable();
-        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14]);
+        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15]);
     }
 
     /// A recorded stall moves a live lease and a queued job's `since` by exactly its length, through the fold and

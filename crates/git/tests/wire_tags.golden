@@ -831,6 +831,7 @@ actions::shard::ActionsOp 26 CreateRunHeld 1a00020201610161010101010101010101010
 actions::shard::ActionsOp 27 ApproveRun 1b02
 actions::shard::ActionsOp 28 CreateRunWaiting 1c0002020161016101010101010101010101010101010101010101010161067265706f3a3101010000000101010101010101010101010101010101010101
 actions::shard::ActionsOp 29 ReleaseSecrets 1d020101010101010101010101010101010101010101
+actions::shard::ActionsOp 30 ReleaseSecretsOn 1e020101010101010101010101010101010101010101016100
 actions::shard::ActionsActor 0 Operator 00
 actions::shard::ActionsActor 1 Admin 0102
 actions::shard::ActionsActor 2 Runner 0202

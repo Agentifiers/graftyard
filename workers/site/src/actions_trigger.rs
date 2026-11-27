@@ -762,7 +762,9 @@ async fn release_if_gated(
     Ok(())
 }
 
-/// `ReleaseSecrets` for `head` when `AgentGate` holds there for a pull request from `branch`, read on this leader.
+/// `ReleaseSecrets` for `head` when `AgentGate` holds there for a pull request from `branch`, read on this leader: per
+/// branch, for `branch`'s push runs and the gated pull requests' runs alone, once a site day set
+/// `GRAFTYARD_SECRETS_BRANCH` (`ReleaseSecretsOn`, 0x15.15, F150).
 /// The shard cannot read the repository's fold (no `deps` reads a repository chain), so the gate is read here; a gate
 /// that stops holding between this read and the commit is the accepted gap in `decisions/DECISIONS.md`,
 /// "`secrets-wait`".
@@ -775,16 +777,19 @@ async fn release_on(
     branch: &git::refs::RefName,
     head: git::refs::ObjectId,
 ) -> std::result::Result<bool, String> {
-    let holds = {
+    let pulls = {
         let core = h.core.borrow();
         let core = &*core.as_ref().ok_or("not joined")?.m.group_fold().fold.core;
-        git::merge::agent_gate_holds(core, repo, branch, head)
+        git::merge::agent_gate_pulls(core, repo, branch, head)
     };
-    if !holds {
+    if pulls.is_empty() {
         return Ok(false);
     }
     let chain = ChainId::Actions(owner, graftyard_actions::actions_shard(repo));
-    let body = json!({ "op": "release_secrets", "repo": repo, "head": head.hex() });
+    // F150: after the day that set `GRAFTYARD_SECRETS_BRANCH`, only this branch's runs (`ReleaseSecretsOn`, 0x15.15);
+    // before it, 0x15.14's release of every run at `head`, which also reaches another branch's runs at that commit.
+    let on = crate::actions::secrets_branch(&h.env).then_some((branch, pulls.as_slice()));
+    let body = graftyard_actions::runsvc::release_call(repo, head, on);
     graftyard_lookup::create(b, chain, record, &json!({})).await?;
     let (v, _) = graftyard_lookup::call(b, chain, record, "/runsvc", &body).await?;
     match v["status"].as_u64() {

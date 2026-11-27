@@ -1,6 +1,8 @@
 //! L0-04's A1 replay on the real repository and Actions members: no secret reaches an agent run before a valid
 //! writer's approval of that run's current head. This ports `tests/m0/run/wp14-ci.ts`, including its independent
-//! oracle and a mutant whose release ignores the head.
+//! oracle and a mutant whose release ignores the head. Each run carries the `head_ref` a site's pull request run
+//! carries (`refs/pull/N/merge`), and each release goes through the site's call and the leader's decode of it
+//! (`runsvc::release_call`, `runsvc::release_op`), per branch as 0x15.15 sends it, or repository-wide as 0x15.14 does.
 //!
 //! The M0 dave/pusher scenario is intentionally dropped (counted separately and otherwise treated as `none`): the
 //! real `IssueOp::Review` does not exclude a user pusher yet. The reusable `sign` job is omitted because
@@ -18,7 +20,7 @@ use graftyard_actions::shard::{
 use graftyard_actions::trigger::{AgentRun, agent_run};
 use graftyard_actions::{JobId, JobState, RunId};
 use graftyard_git::agent::CiMode;
-use graftyard_git::merge::agent_gate_holds;
+use graftyard_git::merge::{agent_gate_holds, agent_gate_pulls};
 use graftyard_git::task::{NewTask, TaskApiState};
 use graftyard_identity::SessionId;
 use graftyard_raft::Acked;
@@ -49,6 +51,7 @@ impl ActionsGroup {
             ACTIONS_FORMAT_ANNOTATIONS,
             ACTIONS_FORMAT_AGENT_CI,
             ACTIONS_FORMAT_SECRETS_WAIT,
+            graftyard_actions::shard::ACTIONS_FORMAT_SECRETS_BRANCH,
         ];
         let mut g = Self {
             reads,
@@ -242,6 +245,9 @@ struct Replay {
     actions: ActionsGroup,
     workflows: Vec<(Box<str>, Vec<JobSpec>)>,
     pulls: BTreeMap<String, Pull>,
+    /// A run's `head_ref`, its pull request's `refs/pull/N/merge`, to that pull request's head branch.
+    branch_of: BTreeMap<Box<str>, String>,
+    release: Release,
     /// The approvals this test sent, not the repository's AgentGate rows: `(pr, approved head, approver)`.
     approvals: BTreeSet<(u32, [u8; 20], i64)>,
     unjudged: Vec<JobId>,
@@ -253,7 +259,7 @@ struct Replay {
 }
 
 impl Replay {
-    fn new() -> Self {
+    fn new(release: Release) -> Self {
         let mut world = World::new();
         world.flag(AgentApp {
             app: CLAUDE,
@@ -319,6 +325,8 @@ jobs:
             actions,
             workflows,
             pulls: BTreeMap::new(),
+            branch_of: BTreeMap::new(),
+            release,
             approvals: BTreeSet::new(),
             unjudged: Vec::new(),
             computed: Vec::new(),
@@ -376,6 +384,7 @@ jobs:
         call.session = Some(SessionId::External { app: CLAUDE, name: session.clone().into() });
         let opened = self.world.commit(RepoCmd::Issue(Box::new(call)));
         let pr = IssueNumber(number(&opened));
+        self.branch_of.insert(tiers::merge_ref(pr).display().into(), branch.into());
         if check_meta {
             let fold = self.world.fold();
             let meta = tiers::agent_meta(&*fold.core, pr).expect("AgentMeta");
@@ -399,7 +408,7 @@ jobs:
         &mut self,
         workflow: &str,
         specs: &[JobSpec],
-        branch: &str,
+        pr: IssueNumber,
         head: ObjectId,
         index: u64,
         kind: AgentRun,
@@ -410,7 +419,7 @@ jobs:
             workflow: workflow.into(),
             event: "pull_request".into(),
             head_sha: head.0,
-            head_ref: branch.into(),
+            head_ref: tiers::merge_ref(pr).display().into(),
             trigger: (ChainId::Repo(REPO), Index(index)),
             attempt: 1,
             concurrency: None,
@@ -455,11 +464,20 @@ jobs:
         self.inspect_actions();
     }
 
-    fn release(&mut self, head: ObjectId) {
+    /// The site's `release_on`: the pull requests from `branch` whose gate holds at `gated`, then its call for `head`
+    /// as the shard leader decodes it. Only the mutant sends a `head` other than `gated`.
+    fn release_with(&mut self, branch: &str, head: ObjectId, gated: ObjectId) {
         let waiting =
             |fold: &ActionsFold| fold.jobs.values().filter(|j| matches!(j.state, JobState::SecretsWait { .. })).count();
         let before = waiting(self.actions.fold());
-        let out = self.actions.cmd(self.world.now, ActionsOp::ReleaseSecrets { repo: REPO, head: head.0 }).unwrap();
+        let fold = self.world.fold();
+        let pulls = agent_gate_pulls(&*fold.core, REPO, &name(branch), gated);
+        drop(fold);
+        let branch = name(branch);
+        let on = (self.release != Release::Repo).then_some((&branch, pulls.as_slice()));
+        let op =
+            graftyard_actions::runsvc::release_op(&graftyard_actions::runsvc::release_call(REPO, head, on)).unwrap();
+        let out = self.actions.cmd(self.world.now, op).unwrap();
         assert_eq!(out, ActionsOut::Done);
         self.stats.releases_sent += 1;
         let after = waiting(self.actions.fold());
@@ -482,13 +500,14 @@ jobs:
                 still.push(id);
                 continue;
             }
-            let pull = self.pulls.get(&*run.head_ref).expect("the run's pull request");
+            let branch = &self.branch_of[&run.head_ref];
+            let pull = self.pulls.get(branch).expect("the run's pull request");
             let current = pull.head.0 == run.head_sha;
             let valid_approval = self.approvals.contains(&(pull.pr.0, run.head_sha, WRITER2));
             if !(current && valid_approval) {
                 self.stats.leaks += 1;
                 let shared = self.pulls.iter().any(|(b, p)| {
-                    **b != *run.head_ref
+                    b != branch
                         && p.heads.contains(&ObjectId(run.head_sha))
                         && self.approvals.contains(&(p.pr.0, run.head_sha, WRITER2))
                 });
@@ -496,7 +515,7 @@ jobs:
                 if self.stats.leak_samples.len() < 5 {
                     self.stats.leak_samples.push(format!(
                         "{}@{} job {} (current={}, writer2 approval={})",
-                        run.head_ref,
+                        branch,
                         ObjectId(run.head_sha).hex(),
                         job.spec.name,
                         current,
@@ -519,7 +538,7 @@ jobs:
         }
     }
 
-    fn approve(&mut self, branch: &str, mutant: bool) {
+    fn approve(&mut self, branch: &str) {
         let (pr, head, previous, scenario) = {
             let pull = &self.pulls[branch];
             (pull.pr, pull.head, pull.previous, pull.scenario)
@@ -555,9 +574,11 @@ jobs:
         let gated = agent_gate_holds(&*fold.core, REPO, &name(branch), head);
         drop(fold);
         if gated {
-            let heads = if mutant { self.pulls[branch].heads.clone() } else { vec![head] };
-            for head in heads {
-                self.release(head);
+            // The mutant releases every head the pull request ever had, as if the gate ignored the head.
+            let heads = if self.release == Release::EveryHead { self.pulls[branch].heads.clone() } else { vec![head] };
+            for h in heads {
+                // The mutant's older heads have no gate of their own: it releases them with the current head's pulls.
+                self.release_with(branch, h, head);
             }
         }
     }
@@ -588,8 +609,19 @@ jobs:
     }
 }
 
-fn replay(mutant: bool, limit: usize) -> Stats {
-    let mut r = Replay::new();
+/// How the replay releases an approved head's waiting jobs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Release {
+    /// 0x15.15's `ReleaseSecretsOn`: the gated branch's runs alone (F150).
+    Branch,
+    /// 0x15.14's `ReleaseSecrets`: every run of the repository at that head, another branch's too.
+    Repo,
+    /// A mutant: every head of the pull request, per branch.
+    EveryHead,
+}
+
+fn replay(release: Release, limit: usize) -> Stats {
+    let mut r = Replay::new(release);
     for (push_index, line) in A1.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).take(limit).enumerate() {
         let mut fields = line.split('\t');
         let _unix = fields.next().expect("time");
@@ -620,11 +652,12 @@ fn replay(mutant: bool, limit: usize) -> Stats {
         drop(fold);
         let kind = agent_run(CiMode::AutoReadOnly, &name(&branch), &[], gated);
         for (workflow, specs) in r.workflows.clone() {
-            r.create_run(&workflow, &specs, &branch, head, push_index as u64 + 1, kind);
+            let pr = r.pulls[&branch].pr;
+            r.create_run(&workflow, &specs, pr, head, push_index as u64 + 1, kind);
         }
         // ReadOnly implies !gated, so release_if_gated immediately after creation has nothing to do.
         if nth == 1 || nth == 3 {
-            r.approve(&branch, mutant);
+            r.approve(&branch);
         }
     }
     r.finish();
@@ -663,37 +696,48 @@ fn print_stats(label: &str, s: &Stats) {
 #[test]
 #[ignore = "slow in debug; run with --release -- --ignored"]
 fn l004_a1_replay_leaks_no_secret_before_the_gate_holds_for_its_head() {
-    let stats = replay(false, usize::MAX);
+    let stats = replay(Release::Branch, usize::MAX);
     print_stats("real", &stats);
     assert_eq!(stats.pushes, 3134);
     assert_eq!(stats.prs, 805);
-    // Every leak on the real code is OPEN-QUESTIONS F150: `ReleaseSecrets` keys on (repository, head), so a head commit
-    // a writer approved on another agent branch's pull request releases this branch's waiting jobs at the same SHA.
-    // Any other leak fails here; when F150 is ruled and fixed, the 16 must go to 0.
-    assert_eq!(stats.leaks, stats.leaks_shared_head, "{:?}", stats.leak_samples);
-    assert_eq!(stats.leaks_shared_head, 16, "{:?}", stats.leak_samples);
-    assert_eq!(stats.released_jobs, 1196);
+    assert_eq!(stats.leaks, 0, "{:?}", stats.leak_samples);
+    assert_eq!(stats.released_jobs, 1180);
     assert_eq!(stats.waiting, 12536);
     // `references()` counts `secrets[format(...)]` as a reference (safe side), so every agent run's `computed` job waits.
     assert_eq!(stats.computed_queued_none, 0);
     assert_eq!(stats.computed_waited, stats.agent_runs / 2);
 }
 
+/// OPEN-QUESTIONS F150: 0x15.14's `ReleaseSecrets` keys on (repository, head), so a writer's approval of one agent
+/// branch's pull request releases another branch's waiting jobs at the same commit. Every leak is one of those.
+#[test]
+#[ignore = "slow in debug; run with --release -- --ignored"]
+fn l004_a1_replay_repository_wide_release_leaks_only_across_branches_at_one_commit() {
+    let stats = replay(Release::Repo, usize::MAX);
+    print_stats("repo-wide", &stats);
+    assert_eq!(stats.leaks, stats.leaks_shared_head, "{:?}", stats.leak_samples);
+    assert_eq!(stats.leaks, 16, "{:?}", stats.leak_samples);
+    assert_eq!(stats.released_jobs, 1196);
+}
+
 #[test]
 #[ignore = "slow in debug; run with --release -- --ignored"]
 fn l004_a1_replay_mutant_that_releases_on_any_head_leaks() {
-    let stats = replay(true, usize::MAX);
+    let stats = replay(Release::EveryHead, usize::MAX);
     print_stats("mutant", &stats);
-    assert!(stats.leaks > stats.leaks_shared_head, "{:?}", stats.leak_samples);
+    assert!(stats.leaks > 0, "{:?}", stats.leak_samples);
 }
 
-/// A fast smoke replay for ordinary debug test runs; it uses exactly the same real and mutant paths as the full tests.
+/// A fast smoke replay for ordinary debug test runs; it uses exactly the same paths as the full tests.
 #[test]
 fn l004_a1_replay_first_300_pushes_checks_real_and_mutant() {
-    let real = replay(false, 300);
+    let real = replay(Release::Branch, 300);
     print_stats("real-300", &real);
-    assert_eq!(real.leaks, real.leaks_shared_head, "{:?}", real.leak_samples);
-    let mutant = replay(true, 300);
+    assert_eq!(real.leaks, 0, "{:?}", real.leak_samples);
+    let repo = replay(Release::Repo, 300);
+    print_stats("repo-wide-300", &repo);
+    assert!(repo.leaks > 0 && repo.leaks == repo.leaks_shared_head, "{:?}", repo.leak_samples);
+    let mutant = replay(Release::EveryHead, 300);
     print_stats("mutant-300", &mutant);
-    assert!(mutant.leaks > mutant.leaks_shared_head, "{:?}", mutant.leak_samples);
+    assert!(mutant.leaks > 0, "{:?}", mutant.leak_samples);
 }
