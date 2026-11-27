@@ -18,6 +18,7 @@ pub mod rest;
 pub mod reusable;
 pub mod run_owner;
 pub mod runsvc;
+pub mod secrets;
 pub mod shard;
 pub mod specs;
 pub mod token;

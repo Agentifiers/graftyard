@@ -137,6 +137,7 @@ impl World {
                 graftyard_actions::shard::ACTIONS_FORMAT_TOKENS,
                 ACTIONS_FORMAT_ANNOTATIONS,
                 graftyard_actions::shard::ACTIONS_FORMAT_AGENT_CI,
+                graftyard_actions::shard::ACTIONS_FORMAT_SECRETS_WAIT,
             ],
             ActionsFold::default(),
             now,
@@ -1147,6 +1148,103 @@ fn an_agent_run_waits_for_approval_then_runs_as_a_fork_run() {
     };
     assert!(b < t, "test waited for build");
     assert!(checks(&w) > 0, "the approved run wrote its checks");
+}
+
+// ---- F142: `secrets-wait` ----
+
+/// F142 (0x15.14): an agent run under `ci: AutoReadOnly`, created waiting on the agent's commit. Its job that names no
+/// secret runs at once as a fork job; its jobs whose steps reference a secret take no runner until `ReleaseSecrets`
+/// for that exact head, and only those released jobs may read secrets afterwards. A release for another head or
+/// repository, or from anyone but the trigger, releases nothing, and a waiting job whose need failed is skipped. On
+/// main no job waits: every job of the run queues at once.
+#[test]
+fn an_agent_runs_secret_jobs_wait_for_the_gate_on_their_own_head_then_alone_read_secrets() {
+    let mut w = World::new();
+    for n in ["lint", "fail", "publish", "deploy", "notify", "ship"] {
+        let ends = if n == "fail" { Conclusion::Failure } else { Conclusion::Success };
+        w.plans.insert(n.into(), Plan { ms: 5_000, ends });
+    }
+    w.register(3);
+    let secret = |n: &str, needs: &[usize], expr: &str| JobSpec {
+        steps: serde_json::json!([{ "type": "action", "environment": { "type": 2, "map": [
+            { "Key": "TOKEN", "Value": { "type": 3, "expr": expr } }
+        ] } }])
+        .to_string()
+        .into(),
+        ..spec(n, needs)
+    };
+    let head = oid(21);
+    let run = WorkflowRun {
+        id: RunId(DbId(0)),
+        repo: REPO,
+        workflow: ".github/workflows/ci.yml".into(),
+        event: "push".into(),
+        head_sha: head.0,
+        head_ref: "refs/heads/graftyard/run-2/fix".into(),
+        trigger: (ChainId::Repo(REPO), Index(4)),
+        attempt: 1,
+        concurrency: None,
+        fork: true,
+    };
+    // `notify` needs `fail` and references a secret: it waits, then is skipped with its need. `ship` needs `lint`,
+    // which succeeds while it waits, so its release queues it at once.
+    let jobs = vec![
+        spec("lint", &[]),
+        spec("fail", &[]),
+        secret("publish", &[], "secrets.NPM_TOKEN"),
+        secret("deploy", &[2], "toJSON(secrets)"),
+        secret("notify", &[1], "secrets['HOOK']"),
+        secret("ship", &[0], "secrets . SHIP"),
+    ];
+    let create = ActionsOp::CreateRunWaiting { create: Box::new(ActionsOp::CreateRun { run, jobs }), head: head.0 };
+    let run = match w.shard_cmd(op(create)) {
+        Some(Ok(ActionsOut::Run(id))) => id,
+        o => panic!("{o:?}"),
+    };
+    let states = |w: &World| -> Vec<JobState> { w.fold().run_jobs(run).iter().map(|j| j.state.clone()).collect() };
+    let s = states(&w);
+    assert!(matches!(s[..2], [JobState::Queued { .. }, JobState::Queued { .. }]), "{s:?}");
+    assert!(
+        s[2..].iter().all(|j| matches!(j, JobState::SecretsWait { head: h, .. } if *h == head.0)),
+        "every job that references a secret waits on the agent's head: {s:?}"
+    );
+
+    w.run_for(2 * MIN);
+    let s = states(&w);
+    assert!(matches!(s[1], JobState::Completed { conclusion: Conclusion::Failure, .. }), "{s:?}");
+    assert!([2, 3, 5].iter().all(|i| matches!(s[*i], JobState::SecretsWait { .. })), "{s:?}");
+    assert!(matches!(s[4], JobState::Completed { conclusion: Conclusion::Skipped, .. }), "{s:?}");
+    assert!(w.running.is_empty(), "no runner took a waiting job");
+
+    let release =
+        |actor, repo, head: ObjectId| ActionsCmd { actor, op: ActionsOp::ReleaseSecrets { repo, head: head.0 } };
+    assert!(matches!(w.shard_cmd(release(ActionsActor::Admin(OWNER), REPO, head)), Some(Err(ActionsErr::Forbidden))));
+    for (repo, h) in [(REPO, oid(22)), (REPO2, head)] {
+        assert!(matches!(w.shard_cmd(release(ActionsActor::Operator, repo, h)), Some(Ok(_))));
+        assert!(matches!(states(&w)[2], JobState::SecretsWait { .. }), "{repo:?} {h:?} released nothing");
+    }
+    assert!(matches!(w.shard_cmd(release(ActionsActor::Operator, REPO, head)), Some(Ok(_))));
+    let s = states(&w);
+    assert!(
+        matches!(
+            s[2..],
+            [JobState::Queued { .. }, JobState::Pending { .. }, JobState::Completed { .. }, JobState::Queued { .. }]
+        ),
+        "{s:?}"
+    );
+
+    w.run_for(2 * MIN);
+    let f = w.fold();
+    let jobs: Vec<JobId> = f.run(run).unwrap().jobs.clone();
+    let s = states(&w);
+    assert!([2, 3, 5].iter().all(|i| s[*i].completed() == Some(Conclusion::Success)), "{s:?}");
+    assert_eq!(jobs.iter().map(|j| f.released(*j)).collect::<Vec<_>>(), [false, false, true, true, false, true]);
+    let reads: Vec<bool> = jobs
+        .iter()
+        .map(|j| graftyard_actions::secrets::reads_secrets(&f.run(run).unwrap().run, f.released(*j)))
+        .collect();
+    assert_eq!(reads, [false, false, true, true, false, true], "only the released jobs read secrets");
+    assert!(f.run(run).unwrap().run.fork, "a released job keeps the fork run's token");
 }
 
 // ---- R24: `workflow_job` to an App ----

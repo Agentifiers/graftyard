@@ -41,9 +41,9 @@ use std::rc::Rc;
 use graftyard_actions::shard::{JobSpec, WorkflowRun};
 use graftyard_actions::specs::Declared;
 use graftyard_actions::trigger::{
-    AgentRun, Carried, IN_FLIGHT_MAX, Item, PrEvent, PrTarget, PushEvent, RETRY_MS, Stream, Tried, agent_run, built,
-    diff_paths, merge_group_run, pr_events, pr_target, pull_request_run, push_base, push_events, push_run, skips_ci,
-    two_dot,
+    AgentRun, Carried, GateEvent, IN_FLIGHT_MAX, Item, PrEvent, PrTarget, PushEvent, RETRY_MS, Stream, Tried,
+    agent_run, built, diff_paths, gate_events, merge_group_run, pr_events, pr_target, pull_request_run, push_base,
+    push_events, push_run, skips_ci, two_dot,
 };
 use graftyard_git as git;
 use graftyard_git::issues::Consumer;
@@ -166,6 +166,7 @@ fn pump(h: &Rc<Host<Repo>>) {
     let now = crate::now_ms();
     let with_prs = pr_trigger(&h.env);
     let with_pushes = push_trigger(&h.env);
+    let with_gates = crate::actions::secrets_wait(&h.env) && crate::actions::agent_ci(&h.env);
     let (started, commit) = {
         let read = |from: Index| -> std::result::Result<(Vec<Carried>, Index), String> {
             let through = Index(f.applied.0.min(from.0 + BATCH).max(from.0));
@@ -188,6 +189,9 @@ fn pump(h: &Rc<Host<Repo>>) {
                 }
                 if with_pushes {
                     items.extend(push_events(&e, now).into_iter().map(|p| item(Item::Push(p))));
+                }
+                if with_gates {
+                    items.extend(gate_events(&e, now).into_iter().map(|g| item(Item::Gate(g))));
                 }
             }
             Ok((items, through))
@@ -354,7 +358,7 @@ async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
             let mut times = Times::default();
             let call = Call::Run { base: None, head: None, actor: None };
             // A queue ref is the queue's, never an agent's (`agent_ci_of`).
-            let agent = AgentRun::No;
+            let agent = (AgentRun::No, q.tip);
             match runs_on(&h.env, &site, &b, f.repo, f.owner, &f.record, q.tip, make, call, agent, &mut times).await {
                 Ok(n) => {
                     let ms = crate::now_ms() - t0;
@@ -373,6 +377,17 @@ async fn run_item(h: &Rc<Host<Repo>>, f: &Found, c: &Carried) -> Tried {
             }
         }
         Item::Pr(p) => pull_request_runs(h, &site, &b, f.repo, f.owner, &f.record, c.index, c.at, p).await,
+        Item::Gate(g) => match gate_released(h, &b, f, g).await {
+            Ok(released) => {
+                let head = g.head.hex();
+                console_log!("actions gate {} #{} {head} at {}: released {released}", f.repo.0.0, g.n.0, c.index.0);
+                Tried::Done
+            }
+            Err(e) => {
+                console_error!("actions gate {} #{} at {}: {e}", f.repo.0.0, g.n.0, c.index.0);
+                Tried::Again
+            }
+        },
         Item::Push(p) => {
             let t0 = crate::now_ms();
             match push_runs(h, &site, &b, f, c, p).await {
@@ -477,8 +492,13 @@ async fn pull_request_try(
             let actor = run_actor(&h.env, p.actor).await?;
             let actor = actor.as_ref().map(|(a, l)| (*a, l.as_str()));
             let call = Call::Run { base: Some(&base), head: head.as_deref(), actor };
-            let agent = agent_ci_of(h, repo, p.n).await?;
-            runs_on(&h.env, site, b, repo, owner, record, merge, make, call, agent, &mut times).await?
+            // The jobs of a waiting run wait on the head this merge was computed from, the agent's commit it tests.
+            let agent = (agent_ci_of(h, repo, p.n).await?.0, v.head);
+            let n = runs_on(&h.env, site, b, repo, owner, record, merge, make, call, agent, &mut times).await?;
+            if waits(&h.env, agent.0) {
+                release_if_gated(h, b, repo, owner, record, agent.1).await?;
+            }
+            n
         }
         PrTarget::Pending | PrTarget::Conflict | PrTarget::None => 0,
     };
@@ -624,7 +644,11 @@ async fn push_runs(
     let mut times = Times::default();
     let agent = agent_ci_on(h, repo, &p.r#ref, p.after).await?;
     let call = Call::Push { actor, event: &event };
-    runs_on(env, site, b, repo, f.owner, record, p.after, make, call, agent, &mut times).await
+    let n = runs_on(env, site, b, repo, f.owner, record, p.after, make, call, agent, &mut times).await?;
+    if waits(env, agent.0) {
+        release_if_gated(h, b, repo, f.owner, record, p.after).await?;
+    }
+    Ok(n)
 }
 
 /// Commit `id`'s raw object from this site's git cache shard: a protocol v2 fetch of the commit alone
@@ -665,15 +689,16 @@ async fn head_commit(
 
 /// `agent-ci`: what the repository's `AgentPolicy.ci` does to a run on `branch` at `head`
 /// (`graftyard_actions::trigger::agent_run`), from the leader's fold and the install's `AgentApp` rows, read once per
-/// event. `AgentRun::No` unless a site day set `GRAFTYARD_AGENT_CI`, so every run is created as before until then.
+/// event, with `head`, the agent's commit an `AutoReadOnly` run's jobs wait on for `AgentGate` (0x15.14). `AgentRun::No`
+/// unless a site day set `GRAFTYARD_AGENT_CI`, so every run is created as before until then.
 async fn agent_ci_on(
     h: &Rc<Host<Repo>>,
     repo: RepoId,
     branch: &git::refs::RefName,
     head: git::refs::ObjectId,
-) -> std::result::Result<AgentRun, String> {
+) -> std::result::Result<(AgentRun, git::refs::ObjectId), String> {
     if !crate::actions::agent_ci(&h.env) {
-        return Ok(AgentRun::No);
+        return Ok((AgentRun::No, head));
     }
     let (ci, gated) = {
         let core = h.core.borrow();
@@ -681,7 +706,85 @@ async fn agent_ci_on(
         (git::tiers::agent_policy(&*fold.core).ci, git::merge::agent_gate_holds(&*fold.core, repo, branch, head))
     };
     let prefixes = agent_prefixes(&h.env).await?;
-    Ok(agent_run(ci, branch, &prefixes, gated))
+    Ok((agent_run(ci, branch, &prefixes, gated), head))
+}
+
+/// Whether an agent run is created waiting (`CreateRunWaiting`, 0x15.14): one under `AutoReadOnly` where a site day set
+/// `GRAFTYARD_SECRETS_WAIT`. The flag decides only what this site sends.
+fn waits(env: &Env, agent: AgentRun) -> bool {
+    agent == AgentRun::ReadOnly && crate::actions::secrets_wait(env)
+}
+
+/// `secrets-wait` (0x15.14): `AgentGate` approval `g`, read again on this leader now. When the gate holds for `g.head`
+/// on its pull request's head branch, `ReleaseSecrets` on the repository's Actions shard; whether it was sent. A
+/// gate that does not hold yet (one approval of two) releases nothing, and a later approval's entry tries again.
+async fn gate_released(
+    h: &Rc<Host<Repo>>,
+    b: &Bindings<'_>,
+    f: &Found,
+    g: &GateEvent,
+) -> std::result::Result<bool, String> {
+    let branch = {
+        let core = h.core.borrow();
+        let core = &*core.as_ref().ok_or("not joined")?.m.group_fold().fold.core;
+        git::tiers::pull_head(core, g.n).filter(|ph| ph.head.repo == f.repo).map(|ph| ph.head.branch)
+    };
+    let Some(branch) = branch else { return Ok(false) };
+    release_on(h, b, f.repo, f.owner, &f.record, &branch, g.head).await
+}
+
+/// After an agent run was created waiting on `head`: the gate read again, so an `AgentGate` that committed between
+/// this item's first read (`agent_ci_on`) and the create, whose own item may have released nothing yet, is not lost.
+/// Either the gate's entry applied before this read and this releases, or after it, and its item's release reaches the
+/// shard after the create committed.
+async fn release_if_gated(
+    h: &Rc<Host<Repo>>,
+    b: &Bindings<'_>,
+    repo: RepoId,
+    owner: AccountId,
+    record: &PlacementRecord,
+    head: git::refs::ObjectId,
+) -> std::result::Result<(), String> {
+    let branches: Vec<git::refs::RefName> = {
+        let core = h.core.borrow();
+        let core = &*core.as_ref().ok_or("not joined")?.m.group_fold().fold.core;
+        git::tiers::pulls_with_head(core, repo, head)
+    };
+    for branch in branches {
+        release_on(h, b, repo, owner, record, &branch, head).await?;
+    }
+    Ok(())
+}
+
+/// `ReleaseSecrets` for `head` when `AgentGate` holds there for a pull request from `branch`, read on this leader.
+/// The shard cannot read the repository's fold (no `deps` reads a repository chain), so the gate is read here; a gate
+/// that stops holding between this read and the commit is the accepted gap in `decisions/DECISIONS.md`,
+/// "`secrets-wait`".
+async fn release_on(
+    h: &Rc<Host<Repo>>,
+    b: &Bindings<'_>,
+    repo: RepoId,
+    owner: AccountId,
+    record: &PlacementRecord,
+    branch: &git::refs::RefName,
+    head: git::refs::ObjectId,
+) -> std::result::Result<bool, String> {
+    let holds = {
+        let core = h.core.borrow();
+        let core = &*core.as_ref().ok_or("not joined")?.m.group_fold().fold.core;
+        git::merge::agent_gate_holds(core, repo, branch, head)
+    };
+    if !holds {
+        return Ok(false);
+    }
+    let chain = ChainId::Actions(owner, graftyard_actions::actions_shard(repo));
+    let body = json!({ "op": "release_secrets", "repo": repo, "head": head.hex() });
+    graftyard_lookup::create(b, chain, record, &json!({})).await?;
+    let (v, _) = graftyard_lookup::call(b, chain, record, "/runsvc", &body).await?;
+    match v["status"].as_u64() {
+        Some(200) => Ok(true),
+        _ => Err(format!("release_secrets answered {v}")),
+    }
 }
 
 /// `agent_ci_on` for pull request `n`'s run: its head branch at its head commit, a same-repository pull request's
@@ -690,14 +793,14 @@ async fn agent_ci_of(
     h: &Rc<Host<Repo>>,
     repo: RepoId,
     n: git::issues::IssueNumber,
-) -> std::result::Result<AgentRun, String> {
+) -> std::result::Result<(AgentRun, git::refs::ObjectId), String> {
     let ph = {
         let core = h.core.borrow();
         git::tiers::pull_head(&*core.as_ref().ok_or("not joined")?.m.group_fold().fold.core, n)
     };
     match ph.filter(|ph| ph.head.repo == repo) {
         Some(ph) => agent_ci_on(h, repo, &ph.head.branch, ph.head_sha).await,
-        None => Ok(AgentRun::No),
+        None => Ok((AgentRun::No, git::refs::ObjectId::ZERO)),
     }
 }
 
@@ -732,7 +835,7 @@ async fn runs_on(
     tip: git::refs::ObjectId,
     make: impl Fn(&str, &str) -> std::result::Result<Option<(WorkflowRun, Vec<JobSpec>, Declared)>, String>,
     call: Call<'_>,
-    agent: AgentRun,
+    (agent, agent_head): (AgentRun, git::refs::ObjectId),
     times: &mut Times,
 ) -> std::result::Result<usize, String> {
     let commit = tip.hex();
@@ -822,6 +925,9 @@ async fn runs_on(
         );
         // `agent-ci`: an agent's run under `ci: Approve` is created held for a writer's approval (0x15.13).
         let body = if agent == AgentRun::Held { graftyard_actions::runsvc::held(body) } else { body };
+        // `secrets-wait`: an agent's run under `ci: AutoReadOnly` is created waiting, so its jobs that reference a
+        // secret wait for `AgentGate` on the agent's own commit, not the pull request's test merge (0x15.14).
+        let body = if waits(env, agent) { graftyard_actions::runsvc::waiting(body, &agent_head.0) } else { body };
         let t = crate::now_ms();
         let created = async {
             graftyard_lookup::create(b, chain, record, &json!({})).await?;
