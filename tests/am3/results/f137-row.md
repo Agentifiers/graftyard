@@ -131,6 +131,71 @@ Prices are from `research/prices.json`. History is from earlier rows on graft-m4
 | Runner account | nothing runs there | $0.00 |
 | **Total** | | **$0.10 to $0.35**, stop **$1.50**, read by `state` and before every line; past it the row tears down and reports |
 
-## Result
+## Result r1 (2026-11-27, from main `b12a07a0`): 6 of 7 steps PASS; octokit FAIL on one check (F155)
 
-Not run yet. The row waits for AM2's rerun teardown line.
+The row started at 10:21Z on the lead's GO, after AM2's rerun teardown (done 10:15Z, 0 containers on either account).
+The `state` at 10:21Z matched the lead's: sites on `3529a45f` (a `d59e6458`, b `cecd6a85`, c `afd86f1c`) with
+`GRAFTYARD_AGENT_CI=1` and `GRAFTYARD_SECRETS_WAIT=1`; edge `50b5577a` with 41 formats, 32.34 to 32.37 off. Logs are in
+`tests/am3/raw/f137-r1/`, and the days in `tests/m4/raw/wp3/f137/r1/`.
+
+| Step | Time (UTC) | Result |
+| --- | --- | --- |
+| `repo` | 10:22 | PASS (5 checks): m3org/f137-r1, pull request A, issue I with a comment, `plain`; m3-ci holds `issues` and `pull_requests` write |
+| `base` | 10:23 | **PASS (21 of 21)**: every request answered as main before any day, and issue I, pull request A and `plain` were unchanged over REST and GraphQL. `gh label edit` got its 404 and `gh issue edit -m` failed on `milestones` being `undefinedField` |
+| Site day | 10:23 to 10:25 | PASS: `deploy exit 0` from `b12a07a0`, a `f8e982af`, b `c34c352c`, c `ba9de861`. Every live flag was kept (`AGENT_CI`, `ARTIFACTS_V4`, `REUSABLE`, `SECRETS_WAIT` and the ones BF-73's day sets) and none added. Each site's plain-text vars were unchanged, and `GRAFTYARD_SECRETS_BRANCH` is unset on all three. This day also shipped F150's 0x15.15 reader |
+| Edge day | 10:25 to 10:29 | PASS: `06370a45` at 100%, `FORMATS_ENABLED` 41 → 44, adding 32.35, 32.36 and 32.37 (none was on before) and removing none. No other plain-text var moved, edgever exit 0 |
+| `octokit` | 10:30 to 10:31 | **FAIL, 26 of 27**: see below |
+| `gh` | 10:33 to 10:34 | **PASS (23 of 23)** |
+| Teardown | 10:34 to 10:35 | PASS: m3org/f137-r1 deleted (204); the shard sweep found no shard container running, and `graft-m4a-shardkill` was deleted. Afterwards graft-m4a's three gitshard applications and the runner account's `graft-runners-runnerbox` each had 0 active instances. 32.35 to 32.37 stay enabled |
+
+### What passed
+
+- **32.35, issue writes (Octokit):** `issues.update` set title and body in one `PATCH`; `updateComment`; `lock` (204,
+  REST `locked: true`) and `unlock` (204, `locked: false`). Each was read back over REST and GraphQL, except lock over
+  GraphQL, which is F152.
+- **32.36, labels:** `getLabel` matched case-insensitively. `updateLabel` renamed `plain` to `plain2` and recoloured
+  it, read back over REST and GraphQL, and the old name answers 404. `deleteLabel` answered 204, then REST 404, and
+  the label is gone from GraphQL. gh's `label create`, `label edit -d` and `label delete` all exited 0 and read back
+  the same way.
+- **32.37, milestones (Octokit):**
+  - `createMilestone` twice returned consecutive numbers, with m3-admin as creator. `V1` was 422.
+  - `getMilestone`; `updateMilestone` closed v2; `listMilestones` open listed v1 and closed listed v2; GraphQL's
+    `milestones(states: [OPEN])` and `milestone(number:)` agreed.
+  - An issue `PATCH` set v1, and v1's `open_issues` read 1. 999 was 422 and changed nothing. `null` cleared it.
+  - `issues.create` with a milestone; `listLabelsForMilestone`.
+  - m3-ci's `pull_requests`-only token deleted its milestone (204, then REST 404 and GraphQL `null`). A `contents`-only
+    token was refused 403 "Resource not accessible by integration". `deleteMilestone` v2 answered 204.
+- **32.37 through gh (F149's writes):** each command exited 0 and read back over REST and GraphQL:
+  - `issue edit -t -b`, `-m`, `--remove-milestone`, and `-t -b -m`.
+  - `issue create -m`.
+  - `pr edit -m` and `--remove-milestone`.
+  - `issue view --json` read title `gh t2` and milestone `gh1`.
+- **The lead's line:** gh's own `IssueUpdate` document with a deleted milestone's id (`MI_kwDOAAEAY84AUAAI`), and with
+  an issue's id, each answered `NOT_FOUND` ("Could not resolve to a node with the global id of …") with `updateIssue`
+  `null`. Issue I's title, body, milestone (`gh1`) and `updated_at` were unchanged over REST and GraphQL both times.
+  `gh issue edit -m nosuch` exited 1 in gh itself, before it sent anything.
+- **The gaps (F152 to F154), each changing nothing:**
+  - `gh issue lock` exited 1 on `activeLockReason` and `locked` being `undefinedField`.
+  - `gh issue comment --edit-last` exited 1 on "a mutation runs through plan".
+  - `gh issue list -m gh1` exited 1 on "search qualifier 'milestone:gh1' is not served".
+
+### The failure: an App's milestone create renders its creator as `ghost[bot]` (F155)
+
+m3-ci's `pull_requests`-only token created a milestone: 201, but its `creator.login` was `ghost[bot]` where the line
+wants `m3-ci[bot]`. A probe by hand before teardown (`tests/am3/raw/f137-r1/creator-probe.txt`) repeated it:
+- The 201 named `ghost[bot]`.
+- Every read of the same milestone, by m3-admin or by the App, named `m3-ci[bot]`.
+- An issue the same App created named `m3-ci[bot]` in its own 201.
+
+So the committed creator is right, and only the create's reply is wrong. Before a POST by an App, the edge reads the
+App's bot login into the directory only for statuses, issues and comments (`workers/edge/src/api.rs`, "A status an
+App sets, or an issue or a comment it writes through REST, names its bot account"). It does not do so for
+`milestones`, so the leader renders a creator the directory cannot name, as `ghost[bot]` (`crate::wire`, `bot_user`).
+The native test (`graphql_milestones_read_what_rest_wrote_and_a_pull_requests_app_writes_them`) checks the creator on
+the read, not on the 201. The fix is one more route in that condition, `["milestones"]` under 32.37, plus a 201
+assertion. It is not built in this row.
+
+### Spend
+
+$0.08 from 10:22:05Z to 10:35Z (graft-m4a $0.08, `graft-agents-m4a-` $0, graft-runners $0.00), against the $1.50 stop and
+the estimate of $0.10 to $0.35.

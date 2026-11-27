@@ -46,7 +46,7 @@ N=$(ls "$O" | grep -c "^$STEP\(-[0-9]*\)\?\.log$" || true)
 L="$O/$STEP$( [ "$N" -gt 0 ] && echo "-$((N + 1))" ).log"
 log() { { date -u +%FT%TZ; git rev-parse --short HEAD; cat; } | scrub >"$L"; cat "$L"; }
 deployment() { api "$B/workers/scripts/$1/deployments" | jq -c --arg n "$1" '.result.deployments[0] | {script: $n, created_on, versions: [.versions[]? | "\(.version_id[0:8]) \(.percentage)"]}'; }
-plain() { api "$B/workers/scripts/$1/settings" | jq -S '[.result.bindings[] | select(.type == "plain_text") | {(.name): .text}] | add'; }
+plain() { api "$B/workers/scripts/$1/settings" | jq -S '[.result.bindings[] | select(.type == "plain_text") | {(.name): .text}] | add' | scrub; }
 formats() { api "$B/workers/scripts/graft-m4a-edge/settings" | jq -r '.result.bindings[] | select(.name == "FORMATS_ENABLED") | .text'; }
 has() { case ",$1," in *",$2,"*) echo 1 ;; *) echo 0 ;; esac; }
 spend() {  # graft-m4a, and the runner account's graft-agents-m4a- and graft-runners, since `repo`
@@ -135,6 +135,8 @@ teardown)
   { node tests/am3/hosted/f137.mjs delete "$O" "f137-$TAG"; echo "delete exit $?"
     python3 tests/fanout/teardown.py --sweep --shardkill 2>&1 | tail -4; echo "sweep exit ${PIPESTATUS[0]}"
   } 2>&1 | log
+  # The day scripts' raw deploy logs and var dumps under $D hold account values; scrub them as `log` does.
+  for f in "$D"/*.json "$D"/*.raw "$D"/*/*.raw "$D"/*/*.log; do [ -f "$f" ] && { scrub <"$f" >"$f.s" && mv "$f.s" "$f"; }; done
   if grep -q "SWEEP FAILED\|delete exit [^0]\|sweep exit [^0]" "$L"; then echo "FAIL: teardown failed or containers left running" >&2; exit 2; fi ;;
 cost) spend 2>&1 | log ;;
 *) echo "step: state repo base site edge octokit gh teardown cost"; exit 2 ;;

@@ -1,0 +1,7 @@
+{"t":1795774955071,"check":"the row's repository is created","ok":true}
+{"t":1795774960102,"check":"issue I, its comment and `plain` are made","ok":true}
+{"t":1795774967856,"check":"branch f pushed","ok":true}
+{"t":1795774969658,"seeded":{"issue":1,"issueNode":"I_kwDOAAEAY84AUIAA","comment":5242880,"pr":2}}
+{"t":1795774969658,"check":"pull request A is open","ok":true}
+{"t":1795774971836,"m3ci_permissions":{"checks":"write","contents":"write","issues":"write","metadata":"read","pull_requests":"write"}}
+{"t":1795774971836,"check":"m3-ci's installation holds issues and pull_requests write (the App lines need both)","ok":true}

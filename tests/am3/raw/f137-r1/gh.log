@@ -1,0 +1,49 @@
+2026-11-27T10:33:15Z
+9e7c8eaf6
+row since 2026-11-27T10:22:05Z: graft-m4a $0.05, graft-agents-m4a- $0, graft-runners $0.0, total $0.05 (stop $1.50)
+2026-11-27T10:33:21.938Z {"check":"milestone gh1 made","ok":true}
+2026-11-27T10:33:23.838Z {"gh":"label create q -c ededed","code":0,"out":""}
+2026-11-27T10:33:24.732Z {"check":"gh label create: exit 0, read back over REST and GraphQL","ok":true}
+2026-11-27T10:33:27.767Z {"gh":"label edit q -d by gh","code":0,"out":""}
+2026-11-27T10:33:28.567Z {"check":"gh label edit: exit 0, description read back over REST and GraphQL","ok":true}
+2026-11-27T10:33:30.014Z {"gh":"label delete q --yes","code":0,"out":""}
+2026-11-27T10:33:31.365Z {"check":"gh label delete: exit 0, REST 404, GraphQL gone","ok":true}
+2026-11-27T10:33:35.434Z {"gh":"issue edit 1 -t gh t -b gh b","code":0,"out":"<edge>/m3org/f137-r1/issues/1\n"}
+2026-11-27T10:33:35.434Z {"check":"gh issue edit -t -b: exit 0","ok":true}
+2026-11-27T10:33:36.271Z {"check":"gh issue edit -t -b read back over REST and GraphQL","ok":true}
+2026-11-27T10:33:39.227Z {"gh":"issue edit 1 -m gh1","code":0,"out":"<edge>/m3org/f137-r1/issues/1\n"}
+2026-11-27T10:33:39.228Z {"check":"gh issue edit -m: exit 0","ok":true}
+2026-11-27T10:33:39.984Z {"check":"gh issue edit -m read back over REST and GraphQL","ok":true}
+2026-11-27T10:33:42.298Z {"gh":"issue edit 1 --remove-milestone","code":0,"out":"<edge>/m3org/f137-r1/issues/1\n"}
+2026-11-27T10:33:42.298Z {"check":"gh issue edit --remove-milestone: exit 0","ok":true}
+2026-11-27T10:33:43.433Z {"check":"gh issue edit --remove-milestone read back over REST and GraphQL","ok":true}
+2026-11-27T10:33:47.057Z {"gh":"issue edit 1 -t gh t2 -b gh b2 -m gh1","code":0,"out":"<edge>/m3org/f137-r1/issues/1\n"}
+2026-11-27T10:33:47.058Z {"check":"gh issue edit -t -b -m: exit 0","ok":true}
+2026-11-27T10:33:47.825Z {"check":"gh issue edit -t -b -m read back over REST and GraphQL (one EditWithMilestone)","ok":true}
+2026-11-27T10:33:50.239Z {"gh":"issue create -t gh made -b b -m gh1","code":0,"out":"<edge>/m3org/f137-r1/issues/5\n"}
+2026-11-27T10:33:51.020Z {"check":"gh issue create -m: exit 0, read back over REST and GraphQL","ok":true}
+2026-11-27T10:33:54.351Z {"gh":"pr edit 2 -m gh1","code":0,"out":"<edge>/m3org/f137-r1/pull/2\n"}
+2026-11-27T10:33:55.085Z {"check":"gh pr edit -m: exit 0, read back over REST and GraphQL","ok":true}
+2026-11-27T10:33:59.194Z {"gh":"pr edit 2 --remove-milestone","code":0,"out":"<edge>/m3org/f137-r1/pull/2\n"}
+2026-11-27T10:34:00.342Z {"check":"gh pr edit --remove-milestone: exit 0, read back over REST and GraphQL","ok":true}
+2026-11-27T10:34:00.865Z {"gh":"issue view 1 --json title,body,milestone","code":0,"out":"{\"body\":\"gh b2\",\"milestone\":{\"number\":5,\"title\":\"gh1\",\"description\":\"\",\"dueOn\":null},\"title\":\"gh t2\"}\n"}
+2026-11-27T10:34:00.866Z {"check":"gh issue view --json reads the title and milestone","ok":true}
+2026-11-27T10:34:06.166Z {"unknown":"a deleted milestone's id","reply":{"data":{"updateIssue":null},"errors":[{"message":"Could not resolve to a node with the global id of 'MI_kwDOAAEAY84AUAAI'.","path":["updateIssue"],"type":"NOT_FOUND"}]}}
+2026-11-27T10:34:06.166Z {"check":"gh's IssueUpdate with a deleted milestone's id as milestoneId: NOT_FOUND","ok":true}
+2026-11-27T10:34:07.476Z {"check":"... and issue I is unchanged over REST and GraphQL (milestone gh1, title, body, updated_at)","ok":true}
+2026-11-27T10:34:09.632Z {"unknown":"an issue's id","reply":{"data":{"updateIssue":null},"errors":[{"message":"Could not resolve to a node with the global id of 'I_kwDOAAEAY84AUIAA'.","path":["updateIssue"],"type":"NOT_FOUND"}]}}
+2026-11-27T10:34:09.632Z {"check":"gh's IssueUpdate with an issue's id as milestoneId: NOT_FOUND","ok":true}
+2026-11-27T10:34:10.939Z {"check":"... and issue I is unchanged over REST and GraphQL (milestone gh1, title, body, updated_at)","ok":true}
+2026-11-27T10:34:11.655Z {"gh":"issue edit 1 -m nosuch","code":1,"out":"failed to update <edge>/m3org/f137-r1/issues/1: 'nosuch' not found\nfailed to update 1 issue\n"}
+2026-11-27T10:34:11.656Z {"note":"gh resolves -m by title before it sends: an unknown title fails in gh, no mutation sent","code":1}
+2026-11-27T10:34:14.626Z {"gh":"issue lock 1","code":1,"out":"GraphQL: Field 'activeLockReason' doesn't exist on type 'Issue' (repository.issue.activeLockReason), Field 'locked' doesn't exist on type 'Issue' (repository.issue.locked)\n"}
+2026-11-27T10:34:14.626Z {"gap":"gh issue lock 1","code":1}
+2026-11-27T10:34:16.207Z {"check":"gap probe gh issue lock changes nothing","ok":true}
+2026-11-27T10:34:18.637Z {"gh":"issue comment 1 --edit-last -b probe","code":1,"out":"GraphQL: a mutation runs through plan\n"}
+2026-11-27T10:34:18.637Z {"gap":"gh issue comment 1 --edit-last -b probe","code":1}
+2026-11-27T10:34:20.244Z {"check":"gap probe gh issue comment changes nothing","ok":true}
+2026-11-27T10:34:21.770Z {"gh":"issue list -m gh1","code":1,"out":"GraphQL: search qualifier 'milestone:gh1' is not served (search)\n"}
+2026-11-27T10:34:21.770Z {"gap":"gh issue list -m gh1","code":1}
+2026-11-27T10:34:23.268Z {"check":"gap probe gh issue list changes nothing","ok":true}
+VERDICT gh PASS 
+gh exit 0

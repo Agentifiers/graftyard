@@ -1,0 +1,7 @@
+2026-11-27T10:32Z, after octokit's FAIL, by hand (node, the same Octokit and auth-app, m3org/f137-r1 before teardown):
+a pull_requests+metadata installation token of m3-ci POSTs milestone "probe-bot", then reads it back.
+POST 201 creator ghost[bot]
+GET (m3-admin) 200 creator m3-ci[bot]   (3 of 3)
+GET (the App token) 200 creator m3-ci[bot]
+control: issue POST by an m3-ci token 201 user m3-ci[bot]; GET 200 user m3-ci[bot]
+DELETE (m3-admin) 204
