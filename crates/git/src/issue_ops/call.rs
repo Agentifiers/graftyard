@@ -89,6 +89,13 @@ pub const REPO_FORMAT_ISSUE_EDIT: Format = Format { family: 0x20, version: 35 };
 /// refuses it before it commits, and the edge sends it only once `FormatsEnable` enabled it. It is main's highest
 /// repository format plus one when it merged ("`format-order`").
 pub const REPO_FORMAT_LABEL_UPDATE: Format = Format { family: 0x20, version: 36 };
+/// Milestones (`decisions/DECISIONS.md`, "`milestones`"): `DefineMilestone`, `DeleteMilestone`, `SetMilestone`,
+/// `EditWithMilestone` and `OpenIssueWithMilestone` (`IssueOp::is_milestone`, tags 48 to 52) and their event
+/// `RepoEvent::Milestones` (tag 51), which a release that reads only up to 32.36 cannot decode. A milestone command
+/// always takes it, whoever sends it, and carries what 32.35 does. A member that cannot read it refuses it before it
+/// commits, and the edge sends it only once `FormatsEnable` enabled it. It is main's highest repository format plus one
+/// when it merged ("`format-order`").
+pub const REPO_FORMAT_MILESTONES: Format = Format { family: 0x20, version: 37 };
 /// AM3-WP2a, base forks (`build/BUILD-PLAN.md`): `RepoEvent::Genesis` (tag 50), whose fork's core `fork` row names the
 /// repository's network. A member that cannot read it refuses it before it commits, and the edge sends it only once
 /// `FormatsEnable` enabled it. It is above every format on main when it merged, not 32.31: an entry takes the highest
@@ -167,6 +174,10 @@ impl IssueCall {
         // 32.23 likewise: a secret or variable command is never an agent, task, or lease command.
         if self.op.is_secret() {
             return crate::secrets::REPO_FORMAT_SECRETS;
+        }
+        // 32.37 likewise: a milestone command, or an edit or create that sets one.
+        if self.op.is_milestone() {
+            return REPO_FORMAT_MILESTONES;
         }
         // 32.36 likewise: a REST label update.
         if self.rest_label {
@@ -382,6 +393,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             REPO_FORMAT_HOST_PAUSE,
             REPO_FORMAT_ISSUE_EDIT,
             REPO_FORMAT_LABEL_UPDATE,
+            REPO_FORMAT_MILESTONES,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
@@ -411,7 +423,9 @@ impl<'de> Deserialize<'de> for IssueCall {
         let edit = fmt(REPO_FORMAT_ISSUE_EDIT);
         // 32.36 carries what 32.35 does.
         let label = fmt(REPO_FORMAT_LABEL_UPDATE);
-        let assign = fmt(REPO_FORMAT_ASSIGN) || comment || pause || edit || label;
+        // 32.37 carries what 32.35 does.
+        let milestones = fmt(REPO_FORMAT_MILESTONES);
+        let assign = fmt(REPO_FORMAT_ASSIGN) || comment || pause || edit || label || milestones;
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         let task_claim = w.claims.as_ref().is_some_and(|c| c.task.is_some());
         if !tasks && (w.agent_session.is_some() || (task_claim && !assign)) {
@@ -458,7 +472,7 @@ impl<'de> Deserialize<'de> for IssueCall {
 impl IssueCall {
     pub fn tiers(&self) -> TierSet {
         // A 32.33 command may write a task's core row (`TaskUpdated`) and its metadata row (`TaskResumed`).
-        if self.pause || matches!(self.op, IssueOp::Edit { .. }) {
+        if self.pause || matches!(self.op, IssueOp::Edit { .. } | IssueOp::EditWithMilestone { .. }) {
             return TierSet::CORE.union(TierSet::METADATA);
         }
         self.cmd().map_or(TierSet::METADATA, |cmd| cmd.tiers())
@@ -474,7 +488,8 @@ impl IssueCall {
         crate::repo::with_install(&mut d, &self.actor);
         let install = ChainId::Authz(graftyard_identity::install_account());
         // An assignment, or an edit that sets assignees, reads the install's `AgentApp` rows for the one assignable bot.
-        if (self.agent_events() || matches!(self.op, IssueOp::Assign { .. } | IssueOp::Edit { .. }))
+        if (self.agent_events()
+            || matches!(self.op, IssueOp::Assign { .. } | IssueOp::Edit { .. } | IssueOp::EditWithMilestone { .. }))
             && !d.contains(&install)
         {
             d.push(install);
@@ -499,14 +514,17 @@ impl IssueCall {
         // The entry's time: an invitation's `expires` is set from it and checked against it.
         let view = RepoView::new(s.fold().tiers(), core, meta, s.at());
         // 32.33 carries a body edit's lease events too, and so does a 32.35 `Edit`, which carries its pause.
-        let edit = matches!(self.op, IssueOp::Edit { .. });
+        // A 32.37 edit with a milestone carries what an `Edit` does.
+        let edit = matches!(self.op, IssueOp::Edit { .. } | IssueOp::EditWithMilestone { .. });
         let leases = self.format() == crate::repo::REPO_FORMAT_LEASES || self.pause || edit;
         let (evs, out) = if self.op.is_task() {
             cmd.decide_task(&view, deps, s.at(), s.applied(), leases, s.actor_writes())?
         } else if self.op.is_lease() {
             cmd.decide_lease(&view, deps, s.at())?
         } else {
-            let bot = matches!(self.format(), REPO_FORMAT_ROUTES | REPO_FORMAT_ISSUE_COMMENT);
+            // A REST create with a milestone (32.37) is authored as 32.29's is.
+            let bot = matches!(self.format(), REPO_FORMAT_ROUTES | REPO_FORMAT_ISSUE_COMMENT)
+                || matches!(self.op, IssueOp::OpenIssueWithMilestone { .. });
             let pause = (self.pause || edit).then(|| s.applied());
             cmd.decide_in(&view, deps, self.agent_events(), self.session.as_ref(), leases, self.reviews, bot, pause)?
         };

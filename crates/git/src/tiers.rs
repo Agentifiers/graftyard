@@ -28,7 +28,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::blob::BlobRef;
-use crate::issues::{AssetRecord, LfsLockEvent, ReleaseRecord, RepoReleaseId};
+use crate::issues::{AssetRecord, LfsLockEvent, MilestoneEvent, ReleaseRecord, RepoReleaseId};
 use crate::issues::{
     CHECK_RETENTION_DEFAULT, CheckConclusion, CheckRunUpdate, CheckSource, CheckSuiteUpdate, CommentEvent,
     CommentTarget, Consumer, Grantee, HeadSpec, IssueChange, IssueKind, IssueNumber, LabelEvent, LabelName, LockReason,
@@ -93,7 +93,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Watchers(_) => TierSet::METADATA,
         RepoEvent::Split(x) => crate::split::tiers(x),
         RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => TierSet::CORE,
-        RepoEvent::WorkflowJob(_) | RepoEvent::Assigned { .. } => TierSet::METADATA,
+        RepoEvent::WorkflowJob(_) | RepoEvent::Assigned { .. } | RepoEvent::Milestones(_) => TierSet::METADATA,
     }
 }
 
@@ -221,6 +221,12 @@ pub const METADATA: Schema = Schema {
         t("watch_count", &[]),
         // Format 32.20: the parent's slim cursor and a child member's restamp (`crate::split`).
         t("split", &["k"]),
+        // Milestones, 32.37: milestones by number, the highest number used, each issue's milestone, and each milestone's
+        // issues by state, which its `open_issues` and `closed_issues` count.
+        t("milestone", &["n"]),
+        t("milestone_last", &[]),
+        t("issue_milestone", &["n"]),
+        t("milestone_issue", &["milestone", "open", "n"]),
     ],
 };
 
@@ -411,6 +417,52 @@ pub struct LabelRow {
     pub name: LabelName,
     pub color: [u8; 3],
     pub description: Option<Box<str>>,
+}
+
+/// The metadata `milestone` row (format 32.37).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct MilestoneRow {
+    pub id: DbId,
+    pub title: Box<str>,
+    pub description: Option<Box<str>>,
+    pub open: bool,
+    pub due_on: Option<Timestamp>,
+    pub creator: Option<AccountId>,
+    pub created: Timestamp,
+    pub updated: Timestamp,
+    pub closed: Option<Timestamp>,
+}
+
+/// Milestone `n`'s row.
+pub fn milestone(meta: &(impl Read + ?Sized), n: u32) -> Option<MilestoneRow> {
+    get_rec(meta, "milestone", &[int(i64::from(n))])
+}
+
+/// Every milestone, by number.
+pub fn milestones(meta: &(impl Read + ?Sized)) -> Vec<(u32, MilestoneRow)> {
+    meta.prefix("milestone", &[])
+        .into_iter()
+        .filter_map(|(k, _)| match k.first() {
+            Some(Val::Int(n)) => Some((*n as u32, get_rec(meta, "milestone", &k)?)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The highest milestone number used, deleted ones included, so a number is never handed out twice.
+pub fn milestone_last(meta: &(impl Read + ?Sized)) -> u32 {
+    get_rec(meta, "milestone_last", &[]).unwrap_or(0)
+}
+
+/// Issue `n`'s milestone number.
+pub fn issue_milestone(meta: &(impl Read + ?Sized), n: IssueNumber) -> Option<u32> {
+    get_rec(meta, "issue_milestone", &[n_key(n)])
+}
+
+/// Milestone `m`'s open and closed issues and pull requests, from the `milestone_issue` index.
+pub fn milestone_counts(meta: &(impl Read + ?Sized), m: u32) -> (usize, usize) {
+    let count = |open: bool| meta.prefix("milestone_issue", &[int(i64::from(m)), int(i64::from(open))]).len();
+    (count(true), count(false))
 }
 
 /// The metadata `release` row.
@@ -962,7 +1014,7 @@ impl RepoTiers {
             }
             RepoEvent::Split(x) => crate::split::write_core(w, x, at),
             RepoEvent::ActionsSecret { .. } | RepoEvent::ActionsVariable { .. } => crate::secrets::write_core(w, ev),
-            RepoEvent::WorkflowJob(_) | RepoEvent::Assigned { .. } => {}
+            RepoEvent::WorkflowJob(_) | RepoEvent::Assigned { .. } | RepoEvent::Milestones(_) => {}
         }
     }
 
@@ -976,6 +1028,11 @@ impl RepoTiers {
                 if was != row.open {
                     w.delete("issue_order", &order_key(row.kind, was, n));
                     mark(w, "issue_order", order_key(row.kind, row.open, n));
+                    // Milestones (32.37): its milestone's counts move in the same entry. An issue with no milestone has no row.
+                    if let Some(m) = issue_milestone(w, n) {
+                        w.delete("milestone_issue", &milestone_issue_key(m, was, n));
+                        mark(w, "milestone_issue", milestone_issue_key(m, row.open, n));
+                    }
                 }
                 put_rec(w, "issue", vec![n_key(n)], &row);
             }
@@ -1296,9 +1353,62 @@ impl RepoTiers {
                 touch(w, *n, &|_| {});
             }
             RepoEvent::TaskResumed { session, snapshot } => crate::task::write_resumed_meta(w, session, *snapshot),
+            RepoEvent::Milestones(m) => match m {
+                MilestoneEvent::Defined { n, id, title, description, open, due_on, actor } => {
+                    let was = milestone(w, *n);
+                    if was.is_none() {
+                        assigned(w, ev, Tier::Metadata, *id);
+                        let last = (*n).max(milestone_last(w));
+                        put_rec(w, "milestone_last", Vec::new(), &last);
+                    }
+                    let closed = match (&was, open) {
+                        (_, true) => None,
+                        (Some(MilestoneRow { closed: Some(c), .. }), false) => Some(*c),
+                        (_, false) => Some(at),
+                    };
+                    let row = MilestoneRow {
+                        id: *id,
+                        title: title.clone(),
+                        description: description.clone(),
+                        open: *open,
+                        due_on: *due_on,
+                        creator: was.as_ref().map_or(*actor, |r| r.creator),
+                        created: was.as_ref().map_or(at, |r| r.created),
+                        updated: at,
+                        closed,
+                    };
+                    put_rec(w, "milestone", vec![int(i64::from(*n))], &row);
+                }
+                MilestoneEvent::Deleted { n } => {
+                    w.delete("milestone", &[int(i64::from(*n))]);
+                    for (k, _) in w.prefix("milestone_issue", &[int(i64::from(*n))]) {
+                        if let Some(Val::Int(i)) = k.get(2) {
+                            w.delete("issue_milestone", &[int(*i)]);
+                        }
+                        w.delete("milestone_issue", &k);
+                    }
+                }
+                MilestoneEvent::Set { issue: n, milestone: to, .. } => {
+                    let Some(row) = issue(w, *n) else { return };
+                    if let Some(from) = issue_milestone(w, *n) {
+                        w.delete("milestone_issue", &milestone_issue_key(from, row.open, *n));
+                        w.delete("issue_milestone", &[n_key(*n)]);
+                    }
+                    if let Some(m) = to {
+                        put_rec(w, "issue_milestone", vec![n_key(*n)], m);
+                        mark(w, "milestone_issue", milestone_issue_key(*m, row.open, *n));
+                    }
+                    touch(w, *n, &|_| {});
+                }
+            },
             _ => {}
         }
     }
+}
+
+/// The `milestone_issue` key: the milestone, the issue's state, and its number.
+fn milestone_issue_key(m: u32, open: bool, n: IssueNumber) -> Vec<Val> {
+    vec![int(i64::from(m)), int(i64::from(open)), n_key(n)]
 }
 
 /// Writes a check row unless the stored one has a version at or above it, so a repeat or a late older update

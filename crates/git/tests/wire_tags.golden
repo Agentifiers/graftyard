@@ -52,6 +52,7 @@ git::repo::RepoEvent 47 Compacted 2f00000c726566732f68656164732f610101
 git::repo::RepoEvent 48 Assigned 3001000000
 git::repo::RepoEvent 49 TaskResumed 31000101
 git::repo::RepoEvent 50 Genesis 320202016100
+git::repo::RepoEvent 51 Milestones 33000102016100000000
 git::issue_ops::IssueOp<git::blob::BlobRef> 0 OpenIssue 00016101610000
 git::issue_ops::IssueOp<git::blob::BlobRef> 1 OpenPr 01020000016101610001010101010101010101010101010101010101010101010101010101010101010101010101010101
 git::issue_ops::IssueOp<git::blob::BlobRef> 2 Close 0201
@@ -100,6 +101,11 @@ git::issue_ops::IssueOp<git::blob::BlobRef> 44 DeleteActionsVariable 2c000161
 git::issue_ops::IssueOp<git::blob::BlobRef> 45 CreateRun 2d00000161
 git::issue_ops::IssueOp<git::blob::BlobRef> 46 Assign 2e010000
 git::issue_ops::IssueOp<git::blob::BlobRef> 47 Edit 2f01000000
+git::issue_ops::IssueOp<git::blob::BlobRef> 48 DefineMilestone 30000161000000
+git::issue_ops::IssueOp<git::blob::BlobRef> 49 DeleteMilestone 3101
+git::issue_ops::IssueOp<git::blob::BlobRef> 50 SetMilestone 320100
+git::issue_ops::IssueOp<git::blob::BlobRef> 51 EditWithMilestone 330100000000
+git::issue_ops::IssueOp<git::blob::BlobRef> 52 OpenIssueWithMilestone 3401610161000001
 id::AuthzEvent 0 Opened 000000
 id::AuthzEvent 1 Member 010200
 id::AuthzEvent 2 Grant 02020200
@@ -880,3 +886,6 @@ id::sealed::SecretVisibility 2 Selected 02
 git::workflow_job::JobAction 0 Queued 00
 git::workflow_job::JobAction 1 InProgress 01
 git::workflow_job::JobAction 2 Completed 02
+git::issues::MilestoneEvent 0 Defined 000102016100000000
+git::issues::MilestoneEvent 1 Deleted 0101
+git::issues::MilestoneEvent 2 Set 02010000

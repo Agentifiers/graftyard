@@ -333,6 +333,7 @@ pub fn repo_reads() -> Vec<Format> {
         graftyard_git::issue_ops::call::REPO_FORMAT_FORKS,
         graftyard_git::issue_ops::call::REPO_FORMAT_ISSUE_EDIT,
         graftyard_git::issue_ops::call::REPO_FORMAT_LABEL_UPDATE,
+        graftyard_git::issue_ops::call::REPO_FORMAT_MILESTONES,
     ]
 }
 

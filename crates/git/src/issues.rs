@@ -250,6 +250,26 @@ pub enum LabelEvent {
     Applied { n: IssueNumber, add: SmallVec<[LabelId; 4]>, remove: SmallVec<[LabelId; 4]>, actor: ActorId },
 }
 
+/// Milestones, format 32.37 (`crate::issue_ops::call::REPO_FORMAT_MILESTONES`): a repository's milestones, numbered from 1
+/// per repository, and which milestone each issue or pull request is in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MilestoneEvent {
+    /// A create (the number after every earlier one) or an update of milestone `n`, whole.
+    Defined {
+        n: u32,
+        id: DbId,
+        title: Box<str>,
+        description: Option<Box<str>>,
+        open: bool,
+        due_on: Option<Timestamp>,
+        actor: ActorId,
+    },
+    /// Milestone `n` and every issue's link to it go.
+    Deleted { n: u32 },
+    /// Issue `issue`'s milestone, or none.
+    Set { issue: IssueNumber, milestone: Option<u32>, actor: ActorId },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Pusher {
     User(UserId),

@@ -80,6 +80,13 @@ const reqs = [
   ["rest-issue-comment-delete-reader", "DELETE", `/api/v3/repos/${seed.login}/${seed.repo}/issues/comments/${seed2.comment}`, reader],
   ["rest-repo-assignee", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/assignees/${seed.login}`, tok],
   ["rest-repo-assignee-reader", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/assignees/cw2`, tok],
+  // Milestones are served only once 32.37 is enabled, which this bed does not enable: every route, and an issue
+  // body's `milestone`, stay main's answer.
+  ["rest-milestones", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/milestones`, tok],
+  ["rest-milestone-1", "GET", `/api/v3/repos/${seed.login}/${seed.repo}/milestones/1`, tok],
+  ["rest-milestone-create", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/milestones`, { ...tok, "content-type": "application/json" }, JSON.stringify({ title: "v1" })],
+  ["rest-milestone-delete", "DELETE", `/api/v3/repos/${seed.login}/${seed.repo}/milestones/1`, tok],
+  ["rest-issue-1-patch-milestone", "PATCH", `/api/v3/repos/${seed.login}/${seed.repo}/issues/1`, { ...tok, "content-type": "application/json" }, JSON.stringify({ milestone: 1 })],
   ["rest-label-write", "POST", `/api/v3/repos/${seed.login}/${seed.repo}/labels`, { ...tok, "content-type": "application/json" }, "LABEL"],
   ["graphql", "POST", "/api/graphql", { ...tok, "content-type": "application/json" }, JSON.stringify({ query: "{ repository(owner: \"cw\", name: \"r\") { name } }" })],
 ];

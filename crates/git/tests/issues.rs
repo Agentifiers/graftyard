@@ -1826,3 +1826,130 @@ fn a_rest_label_update_is_32_36_and_keeps_its_issues() {
     wire["format"] = serde_json::json!([0x20, 36]);
     assert!(serde_json::from_value::<IssueCall>(wire).is_err(), "32.36 marks only a label update");
 }
+
+/// Milestones (format 32.37): numbers count from 1 and are never reused, a title another milestone has in any case is
+/// refused, an issue's milestone moves its counts and so does closing or reopening the issue in the entry that does it,
+/// a delete clears every issue's milestone, a reader's set changes nothing, and an edit with a milestone commits whole
+/// or not at all. Every milestone command crosses the binding as 32.37, and 32.37 on any other command is malformed.
+#[test]
+fn milestones_number_count_and_clear_in_one_entry() {
+    use graftyard_git::issue_ops::call::{IssueCall, REPO_FORMAT_MILESTONES};
+    use graftyard_git::tiers::{issue_milestone, milestone, milestone_counts};
+    let mut c = setup(2, 91);
+    let define = |n, title: &str, open| IssueOp::DefineMilestone {
+        n,
+        title: title.into(),
+        description: None,
+        open,
+        due_on: Some(Timestamp(5 * DAY)),
+    };
+    let open_issue = |c: &mut Chain| match c.commit(
+        WRITER,
+        IssueOp::OpenIssue { title: "t".into(), body: "".into(), labels: SmallVec::new(), assignees: SmallVec::new() },
+    ) {
+        Ok(IssueOut::Number(n)) => n,
+        o => panic!("{o:?}"),
+    };
+    let meta = |c: &Chain| c.members[1].meta.clone();
+    assert!(matches!(c.commit(WRITER, define(None, "v1", true)), Ok(IssueOut::Id(_))));
+    assert!(matches!(c.commit(WRITER, define(None, "v2", true)), Ok(IssueOut::Id(_))));
+    assert_eq!(c.commit(WRITER, define(None, "V1", true)), Err(IssueErr::Exists), "a taken title, in any case");
+    assert_eq!(c.commit(READER, define(None, "v3", true)), Err(IssueErr::Forbidden));
+    assert_eq!(c.commit(WRITER, define(Some(9), "v9", true)), Err(IssueErr::NotFound));
+    assert_eq!(c.commit(WRITER, define(None, " ", true)), Err(IssueErr::Invalid("milestone title")));
+    assert_eq!(milestone(&meta(&c), 2).map(|m| m.title), Some("v2".into()));
+
+    let (a, b) = (open_issue(&mut c), open_issue(&mut c));
+    let set = |n, m| IssueOp::SetMilestone { n, milestone: m };
+    c.commit(WRITER, set(a, Some(1))).unwrap();
+    c.commit(WRITER, set(b, Some(1))).unwrap();
+    assert_eq!(milestone_counts(&meta(&c), 1), (2, 0));
+    assert_eq!(c.commit(READER, set(a, Some(2))), Ok(IssueOut::Done), "a reader's set is ignored");
+    assert_eq!(issue_milestone(&meta(&c), a), Some(1));
+    assert_eq!(c.commit(WRITER, set(a, Some(7))), Err(IssueErr::Invalid("milestone")));
+
+    // Closing and reopening an issue moves its milestone's counts in the same entry.
+    let state = |open| IssueChange::State { open, reason: None };
+    c.commit(WRITER, IssueOp::Change { n: a, change: state(false) }).unwrap();
+    assert_eq!(milestone_counts(&meta(&c), 1), (1, 1));
+    c.commit(WRITER, IssueOp::Close { n: b }).unwrap();
+    assert_eq!(milestone_counts(&meta(&c), 1), (0, 2));
+    c.commit(WRITER, IssueOp::Change { n: a, change: state(true) }).unwrap();
+    assert_eq!(milestone_counts(&meta(&c), 1), (1, 1));
+    // Moving an issue to another milestone moves it between their counts; clearing it removes it.
+    c.commit(WRITER, set(a, Some(2))).unwrap();
+    assert_eq!((milestone_counts(&meta(&c), 1), milestone_counts(&meta(&c), 2)), ((0, 1), (1, 0)));
+    c.commit(WRITER, set(a, None)).unwrap();
+    assert_eq!((issue_milestone(&meta(&c), a), milestone_counts(&meta(&c), 2)), (None, (0, 0)));
+
+    // Closing a milestone stamps `closed`; editing it closed keeps the stamp; reopening clears it.
+    c.commit(WRITER, define(Some(1), "v1", false)).unwrap();
+    let closed = milestone(&meta(&c), 1).unwrap().closed;
+    assert!(closed.is_some());
+    c.now = Timestamp(c.now.0 + 1000);
+    c.commit(WRITER, define(Some(1), "v1.0", false)).unwrap();
+    assert_eq!(milestone(&meta(&c), 1).map(|m| (m.title, m.closed)), Some(("v1.0".into(), closed)));
+    c.commit(WRITER, define(Some(1), "v1.0", true)).unwrap();
+    assert_eq!(milestone(&meta(&c), 1).unwrap().closed, None);
+
+    // A delete clears its issues' milestone, and its number is not handed out again.
+    assert_eq!(c.commit(READER, IssueOp::DeleteMilestone { n: 1 }), Err(IssueErr::Forbidden));
+    c.commit(WRITER, IssueOp::DeleteMilestone { n: 1 }).unwrap();
+    assert_eq!((milestone(&meta(&c), 1), issue_milestone(&meta(&c), b)), (None, None));
+    assert_eq!(c.rows(Tier::Metadata, "milestone_issue"), 0);
+    c.commit(WRITER, define(None, "v1", true)).unwrap();
+    assert!(milestone(&meta(&c), 3).is_some() && milestone(&meta(&c), 1).is_none(), "number 3, not 1");
+
+    // An edit with a milestone is all or nothing: a missing milestone refuses the title change with it.
+    let edit = |m| IssueOp::EditWithMilestone {
+        n: b,
+        changes: smallvec![IssueChange::Title("renamed".into())],
+        labels: None,
+        assignees: None,
+        milestone: m,
+    };
+    let title = |c: &Chain| {
+        graftyard_git::tiers::get_rec::<graftyard_git::tiers::IssueRow>(
+            &c.members[0].meta,
+            "issue",
+            &[graftyard_git::tiers::n_key(b)],
+        )
+        .unwrap()
+        .title
+    };
+    assert_eq!(c.commit(WRITER, edit(Some(1))), Err(IssueErr::Invalid("milestone")));
+    assert_eq!(&*title(&c), "t");
+    c.commit(WRITER, edit(Some(3))).unwrap();
+    assert_eq!((&*title(&c), issue_milestone(&meta(&c), b)), ("renamed", Some(3)));
+    // A create with a milestone sets it in the create's own entry; a reader's create keeps the issue and drops it.
+    let create = IssueOp::OpenIssueWithMilestone {
+        title: "new".into(),
+        body: "".into(),
+        labels: SmallVec::new(),
+        assignees: SmallVec::new(),
+        milestone: 3,
+    };
+    let entries = c.log.len();
+    let Ok(IssueOut::Number(n)) = c.commit(WRITER, create.clone()) else { panic!() };
+    assert_eq!((c.log.len(), issue_milestone(&meta(&c), n)), (entries + 1, Some(3)));
+    let Ok(IssueOut::Number(r)) = c.commit(READER, create.clone()) else { panic!() };
+    assert_eq!(issue_milestone(&meta(&c), r), None);
+    // `b`, closed above, joined milestone 3 as closed; the writer's new issue is open.
+    assert_eq!(milestone_counts(&meta(&c), 3), (1, 1));
+    c.agree();
+
+    // The wire: every milestone command is 32.37, and 32.37 on another command is malformed.
+    let blobless = |op: IssueOp| op.map_blob(|_| Err::<graftyard_git::blob::BlobRef, ()>(())).expect("no blob");
+    let call = |op| IssueCall::new(blobless(op), who(WRITER), RequestId(Ulid(92)), serde_json::json!({}));
+    for op in [define(None, "x", true), IssueOp::DeleteMilestone { n: 3 }, set(a, None), edit(None), create] {
+        let m = call(op);
+        assert_eq!(m.format(), REPO_FORMAT_MILESTONES, "{:?}", m.op);
+        let wire = serde_json::to_value(&m).unwrap();
+        assert_eq!(wire["format"], serde_json::json!([0x20, 37]));
+        let back: IssueCall = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.op, m.op);
+    }
+    let mut wire = serde_json::to_value(call(IssueOp::Close { n: a })).unwrap();
+    wire["format"] = serde_json::json!([0x20, 37]);
+    assert!(serde_json::from_value::<IssueCall>(wire).is_err(), "32.37 is only a milestone command's");
+}

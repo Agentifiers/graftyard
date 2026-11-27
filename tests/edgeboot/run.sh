@@ -72,7 +72,9 @@ for p in "/api/v3/repos/o/r" "/api/v3/repos/o/r/pulls?state=all&per_page=5" "/ap
   "/o/r.git/git-upload-pack" "PATCH /api/v3/repos/o/r/issues/1" "PATCH /api/v3/repos/o/r/issues/comments/1" "DELETE /api/v3/repos/o/r/issues/comments/1" \
   "PUT /api/v3/repos/o/r/issues/1/lock" "DELETE /api/v3/repos/o/r/issues/1/lock" "/api/v3/repos/o/r/issues/1/assignees/o" \
   "/api/v3/repos/o/r/labels/bug" "PATCH /api/v3/repos/o/r/labels/bug" "DELETE /api/v3/repos/o/r/labels/bug" \
-  "/api/v3/repos/o/r/assignees/o"; do
+  "/api/v3/repos/o/r/assignees/o" "/api/v3/repos/o/r/milestones" "/api/v3/repos/o/r/milestones/1" \
+  "/api/v3/repos/o/r/milestones/1/labels" "POST /api/v3/repos/o/r/milestones" "PATCH /api/v3/repos/o/r/milestones/1" \
+  "DELETE /api/v3/repos/o/r/milestones/1"; do
   m=GET; case "${p##*/}" in git-upload-pack|comments) m=POST;; esac
   # A request written "METHOD path" names its method: F141's issue PATCH, through its 32.33 gate, and F137's comment
   # edit and delete, the lock, through 32.35's (both off here: 404, never a trap).

@@ -449,6 +449,10 @@ pub enum RepoEvent {
         name: graftyard_identity::RepoName,
         fork_of: Option<(RepoId, Index)>,
     },
+    // Milestones, format 32.37 (`crate::issue_ops::call::REPO_FORMAT_MILESTONES`): tag 51.
+    /// Metadata. A milestone defined or deleted, or an issue's milestone set (`crate::tiers`, the `milestone`,
+    /// `issue_milestone` and `milestone_issue` tables).
+    Milestones(crate::issues::MilestoneEvent),
 }
 
 impl RepoEvent {
@@ -1015,6 +1019,9 @@ impl Fold for RepoFold {
             | RepoEvent::Hook { actor, .. }
             | RepoEvent::ActionsSecret { actor, .. }
             | RepoEvent::ActionsVariable { actor, .. } => by(actor),
+            RepoEvent::Milestones(
+                crate::issues::MilestoneEvent::Defined { actor, .. } | crate::issues::MilestoneEvent::Set { actor, .. },
+            ) => by(actor),
             RepoEvent::Assigned { actor: Some(a), .. } => match AppId::of_bot(*a) {
                 Some(x) => app(x),
                 None => account(*a),
@@ -2054,6 +2061,8 @@ impl Record for RepoEvent {
             RepoEvent::Genesis { owner, network, name, fork_of } => {
                 return tagged(out, 50, &(owner, network, name, fork_of));
             }
+            // Milestones, 32.37: tag 51.
+            RepoEvent::Milestones(m) => return tagged(out, 51, m),
         };
         e.u8(0);
         e.u128(push.0.0);

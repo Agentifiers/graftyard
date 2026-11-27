@@ -63,10 +63,12 @@ pub enum NodeType {
     Bot,
     /// A pull request's `merged` issue event (F137), GitHub's `ME_` prefix.
     MergedEvent,
+    /// A milestone (32.37), GitHub's `MI_` prefix.
+    Milestone,
 }
 
 impl NodeType {
-    const ALL: [NodeType; 14] = [
+    const ALL: [NodeType; 15] = [
         Self::User,
         Self::Organization,
         Self::Repository,
@@ -81,6 +83,7 @@ impl NodeType {
         Self::ReleaseAsset,
         Self::Bot,
         Self::MergedEvent,
+        Self::Milestone,
     ];
 
     pub const fn prefix(self) -> &'static str {
@@ -99,6 +102,7 @@ impl NodeType {
             Self::ReleaseAsset => "RA",
             Self::Bot => "BOT",
             Self::MergedEvent => "ME",
+            Self::Milestone => "MI",
         }
     }
 
@@ -118,6 +122,7 @@ impl NodeType {
             Self::ReleaseAsset => "ReleaseAsset",
             Self::Bot => "Bot",
             Self::MergedEvent => "MergedEvent",
+            Self::Milestone => "Milestone",
         }
     }
 
