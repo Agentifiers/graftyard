@@ -578,7 +578,13 @@ fn a_committed_put_hook_renders_ghes_hook_with_location() {
     let (h, d) = (host(), Dir::new(OWNER));
     let r = c.repo(0, &h, &d);
     let dir = graftyard_api::hosted::HostedDir { home: Some(d.home()), ..Default::default() };
-    let render = Render { host: "ghes.example.com".into(), isolation: false, dir, what: What::Hook { created: true } };
+    let render = Render {
+        host: "ghes.example.com".into(),
+        isolation: false,
+        dir,
+        what: What::Hook { created: true },
+        doc: None,
+    };
     let reply = render_ok(&render, &ack(out), r.core, r.meta).reply();
     assert_eq!(reply.status, 201);
     assert!(reply.header("location").unwrap().starts_with("https://ghes.example.com/api/v3/repos/o/r/hooks/"));

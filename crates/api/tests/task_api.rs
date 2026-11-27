@@ -573,7 +573,7 @@ fn a_patch_reply_over_the_command_logins_is_the_whole_tier_reply() {
             dir.logins = ids.iter().map(|a| (a.0.0, login(a.0.0))).collect();
             dir.logins.insert(OWNER, "o".into());
             let what = What::Task { created: false, contents: true };
-            let mut r = Render { host: "graftyard.example".into(), isolation: false, dir, what };
+            let mut r = Render { host: "graftyard.example".into(), isolation: false, dir, what, doc: None };
             fill_authz(&mut r, Some(&w.ident.owner));
             render_ok(&r, &acked, &f.core, &f.meta)
         };
@@ -611,6 +611,7 @@ fn a_leader_rendered_reply_is_the_edge_rendered_reply() {
         isolation: false,
         dir: HostedDir { home: Some(at(REPO)), authz, ..HostedDir::default() },
         what,
+        doc: None,
     };
     let call = |op, r: &Render, rid| {
         let mut c = IssueCall::new(op, app(CLAUDE), RequestId(Ulid(rid)), serde_json::to_value(r).unwrap());

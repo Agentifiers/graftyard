@@ -965,6 +965,7 @@ fn a_hosted_mutation_renders_on_the_member_as_in_process() {
             field: planned.field.clone(),
             subject: planned.subject.map(|n| n.0),
         },
+        doc: None,
     };
     let render_req: Render = serde_json::from_value(serde_json::to_value(&render_req).unwrap()).unwrap();
     let Plan::Issue(op) = planned.plan.clone() else { panic!() };
@@ -1166,7 +1167,8 @@ fn rest_issue_create_and_a_bot_status_render_ghes_shapes() {
     let app = graftyard_identity::stateless::ACTIONS_APP;
     logins.insert(app.bot().0.0, "github-actions[bot]".into());
     let hosted = HostedDir { home: Some(dir.home()), logins, ..Default::default() };
-    let render = |what: What| Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what };
+    let render =
+        |what: What| Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what, doc: None };
     let m = &c.members[0];
     let reply = render_ok(&render(What::IssueCreated), &ack(out), &m.core, &m.meta).reply();
     assert_eq!(reply.status, 201);
@@ -1233,6 +1235,7 @@ fn rest_issue_comment_create_renders_the_issue_comment() {
         isolation: false,
         dir: hosted.clone(),
         what: What::IssueCommentCreated { n },
+        doc: None,
     };
     for bad in [json!({}), json!({ "body": 7 })] {
         let e = plan_create_issue_comment(&c.repo(0, &h, &dir), "1", &bad).unwrap_err();
@@ -1312,7 +1315,8 @@ fn rest_assignees_add_remove_and_replace_render_the_issue() {
     let logins: std::collections::BTreeMap<i64, String> =
         [(OWNER, "o".to_owned()), (WRITER, "alice".to_owned()), (READER, "bob".to_owned())].into();
     let hosted = HostedDir { home: Some(dir.home()), logins, ..Default::default() };
-    let render = |what: What| Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what };
+    let render =
+        |what: What| Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what, doc: None };
     let m = &c.members[0];
     let reply = render_ok(&render(What::IssueAssigned { n: 1, created: true }), &ack(out), &m.core, &m.meta).reply();
     assert_eq!(reply.status, 201);
@@ -1374,6 +1378,7 @@ fn rest_issue_patch_of_one_field_is_one_change() {
         isolation: false,
         dir: hosted,
         what: What::IssueAssigned { n: 1, created: false },
+        doc: None,
     };
     let m = &c.members[0];
     let reply = render_ok(&render, &ack(out), &m.core, &m.meta).reply();
@@ -1401,7 +1406,8 @@ fn rest_issue_edits_commit_and_render_as_ghes_does() {
     let logins: std::collections::BTreeMap<i64, String> =
         [(OWNER, "o".to_owned()), (WRITER, "alice".to_owned()), (READER, "bob".to_owned())].into();
     let hosted = HostedDir { home: Some(dir.home()), logins, ..Default::default() };
-    let render = |what: What| Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what };
+    let render =
+        |what: What| Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what, doc: None };
 
     // A single title is the `Change` it always was; title with state is one `Edit`.
     let op = plan_issue_update(&c.repo(0, &h, &dir), "1", &json!({ "title": "t" })).unwrap();
@@ -1492,6 +1498,128 @@ fn rest_issue_edits_commit_and_render_as_ghes_does() {
         ("99", Some(RepoPermission::Write), 404),
     ] {
         assert_eq!(check_assignee(&r, n, perm).status, want, "{n} {perm:?}");
+    }
+}
+
+/// F137's label routes: `GET labels/{name}` finds the label in any case and percent-encoded, `PATCH` renames,
+/// recolors and clears in one `DefineLabel` of its id and answers 200 with the label after the entry, a taken
+/// `new_name` is gh's `already_exists`, `DELETE` answers 204 and the name is then 404, and `GET assignees/{login}` is
+/// 204 only for a write-or-more account. A refused delete names its own route's documentation, never a release's.
+#[test]
+fn rest_label_routes_and_route_docs_render_as_ghes_does() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_err, render_ok};
+    use graftyard_api::rest::{
+        ISSUE_COMMENT_DELETE_DOC, LABEL_DELETE_DOC, check_repo_assignee, get_label, plan_delete_label,
+        plan_update_label,
+    };
+    use graftyard_identity::RepoPermission;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let hosted = HostedDir { home: Some(dir.home()), ..Default::default() };
+    let render = |what: What, doc: Option<&str>| Render {
+        host: h.name().to_owned(),
+        isolation: false,
+        dir: hosted.clone(),
+        what,
+        doc: doc.map(Into::into),
+    };
+    c.commit(
+        WRITER,
+        IssueOp::DefineLabel {
+            id: None,
+            name: LabelName("good first issue".into()),
+            color: [0, 0x80, 0],
+            description: Some("start here".into()),
+        },
+    )
+    .unwrap();
+    let got = get_label(&c.repo(0, &h, &dir), "Good%20First%20Issue");
+    assert_eq!((got.status, got.value()["name"].clone()), (200, json!("good first issue")));
+    keep_rest("label-get", "/repos/{owner}/{repo}/labels/{name}", &got);
+    assert_eq!(get_label(&c.repo(0, &h, &dir), "nope").status, 404);
+
+    // A partial body keeps what it leaves out; an empty description clears it.
+    let op = plan_update_label(&c.repo(0, &h, &dir), "good%20first%20issue", &json!({ "color": "ff0000" })).unwrap();
+    let IssueOp::DefineLabel { id: Some(_), name, color, description } = &op else { panic!("{op:?}") };
+    assert_eq!((&*name.0, *color, description.as_deref()), ("good first issue", [0xff, 0, 0], Some("start here")));
+    let bug = plan_delete_label(&c.repo(0, &h, &dir), "bug").map(|op| match op {
+        IssueOp::DeleteLabel { id } => id,
+        o => panic!("{o:?}"),
+    });
+    let bug = bug.unwrap();
+    let op = plan_update_label(
+        &c.repo(0, &h, &dir),
+        "good%20first%20issue",
+        &json!({ "new_name": "starter", "description": "" }),
+    )
+    .unwrap();
+    let IssueOp::DefineLabel { id: Some(starter), name, color, description } = op.clone() else { panic!() };
+    assert_eq!((&*name.0, color, description), ("starter", [0, 0x80, 0], None));
+    let out = c.commit(WRITER, op).unwrap();
+    let m = &c.members[0];
+    let reply = render_ok(&render(What::LabelUpdated { id: starter.0.0 }, None), &ack(out), &m.core, &m.meta).reply();
+    assert_eq!(reply.status, 200);
+    assert_eq!((reply.value()["name"].clone(), reply.value()["description"].clone()), (json!("starter"), json!(null)));
+    keep_rest_as("label-updated", "PATCH", "/repos/{owner}/{repo}/labels/{name}", &reply);
+    assert_eq!(get_label(&c.repo(0, &h, &dir), "good%20first%20issue").status, 404, "renamed away");
+    for bad in [json!({ "color": "red" }), json!({ "new_name": "" }), json!({ "description": 7 })] {
+        assert_eq!(plan_update_label(&c.repo(0, &h, &dir), "bug", &bad).unwrap_err().status, 422, "{bad}");
+    }
+    assert_eq!(plan_update_label(&c.repo(0, &h, &dir), "nope", &json!({})).unwrap_err().status, 404);
+    // Renaming `bug` to `STARTER` is taken: gh's `already_exists`, with the update's documentation.
+    let op = plan_update_label(&c.repo(0, &h, &dir), "bug", &json!({ "new_name": "STARTER" })).unwrap();
+    let e = c.commit(WRITER, op).unwrap_err();
+    let taken = render_err(&render(What::LabelUpdated { id: bug.0.0 }, None), &e).reply();
+    assert_eq!((taken.status, taken.value()["errors"][0]["code"].clone()), (422, json!("already_exists")));
+    assert!(taken.value()["documentation_url"].as_str().unwrap().ends_with("#update-a-label"));
+
+    // `DELETE`: 204, then 404.
+    let op = plan_delete_label(&c.repo(0, &h, &dir), "STARTER").unwrap();
+    let out = c.commit(WRITER, op).unwrap();
+    let m = &c.members[0];
+    assert_eq!(
+        render_ok(&render(What::Deleted, Some(LABEL_DELETE_DOC)), &ack(out), &m.core, &m.meta).reply().status,
+        204
+    );
+    assert_eq!(plan_delete_label(&c.repo(0, &h, &dir), "starter").unwrap_err().status, 404);
+
+    // A refused delete keeps its status and message and names its route's page; without a doc, the releases page as
+    // before. 401, 404 and 503 keep the API root's.
+    let docs = "https://docs.github.com/enterprise-server@3.22";
+    for (doc, want) in [
+        (Some(LABEL_DELETE_DOC), format!("{docs}/rest/issues/labels#delete-a-label")),
+        (Some(ISSUE_COMMENT_DELETE_DOC), format!("{docs}/rest/issues/comments#delete-an-issue-comment")),
+        (None, format!("{docs}/rest/releases/releases")),
+    ] {
+        let e = render_err(&render(What::Deleted, doc), &IssueErr::Forbidden).reply();
+        let before = render_err(&render(What::Deleted, None), &IssueErr::Forbidden).reply();
+        assert_eq!((e.status, &e.value()["message"]), (before.status, &before.value()["message"]), "{doc:?}");
+        assert_eq!(e.value()["documentation_url"], json!(want), "{doc:?}");
+        for root in [IssueErr::NotFound, IssueErr::Unavailable] {
+            let e = render_err(&render(What::Deleted, doc), &root).reply();
+            assert_eq!(
+                e.value()["documentation_url"],
+                render_err(&render(What::Deleted, None), &root).reply().value()["documentation_url"]
+            );
+        }
+    }
+
+    // An edge older than the field sent no `doc`; a member reads it as `None`.
+    let old: Render = serde_json::from_value(
+        json!({ "host": "h", "isolation": false, "dir": HostedDir::default(), "what": "Deleted" }),
+    )
+    .unwrap();
+    assert_eq!(old.doc, None);
+    assert!(serde_json::to_value(render(What::Deleted, None)).unwrap().get("doc").is_none(), "no doc, the same bytes");
+
+    for (perm, want) in [
+        (Some(RepoPermission::Admin), 204),
+        (Some(RepoPermission::Write), 204),
+        (Some(RepoPermission::Triage), 404),
+        (Some(RepoPermission::Read), 404),
+        (None, 404),
+    ] {
+        assert_eq!(check_repo_assignee(perm).status, want, "{perm:?}");
     }
 }
 
@@ -2459,7 +2587,7 @@ fn rest_writes_of_review_comments_and_check_runs_render_ghes_shapes() {
     // The member's render, through the `What` each route sends, equals the in-process one.
     let hosted = HostedDir { home: Some(dir.home()), viewer: Some(AccountId(DbId(READER))), ..Default::default() };
     let render = |what: What| -> Render {
-        let r = Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what };
+        let r = Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what, doc: None };
         serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap()
     };
     let m = &c.members[0];
@@ -2605,8 +2733,13 @@ fn a_revoked_tokens_write_is_refused_at_decide_with_the_fronts_401() {
     // The owner's token is not revoked: only the revoked caller is refused.
     assert!(c.commit(OWNER, label("owner")).is_ok());
 
-    let render =
-        |what: What| Render { host: host().name().to_owned(), isolation: false, dir: HostedDir::default(), what };
+    let render = |what: What| Render {
+        host: host().name().to_owned(),
+        isolation: false,
+        dir: HostedDir::default(),
+        what,
+        doc: None,
+    };
     let rest = json!({ "message": "Bad credentials", "documentation_url":
         "https://docs.github.com/enterprise-server@3.22/rest", "status": "401" });
     for what in [

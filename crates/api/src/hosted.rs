@@ -635,6 +635,10 @@ pub enum What {
     /// `PUT` and `DELETE /repos/{o}/{r}/issues/{n}/lock` (F137, format 32.35): 204, refused with the issue routes'
     /// errors.
     IssueLocked,
+    /// `PATCH /repos/{o}/{r}/labels/{name}` (F137, format 32.36): 200 with the pinned `label` as it is after the entry.
+    LabelUpdated {
+        id: i64,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -644,6 +648,11 @@ pub struct Render {
     pub isolation: bool,
     pub dir: HostedDir,
     pub what: What,
+    /// The documentation path a refused `What::Deleted` names (`rest/issues/labels#delete-a-label`), for a route that
+    /// is not a release's; `None` keeps the releases page. Absent from a render an older edge sent, and ignored by an
+    /// older member, so it needs no format: only a refusal's `documentation_url` reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 /// A reply as it crosses the binding: its status, its handler headers, and its JSON body, if any.
@@ -737,6 +746,7 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::RestMerge => WireReply::of(&Reply::error(500, "a merge rendered as an issue command", "rest")),
         What::StatusCreated { sha, id } => WireReply::of(&crate::rest::status_created(acked, &r, *sha, *id)),
         What::LabelCreated => WireReply::of(&crate::rest::label_created(acked, &r)),
+        What::LabelUpdated { id } => WireReply::of(&crate::rest::label_updated(&r, *id)),
         What::AgentPolicy => {
             WireReply::of(&Reply::json(200, crate::agents::policy_json(&graftyard_git::tiers::agent_policy(core))))
         }
@@ -799,11 +809,16 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::Graphql { field, .. } => {
             graphql_refused(crate::graphql::refused_field(field, e), matches!(e, IssueErr::Unauthorized(_)))
         }
-        What::ReleaseCreated | What::ReleaseUpdated | What::Deleted => WireReply::of(&crate::release::refused(e)),
+        What::Deleted => WireReply::of(&match &render.doc {
+            Some(doc) => crate::release::refused(e).with_doc(doc),
+            None => crate::release::refused(e),
+        }),
+        What::ReleaseCreated | What::ReleaseUpdated => WireReply::of(&crate::release::refused(e)),
         What::LfsVerified => WireReply::of(&crate::lfs::not_verified()),
         What::LfsLocked | What::LfsUnlocked { .. } => WireReply::of(&crate::lfs::refused(e)),
         What::RestMerge | What::StatusCreated { .. } => WireReply::of(&crate::release::refused(e)),
         What::LabelCreated => WireReply::of(&crate::rest::label_refused(e)),
+        What::LabelUpdated { .. } => WireReply::of(&crate::rest::label_update_refused(e)),
         What::AgentPolicy => WireReply::of(&crate::release::refused(e)),
         What::Task { .. } => WireReply::of(&crate::tasks::refused(e)),
         What::RepoSaved { .. } => WireReply::of(&crate::repos::refused(e)),

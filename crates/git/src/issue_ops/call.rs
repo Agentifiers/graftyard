@@ -83,6 +83,12 @@ pub const REPO_FORMAT_HOST_PAUSE: Format = Format { family: 0x20, version: 33 };
 /// commits, and the edge sends it only once `FormatsEnable` enabled it. 32.34 is the forks' (`REPO_FORMAT_FORKS`): a new
 /// format is above every format on main when it merges.
 pub const REPO_FORMAT_ISSUE_EDIT: Format = Format { family: 0x20, version: 35 };
+/// F137's REST label update (`decisions/DECISIONS.md`, "`label-routes`"): `PATCH /repos/{o}/{r}/labels/{name}`, a
+/// `DefineLabel` of an existing label's id the edge marks (`IssueCall::rest_label`), whose reply a release without
+/// `What::LabelUpdated` cannot render after the entry commits. It carries what 32.35 does. A member that cannot read it
+/// refuses it before it commits, and the edge sends it only once `FormatsEnable` enabled it. It is main's highest
+/// repository format plus one when it merged ("`format-order`").
+pub const REPO_FORMAT_LABEL_UPDATE: Format = Format { family: 0x20, version: 36 };
 /// AM3-WP2a, base forks (`build/BUILD-PLAN.md`): `RepoEvent::Genesis` (tag 50), whose fork's core `fork` row names the
 /// repository's network. A member that cannot read it refuses it before it commits, and the edge sends it only once
 /// `FormatsEnable` enabled it. It is above every format on main when it merged, not 32.31: an entry takes the highest
@@ -121,6 +127,9 @@ pub struct IssueCall {
     /// Format 32.35 (`REPO_FORMAT_ISSUE_EDIT`): a REST comment edit or lock change (`IssueCall::edit_mark`), whose
     /// reply only a 32.35 member renders. An `Edit` is always 32.35.
     pub rest_edit: bool,
+    /// Format 32.36 (`REPO_FORMAT_LABEL_UPDATE`): a REST label update (`IssueCall::label_mark`), whose reply only a
+    /// 32.36 member renders.
+    pub rest_label: bool,
     /// What the leader renders from the `&Acked`, opaque here (`graftyard_api::hosted::Render`).
     pub render: Value,
     /// The blob `op` names, rebuilt by the member that admits the command. Never sent.
@@ -158,6 +167,10 @@ impl IssueCall {
         // 32.23 likewise: a secret or variable command is never an agent, task, or lease command.
         if self.op.is_secret() {
             return crate::secrets::REPO_FORMAT_SECRETS;
+        }
+        // 32.36 likewise: a REST label update.
+        if self.rest_label {
+            return REPO_FORMAT_LABEL_UPDATE;
         }
         // 32.35 likewise: a multi-field issue edit, or a REST comment edit or lock change.
         if self.rest_edit || matches!(self.op, IssueOp::Edit { .. }) {
@@ -235,6 +248,7 @@ impl IssueCall {
             rest_comment: false,
             pause: false,
             rest_edit: false,
+            rest_label: false,
         }
     }
 
@@ -253,6 +267,11 @@ impl IssueCall {
             op,
             IssueOp::EditComment { .. } | IssueOp::Change { change: crate::issues::IssueChange::Locked(_), .. }
         )
+    }
+
+    /// Whether `op` is a command 32.36 marks when it comes from REST: a `DefineLabel` of an existing label's id.
+    pub fn label_mark<B>(op: &IssueOp<B>) -> bool {
+        matches!(op, IssueOp::DefineLabel { id: Some(_), .. })
     }
 
     /// Whether `op` is a review comment outside a review, which 32.22 gives a `SingleComment` review. Never a lease,
@@ -362,6 +381,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             REPO_FORMAT_ISSUE_COMMENT,
             REPO_FORMAT_HOST_PAUSE,
             REPO_FORMAT_ISSUE_EDIT,
+            REPO_FORMAT_LABEL_UPDATE,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
@@ -389,7 +409,9 @@ impl<'de> Deserialize<'de> for IssueCall {
         let pause = fmt(REPO_FORMAT_HOST_PAUSE);
         // 32.35 carries what 32.33 does.
         let edit = fmt(REPO_FORMAT_ISSUE_EDIT);
-        let assign = fmt(REPO_FORMAT_ASSIGN) || comment || pause || edit;
+        // 32.36 carries what 32.35 does.
+        let label = fmt(REPO_FORMAT_LABEL_UPDATE);
+        let assign = fmt(REPO_FORMAT_ASSIGN) || comment || pause || edit || label;
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         let task_claim = w.claims.as_ref().is_some_and(|c| c.task.is_some());
         if !tasks && (w.agent_session.is_some() || (task_claim && !assign)) {
@@ -423,6 +445,7 @@ impl<'de> Deserialize<'de> for IssueCall {
         c.rest_comment = comment && IssueCall::issue_comment(&c.op);
         c.pause = pause && IssueCall::pausable(&c.op);
         c.rest_edit = edit && IssueCall::edit_mark(&c.op);
+        c.rest_label = label && IssueCall::label_mark(&c.op);
         // One form per command: a format that does not match the command is malformed.
         let got = c.format();
         if !fmt(got) {

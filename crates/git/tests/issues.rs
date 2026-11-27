@@ -1773,3 +1773,56 @@ fn a_multi_field_issue_edit_commits_whole_or_not_at_all() {
     wire["format"] = serde_json::json!([0x20, 35]);
     assert!(serde_json::from_value::<IssueCall>(wire).is_err(), "32.35 marks only an edit, a comment edit or a lock");
 }
+
+/// F137's REST label update (format 32.36): a `DefineLabel` of an existing label's id renames it, recolors it, and
+/// clears its description in one entry, keeping its issues; a rename to another label's name, in any case, is
+/// refused. The update crosses the binding as 32.36 only when marked; a create, or 32.36 on one, is not a label update.
+#[test]
+fn a_rest_label_update_is_32_36_and_keeps_its_issues() {
+    use graftyard_git::issue_ops::call::{IssueCall, REPO_FORMAT_ISSUES, REPO_FORMAT_LABEL_UPDATE};
+    use graftyard_git::issues::{LabelId, LabelName};
+    use graftyard_git::tiers::{LabelRow, get_rec, int, n_key};
+    let mut c = setup(1, 91);
+    let define = |id, name: &str, d: Option<&str>| IssueOp::DefineLabel {
+        id,
+        name: LabelName(name.into()),
+        color: [1, 2, 3],
+        description: d.map(Into::into),
+    };
+    let id = |out| match out {
+        Ok(IssueOut::Id(i)) => LabelId(i),
+        o => panic!("{o:?}"),
+    };
+    let bug = id(c.commit(WRITER, define(None, "bug", Some("broken"))));
+    let ui = id(c.commit(WRITER, define(None, "ui", None)));
+    let n = match c.commit(
+        WRITER,
+        IssueOp::OpenIssue { title: "t".into(), body: "".into(), labels: smallvec![bug], assignees: SmallVec::new() },
+    ) {
+        Ok(IssueOut::Number(n)) => n,
+        o => panic!("{o:?}"),
+    };
+    let update =
+        IssueOp::DefineLabel { id: Some(bug), name: LabelName("defect".into()), color: [9, 9, 9], description: None };
+    assert_eq!(c.commit(WRITER, update.clone()), Ok(IssueOut::Id(bug.0)));
+    let row = get_rec::<LabelRow>(&c.members[0].meta, "label", &[int(bug.0.0)]).unwrap();
+    assert_eq!((&*row.name.0, row.color, row.description.as_deref()), ("defect", [9, 9, 9], None));
+    assert!(c.members[0].meta.get("issue_label", &[n_key(n), int(bug.0.0)]).is_some(), "the issue keeps the label");
+    assert_eq!(c.commit(WRITER, define(Some(bug), "UI", None)), Err(IssueErr::Exists), "another label's name");
+    assert_eq!(c.commit(READER, define(Some(ui), "x", None)), Err(IssueErr::Forbidden));
+
+    let blobless = |op: IssueOp| op.map_blob(|_| Err::<graftyard_git::blob::BlobRef, ()>(())).expect("no blob");
+    let call = |op| IssueCall::new(blobless(op), who(WRITER), RequestId(Ulid(91)), serde_json::json!({}));
+    let mut m = call(update);
+    assert_eq!(m.format(), REPO_FORMAT_ISSUES, "unmarked, it keeps its bytes");
+    m.rest_label = IssueCall::label_mark(&m.op);
+    assert_eq!(m.format(), REPO_FORMAT_LABEL_UPDATE);
+    let wire = serde_json::to_value(&m).unwrap();
+    assert_eq!(wire["format"], serde_json::json!([0x20, 36]));
+    let back: IssueCall = serde_json::from_value(wire).unwrap();
+    assert!(back.rest_label && back.op == m.op, "{back:?}");
+    assert!(!IssueCall::label_mark(&define(None, "new", None)), "a create is not a label update");
+    let mut wire = serde_json::to_value(call(define(None, "new", None))).unwrap();
+    wire["format"] = serde_json::json!([0x20, 36]);
+    assert!(serde_json::from_value::<IssueCall>(wire).is_err(), "32.36 marks only a label update");
+}
