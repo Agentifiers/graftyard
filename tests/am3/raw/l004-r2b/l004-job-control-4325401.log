@@ -1,0 +1,23 @@
+2026-11-27T14:03:20.9722679Z Current runner version: '2.338.2'
+2026-11-27T14:03:20.9750158Z Runner name: 'graftyard-hosted-15eb5f13'
+2026-11-27T14:03:20.9751602Z Machine name: '50885975ac16cc8f5f609e94947a7d95415db6812dbfb244ca71461fd30d4b2'
+2026-11-27T14:03:20.9768026Z Prepare workflow directory
+2026-11-27T14:03:21.1861274Z Prepare all required actions
+2026-11-27T14:03:21.2055166Z Complete job name: secret
+2026-11-27T14:03:21.3934863Z ##[group]Run printf 'secret %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"
+2026-11-27T14:03:21.3935253Z [36;1mprintf 'secret %s %s\n' "$(printf %s "$S" | sha256sum | cut -c1-16)" "${#S}"[0m
+2026-11-27T14:03:21.4109459Z shell: /usr/bin/bash -e {0}
+2026-11-27T14:03:21.4110082Z env:
+2026-11-27T14:03:21.4111056Z   GRAFTYARD_ACTIONS: true
+2026-11-27T14:03:21.4111460Z   S: ***
+2026-11-27T14:03:21.4111521Z ##[endgroup]
+2026-11-27T14:03:21.4591261Z secret 8f99439a52a536bb 29
+2026-11-27T14:03:21.4974973Z ##[group]Run curl -s -o /dev/null -w 'token write %{http_code}\n' -X POST -H "authorization: token $T" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/refs" -d "{\"ref\":\"refs/heads/l004-probe-$GITHUB_RUN_ID-secret\",\"sha\":\"$GITHUB_SHA\"}"
+2026-11-27T14:03:21.4976111Z [36;1mcurl -s -o /dev/null -w 'token write %{http_code}\n' -X POST -H "authorization: token $T" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/refs" -d "{\"ref\":\"refs/heads/l004-probe-$GITHUB_RUN_ID-secret\",\"sha\":\"$GITHUB_SHA\"}"[0m
+2026-11-27T14:03:21.4986529Z shell: /usr/bin/bash -e {0}
+2026-11-27T14:03:21.4986995Z env:
+2026-11-27T14:03:21.4987110Z   GRAFTYARD_ACTIONS: true
+2026-11-27T14:03:21.4987776Z   T: ***
+2026-11-27T14:03:21.4987906Z ##[endgroup]
+2026-11-27T14:03:25.7172151Z token write 403
+2026-11-27T14:03:25.7467334Z Cleaning up orphan processes

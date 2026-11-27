@@ -1,0 +1,9 @@
+2026-11-27T13:48:07Z
+ba24e4918
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            BuildKit is currently disabled; enable it by removing the DOCKER_BUILDKIT=0
+            environment-variable.
+
+l004-r2b: digest: sha256:df8c28a2b1ad521e3e524df3b3d25766c61b43c2ff5be2bff48ec745b0205ebd size: 1184
+Pushed image: registry.cloudflare.com/<runner-account>/graft-agents-m4a-sandbox:l004-r2b
+{"image":"registry.cloudflare.com/<runner-account>/graft-agents-m4a-sandbox@sha256:df8c28a2b1ad521e3e524df3b3d25766c61b43c2ff5be2bff48ec745b0205ebd","harness":["python3","/harness.py","graft-m4a-edge.<sub>.workers.dev","m3org/l004-r2b","2","15"],"agents_front":null}

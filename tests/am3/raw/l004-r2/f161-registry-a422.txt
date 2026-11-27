@@ -1,0 +1,13 @@
+11:12:19.990 -> 11:12:30.033 wall 10043 cpu 0 ok 1ac863ab GET https://registry/row?chain=repo%3A65636
+11:12:24.823 -> 11:12:30.069 wall 5246 cpu 9 ok 1ac863ab POST https://registry/claim
+11:12:24.024 -> 11:12:30.069 wall 6045 cpu 0 ok 1ac863ab POST https://registry/claim
+11:12:24.221 -> 11:12:30.069 wall 5848 cpu 0 ok 1ac863ab POST https://registry/claim
+11:12:30.293 -> 11:12:30.293 wall 0 cpu 0 ok 1ac863ab GET https://registry/row?chain=repo%3A65636
+11:13:11.890 -> 11:13:11.891 wall 1 cpu 0 ok 1ac863ab GET https://registry/row?chain=repo%3A65636
+11:13:12.623 -> 11:13:12.623 wall 0 cpu 0 ok 1ac863ab GET https://registry/row?chain=repo%3A65636
+11:13:13.427 -> 11:13:13.427 wall 0 cpu 0 ok 1ac863ab POST https://registry/claim
+11:13:13.594 -> 11:13:13.594 wall 0 cpu 0 ok 1ac863ab POST https://registry/claim
+11:13:13.611 -> 11:13:13.635 wall 24 cpu 1 ok 1ac863ab PUT https://registry/row
+11:13:13.647 -> 11:13:13.648 wall 1 cpu 1 ok 1ac863ab GET https://registry/row?chain=repo%3A65636
+11:13:13.779 -> 11:13:13.781 wall 2 cpu 1 ok 1ac863ab POST https://registry/claim
+11:13:23.529 -> 11:13:23.529 wall 0 cpu 0 ok 1ac863ab GET https://registry/row?chain=repo%3A65636
