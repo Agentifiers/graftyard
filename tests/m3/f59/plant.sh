@@ -132,33 +132,42 @@ plant create-repo-without-event crates/identity/src/authz.rs \
 	''
 # CreateRepoWith accepts arbitrarily large recorded settings.
 plant create-repo-without-init-cap crates/identity/src/authz.rs \
-	'                if init.len() > CREATE_INIT_MAX {' \
-	'                if false && init.len() > CREATE_INIT_MAX {'
+	'            AuthzOp::CreateRepoWith { name, init } => {
+                if init.len() > CREATE_INIT_MAX {' \
+	'            AuthzOp::CreateRepoWith { name, init } => {
+                if false && init.len() > CREATE_INIT_MAX {'
 # A follower accepts a RepoCreate event without the matching Live name.
 plant follower-accepts-any-repo-create crates/identity/src/authz.rs \
-	'            AuthzEvent::RepoCreate { key, repo, .. } if !matches!(self.name(key), Some(RepoEntry::Live { repo: r, .. }) if r == *repo) => {
+	'            AuthzEvent::RepoCreate { key, repo, .. } | AuthzEvent::ForkCreate { key, repo, .. } if !matches!(self.name(key), Some(RepoEntry::Live { repo: r, .. }) if r == *repo) => {
                 Err(format!("{key:?} is not live for {repo:?}").into())
             }' \
-	'            AuthzEvent::RepoCreate { .. } => Ok(()),'
+	'            AuthzEvent::RepoCreate { .. } | AuthzEvent::ForkCreate { .. } => Ok(()),'
 # Lifecycle::Init no longer requires a Live name.
 plant lifecycle-init-without-live crates/git/src/lifecycle.rs \
-	'                let live = authz.names.values().any(|e| matches!(e, RepoEntry::Live { repo: r, .. } if *r == repo));
-                if !live {
+	'                if !live(authz, repo) {
                     return Err(LifecycleErr::NotLive);
                 }
-' \
-	''
+                if Some(settings.owner)' \
+	'                if Some(settings.owner)'
 # A second Init overwrites the first settings and Created event.
 plant lifecycle-init-not-once crates/git/src/lifecycle.rs \
-	'                if created(s.core()).is_some() || get_rec::<RepoSettings>(s.core(), "settings", &[]).is_some() {' \
-	'                if false && (created(s.core()).is_some() || get_rec::<RepoSettings>(s.core(), "settings", &[]).is_some()) {'
+	'            LifecycleOp::Init(settings) => {
+                if deleted(s.core()).is_some() {
+                    return Err(LifecycleErr::Gone);
+                }
+                if created(s.core()).is_some() || get_rec::<RepoSettings>(s.core(), "settings", &[]).is_some() {' \
+	'            LifecycleOp::Init(settings) => {
+                if deleted(s.core()).is_some() {
+                    return Err(LifecycleErr::Gone);
+                }
+                if false && (created(s.core()).is_some() || get_rec::<RepoSettings>(s.core(), "settings", &[]).is_some()) {'
 # Init accepts settings for another owner or enterprise.
 plant lifecycle-init-without-owner-check crates/git/src/lifecycle.rs \
 	'                if Some(settings.owner) != s.authz_owner() || settings.enterprise != authz.enterprise() {
                     return Err(LifecycleErr::WrongOwner);
                 }
-' \
-	''
+                if !in_range(settings) {' \
+	'                if !in_range(settings) {'
 # Lifecycle::Delete no longer requires the matching Deleted name.
 plant lifecycle-delete-without-name crates/git/src/lifecycle.rs \
 	'                let held = authz.names.values().any(

@@ -1009,6 +1009,15 @@ fn push_events_skip_deletes_queue_refs_and_more_than_three_tags() {
         [("refs/heads/main".into(), Some(AccountId(DbId(77))))]
     );
     assert!(push_events(&e, w.now.0 + PR_REPLAY_MS + 1).is_empty(), "an entry over an hour old starts nothing");
+    let genesis = RepoEvent::Genesis {
+        owner: AccountId(DbId(9)),
+        network: graftyard_types::NetworkId(DbId(5)),
+        name: graftyard_identity::RepoName::parse("tool").unwrap(),
+        fork_of: Some((RepoId(DbId(5)), Index(42))),
+    };
+    let copied = || refs(vec![up("refs/heads/main", None, Some(oid(350)))]);
+    assert!(names(&entry(vec![genesis, copied()])).is_empty(), "a fork's copied refs start no workflow");
+    assert_eq!(names(&entry(vec![copied()])).len(), 1);
 }
 
 /// GHES's skip markers (`push_run`'s caller reads them from the head commit): each marker anywhere, and the

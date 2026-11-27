@@ -425,8 +425,11 @@ pub fn webhooks(core: &dyn Read, repo: RepoId, e: &LogEntry<RepoEvent>) -> Vec<W
     let EntryBody::Events(evs) = &e.body else { return Vec::new() };
     let mut out = Vec::new();
     let w = |event, action, subject| Webhook { event, action, subject, target: None };
+    // A fork's copied refs are not pushes: GitHub sends no push webhook when a fork is created.
+    let fork = evs.iter().any(|ev| matches!(ev, RepoEvent::Genesis { .. }));
     for ev in evs {
         match ev {
+            RepoEvent::Refs { .. } if fork => {}
             RepoEvent::Refs { actor, updates, .. } => {
                 for u in updates.iter().filter(|u| tag_or_branch(&u.name) && !is_queue_ref(&u.name)) {
                     let before = u.expect.unwrap_or(ObjectId::ZERO);

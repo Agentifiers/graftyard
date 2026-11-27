@@ -12025,6 +12025,23 @@ The time is 12:00Z, not 00:00Z, because BM-6's prep site day runs from 00:05Z to
 
 **Flip.** If the access rows ever stop being read on every request, such as a gate served wholly from a cache that carries no rows and no `net`: then the `o/r` path reads the network from `RepoOwner` (A) or carries it in the resolve.
 
+### `fork-create`: a fork's commit point is its own `CreateFork` with the parent and network, and `ForkAdded` names the parent, 2026-11-27
+
+**Status.** Wire numbers cleared by the lead (T-01a17bda), 2026-11-27: `AuthzOp` 40 `CreateFork`, `AuthzEvent` 21 `ForkCreate`, `audit::Owed` 7 `Fork`, Authz 0x12.16; `ForkAdded { repo, parent }` approved. Built in AM3-WP2a's head 3 at $0 (`build/BUILD-PLAN.md`, AM3-WP2a, Progress). Not hosted.
+
+**Decision.** `POST /repos/{o}/{r}/forks` commits `AuthzOp::CreateFork { name, init, parent, network }` on the fork owner's `Authz` chain under the caller's credential: the name's `Live` and `AuthzEvent::ForkCreate` with the parent and network in one entry, refused 403 for a caller who does not administer the owner and 422 for a taken name. The edge read the parent through its read gate and fixed its network there (`fork-network-read`). The finisher (`graftyard_identity::finish::fork`), in band on the owner's `Authz` leader and from the `Audit` cursor otherwise, then owes `RepoOwnerIn` with the network (Names 0x10.4), `NetworkCmd::ForkAdded { repo, parent }` on the network chain (0x21.1, created under the root owner's record on first use), and `LifecycleOp::Fork` on the fork's chain (repository 32.34): `Genesis` with `fork_of: (parent, cut)`, the first settings, `Created`, and the parent's branches and tags at `cut` as one `Refs` with no pack. An entry that holds `Genesis` starts no workflow and sends no push webhook for its `Refs`. The abort is a create's `AbortCreate` after `CREATE_ABORT_AFTER`.
+
+**Why.** `fork_of` could not ride `CreateRepoWith`: `AuthzOp` is a wire enum, so a new field changes every stored `CreateRepoWith`'s bytes. A new op is append-only. `ForkAdded` names the parent so that `GET /forks` and `forks_count` read one network fold, not every member chain's `fork` row; SHARED's `ForkAdded(RepoId)` held only the fork.
+
+**What it beat.**
+- A `fork_of` field on `CreateRepoWith` at 0x12.16: it breaks the wire tags of every stored create (`crates/git/tests/wire_tags.golden`).
+- Copying the parent's refs through a `Push` from the edge: it needs the git cache's `validate`, which no finisher calls, so an edge that died after the commit point would leave a fork with no branches. The refs are already the network's objects.
+- `ForkAdded(RepoId)` as SHARED had it: listing a repository's forks would read every member's chain.
+
+**Evidence.** `crates/identity/src/authz.rs` (`CreateFork`), `crates/identity/src/finish.rs` (`fork`), `crates/git/src/network.rs`, `crates/git/src/lifecycle.rs` (`Fork`), `workers/site/src/audit.rs` (`network_step`, `parent_refs`), `workers/edge/src/forks.rs`; tests `create_fork_needs_an_admin_and_records_its_parent_and_network`, `a_fork_is_finished_in_order_owner_row_network_then_chain`, `a_forks_first_touch_writes_genesis_settings_created_and_the_parents_refs`, `a_fork_first_touch_is_refused_off_its_rules`, `crates/git/tests/network.rs`, `a_forks_copied_refs_send_no_push_webhook`; plant277.
+
+**Flip.** If a fork must carry more than `FORK_REFS_MAX` (1,000 [guess]) branches and tags in its first touch: then the first touch copies them in pages of `Refs` entries after `Genesis`, and `Created` waits for the last.
+
 ### `format-order`: a new repository event's format is main's highest repository format plus one when it merges, 2026-11-26
 
 **Status.** Ruled by the lead (T-01a17bda), 2026-11-26, on AM2's review of AM3-WP2a's head 1 (T-01a1d805). Built at $0 in the same head: `Genesis` moved from 32.31 to 32.34 (`call::REPO_FORMAT_FORKS`), and `crates/git/tests/fold_corpus.rs` checks the order.

@@ -120,6 +120,9 @@ pub const AUTHZ_FORMAT_V14: Format = Format { family: 0x12, version: 14 };
 /// BF-76 (`pin-map`): `AuthzOp::SetActionsSubstitution` and `AuthzEvent::ActionsSubstitution`, an org's tag
 /// substitution and approved pin-map digest. Read and enabled on the same terms as version 2.
 pub const AUTHZ_FORMAT_V15: Format = Format { family: 0x12, version: 15 };
+/// AM3-WP2a: `AuthzOp::CreateFork` and `AuthzEvent::ForkCreate`, a fork's create with its parent and network
+/// (`build/BUILD-PLAN.md`, AM3-WP2a). Read and enabled on the same terms as version 2.
+pub const AUTHZ_FORMAT_V16: Format = Format { family: 0x12, version: 16 };
 /// The `Audit` consumer's cursor on `Names` and `Tokens` shards (`crate::audit`), M3's close. Read and enabled on the
 /// same terms as version 2.
 pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };

@@ -23,7 +23,7 @@ use crate::Ctx;
 const NEEDS: [Format; 2] = [graftyard_git::transfer::REPO_FORMAT_TRANSFER, graftyard_identity::AUTHZ_FORMAT_V4];
 
 /// GHES 3.22's `minimal-repository` for the repository under its new owner: every required field.
-fn minimal_repository(c: &Ctx<'_>, id: i64, owner: AccountId, login: &str, name: &str, org: bool) -> Value {
+pub(crate) fn minimal_repository(c: &Ctx<'_>, id: i64, owner: AccountId, login: &str, name: &str, org: bool) -> Value {
     let api = format!("https://{}/api/v3", c.cfg.host);
     let web = format!("https://{}", c.cfg.host);
     let r = format!("{api}/repos/{login}/{name}");
@@ -166,8 +166,8 @@ pub async fn transfer(c: &Ctx<'_>, req: &mut Request, owner: &str, name: &str) -
     Ok(Reply::json(202, minimal_repository(c, repo.id.0.0, to, new_owner, new_name, org)))
 }
 
-/// Starts the in-band finish on the destination's `Authz` leader.
-async fn finish(c: &Ctx<'_>, to: AccountId, owed: &Value) -> std::result::Result<(), String> {
+/// Starts the in-band finish on the destination's `Authz` leader: a transfer's, or a fork's on the fork owner's.
+pub(crate) async fn finish(c: &Ctx<'_>, to: AccountId, owed: &Value) -> std::result::Result<(), String> {
     let record = crate::placement(c, to).await?.ok_or("no placement")?;
     let b = c.bindings();
     let (v, _, _) = graftyard_lookup::call_opt(&b, ChainId::Authz(to), &record, "/finish", owed.to_string().as_bytes())

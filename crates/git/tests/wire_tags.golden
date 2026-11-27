@@ -123,6 +123,7 @@ id::AuthzEvent 18 OrgSecret 12016100
 id::AuthzEvent 19 OrgVariable 13016100
 # BF-76: an org's Actions substitution policy (0x12.15).
 id::AuthzEvent 20 ActionsSubstitution 140000
+id::AuthzEvent 21 ForkCreate 15016101610201610202
 id::AuthzOp 0 Open 000000
 id::AuthzOp 1 SetMember 010200
 id::AuthzOp 2 SetGrant 02020200
@@ -163,6 +164,7 @@ id::AuthzOp 36 PutOrgVariable 24016100016100
 id::AuthzOp 37 DeleteOrgVariable 250161
 id::AuthzOp 38 SetAppHook 26020000
 id::AuthzOp 39 SetActionsSubstitution 270000
+id::AuthzOp 40 CreateFork 28016101610202
 id::IdentityEvent 0 Created 0001610001
 id::IdentityEvent 1 Credential 0100000101010101010101010101010101010101010101010101010101010101010101000161
 id::IdentityEvent 2 Sso 0200020101010101010101010101010101010101010101010101010101010101010101
@@ -337,6 +339,7 @@ id::audit::Owed 3 Transfer 030202020161
 id::audit::Owed 4 Enterprise 0402
 id::audit::Owed 5 Create 0502016102016101
 id::audit::Owed 6 Delete 06020201
+id::audit::Owed 7 Fork 070201610161020161020201
 id::AccountKind 0 User 00
 id::AccountKind 1 Org 01
 id::AccountKind 2 Enterprise 02
@@ -732,12 +735,19 @@ git::sequencer::Outcome 1 Failed 01
 git::sequencer::Outcome 2 TimedOut 02
 git::lifecycle::LifecycleOp 0 Init 0002000000000000000000000000000001
 git::lifecycle::LifecycleOp 1 Delete 0101
+git::lifecycle::LifecycleOp 2 Fork 0202000000000000000000000000000001016102020100
 git::lifecycle::LifecycleErr 0 NotLive 00
 git::lifecycle::LifecycleErr 1 NotDeleted 01
 git::lifecycle::LifecycleErr 2 WrongOwner 02
 git::lifecycle::LifecycleErr 3 Invalid 03
 git::lifecycle::LifecycleErr 4 Gone 04
 git::lifecycle::LifecycleErr 5 NotRead 05
+git::network::NetworkEvent 0 ForkAdded 000202
+git::network::NetworkOp 0 ForkAdded 000202
+git::network::NetworkErr 0 Forbidden 00
+git::network::NetworkErr 1 NotMember 01
+git::network::NetworkErr 2 Conflict 02
+git::network::NetworkErr 3 Invalid 03
 id::UserRecord 0 Star 000200
 id::UserRecord 1 Watch 01020000
 id::UserRecord 2 Follow 020200

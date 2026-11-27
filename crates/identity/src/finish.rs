@@ -26,14 +26,19 @@
 //! - **Repository delete (F59).** The commit point is the name's `Deleted` on the owner's `Authz` chain; the chain's
 //!   `Deleted` tombstone follows (`RepoStep::Delete`, 32.17). It has no abort: once the name is `Deleted` the
 //!   repository is gone for every route, and only the tombstone is owed (`delete`).
+//! - **Fork (AM3-WP2a).** The commit point is `CreateFork` on the owner's `Authz` chain (Authz format 0x12.16): the
+//!   name's `Live` and, in the same entry, `ForkCreate` with the settings, parent, and network. Then `RepoOwner` with
+//!   its network on `Names` 0x10.4, `ForkAdded` on the network chain, and `Genesis` and the first settings on the
+//!   fork's chain (repository format 32.34). Its abort, once `CREATE_ABORT_AFTER` has passed with the chain still
+//!   uncreated, is the same `AbortCreate` as a create's (`design/SHARED.md`, "Multi-chain operations", Fork).
 
-use graftyard_types::{AccountId, ChainId, CredentialShard, PlacementRecord, RepoId, SiteId, Timestamp};
+use graftyard_types::{AccountId, ChainId, CredentialShard, NetworkId, PlacementRecord, RepoId, SiteId, Timestamp};
 
 use crate::apps::{AppRecord, ClientId, Slug};
 use crate::authz::{AuthzCmd, AuthzFold, AuthzOp, AuthzRead, RepoEntry};
 use crate::identity::{CredentialRef, IdentityCmd, IdentityFold, IdentityOp};
 use crate::names::{
-    Login, LoginRow, NameKey, NamesCmd, NamesOp, NamesRead, RepoNameKey, SlugRow, account_shard, name_shard,
+    Login, LoginRow, NameKey, NamesCmd, NamesOp, NamesRead, RepoName, RepoNameKey, SlugRow, account_shard, name_shard,
 };
 use crate::tokens::TokensRead;
 
@@ -47,6 +52,15 @@ pub enum Step {
     Tokens(ChainId, Box<crate::tokens::TokensCmd>),
     /// A step on the repository chain, which this crate cannot name as a command: the site builds it.
     Repo(RepoId, RepoStep),
+    /// A step on a network chain, which this crate cannot name as a command: the site builds it
+    /// (`graftyard_git::network`).
+    Network(NetworkId, NetworkStep),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NetworkStep {
+    /// The fork joins the network (`NetworkEvent::ForkAdded`), idempotent by repository id.
+    ForkAdded { repo: RepoId, parent: RepoId },
 }
 
 /// A transfer's or an enterprise change's step on the repository chain (`TransferStep`'s two that are not identity
@@ -66,6 +80,16 @@ pub enum RepoStep {
     /// F125: a deleted repository's Actions cache entries and their chunks, and its artifacts, which live on the
     /// owner's Actions shard and home bucket, not on its chain. The site drops them; a drop run twice finds nothing.
     DropActions,
+    /// A fork's first touch on its own chain (repository format 32.34): `Genesis`, the first settings and `Created`,
+    /// and the parent's branches and tags, which the site reads from the parent's leader.
+    Fork {
+        owner: AccountId,
+        enterprise: Option<AccountId>,
+        init: Box<str>,
+        name: RepoName,
+        network: NetworkId,
+        parent: RepoId,
+    },
 }
 
 /// How long the finisher keeps trying a create's first settings before it aborts the create and releases its name
@@ -128,6 +152,72 @@ pub fn create(
             }
             let init = RepoStep::Init { owner: c.owner, enterprise: authz.enterprise(), init: c.init.into() };
             Ok(Some(Step::Repo(c.repo, init)))
+        }
+    }
+}
+
+/// A fork whose commit point committed on `owner`'s chain at `at`, with its settings, parent, and network.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fork<'a> {
+    pub owner: AccountId,
+    pub repo: RepoId,
+    pub name: &'a RepoName,
+    pub init: &'a str,
+    pub parent: RepoId,
+    pub network: NetworkId,
+    pub at: Timestamp,
+}
+
+/// The next step of a fork, in the order of `design/SHARED.md`, "Multi-chain operations", Fork: the owner's `Live`
+/// name must still exist; then its network-bearing `RepoOwner` row; then, after the repository chain is read, either
+/// the create-style abort past its deadline, `ForkAdded` on the network, or the fork chain's first settings and
+/// `Genesis`. `None` means another owner holds the row, the name is no longer `Live`, or the chain was created or
+/// deleted. `Err(ChainId::Repo(repo))` asks for the chain's state only after the owner row commits.
+pub fn fork(
+    f: &Fork<'_>,
+    authz: &AuthzFold,
+    repo_owner: Option<AccountId>,
+    network: &crate::audit::NetworkRead,
+    life: Option<RepoLife>,
+    now: Timestamp,
+) -> Result<Option<Step>, ChainId> {
+    let live = authz.names.iter().find_map(|(k, e)| match e {
+        RepoEntry::Live { repo, .. } if *repo == f.repo => Some(k),
+        _ => None,
+    });
+    let Some(key) = live else { return Ok(None) };
+    match repo_owner {
+        None => {
+            return Ok(Some(names(
+                NameKey::Repo(f.repo),
+                NamesOp::RepoOwnerIn { repo: f.repo, owner: f.owner, network: f.network },
+            )));
+        }
+        Some(o) if o != f.owner => return Ok(None),
+        Some(_) => {}
+    }
+    match life.ok_or(ChainId::Repo(f.repo))? {
+        RepoLife::Created | RepoLife::Deleted => Ok(None),
+        RepoLife::NoGroup | RepoLife::Open => {
+            if now.0 >= f.at.0.saturating_add(CREATE_ABORT_AFTER.as_millis() as u64) {
+                let op = AuthzOp::AbortCreate { key: key.clone(), repo: f.repo };
+                return Ok(Some(Step::Authz(
+                    ChainId::Authz(f.owner),
+                    Box::new(AuthzCmd { cred: CredentialShard::NONE, op }),
+                )));
+            }
+            if !network.forks.contains_key(&f.repo) {
+                return Ok(Some(Step::Network(f.network, NetworkStep::ForkAdded { repo: f.repo, parent: f.parent })));
+            }
+            let fork = RepoStep::Fork {
+                owner: f.owner,
+                enterprise: authz.enterprise(),
+                init: f.init.into(),
+                name: f.name.clone(),
+                network: f.network,
+                parent: f.parent,
+            };
+            Ok(Some(Step::Repo(f.repo, fork)))
         }
     }
 }

@@ -645,3 +645,41 @@ fn the_hook_cursor_moves_only_forward_on_the_group() {
     assert_eq!(commit(&mut w, at(3, 9)), at(3, 4), "replay_from stops at read + 1");
     assert_eq!(commit(&mut w, at(5, 3)), at(5, 4));
 }
+
+/// A fork's first touch copies its parent's branches and tags as a `Refs` beside its `Genesis`, and GitHub sends no
+/// push webhook when a fork is created; the same `Refs` without the `Genesis` is a push.
+#[test]
+fn a_forks_copied_refs_send_no_push_webhook() {
+    use graftyard_git::hooks::webhooks;
+    use graftyard_raft::{EntryBody, Fold as _, LogEntry, PREV_ZERO, Term, TierSet};
+    let repo = RepoId(DbId(7));
+    let fold = RepoFold::new(repo, OWNER);
+    let refs = RepoEvent::Refs {
+        push: RequestId(Ulid(1)),
+        actor: None,
+        updates: vec![RefUpdate { name: name("refs/heads/main"), expect: None, new: Some(oid(1)) }],
+        pack: None,
+    };
+    let genesis = RepoEvent::Genesis {
+        owner: OWNER,
+        network: graftyard_types::NetworkId(DbId(5)),
+        name: graftyard_identity::RepoName::parse("tool").unwrap(),
+        fork_of: Some((RepoId(DbId(5)), Index(42))),
+    };
+    let entry = |evs: Vec<RepoEvent>| LogEntry {
+        term: Term(2),
+        index: Index(1),
+        prev: PREV_ZERO,
+        format: REPO_FORMAT_V1,
+        tiers: TierSet::CORE,
+        at: Timestamp(1),
+        requests: smallvec::SmallVec::new(),
+        extend: None,
+        body: EntryBody::Events(evs),
+    };
+    let pushes = |evs: Vec<RepoEvent>| {
+        webhooks(fold.scratch().core(), repo, &entry(evs)).iter().filter(|w| w.event == "push").count()
+    };
+    assert_eq!(pushes(vec![genesis, refs.clone()]), 0, "a fork's copied refs are not a push");
+    assert_eq!(pushes(vec![refs]), 1);
+}

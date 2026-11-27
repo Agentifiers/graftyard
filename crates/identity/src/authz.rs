@@ -32,7 +32,7 @@ use crate::sealed::{ActionsName, SealKey, SecretRecord, SecretScope, VariableRec
 use crate::tokens::RepoScope;
 use crate::{
     AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AUTHZ_FORMAT_V11, AUTHZ_FORMAT_V12,
-    AUTHZ_FORMAT_V13, AUTHZ_FORMAT_V14, AUTHZ_FORMAT_V15,
+    AUTHZ_FORMAT_V13, AUTHZ_FORMAT_V14, AUTHZ_FORMAT_V15, AUTHZ_FORMAT_V16,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -184,6 +184,17 @@ pub enum AuthzEvent {
     /// The org's Actions substitution policy, the whole record each time (`design/SHARED.md`, "Toolkit hostname
     /// heuristics and SHA pins"; `decisions/DECISIONS.md`, "`pin-map`").
     ActionsSubstitution(ActionsSubstitution),
+    // ---- AM3-WP2a, format 16 ----
+    /// A fork's commit point carries what its finisher needs, like `RepoCreate`, plus the repository forked and the
+    /// network it joins. The fold keeps nothing of it: only the log does, which the consumer scans.
+    ForkCreate {
+        key: RepoNameKey,
+        name: RepoName,
+        repo: RepoId,
+        init: Box<str>,
+        parent: RepoId,
+        network: graftyard_types::NetworkId,
+    },
 }
 
 /// BF-76's org policy: `tags` substitutes `actions/<name>@<tag>` by its `graftyard-actions` fork, and `pin_map` is the
@@ -361,6 +372,10 @@ impl Record for AuthzEvent {
             AuthzEvent::ActionsSubstitution(p) => {
                 e.u8(21);
                 graftyard_fold::canon::write(e.0, p);
+            }
+            AuthzEvent::ForkCreate { key, name, repo, init, parent, network } => {
+                e.u8(22);
+                graftyard_fold::canon::write(e.0, &(key, name, repo, init, parent, network));
             }
         }
     }
@@ -897,7 +912,10 @@ where
         }
         AuthzEvent::AgentApp { app, row: Some(r) } => t.agent_apps.put(*app, r.clone()),
         AuthzEvent::AgentApp { app, row: None } => t.agent_apps.del(app),
-        AuthzEvent::OrgAgents { .. } | AuthzEvent::AuditCursor { .. } | AuthzEvent::RepoCreate { .. } => {}
+        AuthzEvent::OrgAgents { .. }
+        | AuthzEvent::AuditCursor { .. }
+        | AuthzEvent::RepoCreate { .. }
+        | AuthzEvent::ForkCreate { .. } => {}
         // `ActionsRows::write`'s.
         AuthzEvent::SealKey { .. }
         | AuthzEvent::OrgSecret { .. }
@@ -1047,7 +1065,7 @@ impl Scratch for AuthzScratch<'_> {
                 key,
                 entry: Some(RepoEntry::Live { repo, .. } | RepoEntry::Reserved { repo, .. }),
             } if !free_for(self.name(key), *repo) => Err(format!("{key:?} is held by {:?}", self.name(key)).into()),
-            AuthzEvent::RepoCreate { key, repo, .. } if !matches!(self.name(key), Some(RepoEntry::Live { repo: r, .. }) if r == *repo) => {
+            AuthzEvent::RepoCreate { key, repo, .. } | AuthzEvent::ForkCreate { key, repo, .. } if !matches!(self.name(key), Some(RepoEntry::Live { repo: r, .. }) if r == *repo) => {
                 Err(format!("{key:?} is not live for {repo:?}").into())
             }
             AuthzEvent::SealKey { key_id, key: Some(k) } if k.key_id != *key_id => {
@@ -1381,6 +1399,15 @@ pub enum AuthzOp {
         #[serde(default, with = "pin_map_change")]
         pin_map: Option<Option<Digest>>,
     },
+    // ---- AM3-WP2a, format 16 ----
+    /// `POST /repos/{o}/{r}/forks`: `CreateRepoWith` for a fork, under the fork owner's admin; the edge read the parent
+    /// through its read gate and fixed its network (`Repo::fix`), which this chain cannot read.
+    CreateFork {
+        name: RepoName,
+        init: Box<str>,
+        parent: RepoId,
+        network: graftyard_types::NetworkId,
+    },
 }
 
 /// `SetActionsSubstitution.pin_map` in a text format: `null` keeps, a digest approves, and `"withdraw"` withdraws.
@@ -1644,6 +1671,10 @@ impl Record for AuthzCmd {
                 e.u8(39);
                 graftyard_fold::canon::write(e.0, &(tags, pin_map));
             }
+            AuthzOp::CreateFork { name, init, parent, network } => {
+                e.u8(40);
+                graftyard_fold::canon::write(e.0, &(name, init, parent, network));
+            }
         }
     }
 }
@@ -1858,6 +1889,35 @@ impl AuthzCmd {
                     smallvec![
                         AuthzEvent::RepoName { key: key.clone(), entry: Some(entry) },
                         AuthzEvent::RepoCreate { key, repo, init: init.clone() },
+                    ],
+                    AuthzOut::Repo { repo, epoch: next },
+                ))
+            }
+            AuthzOp::CreateFork { name, init, parent, network } => {
+                if init.len() > CREATE_INIT_MAX {
+                    return Err(AuthzErr::BadRecord);
+                }
+                let key = name.key();
+                if s.name(&key).is_some_and(|e| !matches!(e, RepoEntry::Alias { .. })) {
+                    return Err(AuthzErr::Taken);
+                }
+                let repo = RepoId(s.ids.peek().ok_or(AuthzErr::NeedIdBlock)?);
+                // Impossible in practice, but a fork must never name itself its network's root.
+                if repo == network.root() {
+                    return Err(AuthzErr::BadRecord);
+                }
+                let entry = RepoEntry::Live { repo, epoch: next };
+                Ok((
+                    smallvec![
+                        AuthzEvent::RepoName { key: key.clone(), entry: Some(entry) },
+                        AuthzEvent::ForkCreate {
+                            key,
+                            name: name.clone(),
+                            repo,
+                            init: init.clone(),
+                            parent: *parent,
+                            network: *network,
+                        },
                     ],
                     AuthzOut::Repo { repo, epoch: next },
                 ))
@@ -2227,6 +2287,7 @@ impl Command for AuthzCmd {
             | AuthzOp::DeleteOrgVariable { .. } => AUTHZ_FORMAT_V12,
             AuthzOp::SetAppHook { .. } => AUTHZ_FORMAT_V13,
             AuthzOp::SetActionsSubstitution { .. } => AUTHZ_FORMAT_V15,
+            AuthzOp::CreateFork { .. } => AUTHZ_FORMAT_V16,
             AuthzOp::Install { ref row, .. } if row.app == crate::stateless::ACTIONS_APP => AUTHZ_FORMAT_V14,
             AuthzOp::PutAgentApp(_) | AuthzOp::DeleteAgentApp { .. } | AuthzOp::SetOrgAgents { .. } => AUTHZ_FORMAT_V3,
             AuthzOp::PutApp { .. }

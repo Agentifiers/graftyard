@@ -6,9 +6,9 @@ use std::collections::BTreeMap;
 use graftyard_identity::finish::Step;
 use graftyard_identity::{
     AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AUTHZ_FORMAT_V11, AUTHZ_FORMAT_V12,
-    AUTHZ_FORMAT_V13, AuthzCmd, AuthzFold, IDENTITY_FORMAT, IDENTITY_FORMAT_V2, IdBlock, IdentityCmd, IdentityDep,
-    IdentityFold, NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V3, NAMES_FORMAT_V4, NameKey, NamesCmd, NamesFold,
-    NamesOp, TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3, TokensCmd, TokensFold, name_shard,
+    AUTHZ_FORMAT_V13, AUTHZ_FORMAT_V16, AuthzCmd, AuthzFold, IDENTITY_FORMAT, IDENTITY_FORMAT_V2, IdBlock, IdentityCmd,
+    IdentityDep, IdentityFold, NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V3, NAMES_FORMAT_V4, NameKey, NamesCmd,
+    NamesFold, NamesOp, TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3, TokensCmd, TokensFold, name_shard,
 };
 use graftyard_types::{AccountId, ChainId, CredentialShard, TokenShard};
 
@@ -83,6 +83,7 @@ impl World {
                     AUTHZ_FORMAT_V13,
                     graftyard_identity::AUTHZ_FORMAT_V14,
                     graftyard_identity::AUTHZ_FORMAT_V15,
+                    AUTHZ_FORMAT_V16,
                 ],
                 AuthzFold::new(owner),
             );
@@ -181,7 +182,7 @@ impl World {
             Step::Tokens(_, cmd) => {
                 self.tokens_cmd(*cmd).expect("finisher step commits");
             }
-            Step::Authz(..) | Step::Identity(..) | Step::Repo(..) => unreachable!(),
+            Step::Authz(..) | Step::Identity(..) | Step::Repo(..) | Step::Network(..) => unreachable!(),
         }
     }
 

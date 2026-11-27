@@ -569,6 +569,7 @@ fn authz_batch(
                         repo.read.actions_held = false;
                         false
                     }
+                    RepoStep::Fork { .. } => unreachable!("this harness has no fork chain"),
                 };
                 if !refused {
                     repo.steps.push(s);
@@ -1060,6 +1061,135 @@ fn create_repo_with_over_the_cap_is_bad_record() {
     let name = RepoName::parse("exactly-large-enough").unwrap();
     let repo_id = commit_create(&mut w, owner, admin, &name, &at_cap);
     assert_live(&mut w, owner, &name, repo_id);
+}
+
+// ---- forks, from the owner's `Authz` log (format 0x12.16) ----
+
+#[test]
+fn a_fork_is_finished_in_order_owner_row_network_then_chain() {
+    use graftyard_identity::AuthzEvent;
+    use graftyard_identity::audit::NetworkRead;
+    use graftyard_identity::finish::{self, CREATE_ABORT_AFTER, NetworkStep};
+    use graftyard_raft::Fold;
+    use graftyard_types::NetworkId;
+
+    let owner = acct(0, 19, 1);
+    let repo = RepoId(DbId(5_001));
+    let parent = RepoId(DbId(5_000));
+    let network = NetworkId::of_root(parent);
+    let name = RepoName::parse("ordered-fork").unwrap();
+    let init = r#"{"description":"fork settings"}"#;
+    let at = Timestamp(1_000);
+    let now = Timestamp(2_000);
+    let mut authz = AuthzFold::new(owner);
+    authz.apply(&AuthzEvent::Opened { kind: AccountKind::Org, enterprise: None });
+    authz.apply(&AuthzEvent::RepoName {
+        key: name.key(),
+        entry: Some(RepoEntry::Live { repo, epoch: graftyard_identity::NameEpoch(1) }),
+    });
+    let f = finish::Fork { owner, repo, name: &name, init, parent, network, at };
+    let mut net = NetworkRead::default();
+
+    assert_eq!(
+        finish::fork(&f, &authz, None, &net, None, now),
+        Ok(Some(Step::Names(
+            ChainId::Names(name_shard(&NameKey::Repo(repo))),
+            NamesCmd { cred: CredentialShard::NONE, op: NamesOp::RepoOwnerIn { repo, owner, network } },
+        ))),
+        "the owner row, including its network, comes first"
+    );
+    assert_eq!(finish::fork(&f, &authz, Some(owner), &net, None, now), Err(ChainId::Repo(repo)));
+    assert_eq!(
+        finish::fork(&f, &authz, Some(owner), &net, Some(RepoLife::Open), now),
+        Ok(Some(Step::Network(network, NetworkStep::ForkAdded { repo, parent }))),
+        "the network row comes before the repository chain is touched"
+    );
+
+    net.forks.insert(repo, parent);
+    assert_eq!(
+        finish::fork(&f, &authz, Some(owner), &net, Some(RepoLife::Open), now),
+        Ok(Some(Step::Repo(
+            repo,
+            RepoStep::Fork { owner, enterprise: None, init: init.into(), name: name.clone(), network, parent },
+        )))
+    );
+    assert_eq!(finish::fork(&f, &authz, Some(owner), &net, Some(RepoLife::Created), now), Ok(None));
+
+    let expired = Timestamp(at.0 + CREATE_ABORT_AFTER.as_millis() as u64);
+    assert_eq!(
+        finish::fork(&f, &authz, Some(owner), &net, Some(RepoLife::Open), expired),
+        Ok(Some(Step::Authz(
+            ChainId::Authz(owner),
+            Box::new(AuthzCmd { cred: CredentialShard::NONE, op: AuthzOp::AbortCreate { key: name.key(), repo } }),
+        ))),
+        "the create-style abort precedes either remaining follow-up after the deadline"
+    );
+}
+
+#[test]
+fn create_fork_needs_an_admin_and_records_its_parent_and_network() {
+    use graftyard_identity::{AuthzErr, AuthzEvent, AuthzOut};
+    use graftyard_raft::{Command, EntryBody};
+    use graftyard_types::NetworkId;
+
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, None);
+    let outsider = acct(0, 12, 9);
+    created(&mut w, outsider, "NotAdmin");
+    let name = RepoName::parse("a-new-fork").unwrap();
+    let init = r#"{"description":"fork payload"}"#;
+    let parent = RepoId(DbId(4_001));
+    let network = NetworkId::of_root(RepoId(DbId(4_000)));
+    let op = AuthzOp::CreateFork { name: name.clone(), init: init.into(), parent, network };
+    let create = AuthzCmd { cred: as_user(admin), op };
+    assert_eq!(create.format(), graftyard_identity::AUTHZ_FORMAT_V16);
+    assert_eq!((create.format().family, create.format().version), (0x12, 16));
+
+    assert!(matches!(
+        w.authz_cmd(owner, AuthzCmd { cred: as_user(outsider), op: create.op.clone() }),
+        Err(CommitError::Refused { err: AuthzErr::Forbidden, .. })
+    ));
+    let acked = w.authz_cmd(owner, create.clone()).unwrap();
+    let repo = match &acked.out {
+        AuthzOut::Repo { repo, .. } => *repo,
+        other => panic!("fork returned {other:?}"),
+    };
+    let (at, owed) = {
+        let g = w.authz(owner);
+        let leader = g.leader().unwrap();
+        let entry = g.m(leader).entry_at(acked.index).unwrap();
+        let EntryBody::Events(events) = &entry.body else { panic!("fork committed no events") };
+        match events.as_slice() {
+            [
+                AuthzEvent::RepoName { key, entry: Some(RepoEntry::Live { repo: live, .. }) },
+                AuthzEvent::ForkCreate {
+                    key: marker_key,
+                    name: marker_name,
+                    repo: marked,
+                    init: marker_init,
+                    parent: marked_parent,
+                    network: marked_network,
+                },
+            ] => {
+                assert_eq!(key, &name.key());
+                assert_eq!(marker_key, &name.key());
+                assert_eq!(*live, repo);
+                assert_eq!(*marked, repo);
+                assert_eq!(marker_name, &name);
+                assert_eq!(marker_init.as_ref(), init);
+                assert_eq!(*marked_parent, parent);
+                assert_eq!(*marked_network, network);
+            }
+            other => panic!("unexpected fork events: {other:?}"),
+        }
+        (entry.at, audit::authz_owed(owner, entry))
+    };
+    assert_eq!(
+        owed,
+        vec![Owed::Fork { owner, key: name.key(), name: name.clone(), repo, init: init.into(), parent, network, at }]
+    );
+
+    assert!(matches!(w.authz_cmd(owner, create), Err(CommitError::Refused { err: AuthzErr::Taken, .. })));
 }
 
 /// A created repository whose delete committed only on `Authz` gets the repository tombstone with precisely the

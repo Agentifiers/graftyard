@@ -341,6 +341,7 @@ fn current() -> (Vec<String>, Vec<String>) {
         // M4-WP1: a `HookSequencer`'s stored attempt rows.
         git::sequencer::Outcome,
         git::lifecycle::LifecycleOp, git::lifecycle::LifecycleErr,
+        git::network::NetworkEvent, git::network::NetworkOp, git::network::NetworkErr,
         // M4-WP2: inside `IdentityEvent::Record` and `RepoEvent::Watchers`, an `Inbox`'s stored rows and snapshots,
         // and a `SearchShard`'s name.
         id::UserRecord, git::watch::WatcherUpdate, git::inbox::Reason, git::search::Domain,
