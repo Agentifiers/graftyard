@@ -1,0 +1,69 @@
+[
+  {
+    "i": 0,
+    "id": "01a21b43-c454-8e22-a249-1e358e90c141",
+    "plan": "before",
+    "kill": {
+      "at": 1795753766885,
+      "sandbox": "01a21b43-c454-8e22-a249-1e358e90c141-1",
+      "last_push": null,
+      "hit": "before"
+    },
+    "late": {
+      "replayed": [
+        {
+          "status": 403,
+          "url": "https://controller.graftyard.internal/report"
+        },
+        {
+          "status": 403,
+          "url": "https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"
+        }
+      ],
+      "late": 2
+    },
+    "end": {
+      "state": "Done",
+      "generation": 2,
+      "late": 2,
+      "running": false
+    },
+    "first": "01a21b43-c454-8e22-a249-1e358e90c141-1",
+    "restarted": {
+      "sandbox": "01a21b43-c454-8e22-a249-1e358e90c141-2",
+      "from_ms": 1795753794807
+    },
+    "last": {
+      "state": {
+        "Running": {
+          "last_push": [
+            181,
+            26,
+            108,
+            5,
+            202,
+            86,
+            214,
+            217,
+            146,
+            122,
+            74,
+            149,
+            108,
+            75,
+            13,
+            175,
+            90,
+            28,
+            24,
+            46
+          ],
+          "sandbox": "01a21b43-c454-8e22-a249-1e358e90c141-2"
+        }
+      },
+      "generation": 2,
+      "late": 2,
+      "running": true
+    }
+  }
+]

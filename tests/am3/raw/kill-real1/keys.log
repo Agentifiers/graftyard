@@ -1,0 +1,6 @@
+2026-11-27T03:51:31Z
+c532f70e7
+{"count":586,"prev":"680fdff0996a8e4c46f73448d245fdd792f4aebc476202e59fbc1cf1744d23bf"}
+wrote unsigned Keys to ~/.graft-m4a/kill/keys.unsigned, prev 680fdff0996a8e4c46f73448d245fdd792f4aebc476202e59fbc1cf1744d23bf
+{"digest":"b776597314e99d462478ed60672b9361666e130cf2d0e68de18554f3f3301387","index":1424,"status":201}
+{"count":587,"keys":{"agents_executor":"5b883ddbee97b210871c8dbfc6807e283a636a882a82c13604b40191ad2d2fdb","customer":"031923da25f100f1e0586087cd86b749be1ae6d26a75f4fa8cc6112f2dd882bd","drain":"477de5269050c38534d965f1a4d95c17f2f0fe1a4089bfa51c0b598d8c67c70b","executor":"d387253b7e8b191191dfd4508252587bf37f0dcad90ed180e2b8b42d85aaef1b","generation":14,"release":"dbde3befb57425850c8dc215410af552b1a23eede0ecc7c42dd2299076f3893f","vendor":null}}

@@ -1,0 +1,13 @@
+2026-11-27T04:28:51Z
+c532f70e7
+2026-11-27T04:29:04.009Z {"create":0,"status":201,"id":"01a21b43-c454-8e22-a249-1e358e90c141","state":"queued","plan":"before"}
+2026-11-27T04:29:10.679Z {"started":0,"sandbox":"01a21b43-c454-8e22-a249-1e358e90c141-1"}
+2026-11-27T04:29:10.893Z {"kill":0,"plan":"before","at":1795753766885,"sandbox":"01a21b43-c454-8e22-a249-1e358e90c141-1","last_push":null,"hit":"before"}
+2026-11-27T04:29:54.808Z {"restarted":0,"sandbox":"01a21b43-c454-8e22-a249-1e358e90c141-2","from_ms":1795753794807}
+2026-11-27T04:29:54.908Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T04:30:37.863Z {"end":0,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.34089675}
+2026-11-27T04:30:37.865Z {"model_usd":0.34089675,"model_stop_usd":25}
+row exit 0
+controller refusals: none
+2026-11-27T04:30:51.086Z claude turns by exit code: {"0":6}
+GATE PASS: every claude turn exited 0 and no refusal but the model arm's

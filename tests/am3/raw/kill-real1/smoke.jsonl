@@ -1,0 +1,10 @@
+{"t":1795752374153,"create":0,"status":201,"id":"01a21b2e-e74f-86b3-b1d5-4c0a9adb8632","state":"queued","plan":"before"}
+{"t":1795752717360,"started":0,"sandbox":null}
+{"t":1795752717361,"stop":"task 0 never started"}
+{"t":1795753744009,"create":0,"status":201,"id":"01a21b43-c454-8e22-a249-1e358e90c141","state":"queued","plan":"before"}
+{"t":1795753750678,"started":0,"sandbox":"01a21b43-c454-8e22-a249-1e358e90c141-1"}
+{"t":1795753750893,"kill":0,"plan":"before","at":1795753766885,"sandbox":"01a21b43-c454-8e22-a249-1e358e90c141-1","last_push":null,"hit":"before"}
+{"t":1795753794808,"restarted":0,"sandbox":"01a21b43-c454-8e22-a249-1e358e90c141-2","from_ms":1795753794807}
+{"t":1795753794908,"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+{"t":1795753837863,"end":0,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.34089675}
+{"t":1795753837864,"model_usd":0.34089675,"model_stop_usd":25}

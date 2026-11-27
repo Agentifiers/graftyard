@@ -288,7 +288,8 @@ pub fn register(out: &Path, ids: &[i64]) -> Res<()> {
     );
     println!(
         "once they commit, set graftyard-agent's webhook secret: PATCH /app/hook/config under its App JWT with \
-         {{\"secret\": <the value of {}{AGENTS_WEBHOOK_SECRET}>}}",
+         {{\"secret\": <the value of {}{AGENTS_WEBHOOK_SECRET}>}}; committing these again on a live install clears that \
+         webhook until the PATCH runs again",
         saved.secret_prefix
     );
     Ok(())

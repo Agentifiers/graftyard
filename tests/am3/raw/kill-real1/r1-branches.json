@@ -1,0 +1,232 @@
+[
+  {
+    "i": 0,
+    "plan": "before",
+    "hit": null,
+    "missed": true,
+    "commits": 6,
+    "first_sandbox_pushes": 6,
+    "second_sandbox_pushes": 0,
+    "last_first_before_kill_s": null,
+    "second_first_after_kill_s": null,
+    "second_starts_after_push": null,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b4b-8d67-8a0b-8e33-f60aed5a7089-1 at 1795754293.788 claude exit 0 tokens 34982",
+      "push 2 by 01a21b4b-8d67-8a0b-8e33-f60aed5a7089-1 at 1795754299.285 claude exit 0 tokens 35106",
+      "push 3 by 01a21b4b-8d67-8a0b-8e33-f60aed5a7089-1 at 1795754305.208 claude exit 0 tokens 35222",
+      "push 4 by 01a21b4b-8d67-8a0b-8e33-f60aed5a7089-1 at 1795754311.871 claude exit 0 tokens 35363",
+      "push 5 by 01a21b4b-8d67-8a0b-8e33-f60aed5a7089-1 at 1795754318.892 claude exit 0 tokens 35490",
+      "push 6 by 01a21b4b-8d67-8a0b-8e33-f60aed5a7089-1 at 1795754325.470 claude exit 0 tokens 35603"
+    ]
+  },
+  {
+    "i": 1,
+    "plan": "between",
+    "hit": null,
+    "missed": true,
+    "commits": 6,
+    "first_sandbox_pushes": 6,
+    "second_sandbox_pushes": 0,
+    "last_first_before_kill_s": null,
+    "second_first_after_kill_s": null,
+    "second_starts_after_push": null,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b4b-a53b-8db8-a5c8-a9d0f2715c90-1 at 1795754297.159 claude exit 0 tokens 34958",
+      "push 2 by 01a21b4b-a53b-8db8-a5c8-a9d0f2715c90-1 at 1795754302.954 claude exit 0 tokens 35107",
+      "push 3 by 01a21b4b-a53b-8db8-a5c8-a9d0f2715c90-1 at 1795754308.583 claude exit 0 tokens 35253",
+      "push 4 by 01a21b4b-a53b-8db8-a5c8-a9d0f2715c90-1 at 1795754315.490 claude exit 0 tokens 35362",
+      "push 5 by 01a21b4b-a53b-8db8-a5c8-a9d0f2715c90-1 at 1795754321.786 claude exit 0 tokens 35507",
+      "push 6 by 01a21b4b-a53b-8db8-a5c8-a9d0f2715c90-1 at 1795754327.675 claude exit 0 tokens 35613"
+    ]
+  },
+  {
+    "i": 2,
+    "plan": "during",
+    "hit": null,
+    "missed": true,
+    "commits": 6,
+    "first_sandbox_pushes": 6,
+    "second_sandbox_pushes": 0,
+    "last_first_before_kill_s": null,
+    "second_first_after_kill_s": null,
+    "second_starts_after_push": null,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b4b-a968-8a6a-aceb-a92be9a5c549-1 at 1795754311.909 claude exit 0 tokens 34975",
+      "push 2 by 01a21b4b-a968-8a6a-aceb-a92be9a5c549-1 at 1795754317.625 claude exit 0 tokens 35110",
+      "push 3 by 01a21b4b-a968-8a6a-aceb-a92be9a5c549-1 at 1795754324.790 claude exit 0 tokens 35223",
+      "push 4 by 01a21b4b-a968-8a6a-aceb-a92be9a5c549-1 at 1795754331.597 claude exit 0 tokens 35378",
+      "push 5 by 01a21b4b-a968-8a6a-aceb-a92be9a5c549-1 at 1795754338.622 claude exit 0 tokens 35510",
+      "push 6 by 01a21b4b-a968-8a6a-aceb-a92be9a5c549-1 at 1795754344.698 claude exit 0 tokens 35593"
+    ]
+  },
+  {
+    "i": 3,
+    "plan": "before",
+    "hit": null,
+    "missed": true,
+    "commits": 6,
+    "first_sandbox_pushes": 6,
+    "second_sandbox_pushes": 0,
+    "last_first_before_kill_s": null,
+    "second_first_after_kill_s": null,
+    "second_starts_after_push": null,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b4b-adaf-8f36-8371-40b17fd0d1ee-1 at 1795754317.750 claude exit 0 tokens 34977",
+      "push 2 by 01a21b4b-adaf-8f36-8371-40b17fd0d1ee-1 at 1795754324.609 claude exit 0 tokens 35107",
+      "push 3 by 01a21b4b-adaf-8f36-8371-40b17fd0d1ee-1 at 1795754330.673 claude exit 0 tokens 35228",
+      "push 4 by 01a21b4b-adaf-8f36-8371-40b17fd0d1ee-1 at 1795754337.338 claude exit 0 tokens 35366",
+      "push 5 by 01a21b4b-adaf-8f36-8371-40b17fd0d1ee-1 at 1795754343.542 claude exit 0 tokens 35515",
+      "push 6 by 01a21b4b-adaf-8f36-8371-40b17fd0d1ee-1 at 1795754351.385 claude exit 0 tokens 35610"
+    ]
+  },
+  {
+    "i": 4,
+    "plan": "between",
+    "hit": "between",
+    "missed": false,
+    "commits": 6,
+    "first_sandbox_pushes": 5,
+    "second_sandbox_pushes": 1,
+    "last_first_before_kill_s": 6.7,
+    "second_first_after_kill_s": 35.7,
+    "second_starts_after_push": 5,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b4b-b3cd-8943-bd52-ddde7b8f79d1-1 at 1795754325.018 claude exit 0 tokens 34972",
+      "push 2 by 01a21b4b-b3cd-8943-bd52-ddde7b8f79d1-1 at 1795754331.512 claude exit 0 tokens 35106",
+      "push 3 by 01a21b4b-b3cd-8943-bd52-ddde7b8f79d1-1 at 1795754337.447 claude exit 0 tokens 35225",
+      "push 4 by 01a21b4b-b3cd-8943-bd52-ddde7b8f79d1-1 at 1795754344.105 claude exit 0 tokens 35392",
+      "push 5 by 01a21b4b-b3cd-8943-bd52-ddde7b8f79d1-1 at 1795754350.834 claude exit 0 tokens 35506",
+      "push 6 by 01a21b4b-b3cd-8943-bd52-ddde7b8f79d1-2 at 1795754393.201 claude exit 0 tokens 35631"
+    ]
+  },
+  {
+    "i": 5,
+    "plan": "before",
+    "hit": null,
+    "missed": true,
+    "commits": 6,
+    "first_sandbox_pushes": 6,
+    "second_sandbox_pushes": 0,
+    "last_first_before_kill_s": null,
+    "second_first_after_kill_s": null,
+    "second_starts_after_push": null,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b4b-b99c-8cb1-964a-7c214f088afb-1 at 1795754333.143 claude exit 0 tokens 34981",
+      "push 2 by 01a21b4b-b99c-8cb1-964a-7c214f088afb-1 at 1795754339.089 claude exit 0 tokens 35108",
+      "push 3 by 01a21b4b-b99c-8cb1-964a-7c214f088afb-1 at 1795754346.181 claude exit 0 tokens 35234",
+      "push 4 by 01a21b4b-b99c-8cb1-964a-7c214f088afb-1 at 1795754352.508 claude exit 0 tokens 35367",
+      "push 5 by 01a21b4b-b99c-8cb1-964a-7c214f088afb-1 at 1795754360.135 claude exit 0 tokens 35487",
+      "push 6 by 01a21b4b-b99c-8cb1-964a-7c214f088afb-1 at 1795754366.227 claude exit 0 tokens 35599"
+    ]
+  },
+  {
+    "i": 6,
+    "plan": "between",
+    "hit": "between",
+    "missed": false,
+    "commits": 6,
+    "first_sandbox_pushes": 3,
+    "second_sandbox_pushes": 3,
+    "last_first_before_kill_s": 2.7,
+    "second_first_after_kill_s": 29,
+    "second_starts_after_push": 3,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b4b-bef4-8205-8e54-3310fea5060a-1 at 1795754343.304 claude exit 0 tokens 34981",
+      "push 2 by 01a21b4b-bef4-8205-8e54-3310fea5060a-1 at 1795754349.808 claude exit 0 tokens 35114",
+      "push 3 by 01a21b4b-bef4-8205-8e54-3310fea5060a-1 at 1795754355.902 claude exit 0 tokens 35230",
+      "push 4 by 01a21b4b-bef4-8205-8e54-3310fea5060a-2 at 1795754387.598 claude exit 0 tokens 35350",
+      "push 5 by 01a21b4b-bef4-8205-8e54-3310fea5060a-2 at 1795754396.453 claude exit 0 tokens 35488",
+      "push 6 by 01a21b4b-bef4-8205-8e54-3310fea5060a-2 at 1795754404.189 claude exit 0 tokens 35569"
+    ]
+  },
+  {
+    "i": 7,
+    "plan": "during",
+    "hit": "during",
+    "missed": false,
+    "commits": 6,
+    "first_sandbox_pushes": 3,
+    "second_sandbox_pushes": 3,
+    "last_first_before_kill_s": 1.1,
+    "second_first_after_kill_s": 32.8,
+    "second_starts_after_push": 3,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b4b-c389-8668-bdfd-b9a8ab75d230-1 at 1795754348.032 claude exit 0 tokens 34966",
+      "push 2 by 01a21b4b-c389-8668-bdfd-b9a8ab75d230-1 at 1795754354.035 claude exit 0 tokens 35106",
+      "push 3 by 01a21b4b-c389-8668-bdfd-b9a8ab75d230-1 at 1795754359.845 claude exit 0 tokens 35226",
+      "push 4 by 01a21b4b-c389-8668-bdfd-b9a8ab75d230-2 at 1795754393.713 claude exit 0 tokens 35364",
+      "push 5 by 01a21b4b-c389-8668-bdfd-b9a8ab75d230-2 at 1795754402.323 claude exit 0 tokens 35496",
+      "push 6 by 01a21b4b-c389-8668-bdfd-b9a8ab75d230-2 at 1795754411.089 claude exit 0 tokens 35596"
+    ]
+  },
+  {
+    "i": 8,
+    "plan": "during",
+    "hit": "during",
+    "missed": false,
+    "commits": 6,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 5,
+    "last_first_before_kill_s": 1,
+    "second_first_after_kill_s": 40.1,
+    "second_starts_after_push": 1,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b4b-c958-88bb-b2af-b909c4d82136-1 at 1795754365.033 claude exit 0 tokens 34974",
+      "push 2 by 01a21b4b-c958-88bb-b2af-b909c4d82136-2 at 1795754406.126 claude exit 0 tokens 35107",
+      "push 3 by 01a21b4b-c958-88bb-b2af-b909c4d82136-2 at 1795754415.077 claude exit 0 tokens 35229",
+      "push 4 by 01a21b4b-c958-88bb-b2af-b909c4d82136-2 at 1795754423.555 claude exit 0 tokens 35367",
+      "push 5 by 01a21b4b-c958-88bb-b2af-b909c4d82136-2 at 1795754431.875 claude exit 0 tokens 35492",
+      "push 6 by 01a21b4b-c958-88bb-b2af-b909c4d82136-2 at 1795754439.900 claude exit 0 tokens 35576"
+    ]
+  },
+  {
+    "i": 9,
+    "plan": "during",
+    "hit": "during",
+    "missed": false,
+    "commits": 6,
+    "first_sandbox_pushes": 1,
+    "second_sandbox_pushes": 5,
+    "last_first_before_kill_s": 0.9,
+    "second_first_after_kill_s": 37.7,
+    "second_starts_after_push": 1,
+    "exits": [
+      0
+    ],
+    "msgs": [
+      "push 1 by 01a21b4b-cf21-8c27-bdaf-c82c0d4b66e5-1 at 1795754365.645 claude exit 0 tokens 34981",
+      "push 2 by 01a21b4b-cf21-8c27-bdaf-c82c0d4b66e5-2 at 1795754404.234 claude exit 0 tokens 35102",
+      "push 3 by 01a21b4b-cf21-8c27-bdaf-c82c0d4b66e5-2 at 1795754411.106 claude exit 0 tokens 35252",
+      "push 4 by 01a21b4b-cf21-8c27-bdaf-c82c0d4b66e5-2 at 1795754417.943 claude exit 0 tokens 35399",
+      "push 5 by 01a21b4b-cf21-8c27-bdaf-c82c0d4b66e5-2 at 1795754423.878 claude exit 0 tokens 35523",
+      "push 6 by 01a21b4b-cf21-8c27-bdaf-c82c0d4b66e5-2 at 1795754429.883 claude exit 0 tokens 35635"
+    ]
+  }
+]

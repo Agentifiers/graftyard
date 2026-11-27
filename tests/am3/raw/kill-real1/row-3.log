@@ -1,0 +1,67 @@
+2026-11-27T04:59:03Z
+42d33f80f
+2026-11-27T04:59:14.635Z {"create":0,"status":201,"id":"01a21b5f-6a35-88ed-870d-bf6d4815d60f","state":"queued","plan":"before"}
+2026-11-27T04:59:16.092Z {"create":1,"status":201,"id":"01a21b5f-7657-8145-9cc8-770ca10122f6","state":"queued","plan":"between"}
+2026-11-27T04:59:17.476Z {"create":2,"status":201,"id":"01a21b5f-7be4-8380-86ed-a421b9500ef5","state":"queued","plan":"during"}
+2026-11-27T04:59:18.748Z {"create":3,"status":201,"id":"01a21b5f-814b-8ffe-9a2c-16a1064f532f","state":"queued","plan":"during"}
+2026-11-27T04:59:20.240Z {"create":4,"status":201,"id":"01a21b5f-8648-8a4d-8c23-de09027d2dde","state":"queued","plan":"during"}
+2026-11-27T04:59:21.728Z {"create":5,"status":201,"id":"01a21b5f-8c2e-8a7b-b353-b5cf4a1ffbaf","state":"queued","plan":"between"}
+2026-11-27T04:59:23.496Z {"create":6,"status":201,"id":"01a21b5f-91fb-8dc8-ba27-2a8436fe44bc","state":"queued","plan":"during"}
+2026-11-27T04:59:24.876Z {"create":7,"status":201,"id":"01a21b5f-98e4-804d-9054-12b43ab0dacd","state":"queued","plan":"before"}
+2026-11-27T04:59:26.301Z {"create":8,"status":201,"id":"01a21b5f-9e43-86d7-80a4-c5d7528810f0","state":"queued","plan":"between"}
+2026-11-27T04:59:27.592Z {"create":9,"status":201,"id":"01a21b5f-a3d7-85b1-af43-43aa4643a4c2","state":"queued","plan":"during"}
+2026-11-27T04:59:28.935Z {"started":0,"sandbox":"01a21b5f-6a35-88ed-870d-bf6d4815d60f-1"}
+2026-11-27T04:59:29.008Z {"started":1,"sandbox":"01a21b5f-7657-8145-9cc8-770ca10122f6-1"}
+2026-11-27T04:59:29.370Z {"kill":0,"plan":"before","delay_ms":0,"at":1795755585392,"sandbox":"01a21b5f-6a35-88ed-870d-bf6d4815d60f-1","last_push":null,"hit":"before"}
+2026-11-27T04:59:33.104Z {"started":2,"sandbox":"01a21b5f-7be4-8380-86ed-a421b9500ef5-1"}
+2026-11-27T04:59:39.815Z {"kill":1,"plan":"between","delay_ms":5929,"at":1795755595853,"sandbox":"01a21b5f-7657-8145-9cc8-770ca10122f6-1","last_push":[114,111,109,102,131,145,26,234,148,37,127,176,61,180,79,250,166,214,1,12],"hit":"between"}
+2026-11-27T04:59:43.402Z {"started":3,"sandbox":"01a21b5f-814b-8ffe-9a2c-16a1064f532f-1"}
+2026-11-27T04:59:50.354Z {"kill":2,"plan":"during","delay_ms":13552,"at":1795755606424,"sandbox":"01a21b5f-7be4-8380-86ed-a421b9500ef5-1","last_push":null,"hit":"during"}
+2026-11-27T04:59:54.487Z {"started":4,"sandbox":"01a21b5f-8648-8a4d-8c23-de09027d2dde-1"}
+2026-11-27T05:00:01.889Z {"kill":3,"plan":"during","delay_ms":9808,"at":1795755617959,"sandbox":"01a21b5f-814b-8ffe-9a2c-16a1064f532f-1","last_push":[153,19,109,139,73,238,29,161,145,208,251,52,110,58,34,138,110,147,168,64],"hit":"between"}
+2026-11-27T05:00:03.911Z {"started":5,"sandbox":"01a21b5f-8c2e-8a7b-b353-b5cf4a1ffbaf-1"}
+2026-11-27T05:00:04.728Z {"restarted":0,"sandbox":"01a21b5f-6a35-88ed-870d-bf6d4815d60f-2","from_ms":1795755604728}
+2026-11-27T05:00:04.855Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T05:00:08.404Z {"restarted":1,"sandbox":"01a21b5f-7657-8145-9cc8-770ca10122f6-2","from_ms":1795755608404}
+2026-11-27T05:00:08.525Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T05:00:09.741Z {"kill":4,"plan":"during","delay_ms":6967,"at":1795755625815,"sandbox":"01a21b5f-8648-8a4d-8c23-de09027d2dde-1","last_push":null,"hit":"during"}
+2026-11-27T05:00:10.755Z {"started":6,"sandbox":"01a21b5f-91fb-8dc8-ba27-2a8436fe44bc-1"}
+2026-11-27T05:00:18.045Z {"started":7,"sandbox":"01a21b5f-98e4-804d-9054-12b43ab0dacd-1"}
+2026-11-27T05:00:19.119Z {"kill":7,"plan":"before","delay_ms":0,"at":1795755635125,"sandbox":"01a21b5f-98e4-804d-9054-12b43ab0dacd-1","last_push":null,"hit":"before"}
+2026-11-27T05:00:20.842Z {"restarted":2,"sandbox":"01a21b5f-7be4-8380-86ed-a421b9500ef5-2","from_ms":1795755620842}
+2026-11-27T05:00:21.439Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T05:00:22.249Z {"restarted":7,"sandbox":"01a21b5f-98e4-804d-9054-12b43ab0dacd-2","from_ms":1795755622248}
+2026-11-27T05:00:22.364Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T05:00:23.761Z {"kill":5,"plan":"between","delay_ms":19557,"at":1795755639836,"sandbox":"01a21b5f-8c2e-8a7b-b353-b5cf4a1ffbaf-1","last_push":[116,202,247,236,54,235,109,126,58,201,55,36,71,98,35,93,49,38,25,62],"hit":"between"}
+2026-11-27T05:00:27.826Z {"started":8,"sandbox":"01a21b5f-9e43-86d7-80a4-c5d7528810f0-1"}
+2026-11-27T05:00:28.139Z {"restarted":3,"sandbox":"01a21b5f-814b-8ffe-9a2c-16a1064f532f-2","from_ms":1795755628139}
+2026-11-27T05:00:28.199Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T05:00:35.242Z {"started":9,"sandbox":"01a21b5f-a3d7-85b1-af43-43aa4643a4c2-1"}
+2026-11-27T05:00:35.736Z {"kill":6,"plan":"during","delay_ms":9302,"at":1795755651810,"sandbox":"01a21b5f-91fb-8dc8-ba27-2a8436fe44bc-1","last_push":null,"hit":"during"}
+2026-11-27T05:00:37.538Z {"restarted":4,"sandbox":"01a21b5f-8648-8a4d-8c23-de09027d2dde-2","from_ms":1795755637538}
+2026-11-27T05:00:38.208Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T05:00:44.072Z {"kill":8,"plan":"between","delay_ms":8940,"at":1795755660140,"sandbox":"01a21b5f-9e43-86d7-80a4-c5d7528810f0-1","last_push":[104,252,164,81,195,179,40,5,138,215,163,10,193,163,49,107,59,9,192,136],"hit":"between"}
+2026-11-27T05:00:46.278Z {"restarted":5,"sandbox":"01a21b5f-8c2e-8a7b-b353-b5cf4a1ffbaf-2","from_ms":1795755646278}
+2026-11-27T05:00:46.364Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T05:00:50.820Z {"kill":9,"plan":"during","delay_ms":6569,"at":1795755666894,"sandbox":"01a21b5f-a3d7-85b1-af43-43aa4643a4c2-1","last_push":[76,5,96,109,67,123,235,70,223,207,33,182,188,215,255,44,114,6,97,91],"hit":"between"}
+2026-11-27T05:00:55.812Z {"restarted":6,"sandbox":"01a21b5f-91fb-8dc8-ba27-2a8436fe44bc-2","from_ms":1795755655812}
+2026-11-27T05:00:56.302Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T05:01:11.524Z {"restarted":8,"sandbox":"01a21b5f-9e43-86d7-80a4-c5d7528810f0-2","from_ms":1795755671524}
+2026-11-27T05:01:11.605Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T05:01:22.192Z {"restarted":9,"sandbox":"01a21b5f-a3d7-85b1-af43-43aa4643a4c2-2","from_ms":1795755682192}
+2026-11-27T05:01:22.862Z {"late":2,"replayed":[{"status":403,"url":"https://controller.graftyard.internal/report"},{"status":403,"url":"https://graft-m4a-edge.<sub>.workers.dev/m3org/kill-real1.git/info/refs?service=git-upload-pack"}]}
+2026-11-27T05:01:22.987Z {"end":0,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.32703075}
+2026-11-27T05:01:23.122Z {"end":1,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.2011485}
+2026-11-27T05:01:23.795Z {"end":2,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.19364895000000001}
+2026-11-27T05:01:23.846Z {"end":3,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.19448895000000002}
+2026-11-27T05:01:23.885Z {"end":4,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.1946631}
+2026-11-27T05:01:23.932Z {"end":5,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.2432631}
+2026-11-27T05:01:46.947Z {"end":6,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.18726854999999998}
+2026-11-27T05:01:47.606Z {"end":7,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.1667316}
+2026-11-27T05:02:09.481Z {"end":8,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.1523496}
+2026-11-27T05:02:09.536Z {"end":9,"state":"Done","generation":2,"late":2,"running":false,"model_usd":0.1525809}
+2026-11-27T05:02:09.536Z {"model_usd":2.0131740000000002,"model_stop_usd":25}
+row exit 0
+controller refusals: none
+2026-11-27T05:02:22.978Z claude turns by exit code: {"0":126}
+GATE PASS: every claude turn exited 0 and no refusal but the model arm's
